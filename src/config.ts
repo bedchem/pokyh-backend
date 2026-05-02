@@ -1,0 +1,26 @@
+import 'dotenv/config';
+
+function requireEnv(key: string): string {
+  const val = process.env[key];
+  if (!val) {
+    throw new Error(`Missing required environment variable: ${key}`);
+  }
+  return val;
+}
+
+export const config = {
+  nodeEnv: process.env.NODE_ENV ?? 'development',
+  port: parseInt(process.env.PORT ?? '4000', 10),
+  databaseUrl: requireEnv('DATABASE_URL'),
+  jwtSecret: requireEnv('JWT_SECRET'),
+  refreshTokenSecret: requireEnv('REFRESH_TOKEN_SECRET'),
+  apiKey: requireEnv('API_KEY'),
+  serverKey: requireEnv('SERVER_KEY'),
+  corsOrigin: process.env.CORS_ORIGIN ?? 'http://localhost:3000',
+  webuntisBase: process.env.WEBUNTIS_BASE ?? 'https://lbs-brixen.webuntis.com/WebUntis',
+  webuntisSchool: process.env.WEBUNTIS_SCHOOL ?? 'lbs-brixen',
+  isDev: (process.env.NODE_ENV ?? 'development') === 'development',
+  isProd: process.env.NODE_ENV === 'production',
+  jwtExpiresIn: '8h',
+  refreshTokenExpiresInDays: 30,
+} as const;
