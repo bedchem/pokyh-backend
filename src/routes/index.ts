@@ -7,10 +7,14 @@ import { classesRouter } from './classes';
 import { remindersRouter } from './reminders';
 import { dishRatingsRouter } from './dishRatings';
 import { sseRouter } from './sse';
+import { adminRouter } from './admin';
 
 const router = Router();
 
-// Apply API key check to all routes
+// Admin routes — no API key required (same-origin, JWT-protected)
+router.use('/api/admin', adminRouter);
+
+// Apply API key check to all other routes
 router.use(apiKeyMiddleware);
 
 // Mount route groups

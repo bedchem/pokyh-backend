@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { config } from '../config';
+import { isTokenRevoked } from '../utils/revokedTokens';
 
 export interface JwtPayload {
   stableUid: string;
@@ -34,6 +35,8 @@ function extractToken(req: Request): string | null {
 function verifyToken(token: string): JwtPayload | null {
   try {
     const decoded = jwt.verify(token, config.jwtSecret) as JwtPayload & jwt.JwtPayload;
+    // Reject tokens issued before this user's session was revoked
+    if (isTokenRevoked(decoded.stableUid, decoded.iat ?? 0)) return null;
     return {
       stableUid: decoded.stableUid,
       username: decoded.username,

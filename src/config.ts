@@ -21,6 +21,13 @@ export const config = {
   webuntisSchool: process.env.WEBUNTIS_SCHOOL ?? 'lbs-brixen',
   isDev: (process.env.NODE_ENV ?? 'development') === 'development',
   isProd: process.env.NODE_ENV === 'production',
-  jwtExpiresIn: '8h',
+  jwtExpiresIn: '7d',
   refreshTokenExpiresInDays: 30,
-} as const;
+  adminUsername: process.env.ADMIN_USERNAME ?? 'admin',
+  adminUsernames: (process.env.ADMIN_USERNAMES ?? process.env.ADMIN_USERNAME ?? 'admin')
+    .split(',').map((u) => u.trim()).filter(Boolean),
+  adminPasswordHash: process.env.ADMIN_PASSWORD_HASH ?? '',
+  debug: process.env.DEBUG === 'true',
+  tunnelName: process.env.TUNNEL_NAME ?? 'pokyh-api',
+  tunnelHostname: process.env.TUNNEL_HOSTNAME ?? '',
+};

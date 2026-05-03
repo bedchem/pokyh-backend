@@ -2,7 +2,8 @@
 // learn more about it in the docs: https://pris.ly/d/prisma-schema
 
 generator client {
-  provider = "prisma-client-js"
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
 }
 
 datasource db {
@@ -29,6 +30,7 @@ model User {
 model Admin {
   stableUid       String   @id @map("stable_uid")
   canCreateClass  Boolean  @default(true) @map("can_create_class")
+  passwordHash    String?  @map("password_hash") @db.VarChar(100)
   createdAt       DateTime @default(now()) @map("created_at")
 
   @@map("admins")
@@ -125,4 +127,23 @@ model ApiKey {
   lastUsedAt DateTime? @map("last_used_at")
 
   @@map("api_keys")
+}
+
+model RequestLog {
+  id        String   @id @default(uuid())
+  method    String   @db.VarChar(10)
+  path      String   @db.VarChar(500)
+  status    Int
+  duration  Int
+  ip        String?  @db.VarChar(45)
+  stableUid String?  @map("stable_uid") @db.VarChar(64)
+  username  String?  @db.VarChar(100)
+  userAgent String?  @map("user_agent") @db.VarChar(500)
+  error     String?  @db.VarChar(1000)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([stableUid])
+  @@index([username])
+  @@index([createdAt])
+  @@map("request_logs")
 }

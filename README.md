@@ -1,351 +1,121 @@
 # pokyh-backend
 
-Production-ready Node.js/Express/TypeScript backend replacing Firebase (Auth + Firestore) for the Pokyh school app.
+REST API + admin panel for the pokyh school app. Express 5 · Prisma · MySQL 8 · JWT · SSE · React admin UI at `/admin/`.
+
+---
 
 ## Stack
 
-- **Runtime**: Node.js + Express 5 + TypeScript
-- **Database**: MySQL 8+ via Prisma ORM (local only)
-- **Auth**: JWT (8h) + Refresh Tokens (30d)
-- **Real-time**: Server-Sent Events (SSE)
-- **Security**: Helmet, CORS, rate limiting, Zod validation, timing-safe comparisons
-
----
-
-## Setup
-
-### 1. Install dependencies
-
-```bash
-npm install
-```
-
-### 2. Configure environment
-
-Copy `.env.example` to `.env` and fill in your values:
-
-```bash
-cp .env.example .env
-```
-
-Required variables:
-
-| Variable | Description |
+| | |
 |---|---|
-| `DATABASE_URL` | MySQL connection string — `mysql://USER:PASS@localhost:3306/pokyh` |
-| `JWT_SECRET` | 64-char random hex for JWT signing |
-| `REFRESH_TOKEN_SECRET` | 64-char random hex for refresh tokens |
-| `API_KEY` | Shared secret sent in `X-API-Key` header by the frontend |
-| `SERVER_KEY` | Server-to-server secret for Next.js → backend calls |
-| `CORS_ORIGIN` | Allowed frontend origin (e.g. `http://localhost:3000`) |
+| Runtime | Node.js 22, Express 5, TypeScript |
+| Database | MySQL 8 via Prisma ORM |
+| Auth | JWT (8 h) + Refresh Tokens (30 d) + in-memory revocation |
+| Real-time | Server-Sent Events |
+| Admin UI | React 19 + Vite + Tailwind CSS (served from same process) |
+| Deployment | Docker + docker-compose, optional Cloudflare Tunnel |
 
-Generate secrets:
-```bash
-node -e "const {randomBytes}=require('crypto'); ['JWT_SECRET','REFRESH_TOKEN_SECRET','API_KEY','SERVER_KEY'].forEach(k => console.log(k+'='+randomBytes(32).toString('hex')))"
+---
+
+## Local development
+
+**Prerequisites:** Node 22+, MySQL 8 on port 3306
+
+```sh
+cp .env.example .env          # fill in your values
+npm install
+cd admin && npm install && cd ..
+npm run db:push               # sync schema to DB
+npm run dev                   # hot-reload dev server
 ```
 
-### 3. Create the MySQL database
+Admin panel → [http://localhost:4000/admin/](http://localhost:4000/admin/)  
+First boot triggers the setup wizard (password + optional tunnel).
 
-```bash
-mysql -u root -e "CREATE DATABASE pokyh CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+---
+
+## Docker (production / Dokploy)
+
+```sh
+cp .env.example .env.production   # fill in secrets
+docker compose --env-file .env.production up -d --build
 ```
 
-(On macOS with Homebrew: `brew services start mysql` first)
+MySQL starts first; the app waits until healthy, then runs `prisma db push` and starts the server. No manual migration step needed.
 
-### 4. Development
+---
 
-```bash
-npm run dev
-```
+## Environment variables
 
-Automatically syncs the database schema and starts the server with hot-reload.
+| Variable | Required | Description |
+|---|---|---|
+| `MYSQL_ROOT_PASSWORD` | Docker | MySQL root password used by docker-compose |
+| `DATABASE_URL` | yes | Set automatically in Docker; set manually for local |
+| `JWT_SECRET` | yes | 32-byte hex — `openssl rand -hex 32` |
+| `REFRESH_TOKEN_SECRET` | yes | Same format |
+| `API_KEY` | yes | Sent by the mobile app in `X-API-Key` |
+| `SERVER_KEY` | yes | Next.js → backend server-to-server key |
+| `CORS_ORIGIN` | yes | Comma-separated allowed origins |
+| `ADMIN_USERNAMES` | yes | Comma-separated admin usernames, e.g. `nexor,plat-feli` |
+| `ADMIN_PASSWORD_HASH` | yes | bcrypt hash — set via setup wizard on first boot |
+| `WEBUNTIS_BASE` | no | WebUntis API base URL |
+| `WEBUNTIS_SCHOOL` | no | WebUntis school slug |
+| `TUNNEL_NAME` / `TUNNEL_HOSTNAME` | no | Cloudflare Tunnel — set via admin wizard |
+| `DEBUG` | no | `true` for verbose request logging |
 
-### 5. Production
+See [`.env.example`](.env.example) for the full template.
 
-```bash
-npm run build   # compiles TypeScript + generates Prisma client
-npm start       # syncs schema + starts compiled server
+---
+
+## Scripts
+
+```sh
+npm run dev          # dev server with hot-reload
+npm run build        # compile TS + generate Prisma client
+npm start            # start compiled server
+npm run db:push      # sync schema (no migration history)
+npm run db:studio    # Prisma Studio GUI
+npm run admin:build  # build admin panel only
 ```
 
 ---
 
-## API Reference
+## API overview
 
-All endpoints require `X-API-Key: <your-api-key>` header.
+Base path: `/api/` · All requests require `X-API-Key` · Authenticated routes require `Authorization: Bearer <jwt>`
 
-Authenticated endpoints additionally require `Authorization: Bearer <jwt>`.
-
-### Auth
-
-#### `POST /auth/login`
-Register or log in a user. Called server-to-server from Next.js.
-
-Requires: `X-Server-Key: <server-key>` header
-
-Request body:
-```json
-{
-  "username": "maxi.muster",
-  "klasseId": 123,
-  "klasseName": "4AHIF"
-}
-```
-
-Response:
-```json
-{
-  "token": "<jwt>",
-  "refreshToken": "<refresh-token>",
-  "user": {
-    "stableUid": "abc123...",
-    "username": "maxi.muster",
-    "webuntisKlasseId": 123,
-    "webuntisKlasseName": "4AHIF",
-    "classId": "def456...",
-    "isAdmin": false
-  }
-}
-```
-
-#### `POST /auth/refresh`
-Issue a new JWT using a refresh token.
-
-Request body:
-```json
-{ "refreshToken": "<refresh-token>" }
-```
-
-Response:
-```json
-{ "token": "<new-jwt>" }
-```
-
-#### `POST /auth/logout`
-Revoke a refresh token. Requires auth.
-
-Request body:
-```json
-{ "refreshToken": "<refresh-token>" }
-```
-
-#### `GET /auth/me`
-Get current user info. Requires auth.
+| Route prefix | Auth | Purpose |
+|---|---|---|
+| `/api/auth/*` | — | Login, refresh, logout, /me |
+| `/api/todos/*` | JWT | User todo CRUD |
+| `/api/classes/*` | JWT | Class management + join/leave |
+| `/api/reminders/*` | JWT | Class reminders |
+| `/api/dish-ratings/*` | JWT | Mensa dish ratings (1–5 ★) |
+| `/api/sse/*` | JWT | Real-time SSE streams (todos, reminders, ratings) |
+| `/api/users/*` | Server key | Internal user lookup |
+| `/api/admin/*` | Admin JWT | Admin panel endpoints |
+| `/api/setup/*` | — | First-time setup wizard (SSE) |
 
 ---
 
-### Users
+## Admin panel
 
-#### `GET /users/me`
-Get current user profile. Requires auth.
+`/admin/` — full management UI:
 
-#### `GET /users/:userId`
-Get user by username or stableUid. Requires auth.
-
----
-
-### Todos
-
-#### `GET /users/:username/todos`
-List todos sorted by `createdAt` ascending. Requires auth (own user only).
-
-#### `POST /users/:username/todos`
-Create todo. Requires auth (own user only).
-
-Request body:
-```json
-{
-  "title": "Math homework",
-  "details": "Page 42–45",
-  "dueAt": "2026-05-10T15:00:00.000Z"
-}
-```
-
-#### `PATCH /users/:username/todos/:todoId`
-Update todo. Requires auth (own user only).
-
-Request body (all fields optional):
-```json
-{
-  "title": "Updated title",
-  "done": true,
-  "doneAt": "2026-05-02T10:00:00.000Z"
-}
-```
-
-#### `DELETE /users/:username/todos/:todoId`
-Delete todo. Requires auth (own user only).
+- **Dashboard** — user / class / todo stats + charts
+- **Users** — detail drawer: view todos & classes, edit/delete entries, revoke sessions (force-logout in real time)
+- **Classes & Reminders** — full CRUD
+- **Sessions** — live session list, revoke with animated fade-out
+- **Tunnel** — step-by-step Cloudflare Tunnel wizard, auto-downloads `cloudflared` if missing
+- Multi-admin login via `ADMIN_USERNAMES` (shared password hash)
 
 ---
 
-### Classes
+## Security
 
-#### `GET /classes/mine`
-Get the user's current class (matching WebUntis `klasseId`). Requires auth.
-
-#### `GET /classes/:classId`
-Get class with members. Requires auth + membership.
-
-#### `POST /classes`
-Create a class (admin only). Requires auth.
-
-Request body:
-```json
-{ "name": "4AHIF", "webuntisKlasseId": 123 }
-```
-
-#### `POST /classes/join`
-Join a class by code. Requires auth.
-
-Request body:
-```json
-{ "code": "ABC123" }
-```
-
-#### `POST /classes/:classId/leave`
-Leave class. Deletes class if no members remain. Requires auth.
-
----
-
-### Reminders
-
-#### `GET /classes/:classId/reminders`
-List reminders sorted by `remindAt` ascending. Requires auth + membership.
-
-#### `POST /classes/:classId/reminders`
-Create reminder. Requires auth + membership.
-
-Request body:
-```json
-{
-  "title": "Math test",
-  "body": "Chapter 5–8",
-  "remindAt": "2026-05-10T08:00:00.000Z"
-}
-```
-
-#### `DELETE /classes/:classId/reminders/:reminderId`
-Delete reminder. Requires auth + (creator OR admin).
-
----
-
-### Dish Ratings
-
-#### `GET /dish-ratings/:dishId`
-Get all ratings for a dish. Requires auth.
-
-Response:
-```json
-{
-  "ratings": { "<stableUid>": 4 },
-  "myRating": 4
-}
-```
-
-#### `POST /dish-ratings/batch`
-Get ratings for multiple dishes at once. Requires auth.
-
-Request body:
-```json
-{ "dishIds": ["dish-1", "dish-2"] }
-```
-
-#### `POST /dish-ratings/:dishId`
-Rate a dish (1–5 stars). Upserts. Requires auth.
-
-Request body:
-```json
-{ "stars": 4 }
-```
-
----
-
-### Server-Sent Events (SSE)
-
-All SSE endpoints require auth via `Authorization: Bearer <token>` header. The connection sends the current state on connect, then pushes updates whenever data changes.
-
-SSE event format:
-```
-event: <eventName>
-data: <JSON payload>
-```
-
-#### `GET /sse/todos`
-Subscribe to todo changes for the authenticated user.
-
-Event: `todos` — payload is the full todos array.
-
-#### `GET /sse/reminders/:classId`
-Subscribe to reminder changes for a class. Requires membership.
-
-Event: `reminders` — payload is the full reminders array.
-
-#### `GET /sse/dish-ratings/:dishId`
-Subscribe to rating changes for a dish.
-
-Event: `dishRatings` — payload is `{ ratings, myRating }`.
-
-Heartbeat: `data: {"type":"heartbeat"}` every 30 seconds.
-
----
-
-## Security Features
-
-- **Helmet**: HTTP security headers
-- **CORS**: Strict origin allowlist (`pokyh.com`, `localhost:3000`)
-- **Rate limiting**:
-  - Global: 500 req/min per IP
-  - Auth: 10 req/15min per IP
-  - Writes: 60 req/min per IP
-  - Reads: 300 req/min per IP
-  - SSE: 10 connections per IP
-- **API Key**: Timing-safe comparison via `crypto.timingSafeEqual`
-- **JWT**: 8h expiry, RS256 signed
-- **Refresh tokens**: 30-day expiry, hashed in DB, revocable
-- **Input validation**: Zod on all request bodies
-- **stableUid isolation**: Users can only access their own data
-- **Class membership checks**: On all class/reminder operations
-- **Admin checks**: On admin-only operations
-
----
-
-## Deployment
-
-### Environment
-
-- Set `NODE_ENV=production`
-- Use a strong, unique `DATABASE_URL` with a dedicated DB user
-- Generate fresh secrets (don't reuse from dev)
-- Set `CORS_ORIGIN=https://pokyh.com`
-
-### Database
-
-```bash
-npx prisma migrate deploy
-```
-
-### Process manager
-
-Use PM2 or systemd:
-
-```bash
-npm run build
-pm2 start dist/index.js --name pokyh-backend
-```
-
-### Reverse proxy (nginx)
-
-```nginx
-location / {
-  proxy_pass http://localhost:4000;
-  proxy_http_version 1.1;
-  proxy_set_header Upgrade $http_upgrade;
-  proxy_set_header Connection '';
-  proxy_set_header Host $host;
-  proxy_set_header X-Real-IP $remote_addr;
-  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-  # SSE: disable buffering
-  proxy_buffering off;
-  proxy_cache off;
-  chunked_transfer_encoding on;
-}
-```
+- **Helmet** + strict CORS allowlist
+- **Rate limiting** — global 500 req/min, auth 10 req/15 min, writes 60 req/min, SSE 10 conn/IP
+- **JWT revocation** — in-memory map invalidates tokens instantly on session revoke or user delete
+- **Refresh tokens** — hashed in DB, individually revocable
+- **Input validation** — Zod on all request bodies
+- **Timing-safe** API key comparison via `crypto.timingSafeEqual`

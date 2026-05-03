@@ -2,6 +2,7 @@
 .env
 .env.local
 .env.*.local
+.env.production
 
 # Dependencies
 node_modules/
@@ -11,6 +12,17 @@ dist/
 
 # Prisma
 prisma/migrations/
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# MySQL dump files
+*.sql.gz
+*.dump
+
+# Cloudflare tunnel credentials (contains secrets)
+~/.cloudflared/*.json
 
 # Logs
 logs/

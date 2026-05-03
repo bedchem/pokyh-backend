@@ -1,0 +1,45 @@
+# Dependencies (rebuilt in Docker)
+node_modules/
+admin/node_modules/
+
+# Build output (rebuilt in Docker)
+dist/
+admin/dist/
+
+# Environment (set via Dokploy / docker-compose env vars — never baked into image)
+.env
+.env.*
+
+# Dev/editor files
+.git/
+.gitignore
+.claude/
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs & temp
+logs/
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test / coverage
+coverage/
+
+# TypeScript incremental build info
+*.tsbuildinfo
+
+# Prisma migrations (not needed in image)
+prisma/migrations/
+
+# DB files
+*.db
+*.db-journal
+*.sqlite
+*.dump
+*.sql.gz
