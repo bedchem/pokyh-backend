@@ -95,6 +95,16 @@ model Reminder {
   @@map("reminders")
 }
 
+model Dish {
+  id        String   @id
+  name      String   @db.VarChar(500)
+  imageUrl  String   @default("") @map("image_url") @db.VarChar(1000)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("dishes")
+}
+
 model DishRating {
   dishId    String   @map("dish_id")
   stableUid String   @map("stable_uid")

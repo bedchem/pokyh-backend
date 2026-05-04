@@ -66,12 +66,23 @@ router.post('/batch', readLimiter, requireAuth, async (req: Request, res: Respon
 // POST /dish-ratings/:dishId — rate a dish (upsert)
 const rateSchema = z.object({
   stars: z.number().int().min(1).max(5),
+  name: z.string().max(500).optional(),
+  imageUrl: z.string().max(1000).optional(),
 });
 
 router.post('/:dishId', writeLimiter, requireAuth, async (req: Request, res: Response) => {
   const dishId = req.params['dishId'] as string;
   const { stableUid } = req.user!;
-  const { stars } = rateSchema.parse(req.body);
+  const { stars, name, imageUrl } = rateSchema.parse(req.body);
+
+  // Upsert dish catalog entry so admin can show name + image
+  if (name) {
+    await prisma.dish.upsert({
+      where: { id: dishId },
+      create: { id: dishId, name, imageUrl: imageUrl ?? '' },
+      update: { name, ...(imageUrl !== undefined ? { imageUrl } : {}) },
+    });
+  }
 
   await prisma.dishRating.upsert({
     where: { dishId_stableUid: { dishId, stableUid } },

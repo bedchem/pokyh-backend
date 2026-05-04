@@ -144,6 +144,8 @@ export interface AdminDishRatingEntry {
 
 export interface AdminDish {
   dishId: string;
+  name: string;
+  imageUrl: string;
   avgStars: number;
   count: number;
   ratings: AdminDishRatingEntry[];

@@ -798,42 +798,48 @@ router.get('/classes/:id/todos', requireAdmin, async (req: Request, res: Respons
 // ─── GET /api/admin/dish-ratings ─────────────────────────────────────────────
 
 router.get('/dish-ratings', requireAdmin, async (_req: Request, res: Response): Promise<void> => {
-  const rows = await prisma.dishRating.findMany({ orderBy: [{ dishId: 'asc' }, { createdAt: 'asc' }] });
-
-  if (rows.length === 0) {
-    res.json([]);
-    return;
-  }
+  const [allDishes, rows] = await Promise.all([
+    prisma.dish.findMany({ orderBy: { name: 'asc' } }),
+    prisma.dishRating.findMany({ orderBy: [{ dishId: 'asc' }, { createdAt: 'asc' }] }),
+  ]);
 
   const uids = [...new Set(rows.map((r) => r.stableUid))];
-  const users = await prisma.user.findMany({
-    where: { stableUid: { in: uids } },
-    select: { stableUid: true, username: true },
-  });
+  const users = uids.length > 0
+    ? await prisma.user.findMany({ where: { stableUid: { in: uids } }, select: { stableUid: true, username: true } })
+    : [];
   const uidToUsername: Record<string, string> = Object.fromEntries(users.map((u) => [u.stableUid, u.username]));
 
-  const grouped = new Map<string, typeof rows>();
+  const ratingsByDish = new Map<string, typeof rows>();
   for (const row of rows) {
-    const list = grouped.get(row.dishId) ?? [];
+    const list = ratingsByDish.get(row.dishId) ?? [];
     list.push(row);
-    grouped.set(row.dishId, list);
+    ratingsByDish.set(row.dishId, list);
   }
 
-  const result = [...grouped.entries()].map(([dishId, entries]) => {
-    const avg = entries.reduce((s, e) => s + e.stars, 0) / entries.length;
-    return {
-      dishId,
-      avgStars: Math.round(avg * 10) / 10,
-      count: entries.length,
-      ratings: entries.map((e) => ({
-        stableUid: e.stableUid,
-        username: uidToUsername[e.stableUid] ?? e.stableUid,
-        stars: e.stars,
-        createdAt: e.createdAt.toISOString(),
-        updatedAt: e.updatedAt.toISOString(),
-      })),
-    };
-  });
+  const dishMap = new Map(allDishes.map((d) => [d.id, d]));
+  const allDishIds = new Set([...allDishes.map((d) => d.id), ...ratingsByDish.keys()]);
+
+  const result = [...allDishIds]
+    .map((dishId) => {
+      const dish = dishMap.get(dishId);
+      const entries = ratingsByDish.get(dishId) ?? [];
+      const avg = entries.length > 0 ? entries.reduce((s, e) => s + e.stars, 0) / entries.length : 0;
+      return {
+        dishId,
+        name: dish?.name ?? dishId,
+        imageUrl: dish?.imageUrl ?? '',
+        avgStars: Math.round(avg * 10) / 10,
+        count: entries.length,
+        ratings: entries.map((e) => ({
+          stableUid: e.stableUid,
+          username: uidToUsername[e.stableUid] ?? e.stableUid,
+          stars: e.stars,
+          createdAt: e.createdAt.toISOString(),
+          updatedAt: e.updatedAt.toISOString(),
+        })),
+      };
+    })
+    .sort((a, b) => a.name.localeCompare(b.name));
 
   res.json(result);
 });

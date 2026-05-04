@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Star, Trash2, ChevronDown, ChevronUp, RefreshCw } from 'lucide-react';
+import { Star, Trash2, ChevronDown, ChevronUp, RefreshCw, UtensilsCrossed } from 'lucide-react';
 import { adminApi } from '../api';
 import type { AdminDish, AdminDishRatingEntry } from '../types';
 import { useToast } from '../components/Toast';
@@ -99,7 +99,7 @@ function RatingRow({
       </div>
 
       {editing ? (
-        <div className="flex items-center gap-2 flex-shrink-0">
+        <div className="flex items-center gap-2 flex-shrink-0 flex-wrap justify-end">
           <StarSelector value={editStars} onChange={setEditStars} />
           <button
             onClick={handleSave}
@@ -173,45 +173,76 @@ function DishCard({
   onDeleted: (dishId: string, stableUid: string) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const [imgError, setImgError] = useState(false);
 
   return (
     <div
-      className="rounded-xl overflow-hidden card-hover animate-fadeInUp"
+      className="rounded-xl overflow-hidden card-hover"
       style={{ background: 'rgba(14,15,28,0.7)', border: '1px solid rgba(99,102,241,0.1)' }}
     >
+      {/* Header row — click to expand */}
       <button
-        className="w-full flex items-center gap-4 px-5 py-4 text-left transition-colors"
+        className="w-full flex items-center gap-4 px-4 py-3.5 text-left transition-colors"
         onClick={() => setExpanded(!expanded)}
         onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.02)'; }}
         onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = ''; }}
       >
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-xs font-mono px-2 py-0.5 rounded-md" style={{ background: 'rgba(99,102,241,0.12)', color: '#818cf8', border: '1px solid rgba(99,102,241,0.2)' }}>
-              {dish.dishId}
-            </span>
-          </div>
+        {/* Dish image */}
+        <div
+          className="w-12 h-12 sm:w-14 sm:h-14 rounded-xl flex-shrink-0 overflow-hidden flex items-center justify-center"
+          style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.08)' }}
+        >
+          {dish.imageUrl && !imgError ? (
+            <img
+              src={dish.imageUrl}
+              alt={dish.name}
+              className="w-full h-full object-cover"
+              onError={() => setImgError(true)}
+            />
+          ) : (
+            <UtensilsCrossed size={20} style={{ color: '#2a2a3e' }} />
+          )}
         </div>
 
-        <div className="flex items-center gap-4 flex-shrink-0">
-          <div className="flex items-center gap-1.5">
-            <StarsDisplay value={Math.round(dish.avgStars)} size={15} />
-            <span className="text-sm font-semibold" style={{ color: '#f59e0b' }}>{dish.avgStars.toFixed(1)}</span>
-          </div>
-          <span className="text-xs px-2 py-0.5 rounded-full" style={{ background: 'rgba(255,255,255,0.06)', color: '#8b8b9b' }}>
-            {dish.count} {dish.count === 1 ? 'vote' : 'votes'}
-          </span>
-          <span style={{ color: '#4a4a5e' }}>
-            {expanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-          </span>
+        {/* Name + vote summary */}
+        <div className="flex-1 min-w-0 text-left">
+          <div className="font-semibold text-sm truncate" style={{ color: '#e0e0ef' }}>{dish.name}</div>
+          {dish.count > 0 ? (
+            <div className="flex items-center gap-2 mt-0.5">
+              <StarsDisplay value={Math.round(dish.avgStars)} size={12} />
+              <span className="text-xs font-semibold" style={{ color: '#f59e0b' }}>{dish.avgStars.toFixed(1)}</span>
+              <span className="text-xs" style={{ color: '#4a4a5e' }}>
+                ({dish.count} {dish.count === 1 ? 'vote' : 'votes'})
+              </span>
+            </div>
+          ) : (
+            <span className="text-xs" style={{ color: '#3a3a4e' }}>No votes yet</span>
+          )}
         </div>
+
+        <span className="flex-shrink-0" style={{ color: '#4a4a5e' }}>
+          {expanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+        </span>
       </button>
 
+      {/* Expanded content */}
       {expanded && (
         <div className="px-4 pb-4 flex flex-col gap-2 animate-fadeInUp">
           <div style={{ height: '1px', background: 'rgba(255,255,255,0.05)', marginBottom: '4px' }} />
+
+          {/* Dish ID badge */}
+          <div className="flex items-center gap-2 mb-1">
+            <span className="text-xs" style={{ color: '#4a4a5e' }}>ID:</span>
+            <span
+              className="text-xs font-mono px-2 py-0.5 rounded-md break-all"
+              style={{ background: 'rgba(99,102,241,0.1)', color: '#818cf8', border: '1px solid rgba(99,102,241,0.15)' }}
+            >
+              {dish.dishId}
+            </span>
+          </div>
+
           {dish.ratings.length === 0 ? (
-            <p className="text-sm text-center py-4" style={{ color: '#4a4a5e' }}>No ratings</p>
+            <p className="text-sm text-center py-4" style={{ color: '#3a3a4e' }}>No ratings yet</p>
           ) : (
             dish.ratings.map((entry) => (
               <RatingRow
@@ -251,41 +282,39 @@ export function RatingsPage() {
 
   function handleUpdated(dishId: string, stableUid: string, stars: number) {
     setDishes((prev) =>
-      prev.map((d) =>
-        d.dishId !== dishId
-          ? d
-          : {
-              ...d,
-              ratings: d.ratings.map((r) => r.stableUid === stableUid ? { ...r, stars } : r),
-              avgStars: Math.round(
-                (d.ratings.reduce((s, r) => s + (r.stableUid === stableUid ? stars : r.stars), 0) / d.ratings.length) * 10
-              ) / 10,
-            }
-      )
+      prev.map((d) => {
+        if (d.dishId !== dishId) return d;
+        const newRatings = d.ratings.map((r) => r.stableUid === stableUid ? { ...r, stars } : r);
+        const avg = newRatings.reduce((s, r) => s + r.stars, 0) / newRatings.length;
+        return { ...d, ratings: newRatings, avgStars: Math.round(avg * 10) / 10 };
+      })
     );
   }
 
   function handleDeleted(dishId: string, stableUid: string) {
     setDishes((prev) =>
-      prev
-        .map((d) => {
-          if (d.dishId !== dishId) return d;
-          const newRatings = d.ratings.filter((r) => r.stableUid !== stableUid);
-          if (newRatings.length === 0) return null;
-          const avg = newRatings.reduce((s, r) => s + r.stars, 0) / newRatings.length;
-          return { ...d, ratings: newRatings, count: newRatings.length, avgStars: Math.round(avg * 10) / 10 };
-        })
-        .filter(Boolean) as AdminDish[]
+      prev.map((d) => {
+        if (d.dishId !== dishId) return d;
+        const newRatings = d.ratings.filter((r) => r.stableUid !== stableUid);
+        const avg = newRatings.length > 0
+          ? newRatings.reduce((s, r) => s + r.stars, 0) / newRatings.length
+          : 0;
+        return { ...d, ratings: newRatings, count: newRatings.length, avgStars: Math.round(avg * 10) / 10 };
+      })
     );
   }
 
   const filtered = search.trim()
     ? dishes.filter(
         (d) =>
+          d.name.toLowerCase().includes(search.toLowerCase()) ||
           d.dishId.toLowerCase().includes(search.toLowerCase()) ||
           d.ratings.some((r) => r.username.toLowerCase().includes(search.toLowerCase()))
       )
     : dishes;
+
+  const withVotes = filtered.filter((d) => d.count > 0);
+  const withoutVotes = filtered.filter((d) => d.count === 0);
 
   return (
     <div className="animate-page">
@@ -316,7 +345,7 @@ export function RatingsPage() {
         type="text"
         value={search}
         onChange={(e) => setSearch(e.target.value)}
-        placeholder="Search by dish ID or username..."
+        placeholder="Search by name, ID or username..."
         className="w-full px-4 py-2.5 rounded-xl text-sm mb-5 outline-none transition-all"
         style={{
           background: 'rgba(255,255,255,0.04)',
@@ -348,12 +377,38 @@ export function RatingsPage() {
           </p>
         </div>
       ) : (
-        <div className="flex flex-col gap-3">
-          {filtered.map((dish, i) => (
-            <div key={dish.dishId} style={{ animationDelay: `${i * 40}ms` }}>
-              <DishCard dish={dish} onUpdated={handleUpdated} onDeleted={handleDeleted} />
+        <div className="flex flex-col gap-6">
+          {/* Dishes with votes */}
+          {withVotes.length > 0 && (
+            <div>
+              <h2 className="text-xs font-semibold uppercase tracking-widest mb-3" style={{ color: '#4a4a5e' }}>
+                Rated dishes
+              </h2>
+              <div className="flex flex-col gap-2">
+                {withVotes.map((dish, i) => (
+                  <div key={dish.dishId} className="animate-fadeInUp" style={{ animationDelay: `${i * 35}ms` }}>
+                    <DishCard dish={dish} onUpdated={handleUpdated} onDeleted={handleDeleted} />
+                  </div>
+                ))}
+              </div>
             </div>
-          ))}
+          )}
+
+          {/* Dishes without votes */}
+          {withoutVotes.length > 0 && (
+            <div>
+              <h2 className="text-xs font-semibold uppercase tracking-widest mb-3" style={{ color: '#3a3a4e' }}>
+                No votes yet
+              </h2>
+              <div className="flex flex-col gap-2">
+                {withoutVotes.map((dish, i) => (
+                  <div key={dish.dishId} className="animate-fadeInUp" style={{ animationDelay: `${i * 35}ms` }}>
+                    <DishCard dish={dish} onUpdated={handleUpdated} onDeleted={handleDeleted} />
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>
