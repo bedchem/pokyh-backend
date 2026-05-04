@@ -231,8 +231,8 @@ function DishForm({ dish, ratingData, onSaved, onClose, onRatingChanged }: DishF
         price: Number(form.price) || 0,
         protein: Number(form.protein) || 0,
         fat: Number(form.fat) || 0,
-        isVegetarian: form.isVegetarian,
-        isVegan: form.isVegan,
+        isVegetarian: Boolean(form.isVegetarian),
+        isVegan: Boolean(form.isVegan),
         date: form.date,
         sortOrder: Number(form.sortOrder) || 0,
       };
@@ -313,7 +313,7 @@ function DishForm({ dish, ratingData, onSaved, onClose, onRatingChanged }: DishF
         </div>
 
         {/* Body */}
-        <div className="flex-1 overflow-y-auto px-5 py-5 flex flex-col gap-4 scroll-touch">
+        <div className="flex-1 overflow-y-auto px-5 py-5 flex flex-col gap-4 scroll-touch scrollbar-thin">
 
           {tab === 'basic' && (
             <>
@@ -356,7 +356,7 @@ function DishForm({ dish, ratingData, onSaved, onClose, onRatingChanged }: DishF
               <div className="flex gap-2">
                 <button
                   type="button"
-                  onClick={() => set('isVegetarian', !form.isVegetarian)}
+                  onClick={() => setForm((p) => ({ ...p, isVegetarian: !p.isVegetarian }))}
                   className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-all select-none"
                   style={{
                     background: form.isVegetarian ? 'rgba(34,197,94,0.15)' : 'rgba(255,255,255,0.04)',
@@ -369,7 +369,7 @@ function DishForm({ dish, ratingData, onSaved, onClose, onRatingChanged }: DishF
                 </button>
                 <button
                   type="button"
-                  onClick={() => set('isVegan', !form.isVegan)}
+                  onClick={() => setForm((p) => ({ ...p, isVegan: !p.isVegan }))}
                   className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-all select-none"
                   style={{
                     background: form.isVegan ? 'rgba(134,239,172,0.15)' : 'rgba(255,255,255,0.04)',
@@ -533,8 +533,8 @@ function DishCard({ dish, ratingData, onEdit, onDelete }: {
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 flex-wrap">
           <span className="text-sm font-medium truncate" style={{ color: '#d0d0e0' }}>{dish.nameDe}</span>
-          {dish.isVegan && <Sprout size={13} style={{ color: '#86efac' }} />}
-          {dish.isVegetarian && !dish.isVegan && <Leaf size={13} style={{ color: '#22c55e' }} />}
+          {!!dish.isVegan && <Sprout size={13} style={{ color: '#86efac' }} />}
+          {!!dish.isVegetarian && !dish.isVegan && <Leaf size={13} style={{ color: '#22c55e' }} />}
         </div>
         <div className="flex items-center gap-2 mt-0.5 flex-wrap">
           {dish.category && (
