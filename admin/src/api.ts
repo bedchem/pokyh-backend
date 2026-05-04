@@ -166,6 +166,15 @@ export const adminApi = {
   classReminders: (classId: string): Promise<AdminReminder[]> =>
     request<AdminReminder[]>('GET', `/api/admin/classes/${classId}/reminders`),
 
+  createReminder: (classId: string, data: { title: string; body?: string; remindAt: string }): Promise<AdminReminder> =>
+    request<AdminReminder>('POST', `/api/admin/classes/${classId}/reminders`, data),
+
+  updateReminder: (id: string, data: Partial<{ title: string; body: string; remindAt: string }>): Promise<AdminReminder> =>
+    request<AdminReminder>('PATCH', `/api/admin/reminders/${id}`, data),
+
+  deleteReminder: (id: string): Promise<void> =>
+    request<void>('DELETE', `/api/admin/reminders/${id}`),
+
   addToClass: (classId: string, username: string): Promise<{ stableUid: string; username: string; joinedAt: string }> =>
     request('POST', `/api/admin/classes/${classId}/members`, { username }),
 

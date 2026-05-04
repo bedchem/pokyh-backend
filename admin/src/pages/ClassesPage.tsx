@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import {
   Building2, Users, ChevronDown, ChevronRight, Search, Plus, X,
   RefreshCw, UserMinus, UserPlus, Bell, Clock, Loader2, Trash2,
-  CheckSquare, Square, Edit3, Check, AlertTriangle, ListTodo,
+  CheckSquare, Square, Edit3, Check, AlertTriangle, ListTodo, CalendarClock,
 } from 'lucide-react';
 import { adminApi } from '../api';
 import { useToast } from '../components/Toast';
@@ -393,6 +393,195 @@ function CreateModal({ onClose, onCreated }: CreateModalProps) {
   );
 }
 
+// ─── Reminder Row ────────────────────────────────────────────────────────────
+
+function ReminderRow({
+  reminder,
+  onUpdated,
+  onDeleted,
+}: {
+  reminder: AdminReminder;
+  onUpdated: (r: AdminReminder) => void;
+  onDeleted: (id: string) => void;
+}) {
+  const { showToast } = useToast();
+  const [editing, setEditing] = useState(false);
+  const [title, setTitle] = useState(reminder.title);
+  const [body, setBody] = useState(reminder.body);
+  const [remindAtLocal, setRemindAtLocal] = useState(toDatetimeLocal(reminder.remindAt));
+  const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [confirmDel, setConfirmDel] = useState(false);
+  const titleRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (editing) titleRef.current?.focus();
+  }, [editing]);
+
+  function resetEdit() {
+    setTitle(reminder.title);
+    setBody(reminder.body);
+    setRemindAtLocal(toDatetimeLocal(reminder.remindAt));
+    setEditing(false);
+  }
+
+  async function saveEdit() {
+    const trimmed = title.trim();
+    if (!trimmed) return;
+    setSaving(true);
+    const patch: Partial<{ title: string; body: string; remindAt: string }> = {};
+    if (trimmed !== reminder.title) patch.title = trimmed;
+    if (body !== reminder.body) patch.body = body;
+    if (remindAtLocal) {
+      const iso = new Date(remindAtLocal).toISOString();
+      if (iso !== reminder.remindAt) patch.remindAt = iso;
+    }
+    if (Object.keys(patch).length === 0) {
+      setEditing(false);
+      setSaving(false);
+      return;
+    }
+    try {
+      const updated = await adminApi.updateReminder(reminder.id, patch);
+      onUpdated(updated);
+      setEditing(false);
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : 'Failed to update', 'error');
+      resetEdit();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleDelete() {
+    if (!confirmDel) {
+      setConfirmDel(true);
+      setTimeout(() => setConfirmDel(false), 3000);
+      return;
+    }
+    setDeleting(true);
+    try {
+      await adminApi.deleteReminder(reminder.id);
+      onDeleted(reminder.id);
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : 'Failed to delete', 'error');
+      setDeleting(false);
+    }
+  }
+
+  const isPast = new Date(reminder.remindAt) < new Date();
+
+  return (
+    <div
+      className="rounded-xl transition-all"
+      style={{
+        background: 'rgba(255,255,255,0.03)',
+        border: `1px solid ${editing ? 'rgba(99,102,241,0.3)' : isPast ? 'rgba(239,68,68,0.12)' : 'rgba(255,255,255,0.05)'}`,
+      }}
+    >
+      <div className="flex items-start gap-2 p-3">
+        <div className="flex-shrink-0 mt-0.5" style={{ color: isPast ? '#f87171' : '#10b981' }}>
+          <CalendarClock size={14} />
+        </div>
+
+        <div className="flex-1 min-w-0">
+          {editing ? (
+            <div className="flex flex-col gap-2">
+              <input
+                ref={titleRef}
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Escape') resetEdit(); }}
+                className="text-sm bg-transparent outline-none border-b w-full font-medium"
+                style={{ color: '#f0f0f5', borderColor: 'rgba(99,102,241,0.5)' }}
+                placeholder="Title *"
+              />
+              <textarea
+                value={body}
+                onChange={(e) => setBody(e.target.value)}
+                rows={3}
+                className="text-xs outline-none resize-none rounded p-2 w-full"
+                style={{ color: '#8b8b9b', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '6px' }}
+                placeholder="Body / description (optional)"
+              />
+              <div className="flex items-center gap-2">
+                <Clock size={10} style={{ color: '#4a4a5e' }} />
+                <input
+                  type="datetime-local"
+                  value={remindAtLocal}
+                  onChange={(e) => setRemindAtLocal(e.target.value)}
+                  className="text-xs bg-transparent outline-none flex-1"
+                  style={{ color: '#8b8b9b', colorScheme: 'dark' }}
+                  required
+                />
+              </div>
+              <div className="flex items-center gap-2 pt-1">
+                <button
+                  onClick={() => void saveEdit()}
+                  disabled={saving || !title.trim() || !remindAtLocal}
+                  className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg font-medium disabled:opacity-50"
+                  style={{ background: 'rgba(99,102,241,0.2)', color: '#818cf8', border: '1px solid rgba(99,102,241,0.3)' }}
+                >
+                  {saving ? <Loader2 size={10} className="animate-spin" /> : <Check size={10} />} Save
+                </button>
+                <button onClick={resetEdit} className="text-xs px-2.5 py-1.5 rounded-lg" style={{ color: '#4a4a5e', border: '1px solid rgba(255,255,255,0.06)' }}>
+                  Cancel
+                </button>
+              </div>
+            </div>
+          ) : (
+            <>
+              <div className="flex items-start justify-between gap-2">
+                <span className="text-sm font-medium leading-snug" style={{ color: '#f0f0f5' }}>{reminder.title}</span>
+                <span
+                  className="text-xs px-1.5 py-0.5 rounded flex items-center gap-1 flex-shrink-0"
+                  style={isPast ? { background: 'rgba(239,68,68,0.1)', color: '#f87171' } : { background: 'rgba(16,185,129,0.1)', color: '#10b981' }}
+                >
+                  <Clock size={9} />
+                  {formatRemindAt(reminder.remindAt)}
+                </span>
+              </div>
+              {reminder.body && <p className="text-xs mt-1 whitespace-pre-wrap" style={{ color: '#8b8b9b' }}>{reminder.body}</p>}
+              <p className="text-xs mt-1" style={{ color: '#4a4a5e' }}>by {reminder.createdByUsername}</p>
+            </>
+          )}
+        </div>
+
+        {!editing && (
+          <div className="flex items-center gap-1 flex-shrink-0">
+            <button
+              onClick={() => setEditing(true)}
+              className="p-1 rounded transition-colors"
+              style={{ color: '#4a4a5e' }}
+              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#818cf8'; }}
+              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = '#4a4a5e'; }}
+              title="Edit"
+            >
+              <Edit3 size={12} />
+            </button>
+            <button
+              onClick={() => void handleDelete()}
+              disabled={deleting}
+              className="flex items-center gap-0.5 text-xs px-1.5 py-1 rounded transition-all disabled:opacity-50"
+              style={{
+                color: '#ef4444',
+                background: confirmDel ? 'rgba(239,68,68,0.2)' : 'transparent',
+                border: confirmDel ? '1px solid rgba(239,68,68,0.4)' : '1px solid transparent',
+              }}
+              onMouseEnter={(e) => { if (!deleting) (e.currentTarget as HTMLElement).style.background = 'rgba(239,68,68,0.1)'; }}
+              onMouseLeave={(e) => { if (!confirmDel) (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
+              title={confirmDel ? 'Click again to confirm' : 'Delete'}
+            >
+              {deleting ? <Loader2 size={11} className="animate-spin" /> : <Trash2 size={11} />}
+              {confirmDel && <span className="ml-0.5">Sure?</span>}
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── Expanded class detail panel ──────────────────────────────────────────────
 
 interface ClassDetailProps {
@@ -419,6 +608,13 @@ function ClassDetail({ cls, onMemberRemoved, onMemberAdded }: ClassDetailProps) 
   const [newTodoDetails, setNewTodoDetails] = useState('');
   const [newTodoDueAt, setNewTodoDueAt] = useState('');
   const [creatingTodo, setCreatingTodo] = useState(false);
+
+  // Create reminder form state
+  const [showCreateReminder, setShowCreateReminder] = useState(false);
+  const [newRemTitle, setNewRemTitle] = useState('');
+  const [newRemBody, setNewRemBody] = useState('');
+  const [newRemAt, setNewRemAt] = useState('');
+  const [creatingReminder, setCreatingReminder] = useState(false);
 
   useEffect(() => {
     if (tab === 'reminders' && reminders === null) {
@@ -497,6 +693,37 @@ function ClassDetail({ cls, onMemberRemoved, onMemberAdded }: ClassDetailProps) 
 
   function handleTodoDeleted(id: string) {
     setClassTodos((prev) => prev ? prev.filter((t) => t.id !== id) : prev);
+  }
+
+  function handleReminderUpdated(updated: AdminReminder) {
+    setReminders((prev) => prev ? prev.map((r) => r.id === updated.id ? updated : r) : prev);
+  }
+
+  function handleReminderDeleted(id: string) {
+    setReminders((prev) => prev ? prev.filter((r) => r.id !== id) : prev);
+  }
+
+  async function handleCreateReminder(e: React.FormEvent) {
+    e.preventDefault();
+    if (!newRemTitle.trim() || !newRemAt) return;
+    setCreatingReminder(true);
+    try {
+      const reminder = await adminApi.createReminder(cls.id, {
+        title: newRemTitle.trim(),
+        body: newRemBody.trim() || undefined,
+        remindAt: new Date(newRemAt).toISOString(),
+      });
+      setReminders((prev) => prev ? [...prev, reminder].sort((a, b) => a.remindAt.localeCompare(b.remindAt)) : [reminder]);
+      setNewRemTitle('');
+      setNewRemBody('');
+      setNewRemAt('');
+      setShowCreateReminder(false);
+      showToast('Reminder created', 'success');
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Failed to create reminder', 'error');
+    } finally {
+      setCreatingReminder(false);
+    }
   }
 
   const pendingTodos = classTodos?.filter((t) => !t.done) ?? [];
@@ -593,7 +820,81 @@ function ClassDetail({ cls, onMemberRemoved, onMemberAdded }: ClassDetailProps) 
 
       {/* Reminders tab */}
       {tab === 'reminders' && (
-        <div className="flex flex-col gap-2">
+        <div className="flex flex-col gap-3">
+          {/* Header */}
+          <div className="flex items-center justify-between">
+            <span className="text-xs" style={{ color: '#4a4a5e' }}>
+              {loadingReminders ? 'Loading…' : `${reminders?.length ?? 0} reminder${reminders?.length !== 1 ? 's' : ''}`}
+            </span>
+            {!showCreateReminder && (
+              <button
+                onClick={() => setShowCreateReminder(true)}
+                className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg font-medium transition-all"
+                style={{ color: '#f59e0b', border: '1px solid rgba(245,158,11,0.25)', background: 'transparent' }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(245,158,11,0.1)'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+              >
+                <Plus size={11} /> Add Reminder
+              </button>
+            )}
+          </div>
+
+          {/* Create reminder form */}
+          {showCreateReminder && (
+            <form
+              onSubmit={(e) => void handleCreateReminder(e)}
+              className="rounded-xl p-3 flex flex-col gap-2"
+              style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(245,158,11,0.25)' }}
+            >
+              <input
+                value={newRemTitle}
+                onChange={(e) => setNewRemTitle(e.target.value)}
+                placeholder="Title *"
+                className="text-sm bg-transparent outline-none border-b w-full font-medium"
+                style={{ color: '#f0f0f5', borderColor: 'rgba(245,158,11,0.4)', paddingBottom: '4px' }}
+                autoFocus
+              />
+              <textarea
+                value={newRemBody}
+                onChange={(e) => setNewRemBody(e.target.value)}
+                rows={2}
+                className="text-xs outline-none resize-none rounded p-2 w-full"
+                style={{ color: '#8b8b9b', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '6px' }}
+                placeholder="Body / description (optional)"
+              />
+              <div className="flex items-center gap-2">
+                <Clock size={10} style={{ color: '#4a4a5e' }} />
+                <input
+                  type="datetime-local"
+                  value={newRemAt}
+                  onChange={(e) => setNewRemAt(e.target.value)}
+                  className="text-xs bg-transparent outline-none flex-1"
+                  style={{ color: '#f59e0b', colorScheme: 'dark' }}
+                  required
+                />
+              </div>
+              <div className="flex items-center gap-2 pt-1">
+                <button
+                  type="submit"
+                  disabled={creatingReminder || !newRemTitle.trim() || !newRemAt}
+                  className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg font-medium disabled:opacity-50"
+                  style={{ background: 'rgba(245,158,11,0.15)', color: '#f59e0b', border: '1px solid rgba(245,158,11,0.3)' }}
+                >
+                  {creatingReminder ? <Loader2 size={10} className="animate-spin" /> : <Plus size={10} />} Add
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setShowCreateReminder(false); setNewRemTitle(''); setNewRemBody(''); setNewRemAt(''); }}
+                  className="text-xs px-2.5 py-1.5 rounded-lg"
+                  style={{ color: '#4a4a5e', border: '1px solid rgba(255,255,255,0.06)' }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </form>
+          )}
+
+          {/* Reminder list */}
           {loadingReminders ? (
             <div className="flex items-center gap-2 py-2" style={{ color: '#4a4a5e' }}>
               <Loader2 size={13} className="animate-spin" /> Loading…
@@ -601,31 +902,16 @@ function ClassDetail({ cls, onMemberRemoved, onMemberAdded }: ClassDetailProps) 
           ) : !reminders || reminders.length === 0 ? (
             <p className="text-sm py-2" style={{ color: '#4a4a5e' }}>No reminders in this class</p>
           ) : (
-            reminders.map((r) => {
-              const isPast = new Date(r.remindAt) < new Date();
-              return (
-                <div
+            <div className="flex flex-col gap-1.5">
+              {reminders.map((r) => (
+                <ReminderRow
                   key={r.id}
-                  className="flex flex-col gap-1 px-3 py-2.5 rounded-lg"
-                  style={{ background: 'rgba(255,255,255,0.03)', border: `1px solid ${isPast ? 'rgba(239,68,68,0.12)' : 'rgba(255,255,255,0.05)'}` }}
-                >
-                  <div className="flex items-start justify-between gap-2">
-                    <span className="text-sm font-medium" style={{ color: '#f0f0f5' }}>{r.title}</span>
-                    <span
-                      className="text-xs px-1.5 py-0.5 rounded flex items-center gap-1 flex-shrink-0"
-                      style={isPast
-                        ? { background: 'rgba(239,68,68,0.1)', color: '#f87171' }
-                        : { background: 'rgba(16,185,129,0.1)', color: '#10b981' }}
-                    >
-                      <Clock size={9} />
-                      {formatRemindAt(r.remindAt)}
-                    </span>
-                  </div>
-                  {r.body && <p className="text-xs" style={{ color: '#8b8b9b' }}>{r.body}</p>}
-                  <p className="text-xs" style={{ color: '#4a4a5e' }}>by {r.createdByUsername}</p>
-                </div>
-              );
-            })
+                  reminder={r}
+                  onUpdated={handleReminderUpdated}
+                  onDeleted={handleReminderDeleted}
+                />
+              ))}
+            </div>
           )}
         </div>
       )}

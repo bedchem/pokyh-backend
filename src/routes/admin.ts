@@ -595,6 +595,86 @@ router.get('/classes/:id/reminders', requireAdmin, async (req: Request, res: Res
   })));
 });
 
+// ─── POST /api/admin/classes/:id/reminders ────────────────────────────────────
+
+router.post('/classes/:id/reminders', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const id = String(req.params['id']);
+  const { title, body, remindAt } = req.body as { title?: string; body?: string; remindAt?: string };
+
+  if (!title || String(title).trim().length < 1) {
+    res.status(400).json({ error: 'Title is required' });
+    return;
+  }
+  if (!remindAt) {
+    res.status(400).json({ error: 'remindAt is required' });
+    return;
+  }
+
+  const cls = await prisma.class.findUnique({ where: { id } });
+  if (!cls) {
+    res.status(404).json({ error: 'Class not found' });
+    return;
+  }
+
+  const reminder = await prisma.reminder.create({
+    data: {
+      classId: id,
+      title: String(title).trim().slice(0, 500),
+      body: body ? String(body).slice(0, 10000) : '',
+      remindAt: new Date(remindAt),
+      createdBy: 'admin',
+      createdByName: config.adminUsername,
+      createdByUsername: 'admin',
+    },
+  });
+
+  res.status(201).json({
+    id: reminder.id,
+    classId: reminder.classId,
+    title: reminder.title,
+    body: reminder.body,
+    remindAt: reminder.remindAt.toISOString(),
+    createdBy: reminder.createdBy,
+    createdByName: reminder.createdByName,
+    createdByUsername: reminder.createdByUsername,
+    createdAt: reminder.createdAt.toISOString(),
+  });
+});
+
+// ─── PATCH /api/admin/reminders/:id ──────────────────────────────────────────
+
+router.patch('/reminders/:id', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const id = String(req.params['id']);
+  const { title, body, remindAt } = req.body as { title?: string; body?: string; remindAt?: string };
+
+  const data: Record<string, unknown> = {};
+  if (title !== undefined) data['title'] = String(title).trim().slice(0, 500);
+  if (body !== undefined) data['body'] = String(body).slice(0, 10000);
+  if (remindAt !== undefined) data['remindAt'] = new Date(remindAt);
+
+  const reminder = await prisma.reminder.update({ where: { id }, data });
+
+  res.json({
+    id: reminder.id,
+    classId: reminder.classId,
+    title: reminder.title,
+    body: reminder.body,
+    remindAt: reminder.remindAt.toISOString(),
+    createdBy: reminder.createdBy,
+    createdByName: reminder.createdByName,
+    createdByUsername: reminder.createdByUsername,
+    createdAt: reminder.createdAt.toISOString(),
+  });
+});
+
+// ─── DELETE /api/admin/reminders/:id ─────────────────────────────────────────
+
+router.delete('/reminders/:id', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const id = String(req.params['id']);
+  await prisma.reminder.delete({ where: { id } }).catch(() => null);
+  res.status(204).send();
+});
+
 // ─── POST /api/admin/classes/:id/members ─────────────────────────────────────
 
 router.post('/classes/:id/members', requireAdmin, async (req: Request, res: Response): Promise<void> => {
