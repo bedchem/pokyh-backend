@@ -21,16 +21,6 @@ function weekKey(iso: string) {
   return mon.toISOString().split('T')[0];
 }
 
-function weekLabel(iso: string) {
-  const d = new Date(iso + 'T00:00:00');
-  const day = d.getDay() || 7;
-  const mon = new Date(d);
-  mon.setDate(d.getDate() - day + 1);
-  const sun = new Date(mon);
-  sun.setDate(mon.getDate() + 6);
-  const fmt = (x: Date) => x.toLocaleDateString('de-AT', { day: '2-digit', month: '2-digit' });
-  return `KW — ${fmt(mon)} – ${fmt(sun)}`;
-}
 
 function emptyDish(): Omit<AdminDishFull, 'id' | 'createdAt' | 'updatedAt'> {
   const today = new Date().toISOString().split('T')[0];
@@ -45,7 +35,7 @@ function emptyDish(): Omit<AdminDishFull, 'id' | 'createdAt' | 'updatedAt'> {
   };
 }
 
-// ─── DishForm (slide-over panel) ─────────────────────────────────────────────
+// ─── DishForm (centered modal) ───────────────────────────────────────────────
 
 interface DishFormProps {
   dish: AdminDishFull | null; // null = create mode
@@ -132,16 +122,17 @@ function DishForm({ dish, onSaved, onClose }: DishFormProps) {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex justify-end"
-      style={{ background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(4px)' }}
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      style={{ background: 'rgba(0,0,0,0.65)', backdropFilter: 'blur(6px)' }}
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
       <div
-        className="h-full flex flex-col w-full max-w-lg animate-scaleIn overflow-hidden"
+        className="w-full max-w-lg flex flex-col animate-scaleIn overflow-hidden rounded-2xl"
         style={{
           background: '#111116',
-          borderLeft: '1px solid rgba(255,255,255,0.08)',
-          boxShadow: '-20px 0 60px rgba(0,0,0,0.5)',
+          border: '1px solid rgba(255,255,255,0.1)',
+          boxShadow: '0 24px 80px rgba(0,0,0,0.6)',
+          maxHeight: 'calc(100dvh - 32px)',
         }}
       >
         {/* Header */}
@@ -630,7 +621,7 @@ export function DishesPage() {
                   onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(99,102,241,0.07)'; }}
                 >
                   <span className="text-xs font-bold uppercase tracking-widest" style={{ color: '#6366f1' }}>
-                    {weekLabel(wk)} &middot; {wDishes.length} {wDishes.length === 1 ? 'Gericht' : 'Gerichte'}
+                    Woche {wi + 1} &middot; {wDishes.length} {wDishes.length === 1 ? 'Gericht' : 'Gerichte'}
                   </span>
                   {collapsed ? <ChevronDown size={15} style={{ color: '#6366f1' }} /> : <ChevronUp size={15} style={{ color: '#6366f1' }} />}
                 </button>
@@ -660,6 +651,7 @@ export function DishesPage() {
       {/* Edit/Create panel */}
       {editDish !== null && (
         <DishForm
+          key={editDish === 'new' ? '__new__' : (editDish as AdminDishFull).id}
           dish={editDish === 'new' ? null : editDish}
           onSaved={handleSaved}
           onClose={() => setEditDish(null)}
