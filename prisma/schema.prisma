@@ -100,18 +100,18 @@ model Dish {
   nameDe       String   @map("name_de") @db.VarChar(500)
   nameIt       String   @default("") @map("name_it") @db.VarChar(500)
   nameEn       String   @default("") @map("name_en") @db.VarChar(500)
-  descDe       String   @default("") @map("desc_de") @db.Text
-  descIt       String   @default("") @map("desc_it") @db.Text
-  descEn       String   @default("") @map("desc_en") @db.Text
+  descDe       String   @default("") @map("desc_de") @db.VarChar(2000)
+  descIt       String   @default("") @map("desc_it") @db.VarChar(2000)
+  descEn       String   @default("") @map("desc_en") @db.VarChar(2000)
   imageUrl     String   @default("") @map("image_url") @db.VarChar(1000)
   category     String   @default("") @db.VarChar(200)
-  tags         String   @default("[]") @db.Text
+  tags         String   @default("[]") @db.VarChar(2000)
   prepTime     Int      @default(0) @map("prep_time")
   calories     Int      @default(0)
   price        Float    @default(0)
   protein      Float    @default(0)
   fat          Float    @default(0)
-  allergens    String   @default("[]") @db.Text
+  allergens    String   @default("[]") @db.VarChar(2000)
   isVegetarian Boolean  @default(false) @map("is_vegetarian")
   isVegan      Boolean  @default(false) @map("is_vegan")
   date         DateTime @db.Date
