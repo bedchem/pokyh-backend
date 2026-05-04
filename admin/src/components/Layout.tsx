@@ -12,6 +12,7 @@ import {
   X,
   Globe,
   Star,
+  UtensilsCrossed,
 } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
 
@@ -88,6 +89,7 @@ function SidebarContent({ adminUser, onLogout, onNavClick }: SidebarContentProps
         <NavItem to="/sessions" icon={<MonitorSmartphone size={17} />} label="Sessions" onClick={onNavClick} />
         <NavItem to="/logs" icon={<ScrollText size={17} />} label="Logs" onClick={onNavClick} />
         <NavItem to="/ratings" icon={<Star size={17} />} label="Ratings" onClick={onNavClick} />
+        <NavItem to="/dishes" icon={<UtensilsCrossed size={17} />} label="Speiseplan" onClick={onNavClick} />
         <NavItem to="/tunnel" icon={<Globe size={17} />} label="Tunnel" onClick={onNavClick} />
       </nav>
 
