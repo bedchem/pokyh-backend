@@ -133,3 +133,18 @@ export interface TopEndpoint {
   count: number;
   avgMs: number;
 }
+
+export interface AdminDishRatingEntry {
+  stableUid: string;
+  username: string;
+  stars: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AdminDish {
+  dishId: string;
+  avgStars: number;
+  count: number;
+  ratings: AdminDishRatingEntry[];
+}

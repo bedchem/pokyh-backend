@@ -795,4 +795,80 @@ router.get('/classes/:id/todos', requireAdmin, async (req: Request, res: Respons
   })));
 });
 
+// ─── GET /api/admin/dish-ratings ─────────────────────────────────────────────
+
+router.get('/dish-ratings', requireAdmin, async (_req: Request, res: Response): Promise<void> => {
+  const rows = await prisma.dishRating.findMany({ orderBy: [{ dishId: 'asc' }, { createdAt: 'asc' }] });
+
+  if (rows.length === 0) {
+    res.json([]);
+    return;
+  }
+
+  const uids = [...new Set(rows.map((r) => r.stableUid))];
+  const users = await prisma.user.findMany({
+    where: { stableUid: { in: uids } },
+    select: { stableUid: true, username: true },
+  });
+  const uidToUsername: Record<string, string> = Object.fromEntries(users.map((u) => [u.stableUid, u.username]));
+
+  const grouped = new Map<string, typeof rows>();
+  for (const row of rows) {
+    const list = grouped.get(row.dishId) ?? [];
+    list.push(row);
+    grouped.set(row.dishId, list);
+  }
+
+  const result = [...grouped.entries()].map(([dishId, entries]) => {
+    const avg = entries.reduce((s, e) => s + e.stars, 0) / entries.length;
+    return {
+      dishId,
+      avgStars: Math.round(avg * 10) / 10,
+      count: entries.length,
+      ratings: entries.map((e) => ({
+        stableUid: e.stableUid,
+        username: uidToUsername[e.stableUid] ?? e.stableUid,
+        stars: e.stars,
+        createdAt: e.createdAt.toISOString(),
+        updatedAt: e.updatedAt.toISOString(),
+      })),
+    };
+  });
+
+  res.json(result);
+});
+
+// ─── PATCH /api/admin/dish-ratings/:dishId/:stableUid ────────────────────────
+
+router.patch('/dish-ratings/:dishId/:stableUid', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const dishId = String(req.params['dishId']);
+  const stableUid = String(req.params['stableUid']);
+  const { stars } = req.body as { stars?: number };
+
+  if (!stars || typeof stars !== 'number' || !Number.isInteger(stars) || stars < 1 || stars > 5) {
+    res.status(400).json({ error: 'stars must be an integer 1-5' });
+    return;
+  }
+
+  await prisma.dishRating.update({
+    where: { dishId_stableUid: { dishId, stableUid } },
+    data: { stars },
+  });
+
+  res.status(204).send();
+});
+
+// ─── DELETE /api/admin/dish-ratings/:dishId/:stableUid ───────────────────────
+
+router.delete('/dish-ratings/:dishId/:stableUid', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const dishId = String(req.params['dishId']);
+  const stableUid = String(req.params['stableUid']);
+
+  await prisma.dishRating.delete({
+    where: { dishId_stableUid: { dishId, stableUid } },
+  }).catch(() => null);
+
+  res.status(204).send();
+});
+
 export { router as adminRouter };

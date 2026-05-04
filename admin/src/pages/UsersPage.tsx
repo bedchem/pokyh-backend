@@ -174,7 +174,7 @@ export function UsersPage() {
   ];
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex flex-col gap-6 animate-page">
       {showCreateModal && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center p-4"
@@ -182,7 +182,7 @@ export function UsersPage() {
           onClick={() => setShowCreateModal(false)}
         >
           <div
-            className="w-full max-w-md rounded-2xl p-6 flex flex-col gap-5"
+            className="w-full max-w-md rounded-2xl p-6 flex flex-col gap-5 animate-scaleIn"
             style={{ background: '#111116', border: '1px solid rgba(255,255,255,0.1)', boxShadow: '0 24px 60px rgba(0,0,0,0.6)' }}
             onClick={(e) => e.stopPropagation()}
           >
@@ -344,7 +344,7 @@ export function UsersPage() {
           boxShadow: '0 1px 3px rgba(0,0,0,0.4), 0 8px 24px rgba(0,0,0,0.2)',
         }}
       >
-        <div className="overflow-x-auto">
+        <div className="overflow-x-auto scroll-touch">
           <table className="w-full">
             <thead>
               <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>

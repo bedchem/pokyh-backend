@@ -1,4 +1,4 @@
-import type { AdminStats, AdminClass, AdminSession, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo } from './types';
+import type { AdminStats, AdminClass, AdminSession, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish } from './types';
 
 const TOKEN_KEY = 'pokyh_admin_token';
 
@@ -180,6 +180,15 @@ export const adminApi = {
 
   classTodos: (classId: string): Promise<AdminClassTodo[]> =>
     request<AdminClassTodo[]>('GET', `/api/admin/classes/${classId}/todos`),
+
+  dishRatings: (): Promise<AdminDish[]> =>
+    request<AdminDish[]>('GET', '/api/admin/dish-ratings'),
+
+  updateDishRating: (dishId: string, stableUid: string, stars: number): Promise<void> =>
+    request<void>('PATCH', `/api/admin/dish-ratings/${encodeURIComponent(dishId)}/${stableUid}`, { stars }),
+
+  deleteDishRating: (dishId: string, stableUid: string): Promise<void> =>
+    request<void>('DELETE', `/api/admin/dish-ratings/${encodeURIComponent(dishId)}/${stableUid}`),
 
   getToken,
 };

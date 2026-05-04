@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useCallback, ReactNode } from 'react';
-import { X } from 'lucide-react';
+import { CheckCircle2, XCircle, X } from 'lucide-react';
 
 interface Toast {
   id: string;
@@ -21,44 +21,50 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     setToasts((prev) => [...prev, { id, message, type }]);
     setTimeout(() => {
       setToasts((prev) => prev.filter((t) => t.id !== id));
-    }, 3000);
+    }, 3500);
   }, []);
 
   return (
     <ToastContext.Provider value={{ showToast }}>
       {children}
-      <div className="fixed top-4 right-4 z-50 flex flex-col gap-2 pointer-events-none">
+      {/* Desktop: top-right · Mobile: bottom, full-width */}
+      <div
+        className="fixed z-[200] flex flex-col gap-2 pointer-events-none
+          bottom-4 left-4 right-4
+          sm:top-5 sm:right-5 sm:bottom-auto sm:left-auto sm:w-auto"
+      >
         {toasts.map((toast) => (
           <div
             key={toast.id}
-            className="pointer-events-auto flex items-center gap-3 px-4 py-3 rounded-lg shadow-2xl animate-slide-in"
+            className="toast-item pointer-events-auto flex items-center gap-3 px-4 py-3 rounded-xl"
             style={{
-              background: '#0e0f1c',
-              border: '1px solid rgba(255,255,255,0.08)',
+              background: '#13141f',
+              border: '1px solid rgba(255,255,255,0.1)',
+              boxShadow: '0 8px 32px rgba(0,0,0,0.5), 0 1px 0 rgba(255,255,255,0.05) inset',
               borderLeft: `3px solid ${toast.type === 'success' ? '#10b981' : '#ef4444'}`,
               minWidth: '260px',
-              animation: 'slideInRight 0.3s ease',
+              backdropFilter: 'blur(12px)',
             }}
           >
-            <span className={toast.type === 'success' ? 'text-emerald-400' : 'text-red-400'}>
-              {toast.type === 'success' ? '✓' : '✕'}
+            <span className="flex-shrink-0" style={{ color: toast.type === 'success' ? '#10b981' : '#ef4444' }}>
+              {toast.type === 'success'
+                ? <CheckCircle2 size={16} />
+                : <XCircle size={16} />
+              }
             </span>
-            <span className="text-slate-200 text-sm flex-1">{toast.message}</span>
+            <span className="text-sm flex-1" style={{ color: '#e2e8f0' }}>{toast.message}</span>
             <button
               onClick={() => setToasts((prev) => prev.filter((t) => t.id !== toast.id))}
-              className="text-slate-500 hover:text-slate-300 transition-colors"
+              className="flex-shrink-0 p-0.5 rounded transition-colors"
+              style={{ color: '#4a4a5e' }}
+              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#e2e8f0'; }}
+              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = '#4a4a5e'; }}
             >
-              <X size={14} />
+              <X size={13} />
             </button>
           </div>
         ))}
       </div>
-      <style>{`
-        @keyframes slideInRight {
-          from { transform: translateX(100%); opacity: 0; }
-          to { transform: translateX(0); opacity: 1; }
-        }
-      `}</style>
     </ToastContext.Provider>
   );
 }

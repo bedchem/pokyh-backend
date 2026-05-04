@@ -466,9 +466,20 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
   const [togglingAdmin, setTogglingAdmin] = useState(false);
   const [mounted, setMounted] = useState(false);
   const [showCreateTodo, setShowCreateTodo] = useState(false);
+  const [isMobile, setIsMobile] = useState(() => typeof window !== 'undefined' && window.innerWidth < 640);
 
   useEffect(() => {
-    requestAnimationFrame(() => setMounted(true));
+    const mq = window.matchMedia('(max-width: 639px)');
+    setIsMobile(mq.matches);
+    const handler = (e: MediaQueryListEvent) => setIsMobile(e.matches);
+    mq.addEventListener('change', handler);
+    return () => mq.removeEventListener('change', handler);
+  }, []);
+
+  useEffect(() => {
+    // Small delay so CSS transition fires after mount
+    const raf = requestAnimationFrame(() => setMounted(true));
+    return () => cancelAnimationFrame(raf);
   }, []);
 
   useEffect(() => {
@@ -539,23 +550,49 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
       {/* Backdrop */}
       <div
         className="fixed inset-0 z-40"
-        style={{ background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)', transition: 'opacity 0.25s', opacity: mounted ? 1 : 0 }}
+        style={{
+          background: 'rgba(0,0,0,0.65)',
+          backdropFilter: 'blur(6px)',
+          transition: 'opacity 0.25s ease',
+          opacity: mounted ? 1 : 0,
+        }}
         onClick={onClose}
       />
 
-      {/* Drawer */}
+      {/* Drawer — right panel on desktop, bottom sheet on mobile */}
       <div
-        className="fixed right-0 top-0 h-full z-50 flex flex-col overflow-hidden"
-        style={{
+        className="fixed z-50 flex flex-col overflow-hidden"
+        style={isMobile ? {
+          bottom: 0,
+          left: 0,
+          right: 0,
+          height: '88vh',
+          background: '#0e0f1c',
+          borderTop: '1px solid rgba(255,255,255,0.1)',
+          borderRadius: '20px 20px 0 0',
+          boxShadow: '0 -24px 80px rgba(0,0,0,0.7)',
+          transform: mounted ? 'translateY(0)' : 'translateY(100%)',
+          transition: 'transform 0.32s cubic-bezier(0.4,0,0.2,1)',
+        } : {
+          right: 0,
+          top: 0,
+          height: '100%',
           width: '480px',
           maxWidth: '100vw',
           background: '#0e0f1c',
           borderLeft: '1px solid rgba(255,255,255,0.07)',
           boxShadow: '-24px 0 80px rgba(0,0,0,0.6)',
           transform: mounted ? 'translateX(0)' : 'translateX(100%)',
-          transition: 'transform 0.28s cubic-bezier(0.4,0,0.2,1)',
+          transition: 'transform 0.3s cubic-bezier(0.4,0,0.2,1)',
         }}
       >
+        {/* Mobile drag handle */}
+        {isMobile && (
+          <div className="flex justify-center pt-3 pb-1 flex-shrink-0">
+            <div className="w-10 h-1 rounded-full" style={{ background: 'rgba(255,255,255,0.15)' }} />
+          </div>
+        )}
+
         {/* Header */}
         <div
           className="flex items-center justify-between px-5 py-4 flex-shrink-0"
@@ -564,17 +601,17 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
           <span className="text-sm font-semibold" style={{ color: '#f0f0f5' }}>User Details</span>
           <button
             onClick={onClose}
-            className="p-1.5 rounded-lg transition-colors"
-            style={{ color: '#4a4a5e' }}
-            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#f0f0f5'; }}
-            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = '#4a4a5e'; }}
+            className="p-2 rounded-xl transition-colors"
+            style={{ color: '#4a4a5e', background: 'rgba(255,255,255,0.04)' }}
+            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#f0f0f5'; (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.08)'; }}
+            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = '#4a4a5e'; (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.04)'; }}
           >
             <X size={16} />
           </button>
         </div>
 
         {/* Content */}
-        <div className="flex-1 overflow-y-auto p-5 flex flex-col gap-5">
+        <div className="flex-1 overflow-y-auto scroll-touch scrollbar-thin p-5 flex flex-col gap-5">
           {loading ? (
             <div className="flex items-center justify-center py-16">
               <Loader2 size={24} className="animate-spin" style={{ color: '#4a4a5e' }} />

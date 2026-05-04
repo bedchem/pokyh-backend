@@ -339,7 +339,7 @@ function CreateModal({ onClose, onCreated }: CreateModalProps) {
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
       <div
-        className="w-full max-w-md rounded-2xl p-6"
+        className="w-full max-w-md rounded-2xl p-6 animate-scaleIn"
         style={{ background: '#111116', border: '1px solid rgba(255,255,255,0.1)', boxShadow: '0 24px 64px rgba(0,0,0,0.6)' }}
       >
         <div className="flex items-center justify-between mb-6">
@@ -1129,7 +1129,7 @@ export function ClassesPage() {
   const totalMembers = classes.reduce((sum, c) => sum + c.memberCount, 0);
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex flex-col gap-6 animate-page">
       {showModal && <CreateModal onClose={() => setShowModal(false)} onCreated={handleCreated} />}
 
       <div className="flex items-start justify-between gap-4">
@@ -1160,10 +1160,10 @@ export function ClassesPage() {
         {[
           { icon: <Building2 size={18} />, color: '#06b6d4', bg: 'rgba(6,182,212,0.15)', value: classes.length, label: 'Total Classes' },
           { icon: <Users size={18} />, color: '#818cf8', bg: 'rgba(99,102,241,0.15)', value: totalMembers, label: 'Total Members' },
-        ].map(({ icon, color, bg, value, label }) => (
-          <div key={label} className="rounded-xl p-5 flex items-center gap-4"
-            style={{ background: '#111116', border: '1px solid rgba(255,255,255,0.07)', boxShadow: '0 1px 3px rgba(0,0,0,0.4), 0 8px 24px rgba(0,0,0,0.2)' }}>
-            <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: bg, color }}>{icon}</div>
+        ].map(({ icon, color, bg, value, label }, i) => (
+          <div key={label} className="rounded-xl p-5 flex items-center gap-4 card-hover animate-fadeInUp"
+            style={{ background: '#111116', border: '1px solid rgba(255,255,255,0.07)', boxShadow: '0 1px 3px rgba(0,0,0,0.4), 0 8px 24px rgba(0,0,0,0.2)', animationDelay: `${i * 80}ms` }}>
+            <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: bg, color }}>{icon}</div>
             <div>
               <div className="text-2xl font-bold" style={{ color: '#f0f0f5' }}>{value}</div>
               <div className="text-sm" style={{ color: '#8b8b9b' }}>{label}</div>
@@ -1185,7 +1185,7 @@ export function ClassesPage() {
       {/* Table */}
       <div className="rounded-xl overflow-hidden"
         style={{ background: '#111116', border: '1px solid rgba(255,255,255,0.07)', boxShadow: '0 1px 3px rgba(0,0,0,0.4), 0 8px 24px rgba(0,0,0,0.2)' }}>
-        <div className="overflow-x-auto">
+        <div className="overflow-x-auto scroll-touch">
           <table className="w-full">
             <thead>
               <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>

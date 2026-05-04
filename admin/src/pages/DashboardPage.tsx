@@ -67,7 +67,7 @@ interface StatCardProps {
 function StatCard({ label, value, icon, iconBg, iconColor }: StatCardProps) {
   return (
     <div
-      className="rounded-xl p-5 flex items-center gap-4 min-w-0"
+      className="rounded-xl p-5 flex items-center gap-4 min-w-0 card-hover"
       style={{
         background: '#111116',
         border: '1px solid rgba(255,255,255,0.07)',
@@ -187,7 +187,7 @@ export function DashboardPage() {
   })();
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex flex-col gap-6 animate-page">
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold" style={{ color: '#f0f0f5' }}>Dashboard</h1>
@@ -211,13 +211,15 @@ export function DashboardPage() {
       </div>
 
       <div className="grid grid-cols-2 xl:grid-cols-4 gap-3 md:gap-4">
-        {statCards.map((c) => (
-          <StatCard key={c.label} {...c} />
+        {statCards.map((c, i) => (
+          <div key={c.label} className="animate-fadeInUp" style={{ animationDelay: `${i * 60}ms` }}>
+            <StatCard {...c} />
+          </div>
         ))}
       </div>
 
       <div
-        className="rounded-xl p-5 md:p-6 min-w-0"
+        className="rounded-xl p-5 md:p-6 min-w-0 animate-fadeInUp delay-200"
         style={{
           background: '#111116',
           border: '1px solid rgba(255,255,255,0.07)',
@@ -285,7 +287,7 @@ export function DashboardPage() {
         )}
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 animate-fadeInUp delay-300">
         <div
           className="rounded-xl p-5 min-w-0"
           style={{

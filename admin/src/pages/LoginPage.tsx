@@ -70,7 +70,7 @@ export function LoginPage() {
 
       {/* Login card */}
       <div
-        className="relative z-10 w-full max-w-md mx-4"
+        className="relative z-10 w-full max-w-md mx-4 animate-scaleIn"
         style={{
           background: 'rgba(14,15,28,0.9)',
           backdropFilter: 'blur(20px)',

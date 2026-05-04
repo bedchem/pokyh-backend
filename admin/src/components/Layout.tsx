@@ -11,6 +11,7 @@ import {
   Menu,
   X,
   Globe,
+  Star,
 } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
 
@@ -86,6 +87,7 @@ function SidebarContent({ adminUser, onLogout, onNavClick }: SidebarContentProps
         <NavItem to="/classes" icon={<Building2 size={17} />} label="Classes" onClick={onNavClick} />
         <NavItem to="/sessions" icon={<MonitorSmartphone size={17} />} label="Sessions" onClick={onNavClick} />
         <NavItem to="/logs" icon={<ScrollText size={17} />} label="Logs" onClick={onNavClick} />
+        <NavItem to="/ratings" icon={<Star size={17} />} label="Ratings" onClick={onNavClick} />
         <NavItem to="/tunnel" icon={<Globe size={17} />} label="Tunnel" onClick={onNavClick} />
       </nav>
 
@@ -221,8 +223,8 @@ export function Layout({ children }: LayoutProps) {
           </button>
         </header>
 
-        <main className="flex-1 overflow-y-auto" style={{ background: '#08080f' }}>
-          <div className="p-5 md:p-8 max-w-[1400px] mx-auto">{children}</div>
+        <main className="flex-1 overflow-y-auto scroll-touch scrollbar-thin" style={{ background: '#08080f' }}>
+          <div className="p-4 sm:p-6 md:p-8 max-w-[1400px] mx-auto">{children}</div>
         </main>
       </div>
     </div>
