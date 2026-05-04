@@ -18,13 +18,23 @@ function dishToJson(d: {
   try { tags = JSON.parse(d.tags); } catch { /* ignore */ }
   try { allergens = JSON.parse(d.allergens); } catch { /* ignore */ }
 
+  const normalizedTags = new Map<string, string>();
+  for (const tag of tags) {
+    if (typeof tag !== 'string') continue;
+    const trimmed = tag.trim();
+    if (!trimmed) continue;
+    normalizedTags.set(trimmed.toLowerCase(), trimmed);
+  }
+  if (d.isVegetarian) normalizedTags.set('vegetarisch', 'Vegetarisch');
+  if (d.isVegan) normalizedTags.set('vegan', 'Vegan');
+
   return {
     id: d.id,
     name: { de: d.nameDe, it: d.nameIt || d.nameDe, en: d.nameEn || d.nameDe },
     description: { de: d.descDe, it: d.descIt, en: d.descEn },
     imageUrl: d.imageUrl,
     category: d.category,
-    tags,
+    tags: Array.from(normalizedTags.values()),
     prepTime: d.prepTime,
     calories: d.calories,
     price: d.price,

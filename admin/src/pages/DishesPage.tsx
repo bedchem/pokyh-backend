@@ -333,6 +333,19 @@ function DishForm({ dish, ratingData, onSaved, onClose, onRatingChanged }: DishF
               </div>
 
               <div>
+                <label style={lblStyle} className={lbl}>Beschreibung (Deutsch)</label>
+                <textarea
+                  className={`${inp} resize-none`}
+                  style={{ ...inpStyle, minHeight: '72px' }}
+                  value={form.descDe}
+                  onChange={(e) => set('descDe', e.target.value)}
+                  onFocus={focusStyle}
+                  onBlur={blurStyle}
+                  placeholder="Beschreibung unter dem Namen im Frontend"
+                />
+              </div>
+
+              <div>
                 <label style={lblStyle} className={lbl}>Datum *</label>
                 <input type="date" className={inp} style={inpStyle} value={form.date}
                   onChange={(e) => set('date', e.target.value)}
