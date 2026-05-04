@@ -134,6 +134,37 @@ export interface TopEndpoint {
   avgMs: number;
 }
 
+export interface AdminDishFull {
+  id: string;
+  nameDe: string;
+  nameIt: string;
+  nameEn: string;
+  descDe: string;
+  descIt: string;
+  descEn: string;
+  imageUrl: string;
+  category: string;
+  tags: string[];
+  prepTime: number;
+  calories: number;
+  price: number;
+  protein: number;
+  fat: number;
+  allergens: string[];
+  isVegetarian: boolean;
+  isVegan: boolean;
+  date: string;
+  sortOrder: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AdminDishImportResult {
+  imported: number;
+  updated: number;
+  total: number;
+}
+
 export interface AdminDishRatingEntry {
   stableUid: string;
   username: string;

@@ -1,4 +1,4 @@
-import type { AdminStats, AdminClass, AdminSession, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish } from './types';
+import type { AdminStats, AdminClass, AdminSession, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish, AdminDishFull, AdminDishImportResult } from './types';
 
 const TOKEN_KEY = 'pokyh_admin_token';
 
@@ -189,6 +189,21 @@ export const adminApi = {
 
   deleteDishRating: (dishId: string, stableUid: string): Promise<void> =>
     request<void>('DELETE', `/api/admin/dish-ratings/${encodeURIComponent(dishId)}/${stableUid}`),
+
+  dishes: (): Promise<AdminDishFull[]> =>
+    request<AdminDishFull[]>('GET', '/api/admin/dishes'),
+
+  createDish: (data: Omit<AdminDishFull, 'id' | 'createdAt' | 'updatedAt'>): Promise<AdminDishFull> =>
+    request<AdminDishFull>('POST', '/api/admin/dishes', data),
+
+  updateDish: (id: string, data: Partial<Omit<AdminDishFull, 'id' | 'createdAt' | 'updatedAt'>>): Promise<AdminDishFull> =>
+    request<AdminDishFull>('PATCH', `/api/admin/dishes/${id}`, data),
+
+  deleteDish: (id: string): Promise<void> =>
+    request<void>('DELETE', `/api/admin/dishes/${id}`),
+
+  importDishesFromUrl: (url?: string): Promise<AdminDishImportResult> =>
+    request<AdminDishImportResult>('POST', '/api/admin/dishes/import-url', url ? { url } : {}),
 
   getToken,
 };

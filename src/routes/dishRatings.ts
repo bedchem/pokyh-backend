@@ -75,12 +75,12 @@ router.post('/:dishId', writeLimiter, requireAuth, async (req: Request, res: Res
   const { stableUid } = req.user!;
   const { stars, name, imageUrl } = rateSchema.parse(req.body);
 
-  // Upsert dish catalog entry so admin can show name + image
+  // Register dish in catalog only if it doesn't exist yet (never overwrite admin data)
   if (name) {
     await prisma.dish.upsert({
       where: { id: dishId },
-      create: { id: dishId, name, imageUrl: imageUrl ?? '' },
-      update: { name, ...(imageUrl !== undefined ? { imageUrl } : {}) },
+      create: { id: dishId, nameDe: name, imageUrl: imageUrl ?? '', date: new Date() },
+      update: {},
     });
   }
 

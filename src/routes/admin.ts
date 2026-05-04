@@ -3,11 +3,60 @@ import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import { v4 as uuidv4 } from 'uuid';
 import { rateLimit } from 'express-rate-limit';
+import https from 'https';
+import http from 'http';
 import { config } from '../config';
 import { prisma } from '../db';
 import { requireAdmin } from '../middleware/requireAdmin';
 import { generateClassCode, generateClassId } from '../utils/uid';
 import { revokeUserTokens } from '../utils/revokedTokens';
+
+function safeParseTags(raw: string): string[] {
+  try { return JSON.parse(raw) as string[]; } catch { return []; }
+}
+
+function dishRow(d: {
+  id: string; nameDe: string; nameIt: string; nameEn: string;
+  descDe: string; descIt: string; descEn: string;
+  imageUrl: string; category: string; tags: string;
+  prepTime: number; calories: number; price: number;
+  protein: number; fat: number; allergens: string;
+  isVegetarian: boolean; isVegan: boolean; date: Date; sortOrder: number;
+  createdAt: Date; updatedAt: Date;
+}) {
+  return {
+    id: d.id,
+    nameDe: d.nameDe, nameIt: d.nameIt, nameEn: d.nameEn,
+    descDe: d.descDe, descIt: d.descIt, descEn: d.descEn,
+    imageUrl: d.imageUrl,
+    category: d.category,
+    tags: safeParseTags(d.tags),
+    prepTime: d.prepTime,
+    calories: d.calories,
+    price: d.price,
+    protein: d.protein,
+    fat: d.fat,
+    allergens: safeParseTags(d.allergens),
+    isVegetarian: d.isVegetarian,
+    isVegan: d.isVegan,
+    date: d.date.toISOString().split('T')[0],
+    sortOrder: d.sortOrder,
+    createdAt: d.createdAt.toISOString(),
+    updatedAt: d.updatedAt.toISOString(),
+  };
+}
+
+function fetchUrl(url: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const lib = url.startsWith('https') ? https : http;
+    lib.get(url, { headers: { 'User-Agent': 'pokyh-backend/1.0' } }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on('data', (c: Buffer) => chunks.push(c));
+      res.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+      res.on('error', reject);
+    }).on('error', reject);
+  });
+}
 
 const router = Router();
 
@@ -795,11 +844,185 @@ router.get('/classes/:id/todos', requireAdmin, async (req: Request, res: Respons
   })));
 });
 
+// ─── GET /api/admin/dishes ───────────────────────────────────────────────────
+
+router.get('/dishes', requireAdmin, async (_req: Request, res: Response): Promise<void> => {
+  const dishes = await prisma.dish.findMany({
+    orderBy: [{ date: 'asc' }, { sortOrder: 'asc' }, { nameDe: 'asc' }],
+  });
+  res.json(dishes.map(dishRow));
+});
+
+// ─── POST /api/admin/dishes ───────────────────────────────────────────────────
+
+router.post('/dishes', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const b = req.body as Record<string, unknown>;
+  if (!b['nameDe'] || String(b['nameDe']).trim().length < 1) {
+    res.status(400).json({ error: 'nameDe is required' });
+    return;
+  }
+  if (!b['date']) {
+    res.status(400).json({ error: 'date is required' });
+    return;
+  }
+
+  const dish = await prisma.dish.create({
+    data: {
+      nameDe: String(b['nameDe']).trim(),
+      nameIt: b['nameIt'] ? String(b['nameIt']).trim() : '',
+      nameEn: b['nameEn'] ? String(b['nameEn']).trim() : '',
+      descDe: b['descDe'] ? String(b['descDe']) : '',
+      descIt: b['descIt'] ? String(b['descIt']) : '',
+      descEn: b['descEn'] ? String(b['descEn']) : '',
+      imageUrl: b['imageUrl'] ? String(b['imageUrl']) : '',
+      category: b['category'] ? String(b['category']).trim() : '',
+      tags: JSON.stringify(Array.isArray(b['tags']) ? b['tags'] : []),
+      prepTime: typeof b['prepTime'] === 'number' ? b['prepTime'] : 0,
+      calories: typeof b['calories'] === 'number' ? b['calories'] : 0,
+      price: typeof b['price'] === 'number' ? b['price'] : 0,
+      protein: typeof b['protein'] === 'number' ? b['protein'] : 0,
+      fat: typeof b['fat'] === 'number' ? b['fat'] : 0,
+      allergens: JSON.stringify(Array.isArray(b['allergens']) ? b['allergens'] : []),
+      isVegetarian: b['isVegetarian'] === true,
+      isVegan: b['isVegan'] === true,
+      date: new Date(String(b['date'])),
+      sortOrder: typeof b['sortOrder'] === 'number' ? b['sortOrder'] : 0,
+    },
+  });
+
+  res.status(201).json(dishRow(dish));
+});
+
+// ─── PATCH /api/admin/dishes/:id ──────────────────────────────────────────────
+
+router.patch('/dishes/:id', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const id = String(req.params['id']);
+  const b = req.body as Record<string, unknown>;
+
+  const data: Record<string, unknown> = {};
+  if (b['nameDe'] !== undefined) data['nameDe'] = String(b['nameDe']).trim();
+  if (b['nameIt'] !== undefined) data['nameIt'] = String(b['nameIt']).trim();
+  if (b['nameEn'] !== undefined) data['nameEn'] = String(b['nameEn']).trim();
+  if (b['descDe'] !== undefined) data['descDe'] = String(b['descDe']);
+  if (b['descIt'] !== undefined) data['descIt'] = String(b['descIt']);
+  if (b['descEn'] !== undefined) data['descEn'] = String(b['descEn']);
+  if (b['imageUrl'] !== undefined) data['imageUrl'] = String(b['imageUrl']);
+  if (b['category'] !== undefined) data['category'] = String(b['category']).trim();
+  if (b['tags'] !== undefined) data['tags'] = JSON.stringify(Array.isArray(b['tags']) ? b['tags'] : []);
+  if (b['prepTime'] !== undefined) data['prepTime'] = Number(b['prepTime']);
+  if (b['calories'] !== undefined) data['calories'] = Number(b['calories']);
+  if (b['price'] !== undefined) data['price'] = Number(b['price']);
+  if (b['protein'] !== undefined) data['protein'] = Number(b['protein']);
+  if (b['fat'] !== undefined) data['fat'] = Number(b['fat']);
+  if (b['allergens'] !== undefined) data['allergens'] = JSON.stringify(Array.isArray(b['allergens']) ? b['allergens'] : []);
+  if (b['isVegetarian'] !== undefined) data['isVegetarian'] = b['isVegetarian'] === true;
+  if (b['isVegan'] !== undefined) data['isVegan'] = b['isVegan'] === true;
+  if (b['date'] !== undefined) data['date'] = new Date(String(b['date']));
+  if (b['sortOrder'] !== undefined) data['sortOrder'] = Number(b['sortOrder']);
+
+  const dish = await prisma.dish.update({ where: { id }, data }).catch(() => null);
+  if (!dish) { res.status(404).json({ error: 'Dish not found' }); return; }
+
+  res.json(dishRow(dish));
+});
+
+// ─── DELETE /api/admin/dishes/:id ────────────────────────────────────────────
+
+router.delete('/dishes/:id', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const id = String(req.params['id']);
+  await prisma.dish.delete({ where: { id } }).catch(() => null);
+  res.status(204).send();
+});
+
+// ─── POST /api/admin/dishes/import-url ───────────────────────────────────────
+// Fetches the external mensa.json URL and bulk-upserts all dishes
+
+router.post('/dishes/import-url', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const url = String(req.body?.url ?? 'https://mensa.plattnericus.dev/mensa.json');
+
+  let raw: string;
+  try {
+    raw = await fetchUrl(url);
+  } catch {
+    res.status(502).json({ error: 'Failed to fetch external URL' });
+    return;
+  }
+
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw); } catch {
+    res.status(502).json({ error: 'Invalid JSON from external URL' });
+    return;
+  }
+
+  type RawDish = Record<string, unknown>;
+  const menu = (parsed as Record<string, unknown>)['menu'] as Record<string, unknown> | undefined;
+  const list = (menu?.['dishes'] ?? []) as RawDish[];
+
+  if (!Array.isArray(list) || list.length === 0) {
+    res.status(422).json({ error: 'No dishes found in response' });
+    return;
+  }
+
+  function parseName(v: unknown): { de: string; it: string; en: string } {
+    if (typeof v === 'string') return { de: v, it: v, en: v };
+    if (v && typeof v === 'object') {
+      const m = v as Record<string, string>;
+      const de = m['de'] ?? m['it'] ?? m['en'] ?? Object.values(m)[0] ?? '';
+      return { de, it: m['it'] ?? de, en: m['en'] ?? de };
+    }
+    return { de: '', it: '', en: '' };
+  }
+
+  let imported = 0;
+  let updated = 0;
+
+  for (const d of list) {
+    const rawId = d['id'];
+    const id = rawId ? String(rawId) : uuidv4();
+    const name = parseName(d['name']);
+    const desc = parseName(d['description'] ?? '');
+    const dateRaw = d['date'] ? String(d['date']) : null;
+    if (!name.de.trim() || !dateRaw) continue;
+
+    const data = {
+      nameDe: name.de.trim(),
+      nameIt: name.it.trim(),
+      nameEn: name.en.trim(),
+      descDe: desc.de,
+      descIt: desc.it,
+      descEn: desc.en,
+      imageUrl: d['imageUrl'] ? String(d['imageUrl']) : '',
+      category: d['category'] ? String(d['category']) : '',
+      tags: JSON.stringify(Array.isArray(d['tags']) ? d['tags'] : []),
+      prepTime: typeof d['prepTime'] === 'number' ? d['prepTime'] : 0,
+      calories: typeof d['calories'] === 'number' ? d['calories'] : 0,
+      price: typeof d['price'] === 'number' ? d['price'] : 0,
+      protein: typeof d['protein'] === 'number' ? d['protein'] : 0,
+      fat: typeof d['fat'] === 'number' ? d['fat'] : 0,
+      allergens: JSON.stringify(Array.isArray(d['allergens']) ? d['allergens'] : []),
+      isVegetarian: d['isVegetarian'] === true,
+      isVegan: d['isVegan'] === true,
+      date: new Date(dateRaw),
+    };
+
+    const existing = await prisma.dish.findUnique({ where: { id } });
+    if (existing) {
+      await prisma.dish.update({ where: { id }, data });
+      updated++;
+    } else {
+      await prisma.dish.create({ data: { id, ...data } });
+      imported++;
+    }
+  }
+
+  res.json({ imported, updated, total: imported + updated });
+});
+
 // ─── GET /api/admin/dish-ratings ─────────────────────────────────────────────
 
 router.get('/dish-ratings', requireAdmin, async (_req: Request, res: Response): Promise<void> => {
   const [allDishes, rows] = await Promise.all([
-    prisma.dish.findMany({ orderBy: { name: 'asc' } }),
+    prisma.dish.findMany({ orderBy: { nameDe: 'asc' } }),
     prisma.dishRating.findMany({ orderBy: [{ dishId: 'asc' }, { createdAt: 'asc' }] }),
   ]);
 
@@ -826,7 +1049,7 @@ router.get('/dish-ratings', requireAdmin, async (_req: Request, res: Response): 
       const avg = entries.length > 0 ? entries.reduce((s, e) => s + e.stars, 0) / entries.length : 0;
       return {
         dishId,
-        name: dish?.name ?? dishId,
+        name: dish?.nameDe ?? dishId,
         imageUrl: dish?.imageUrl ?? '',
         avgStars: Math.round(avg * 10) / 10,
         count: entries.length,

@@ -6,6 +6,7 @@ import { todosRouter } from './todos';
 import { classesRouter } from './classes';
 import { remindersRouter } from './reminders';
 import { dishRatingsRouter } from './dishRatings';
+import { dishesRouter } from './dishes';
 import { sseRouter } from './sse';
 import { adminRouter } from './admin';
 
@@ -13,6 +14,9 @@ const router = Router();
 
 // Admin routes — no API key required (same-origin, JWT-protected)
 router.use('/api/admin', adminRouter);
+
+// Public dish catalog — no API key required (read-only menu data)
+router.use('/dishes', dishesRouter);
 
 // Apply API key check to all other routes
 router.use(apiKeyMiddleware);

@@ -96,11 +96,28 @@ model Reminder {
 }
 
 model Dish {
-  id        String   @id
-  name      String   @db.VarChar(500)
-  imageUrl  String   @default("") @map("image_url") @db.VarChar(1000)
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
+  id           String   @id @default(uuid())
+  nameDe       String   @map("name_de") @db.VarChar(500)
+  nameIt       String   @default("") @map("name_it") @db.VarChar(500)
+  nameEn       String   @default("") @map("name_en") @db.VarChar(500)
+  descDe       String   @default("") @map("desc_de") @db.Text
+  descIt       String   @default("") @map("desc_it") @db.Text
+  descEn       String   @default("") @map("desc_en") @db.Text
+  imageUrl     String   @default("") @map("image_url") @db.VarChar(1000)
+  category     String   @default("") @db.VarChar(200)
+  tags         String   @default("[]") @db.Text
+  prepTime     Int      @default(0) @map("prep_time")
+  calories     Int      @default(0)
+  price        Float    @default(0)
+  protein      Float    @default(0)
+  fat          Float    @default(0)
+  allergens    String   @default("[]") @db.Text
+  isVegetarian Boolean  @default(false) @map("is_vegetarian")
+  isVegan      Boolean  @default(false) @map("is_vegan")
+  date         DateTime @db.Date
+  sortOrder    Int      @default(0) @map("sort_order")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
 
   @@map("dishes")
 }
