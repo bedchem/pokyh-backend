@@ -1,4 +1,4 @@
-import type { AdminStats, AdminClass, AdminSession, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder } from './types';
+import type { AdminStats, AdminClass, AdminSession, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo } from './types';
 
 const TOKEN_KEY = 'pokyh_admin_token';
 
@@ -103,6 +103,9 @@ export const adminApi = {
   deleteUser: (stableUid: string): Promise<void> =>
     request<void>('DELETE', `/api/admin/users/${stableUid}`),
 
+  createTodo: (stableUid: string, data: { title: string; details?: string; dueAt?: string | null }): Promise<AdminTodo> =>
+    request<AdminTodo>('POST', `/api/admin/users/${stableUid}/todos`, data),
+
   updateTodo: (stableUid: string, todoId: string, data: Partial<{ title: string; details: string; done: boolean; dueAt: string | null }>): Promise<AdminTodo> =>
     request<AdminTodo>('PATCH', `/api/admin/users/${stableUid}/todos/${todoId}`, data),
 
@@ -165,6 +168,9 @@ export const adminApi = {
 
   addToClass: (classId: string, username: string): Promise<{ stableUid: string; username: string; joinedAt: string }> =>
     request('POST', `/api/admin/classes/${classId}/members`, { username }),
+
+  classTodos: (classId: string): Promise<AdminClassTodo[]> =>
+    request<AdminClassTodo[]>('GET', `/api/admin/classes/${classId}/todos`),
 
   getToken,
 };

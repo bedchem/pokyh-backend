@@ -321,6 +321,43 @@ router.delete('/users/:stableUid/todos/:todoId', requireAdmin, async (req: Reque
   res.status(204).send();
 });
 
+// ─── POST /api/admin/users/:stableUid/todos ───────────────────────────────────
+
+router.post('/users/:stableUid/todos', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const stableUid = String(req.params['stableUid']);
+  const { title, details, dueAt } = req.body as { title?: string; details?: string; dueAt?: string | null };
+
+  if (!title || String(title).trim().length < 1) {
+    res.status(400).json({ error: 'Title is required' });
+    return;
+  }
+
+  const user = await prisma.user.findUnique({ where: { stableUid } });
+  if (!user) {
+    res.status(404).json({ error: 'User not found' });
+    return;
+  }
+
+  const todo = await prisma.todo.create({
+    data: {
+      stableUid,
+      title: String(title).trim().slice(0, 500),
+      details: details ? String(details).slice(0, 10000) : '',
+      dueAt: dueAt ? new Date(dueAt) : null,
+    },
+  });
+
+  res.status(201).json({
+    id: todo.id,
+    title: todo.title,
+    details: todo.details,
+    dueAt: todo.dueAt ? todo.dueAt.toISOString() : null,
+    done: todo.done,
+    doneAt: null,
+    createdAt: todo.createdAt.toISOString(),
+  });
+});
+
 // ─── DELETE /api/admin/users/:stableUid/classes/:classId ─────────────────────
 
 router.delete('/users/:stableUid/classes/:classId', requireAdmin, async (req: Request, res: Response): Promise<void> => {
@@ -639,6 +676,42 @@ router.get('/stats/top-endpoints', requireAdmin, async (_req: Request, res: Resp
     path: r.path,
     count: Number(r.count),
     avgMs: Number(r.avgMs ?? 0),
+  })));
+});
+
+// ─── GET /api/admin/classes/:id/todos ────────────────────────────────────────
+
+router.get('/classes/:id/todos', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const id = String(req.params['id']);
+
+  const members = await prisma.classMember.findMany({
+    where: { classId: id },
+    select: { stableUid: true, username: true },
+  });
+
+  if (members.length === 0) {
+    res.json([]);
+    return;
+  }
+
+  const uids = members.map((m) => m.stableUid);
+  const uidToUsername: Record<string, string> = Object.fromEntries(members.map((m) => [m.stableUid, m.username]));
+
+  const todos = await prisma.todo.findMany({
+    where: { stableUid: { in: uids } },
+    orderBy: [{ done: 'asc' }, { createdAt: 'asc' }],
+  });
+
+  res.json(todos.map((t) => ({
+    id: t.id,
+    stableUid: t.stableUid,
+    username: uidToUsername[t.stableUid] ?? '',
+    title: t.title,
+    details: t.details,
+    dueAt: t.dueAt ? t.dueAt.toISOString() : null,
+    done: t.done,
+    doneAt: t.doneAt ? t.doneAt.toISOString() : null,
+    createdAt: t.createdAt.toISOString(),
   })));
 });
 

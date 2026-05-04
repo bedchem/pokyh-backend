@@ -1,12 +1,13 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import {
   Building2, Users, ChevronDown, ChevronRight, Search, Plus, X,
   RefreshCw, UserMinus, UserPlus, Bell, Clock, Loader2, Trash2,
+  CheckSquare, Square, Edit3, Check, AlertTriangle, ListTodo,
 } from 'lucide-react';
 import { adminApi } from '../api';
 import { useToast } from '../components/Toast';
 import { useAutoRefresh } from '../hooks/useAutoRefresh';
-import type { AdminClass, AdminReminder } from '../types';
+import type { AdminClass, AdminReminder, AdminClassTodo } from '../types';
 
 const AVATAR_COLORS = [
   '#6366f1', '#8b5cf6', '#06b6d4', '#10b981', '#f59e0b', '#ef4444',
@@ -49,6 +50,18 @@ function formatRemindAt(dateStr: string): string {
   return `${d.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: '2-digit' })} ${d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })} (${label})`;
 }
 
+function fmtDue(iso: string | null): string | null {
+  if (!iso) return null;
+  return new Date(iso).toLocaleDateString('en', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+function toDatetimeLocal(iso: string | null): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 function generateCode(name: string): string {
   const slug = name
     .toLowerCase()
@@ -60,6 +73,227 @@ function generateCode(name: string): string {
     .slice(0, 12);
   return slug || 'class';
 }
+
+// ─── Class Todo Row ───────────────────────────────────────────────────────────
+
+function ClassTodoRow({
+  todo,
+  onUpdated,
+  onDeleted,
+}: {
+  todo: AdminClassTodo;
+  onUpdated: (t: AdminClassTodo) => void;
+  onDeleted: (id: string) => void;
+}) {
+  const { showToast } = useToast();
+  const [editing, setEditing] = useState(false);
+  const [title, setTitle] = useState(todo.title);
+  const [details, setDetails] = useState(todo.details);
+  const [dueAtLocal, setDueAtLocal] = useState(toDatetimeLocal(todo.dueAt));
+  const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const titleRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (editing) titleRef.current?.focus();
+  }, [editing]);
+
+  function resetEdit() {
+    setTitle(todo.title);
+    setDetails(todo.details);
+    setDueAtLocal(toDatetimeLocal(todo.dueAt));
+    setEditing(false);
+  }
+
+  async function toggleDone() {
+    setSaving(true);
+    try {
+      const updated = await adminApi.updateTodo(todo.stableUid, todo.id, { done: !todo.done });
+      onUpdated({ ...todo, ...updated });
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : 'Failed to update', 'error');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function saveEdit() {
+    const trimmed = title.trim();
+    if (!trimmed) return;
+    setSaving(true);
+    const newDueAt = dueAtLocal ? new Date(dueAtLocal).toISOString() : null;
+    const patch: Partial<{ title: string; details: string; dueAt: string | null }> = {};
+    if (trimmed !== todo.title) patch.title = trimmed;
+    if (details !== todo.details) patch.details = details;
+    if (newDueAt !== todo.dueAt) patch.dueAt = newDueAt;
+
+    if (Object.keys(patch).length === 0) {
+      setEditing(false);
+      setSaving(false);
+      return;
+    }
+    try {
+      const updated = await adminApi.updateTodo(todo.stableUid, todo.id, patch);
+      onUpdated({ ...todo, ...updated });
+      setEditing(false);
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : 'Failed to update', 'error');
+      resetEdit();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleDelete() {
+    setDeleting(true);
+    try {
+      await adminApi.deleteTodo(todo.stableUid, todo.id);
+      onDeleted(todo.id);
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : 'Failed to delete', 'error');
+      setDeleting(false);
+    }
+  }
+
+  const isOverdue = todo.dueAt && !todo.done && new Date(todo.dueAt) < new Date();
+
+  return (
+    <div
+      className="rounded-xl transition-all"
+      style={{
+        background: todo.done ? 'rgba(255,255,255,0.02)' : 'rgba(255,255,255,0.03)',
+        border: `1px solid ${editing ? 'rgba(99,102,241,0.3)' : isOverdue ? 'rgba(255,69,58,0.2)' : 'rgba(255,255,255,0.05)'}`,
+      }}
+    >
+      <div className="flex items-start gap-2 p-3">
+        <button
+          onClick={() => void toggleDone()}
+          disabled={saving || editing}
+          className="mt-0.5 flex-shrink-0"
+          style={{ color: todo.done ? '#30d158' : '#4a4a5e' }}
+        >
+          {(saving && !editing) ? <Loader2 size={15} className="animate-spin" /> : todo.done ? <CheckSquare size={15} /> : <Square size={15} />}
+        </button>
+
+        <div className="flex-1 min-w-0">
+          {/* Username badge */}
+          <div className="mb-1">
+            <span
+              className="text-xs px-1.5 py-0.5 font-medium font-mono"
+              style={{ background: `${avatarColor(todo.username)}22`, color: avatarColor(todo.username), border: `1px solid ${avatarColor(todo.username)}44`, borderRadius: '5px' }}
+            >
+              {todo.username}
+            </span>
+          </div>
+
+          {editing ? (
+            <div className="flex flex-col gap-2">
+              <input
+                ref={titleRef}
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Escape') resetEdit(); }}
+                className="text-sm bg-transparent outline-none border-b w-full"
+                style={{ color: '#f0f0f5', borderColor: 'rgba(99,102,241,0.5)' }}
+                placeholder="Title"
+              />
+              <textarea
+                value={details}
+                onChange={(e) => setDetails(e.target.value)}
+                rows={2}
+                className="text-xs outline-none resize-none rounded p-2 w-full"
+                style={{ color: '#8b8b9b', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '6px' }}
+                placeholder="Details (optional)"
+              />
+              <div className="flex items-center gap-2">
+                <Clock size={10} style={{ color: '#4a4a5e' }} />
+                <input
+                  type="datetime-local"
+                  value={dueAtLocal}
+                  onChange={(e) => setDueAtLocal(e.target.value)}
+                  className="text-xs bg-transparent outline-none flex-1"
+                  style={{ color: '#8b8b9b', colorScheme: 'dark' }}
+                />
+                {dueAtLocal && (
+                  <button onClick={() => setDueAtLocal('')} style={{ color: '#4a4a5e' }}><X size={10} /></button>
+                )}
+              </div>
+              <div className="flex items-center gap-2 pt-1">
+                <button
+                  onClick={() => void saveEdit()}
+                  disabled={saving || !title.trim()}
+                  className="flex items-center gap-1 text-xs px-2 py-1 rounded-lg font-medium disabled:opacity-50"
+                  style={{ background: 'rgba(99,102,241,0.2)', color: '#818cf8', border: '1px solid rgba(99,102,241,0.3)' }}
+                >
+                  {saving ? <Loader2 size={10} className="animate-spin" /> : <Check size={10} />} Save
+                </button>
+                <button onClick={resetEdit} className="text-xs px-2 py-1 rounded-lg" style={{ color: '#4a4a5e', border: '1px solid rgba(255,255,255,0.06)' }}>
+                  Cancel
+                </button>
+              </div>
+            </div>
+          ) : (
+            <>
+              <span className="text-sm" style={{ color: todo.done ? '#4a4a5e' : '#f0f0f5', textDecoration: todo.done ? 'line-through' : 'none' }}>
+                {todo.title}
+              </span>
+              <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                {todo.dueAt && (
+                  <span className="text-xs flex items-center gap-1" style={{ color: isOverdue ? '#ff453a' : '#4a4a5e' }}>
+                    {isOverdue && <AlertTriangle size={9} />}<Clock size={9} />{fmtDue(todo.dueAt)}
+                  </span>
+                )}
+                <span className="text-xs" style={{ color: '#4a4a5e' }}>{relativeDate(todo.createdAt)}</span>
+              </div>
+              {todo.details && (
+                <button
+                  onClick={() => setExpanded(!expanded)}
+                  className="flex items-center gap-1 text-xs mt-0.5"
+                  style={{ color: '#818cf8' }}
+                >
+                  {expanded ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
+                  {expanded ? 'Hide' : 'Details'}
+                </button>
+              )}
+              {expanded && todo.details && (
+                <p className="text-xs mt-1 whitespace-pre-wrap" style={{ color: '#8b8b9b' }}>{todo.details}</p>
+              )}
+            </>
+          )}
+        </div>
+
+        {!editing && (
+          <div className="flex items-center gap-1 flex-shrink-0">
+            <button
+              onClick={() => setEditing(true)}
+              className="p-1 rounded transition-colors"
+              style={{ color: '#4a4a5e' }}
+              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#818cf8'; }}
+              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = '#4a4a5e'; }}
+              title="Edit"
+            >
+              <Edit3 size={12} />
+            </button>
+            <button
+              onClick={() => void handleDelete()}
+              disabled={deleting}
+              className="p-1 rounded transition-colors"
+              style={{ color: '#4a4a5e', opacity: deleting ? 0.5 : 1 }}
+              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#ff453a'; }}
+              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = '#4a4a5e'; }}
+              title="Delete"
+            >
+              {deleting ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Create class modal ────────────────────────────────────────────────────────
 
 interface CreateModalProps {
   onClose: () => void;
@@ -170,18 +404,38 @@ interface ClassDetailProps {
 function ClassDetail({ cls, onMemberRemoved, onMemberAdded }: ClassDetailProps) {
   const { showToast } = useToast();
   const [reminders, setReminders] = useState<AdminReminder[] | null>(null);
-  const [loadingReminders, setLoadingReminders] = useState(true);
+  const [loadingReminders, setLoadingReminders] = useState(false);
+  const [classTodos, setClassTodos] = useState<AdminClassTodo[] | null>(null);
+  const [loadingTodos, setLoadingTodos] = useState(false);
   const [removingUid, setRemovingUid] = useState<string | null>(null);
   const [addUsername, setAddUsername] = useState('');
   const [adding, setAdding] = useState(false);
-  const [tab, setTab] = useState<'members' | 'reminders'>('members');
+  const [tab, setTab] = useState<'members' | 'reminders' | 'todos'>('members');
+
+  // Create todo form state (class level)
+  const [showCreateTodo, setShowCreateTodo] = useState(false);
+  const [newTodoUid, setNewTodoUid] = useState(cls.members[0]?.stableUid ?? '');
+  const [newTodoTitle, setNewTodoTitle] = useState('');
+  const [newTodoDetails, setNewTodoDetails] = useState('');
+  const [newTodoDueAt, setNewTodoDueAt] = useState('');
+  const [creatingTodo, setCreatingTodo] = useState(false);
 
   useEffect(() => {
-    adminApi.classReminders(cls.id)
-      .then(setReminders)
-      .catch(() => setReminders([]))
-      .finally(() => setLoadingReminders(false));
-  }, [cls.id]);
+    if (tab === 'reminders' && reminders === null) {
+      setLoadingReminders(true);
+      adminApi.classReminders(cls.id)
+        .then(setReminders)
+        .catch(() => setReminders([]))
+        .finally(() => setLoadingReminders(false));
+    }
+    if (tab === 'todos' && classTodos === null) {
+      setLoadingTodos(true);
+      adminApi.classTodos(cls.id)
+        .then(setClassTodos)
+        .catch(() => setClassTodos([]))
+        .finally(() => setLoadingTodos(false));
+    }
+  }, [tab, cls.id, reminders, classTodos]);
 
   async function handleRemove(stableUid: string, username: string) {
     setRemovingUid(stableUid);
@@ -212,27 +466,67 @@ function ClassDetail({ cls, onMemberRemoved, onMemberAdded }: ClassDetailProps) 
     }
   }
 
+  async function handleCreateTodo(e: React.FormEvent) {
+    e.preventDefault();
+    if (!newTodoTitle.trim() || !newTodoUid) return;
+    setCreatingTodo(true);
+    try {
+      const todo = await adminApi.createTodo(newTodoUid, {
+        title: newTodoTitle.trim(),
+        details: newTodoDetails.trim() || undefined,
+        dueAt: newTodoDueAt ? new Date(newTodoDueAt).toISOString() : null,
+      });
+      const member = cls.members.find((m) => m.stableUid === newTodoUid);
+      const classTodo: AdminClassTodo = { ...todo, stableUid: newTodoUid, username: member?.username ?? '' };
+      setClassTodos((prev) => prev ? [classTodo, ...prev] : [classTodo]);
+      setNewTodoTitle('');
+      setNewTodoDetails('');
+      setNewTodoDueAt('');
+      setShowCreateTodo(false);
+      showToast('Todo created', 'success');
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Failed to create todo', 'error');
+    } finally {
+      setCreatingTodo(false);
+    }
+  }
+
+  function handleTodoUpdated(updated: AdminClassTodo) {
+    setClassTodos((prev) => prev ? prev.map((t) => t.id === updated.id ? updated : t) : prev);
+  }
+
+  function handleTodoDeleted(id: string) {
+    setClassTodos((prev) => prev ? prev.filter((t) => t.id !== id) : prev);
+  }
+
+  const pendingTodos = classTodos?.filter((t) => !t.done) ?? [];
+  const doneTodos = classTodos?.filter((t) => t.done) ?? [];
+
   return (
     <div className="rounded-xl p-4" style={{ background: 'rgba(99,102,241,0.04)', border: '1px solid rgba(99,102,241,0.1)' }}>
       {/* Tab bar */}
-      <div className="flex items-center gap-1 mb-4">
-        {(['members', 'reminders'] as const).map((t) => (
+      <div className="flex items-center gap-1 mb-4 flex-wrap">
+        {([
+          { key: 'members', icon: <Users size={11} />, label: `Members (${cls.members.length})` },
+          { key: 'reminders', icon: <Bell size={11} />, label: `Reminders (${reminders?.length ?? '…'})` },
+          { key: 'todos', icon: <ListTodo size={11} />, label: `Todos (${classTodos?.length ?? '…'})` },
+        ] as const).map((t) => (
           <button
-            key={t}
-            onClick={() => setTab(t)}
+            key={t.key}
+            onClick={() => setTab(t.key)}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold uppercase tracking-wider transition-all"
-            style={tab === t
+            style={tab === t.key
               ? { background: 'rgba(99,102,241,0.2)', color: '#818cf8', border: '1px solid rgba(99,102,241,0.3)' }
               : { background: 'transparent', color: '#4a4a5e', border: '1px solid transparent' }}
           >
-            {t === 'members' ? <><Users size={11} /> Members ({cls.members.length})</> : <><Bell size={11} /> Reminders ({reminders?.length ?? '…'})</>}
+            {t.icon} {t.label}
           </button>
         ))}
       </div>
 
+      {/* Members tab */}
       {tab === 'members' && (
         <div className="flex flex-col gap-3">
-          {/* Add member */}
           <form onSubmit={(e) => void handleAdd(e)} className="flex gap-2">
             <input
               type="text"
@@ -257,7 +551,6 @@ function ClassDetail({ cls, onMemberRemoved, onMemberAdded }: ClassDetailProps) 
             </button>
           </form>
 
-          {/* Members list */}
           {cls.members.length === 0 ? (
             <p className="text-sm py-2" style={{ color: '#4a4a5e' }}>No members yet</p>
           ) : (
@@ -298,6 +591,7 @@ function ClassDetail({ cls, onMemberRemoved, onMemberAdded }: ClassDetailProps) 
         </div>
       )}
 
+      {/* Reminders tab */}
       {tab === 'reminders' && (
         <div className="flex flex-col gap-2">
           {loadingReminders ? (
@@ -332,6 +626,126 @@ function ClassDetail({ cls, onMemberRemoved, onMemberAdded }: ClassDetailProps) 
                 </div>
               );
             })
+          )}
+        </div>
+      )}
+
+      {/* Todos tab */}
+      {tab === 'todos' && (
+        <div className="flex flex-col gap-3">
+          {/* Header with create button */}
+          <div className="flex items-center justify-between">
+            <span className="text-xs" style={{ color: '#4a4a5e' }}>
+              {loadingTodos ? 'Loading…' : `${pendingTodos.length} pending, ${doneTodos.length} done`}
+            </span>
+            {cls.members.length > 0 && !showCreateTodo && (
+              <button
+                onClick={() => { setShowCreateTodo(true); setNewTodoUid(cls.members[0]?.stableUid ?? ''); }}
+                className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg font-medium transition-all"
+                style={{ color: '#818cf8', border: '1px solid rgba(99,102,241,0.25)', background: 'transparent' }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(99,102,241,0.1)'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+              >
+                <Plus size={11} /> Add Todo
+              </button>
+            )}
+          </div>
+
+          {/* Create todo form */}
+          {showCreateTodo && cls.members.length > 0 && (
+            <form
+              onSubmit={(e) => void handleCreateTodo(e)}
+              className="rounded-xl p-3 flex flex-col gap-2"
+              style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(99,102,241,0.25)' }}
+            >
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs" style={{ color: '#4a4a5e' }}>User</label>
+                <select
+                  value={newTodoUid}
+                  onChange={(e) => setNewTodoUid(e.target.value)}
+                  className="text-sm outline-none px-2 py-1.5 rounded-lg"
+                  style={{ background: '#18181f', border: '1px solid rgba(255,255,255,0.07)', color: '#f0f0f5' }}
+                >
+                  {cls.members.map((m) => (
+                    <option key={m.stableUid} value={m.stableUid}>{m.username}</option>
+                  ))}
+                </select>
+              </div>
+              <input
+                value={newTodoTitle}
+                onChange={(e) => setNewTodoTitle(e.target.value)}
+                placeholder="Title *"
+                className="text-sm bg-transparent outline-none border-b w-full"
+                style={{ color: '#f0f0f5', borderColor: 'rgba(99,102,241,0.4)', paddingBottom: '4px' }}
+                autoFocus
+              />
+              <textarea
+                value={newTodoDetails}
+                onChange={(e) => setNewTodoDetails(e.target.value)}
+                rows={2}
+                className="text-xs outline-none resize-none rounded p-2 w-full"
+                style={{ color: '#8b8b9b', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '6px' }}
+                placeholder="Details (optional)"
+              />
+              <div className="flex items-center gap-2">
+                <Clock size={10} style={{ color: '#4a4a5e' }} />
+                <input
+                  type="datetime-local"
+                  value={newTodoDueAt}
+                  onChange={(e) => setNewTodoDueAt(e.target.value)}
+                  className="text-xs bg-transparent outline-none flex-1"
+                  style={{ color: '#8b8b9b', colorScheme: 'dark' }}
+                />
+                {newTodoDueAt && (
+                  <button type="button" onClick={() => setNewTodoDueAt('')} style={{ color: '#4a4a5e' }}><X size={10} /></button>
+                )}
+              </div>
+              <div className="flex items-center gap-2 pt-1">
+                <button
+                  type="submit"
+                  disabled={creatingTodo || !newTodoTitle.trim()}
+                  className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg font-medium disabled:opacity-50"
+                  style={{ background: 'rgba(99,102,241,0.2)', color: '#818cf8', border: '1px solid rgba(99,102,241,0.3)' }}
+                >
+                  {creatingTodo ? <Loader2 size={10} className="animate-spin" /> : <Plus size={10} />} Add
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setShowCreateTodo(false); setNewTodoTitle(''); setNewTodoDetails(''); setNewTodoDueAt(''); }}
+                  className="text-xs px-2.5 py-1.5 rounded-lg"
+                  style={{ color: '#4a4a5e', border: '1px solid rgba(255,255,255,0.06)' }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </form>
+          )}
+
+          {/* Todos list */}
+          {loadingTodos ? (
+            <div className="flex items-center gap-2 py-2" style={{ color: '#4a4a5e' }}>
+              <Loader2 size={13} className="animate-spin" /> Loading…
+            </div>
+          ) : cls.members.length === 0 ? (
+            <p className="text-sm py-2" style={{ color: '#4a4a5e' }}>No members in this class</p>
+          ) : !classTodos || classTodos.length === 0 ? (
+            <p className="text-sm py-2" style={{ color: '#4a4a5e' }}>No todos in this class</p>
+          ) : (
+            <div className="flex flex-col gap-1.5">
+              {pendingTodos.map((t) => (
+                <ClassTodoRow key={t.id} todo={t} onUpdated={handleTodoUpdated} onDeleted={handleTodoDeleted} />
+              ))}
+              {doneTodos.length > 0 && pendingTodos.length > 0 && (
+                <div className="flex items-center gap-3 my-1">
+                  <div className="flex-1 h-px" style={{ background: 'rgba(255,255,255,0.05)' }} />
+                  <span className="text-xs" style={{ color: '#4a4a5e' }}>Done</span>
+                  <div className="flex-1 h-px" style={{ background: 'rgba(255,255,255,0.05)' }} />
+                </div>
+              )}
+              {doneTodos.map((t) => (
+                <ClassTodoRow key={t.id} todo={t} onUpdated={handleTodoUpdated} onDeleted={handleTodoDeleted} />
+              ))}
+            </div>
           )}
         </div>
       )}
@@ -435,7 +849,7 @@ export function ClassesPage() {
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold" style={{ color: '#f0f0f5' }}>Classes</h1>
-          <p className="text-sm mt-1" style={{ color: '#8b8b9b' }}>Manage class groups, members and reminders</p>
+          <p className="text-sm mt-1" style={{ color: '#8b8b9b' }}>Manage class groups, members, reminders and todos</p>
         </div>
         <div className="flex items-center gap-2">
           <button onClick={refresh} disabled={refreshing}

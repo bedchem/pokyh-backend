@@ -21,6 +21,11 @@ export interface AdminTodo {
   createdAt: string;
 }
 
+export interface AdminClassTodo extends AdminTodo {
+  stableUid: string;
+  username: string;
+}
+
 export interface AdminUserClass {
   classId: string;
   className: string;

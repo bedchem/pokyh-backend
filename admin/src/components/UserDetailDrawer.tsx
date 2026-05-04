@@ -15,6 +15,7 @@ import {
   ChevronUp,
   Clock,
   AlertTriangle,
+  Plus,
 } from 'lucide-react';
 import { adminApi } from '../api';
 import { useToast } from './Toast';
@@ -40,6 +41,12 @@ function fmtDate(d: string | null) {
   if (!d) return null;
   return new Date(d).toLocaleDateString('en', { month: 'short', day: 'numeric', year: 'numeric' });
 }
+function toDatetimeLocal(iso: string | null): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
 
 // ─── Todo row ─────────────────────────────────────────────────────────────────
 
@@ -57,14 +64,23 @@ function TodoRow({
   const { showToast } = useToast();
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState(todo.title);
+  const [details, setDetails] = useState(todo.details);
+  const [dueAtLocal, setDueAtLocal] = useState(toDatetimeLocal(todo.dueAt));
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [expanded, setExpanded] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const titleInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    if (editing) inputRef.current?.focus();
+    if (editing) titleInputRef.current?.focus();
   }, [editing]);
+
+  function resetEdit() {
+    setTitle(todo.title);
+    setDetails(todo.details);
+    setDueAtLocal(toDatetimeLocal(todo.dueAt));
+    setEditing(false);
+  }
 
   async function toggleDone() {
     setSaving(true);
@@ -78,16 +94,30 @@ function TodoRow({
     }
   }
 
-  async function saveTitle() {
-    if (title.trim() === todo.title) { setEditing(false); return; }
+  async function saveEdit() {
+    const trimmed = title.trim();
+    if (!trimmed) return;
     setSaving(true);
+
+    const newDueAt = dueAtLocal ? new Date(dueAtLocal).toISOString() : null;
+    const updateData: Partial<{ title: string; details: string; dueAt: string | null }> = {};
+    if (trimmed !== todo.title) updateData.title = trimmed;
+    if (details !== todo.details) updateData.details = details;
+    if (newDueAt !== todo.dueAt) updateData.dueAt = newDueAt;
+
+    if (Object.keys(updateData).length === 0) {
+      setEditing(false);
+      setSaving(false);
+      return;
+    }
+
     try {
-      const updated = await adminApi.updateTodo(stableUid, todo.id, { title: title.trim() });
+      const updated = await adminApi.updateTodo(stableUid, todo.id, updateData);
       onUpdated(updated);
       setEditing(false);
     } catch (e) {
       showToast(e instanceof Error ? e.message : 'Failed to update', 'error');
-      setTitle(todo.title);
+      resetEdit();
     } finally {
       setSaving(false);
     }
@@ -111,100 +141,251 @@ function TodoRow({
       className="rounded-xl transition-all"
       style={{
         background: todo.done ? 'rgba(255,255,255,0.02)' : '#18181f',
-        border: `1px solid ${isOverdue ? 'rgba(255,69,58,0.2)' : 'rgba(255,255,255,0.06)'}`,
+        border: `1px solid ${editing ? 'rgba(99,102,241,0.3)' : isOverdue ? 'rgba(255,69,58,0.2)' : 'rgba(255,255,255,0.06)'}`,
       }}
     >
       <div className="flex items-start gap-3 p-3">
         <button
           onClick={() => void toggleDone()}
-          disabled={saving}
+          disabled={saving || editing}
           className="mt-0.5 flex-shrink-0 transition-opacity"
-          style={{ color: todo.done ? '#30d158' : '#4a4a5e', opacity: saving ? 0.5 : 1 }}
+          style={{ color: todo.done ? '#30d158' : '#4a4a5e', opacity: (saving && !editing) ? 0.5 : 1 }}
         >
-          {saving ? <Loader2 size={16} className="animate-spin" /> : todo.done ? <CheckSquare size={16} /> : <Square size={16} />}
+          {(saving && !editing) ? <Loader2 size={16} className="animate-spin" /> : todo.done ? <CheckSquare size={16} /> : <Square size={16} />}
         </button>
 
         <div className="flex-1 min-w-0">
           {editing ? (
-            <div className="flex items-center gap-2">
+            <div className="flex flex-col gap-2">
               <input
-                ref={inputRef}
+                ref={titleInputRef}
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter') void saveTitle(); if (e.key === 'Escape') { setTitle(todo.title); setEditing(false); } }}
-                className="flex-1 text-sm bg-transparent outline-none border-b"
+                onKeyDown={(e) => { if (e.key === 'Escape') resetEdit(); }}
+                className="text-sm bg-transparent outline-none border-b w-full"
                 style={{ color: '#f0f0f5', borderColor: 'rgba(99,102,241,0.5)' }}
+                placeholder="Title"
               />
-              <button onClick={() => void saveTitle()} style={{ color: '#30d158' }}>
-                <Check size={14} />
-              </button>
-              <button onClick={() => { setTitle(todo.title); setEditing(false); }} style={{ color: '#4a4a5e' }}>
-                <X size={14} />
-              </button>
+              <textarea
+                value={details}
+                onChange={(e) => setDetails(e.target.value)}
+                rows={3}
+                className="text-xs outline-none resize-none rounded p-2 w-full"
+                style={{
+                  color: '#8b8b9b',
+                  background: 'rgba(255,255,255,0.03)',
+                  border: '1px solid rgba(255,255,255,0.07)',
+                  borderRadius: '6px',
+                }}
+                placeholder="Details (optional)"
+              />
+              <div className="flex items-center gap-2">
+                <Clock size={11} style={{ color: '#4a4a5e' }} />
+                <input
+                  type="datetime-local"
+                  value={dueAtLocal}
+                  onChange={(e) => setDueAtLocal(e.target.value)}
+                  className="text-xs bg-transparent outline-none flex-1"
+                  style={{ color: '#8b8b9b', colorScheme: 'dark' }}
+                />
+                {dueAtLocal && (
+                  <button onClick={() => setDueAtLocal('')} style={{ color: '#4a4a5e' }} title="Clear due date">
+                    <X size={11} />
+                  </button>
+                )}
+              </div>
+              <div className="flex items-center gap-2 pt-1">
+                <button
+                  onClick={() => void saveEdit()}
+                  disabled={saving || !title.trim()}
+                  className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg font-medium transition-all disabled:opacity-50"
+                  style={{ background: 'rgba(99,102,241,0.2)', color: '#818cf8', border: '1px solid rgba(99,102,241,0.3)' }}
+                >
+                  {saving ? <Loader2 size={11} className="animate-spin" /> : <Check size={11} />}
+                  Save
+                </button>
+                <button
+                  onClick={resetEdit}
+                  className="text-xs px-2.5 py-1.5 rounded-lg transition-all"
+                  style={{ color: '#4a4a5e', border: '1px solid rgba(255,255,255,0.06)' }}
+                >
+                  Cancel
+                </button>
+              </div>
             </div>
           ) : (
-            <span
-              className="text-sm leading-snug"
-              style={{ color: todo.done ? '#4a4a5e' : '#f0f0f5', textDecoration: todo.done ? 'line-through' : 'none' }}
-            >
-              {todo.title}
-            </span>
-          )}
-
-          <div className="flex items-center gap-3 mt-1 flex-wrap">
-            {todo.dueAt && (
-              <span className="text-xs flex items-center gap-1" style={{ color: isOverdue ? '#ff453a' : '#4a4a5e' }}>
-                {isOverdue && <AlertTriangle size={10} />}
-                <Clock size={10} />
-                {fmtDate(todo.dueAt)}
+            <>
+              <span
+                className="text-sm leading-snug"
+                style={{ color: todo.done ? '#4a4a5e' : '#f0f0f5', textDecoration: todo.done ? 'line-through' : 'none' }}
+              >
+                {todo.title}
               </span>
-            )}
-            <span className="text-xs" style={{ color: '#4a4a5e' }}>{relativeDate(todo.createdAt)}</span>
-          </div>
 
-          {todo.details && (
+              <div className="flex items-center gap-3 mt-1 flex-wrap">
+                {todo.dueAt && (
+                  <span className="text-xs flex items-center gap-1" style={{ color: isOverdue ? '#ff453a' : '#4a4a5e' }}>
+                    {isOverdue && <AlertTriangle size={10} />}
+                    <Clock size={10} />
+                    {fmtDate(todo.dueAt)}
+                  </span>
+                )}
+                <span className="text-xs" style={{ color: '#4a4a5e' }}>{relativeDate(todo.createdAt)}</span>
+              </div>
+
+              {todo.details && (
+                <button
+                  onClick={() => setExpanded(!expanded)}
+                  className="flex items-center gap-1 text-xs mt-1 transition-opacity hover:opacity-80"
+                  style={{ color: '#818cf8' }}
+                >
+                  {expanded ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
+                  {expanded ? 'Hide details' : 'Show details'}
+                </button>
+              )}
+
+              {expanded && todo.details && (
+                <p className="text-xs mt-2 whitespace-pre-wrap leading-relaxed" style={{ color: '#8b8b9b' }}>
+                  {todo.details}
+                </p>
+              )}
+            </>
+          )}
+        </div>
+
+        {!editing && (
+          <div className="flex items-center gap-1 flex-shrink-0">
             <button
-              onClick={() => setExpanded(!expanded)}
-              className="flex items-center gap-1 text-xs mt-1 transition-opacity hover:opacity-80"
-              style={{ color: '#818cf8' }}
+              onClick={() => setEditing(true)}
+              className="p-1 rounded transition-colors"
+              style={{ color: '#4a4a5e' }}
+              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#818cf8'; }}
+              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = '#4a4a5e'; }}
+              title="Edit"
             >
-              {expanded ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
-              {expanded ? 'Hide details' : 'Show details'}
+              <Edit3 size={13} />
             </button>
-          )}
-
-          {expanded && todo.details && (
-            <p className="text-xs mt-2 whitespace-pre-wrap leading-relaxed" style={{ color: '#8b8b9b' }}>
-              {todo.details}
-            </p>
-          )}
-        </div>
-
-        <div className="flex items-center gap-1 flex-shrink-0">
-          <button
-            onClick={() => setEditing(true)}
-            className="p-1 rounded transition-colors"
-            style={{ color: '#4a4a5e' }}
-            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#818cf8'; }}
-            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = '#4a4a5e'; }}
-            title="Edit"
-          >
-            <Edit3 size={13} />
-          </button>
-          <button
-            onClick={() => void handleDelete()}
-            disabled={deleting}
-            className="p-1 rounded transition-colors"
-            style={{ color: '#4a4a5e', opacity: deleting ? 0.5 : 1 }}
-            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#ff453a'; }}
-            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = '#4a4a5e'; }}
-            title="Delete"
-          >
-            {deleting ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}
-          </button>
-        </div>
+            <button
+              onClick={() => void handleDelete()}
+              disabled={deleting}
+              className="p-1 rounded transition-colors"
+              style={{ color: '#4a4a5e', opacity: deleting ? 0.5 : 1 }}
+              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#ff453a'; }}
+              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = '#4a4a5e'; }}
+              title="Delete"
+            >
+              {deleting ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}
+            </button>
+          </div>
+        )}
       </div>
     </div>
+  );
+}
+
+// ─── Create todo form ─────────────────────────────────────────────────────────
+
+function CreateTodoForm({
+  stableUid,
+  onCreated,
+  onCancel,
+}: {
+  stableUid: string;
+  onCreated: (t: AdminTodo) => void;
+  onCancel: () => void;
+}) {
+  const { showToast } = useToast();
+  const [title, setTitle] = useState('');
+  const [details, setDetails] = useState('');
+  const [dueAtLocal, setDueAtLocal] = useState('');
+  const [creating, setCreating] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => { inputRef.current?.focus(); }, []);
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!title.trim()) return;
+    setCreating(true);
+    try {
+      const todo = await adminApi.createTodo(stableUid, {
+        title: title.trim(),
+        details: details.trim() || undefined,
+        dueAt: dueAtLocal ? new Date(dueAtLocal).toISOString() : null,
+      });
+      onCreated(todo);
+      setTitle('');
+      setDetails('');
+      setDueAtLocal('');
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : 'Failed to create todo', 'error');
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  return (
+    <form
+      onSubmit={(e) => void handleSubmit(e)}
+      className="rounded-xl p-3 flex flex-col gap-2"
+      style={{ background: '#18181f', border: '1px solid rgba(99,102,241,0.25)' }}
+    >
+      <input
+        ref={inputRef}
+        value={title}
+        onChange={(e) => setTitle(e.target.value)}
+        placeholder="Todo title *"
+        className="text-sm bg-transparent outline-none border-b w-full"
+        style={{ color: '#f0f0f5', borderColor: 'rgba(99,102,241,0.4)', paddingBottom: '4px' }}
+      />
+      <textarea
+        value={details}
+        onChange={(e) => setDetails(e.target.value)}
+        rows={2}
+        className="text-xs outline-none resize-none rounded p-2 w-full"
+        style={{
+          color: '#8b8b9b',
+          background: 'rgba(255,255,255,0.03)',
+          border: '1px solid rgba(255,255,255,0.07)',
+          borderRadius: '6px',
+        }}
+        placeholder="Details (optional)"
+      />
+      <div className="flex items-center gap-2">
+        <Clock size={11} style={{ color: '#4a4a5e' }} />
+        <input
+          type="datetime-local"
+          value={dueAtLocal}
+          onChange={(e) => setDueAtLocal(e.target.value)}
+          className="text-xs bg-transparent outline-none flex-1"
+          style={{ color: '#8b8b9b', colorScheme: 'dark' }}
+        />
+        {dueAtLocal && (
+          <button type="button" onClick={() => setDueAtLocal('')} style={{ color: '#4a4a5e' }}>
+            <X size={11} />
+          </button>
+        )}
+      </div>
+      <div className="flex items-center gap-2 pt-1">
+        <button
+          type="submit"
+          disabled={creating || !title.trim()}
+          className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg font-medium transition-all disabled:opacity-50"
+          style={{ background: 'rgba(99,102,241,0.2)', color: '#818cf8', border: '1px solid rgba(99,102,241,0.3)' }}
+        >
+          {creating ? <Loader2 size={11} className="animate-spin" /> : <Plus size={11} />}
+          Add Todo
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          className="text-xs px-2.5 py-1.5 rounded-lg transition-all"
+          style={{ color: '#4a4a5e', border: '1px solid rgba(255,255,255,0.06)' }}
+        >
+          Cancel
+        </button>
+      </div>
+    </form>
   );
 }
 
@@ -284,6 +465,7 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [togglingAdmin, setTogglingAdmin] = useState(false);
   const [mounted, setMounted] = useState(false);
+  const [showCreateTodo, setShowCreateTodo] = useState(false);
 
   useEffect(() => {
     requestAnimationFrame(() => setMounted(true));
@@ -296,6 +478,11 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
       .catch((e) => showToast(e instanceof Error ? e.message : 'Failed to load user', 'error'))
       .finally(() => setLoading(false));
   }, [stableUid, showToast]);
+
+  function handleTodoCreated(todo: AdminTodo) {
+    setUser((prev) => prev ? { ...prev, todos: [todo, ...prev.todos] } : prev);
+    setShowCreateTodo(false);
+  }
 
   function handleTodoUpdated(updated: AdminTodo) {
     setUser((prev) => prev ? { ...prev, todos: prev.todos.map((t) => t.id === updated.id ? updated : t) } : prev);
@@ -478,9 +665,30 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
                   <h3 className="text-xs font-semibold uppercase tracking-wider" style={{ color: '#4a4a5e' }}>
                     Todos — {pendingTodos.length} pending, {doneTodos.length} done
                   </h3>
+                  {!showCreateTodo && (
+                    <button
+                      onClick={() => setShowCreateTodo(true)}
+                      className="flex items-center gap-1 text-xs px-2 py-1 rounded-lg transition-all font-medium"
+                      style={{ color: '#818cf8', border: '1px solid rgba(99,102,241,0.25)', background: 'transparent' }}
+                      onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(99,102,241,0.1)'; }}
+                      onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
+                    >
+                      <Plus size={11} /> Add
+                    </button>
+                  )}
                 </div>
 
-                {user.todos.length === 0 ? (
+                {showCreateTodo && (
+                  <div className="mb-2">
+                    <CreateTodoForm
+                      stableUid={user.stableUid}
+                      onCreated={handleTodoCreated}
+                      onCancel={() => setShowCreateTodo(false)}
+                    />
+                  </div>
+                )}
+
+                {user.todos.length === 0 && !showCreateTodo ? (
                   <div
                     className="rounded-xl p-4 text-center text-sm"
                     style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)', color: '#4a4a5e' }}
