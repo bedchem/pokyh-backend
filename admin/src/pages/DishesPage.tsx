@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import {
-  UtensilsCrossed, Plus, Pencil, Trash2, Download, X, ChevronDown, ChevronUp, Leaf, Sprout,
+  UtensilsCrossed, Plus, Pencil, Trash2, Download, X, ChevronDown, ChevronUp, Leaf, Sprout, Star,
 } from 'lucide-react';
 import { adminApi } from '../api';
-import type { AdminDishFull } from '../types';
+import type { AdminDishFull, AdminDish, AdminDishRatingEntry } from '../types';
 import { useToast } from '../components/Toast';
 
 // ─── helpers ────────────────────────────────────────────────────────────────
@@ -21,7 +22,6 @@ function weekKey(iso: string) {
   return mon.toISOString().split('T')[0];
 }
 
-
 function emptyDish(): Omit<AdminDishFull, 'id' | 'createdAt' | 'updatedAt'> {
   const today = new Date().toISOString().split('T')[0];
   return {
@@ -35,15 +35,166 @@ function emptyDish(): Omit<AdminDishFull, 'id' | 'createdAt' | 'updatedAt'> {
   };
 }
 
+// ─── StarsDisplay ────────────────────────────────────────────────────────────
+
+function StarsDisplay({ value, size = 13 }: { value: number; size?: number }) {
+  return (
+    <div className="flex gap-0.5 items-center">
+      {[1, 2, 3, 4, 5].map((s) => (
+        <Star
+          key={s}
+          size={size}
+          fill={value >= s ? '#f59e0b' : 'transparent'}
+          stroke={value >= s ? '#f59e0b' : '#3a3a4e'}
+          strokeWidth={1.5}
+        />
+      ))}
+    </div>
+  );
+}
+
+function StarSelector({ value, onChange }: { value: number; onChange: (v: number) => void }) {
+  const [hovered, setHovered] = useState(0);
+  return (
+    <div className="flex gap-0.5">
+      {[1, 2, 3, 4, 5].map((s) => (
+        <button
+          key={s}
+          type="button"
+          onMouseEnter={() => setHovered(s)}
+          onMouseLeave={() => setHovered(0)}
+          onClick={() => onChange(s)}
+          className="transition-transform hover:scale-110 active:scale-95"
+        >
+          <Star
+            size={18}
+            fill={(hovered || value) >= s ? '#f59e0b' : 'transparent'}
+            stroke={(hovered || value) >= s ? '#f59e0b' : '#4a4a5e'}
+            strokeWidth={1.5}
+          />
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// ─── RatingRow ───────────────────────────────────────────────────────────────
+
+function RatingRow({
+  dishId,
+  entry,
+  onChanged,
+}: {
+  dishId: string;
+  entry: AdminDishRatingEntry;
+  onChanged: () => void;
+}) {
+  const { showToast } = useToast();
+  const [editing, setEditing] = useState(false);
+  const [editStars, setEditStars] = useState(entry.stars);
+  const [saving, setSaving] = useState(false);
+  const [confirmDel, setConfirmDel] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+
+  async function handleSave() {
+    setSaving(true);
+    try {
+      await adminApi.updateDishRating(dishId, entry.stableUid, editStars);
+      setEditing(false);
+      showToast('Bewertung aktualisiert', 'success');
+      onChanged();
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Fehler', 'error');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleDelete() {
+    setDeleting(true);
+    try {
+      await adminApi.deleteDishRating(dishId, entry.stableUid);
+      showToast('Bewertung gelöscht', 'success');
+      onChanged();
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Fehler', 'error');
+      setDeleting(false);
+    }
+  }
+
+  return (
+    <div
+      className="flex items-center gap-3 px-3 py-2.5 rounded-xl"
+      style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.05)' }}
+    >
+      <span className="flex-1 text-sm font-medium truncate" style={{ color: '#b0b0c0' }}>
+        {entry.username}
+      </span>
+
+      {editing ? (
+        <div className="flex items-center gap-2 flex-shrink-0">
+          <StarSelector value={editStars} onChange={setEditStars} />
+          <button onClick={handleSave} disabled={saving}
+            className="px-2.5 py-1 rounded-lg text-xs font-semibold"
+            style={{ background: 'rgba(99,102,241,0.2)', color: '#818cf8', border: '1px solid rgba(99,102,241,0.3)' }}>
+            {saving ? '...' : 'OK'}
+          </button>
+          <button onClick={() => { setEditing(false); setEditStars(entry.stars); }}
+            className="px-2.5 py-1 rounded-lg text-xs"
+            style={{ background: 'rgba(255,255,255,0.05)', color: '#8b8b9b' }}>
+            Abbrechen
+          </button>
+        </div>
+      ) : (
+        <div className="flex items-center gap-2 flex-shrink-0">
+          <StarsDisplay value={entry.stars} />
+          <span className="text-xs w-3 text-center" style={{ color: '#f59e0b' }}>{entry.stars}</span>
+          <button onClick={() => setEditing(true)}
+            className="p-1.5 rounded-lg transition-colors"
+            style={{ color: '#4a4a5e' }}
+            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#818cf8'; }}
+            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = '#4a4a5e'; }}>
+            <Pencil size={13} />
+          </button>
+          {confirmDel ? (
+            <div className="flex items-center gap-1">
+              <button onClick={handleDelete} disabled={deleting}
+                className="px-2 py-1 rounded-lg text-xs font-semibold"
+                style={{ background: 'rgba(239,68,68,0.15)', color: '#f87171', border: '1px solid rgba(239,68,68,0.2)' }}>
+                {deleting ? '...' : 'Sicher?'}
+              </button>
+              <button onClick={() => setConfirmDel(false)}
+                className="px-2 py-1 rounded-lg text-xs"
+                style={{ background: 'rgba(255,255,255,0.05)', color: '#8b8b9b' }}>
+                Nein
+              </button>
+            </div>
+          ) : (
+            <button onClick={() => setConfirmDel(true)}
+              className="p-1.5 rounded-lg transition-colors"
+              style={{ color: '#4a4a5e' }}
+              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#f87171'; }}
+              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = '#4a4a5e'; }}>
+              <Trash2 size={13} />
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── DishForm (centered modal) ───────────────────────────────────────────────
 
 interface DishFormProps {
-  dish: AdminDishFull | null; // null = create mode
+  dish: AdminDishFull | null;
+  ratingData: AdminDish | null;
   onSaved: (d: AdminDishFull) => void;
   onClose: () => void;
+  onRatingChanged: () => void;
 }
 
-function DishForm({ dish, onSaved, onClose }: DishFormProps) {
+function DishForm({ dish, ratingData, onSaved, onClose, onRatingChanged }: DishFormProps) {
   const { showToast } = useToast();
   const isEdit = dish !== null;
 
@@ -53,7 +204,7 @@ function DishForm({ dish, onSaved, onClose }: DishFormProps) {
       : { ...emptyDish(), tagsText: '', allergensText: '' }
   );
   const [saving, setSaving] = useState(false);
-  const [tab, setTab] = useState<'basic' | 'localize' | 'nutrition'>('basic');
+  const [tab, setTab] = useState<'basic' | 'nutrition' | 'ratings'>('basic');
 
   function set<K extends keyof typeof form>(k: K, v: typeof form[K]) {
     setForm((p) => ({ ...p, [k]: v }));
@@ -98,11 +249,7 @@ function DishForm({ dish, onSaved, onClose }: DishFormProps) {
   }
 
   const inp = 'w-full px-3 py-2 rounded-lg text-sm outline-none transition-all';
-  const inpStyle = {
-    background: 'rgba(255,255,255,0.04)',
-    border: '1px solid rgba(255,255,255,0.09)',
-    color: '#c0c0d0',
-  };
+  const inpStyle = { background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.09)', color: '#c0c0d0' };
   const focusStyle = (e: React.FocusEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     (e.target as HTMLElement).style.borderColor = 'rgba(99,102,241,0.45)';
     (e.target as HTMLElement).style.boxShadow = '0 0 0 3px rgba(99,102,241,0.08)';
@@ -116,13 +263,13 @@ function DishForm({ dish, onSaved, onClose }: DishFormProps) {
 
   const tabs = [
     { key: 'basic' as const, label: 'Allgemein' },
-    { key: 'localize' as const, label: 'Sprachen' },
     { key: 'nutrition' as const, label: 'Nährwerte' },
+    ...(isEdit ? [{ key: 'ratings' as const, label: `Ratings${ratingData && ratingData.count > 0 ? ` (${ratingData.count})` : ''}` }] : []),
   ];
 
-  return (
+  return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      className="fixed inset-0 z-[9999] flex items-center justify-center p-4"
       style={{ background: 'rgba(0,0,0,0.65)', backdropFilter: 'blur(6px)' }}
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
@@ -170,7 +317,6 @@ function DishForm({ dish, onSaved, onClose }: DishFormProps) {
 
           {tab === 'basic' && (
             <>
-              {/* Image preview */}
               {form.imageUrl && (
                 <div className="w-full h-36 rounded-xl overflow-hidden flex-shrink-0"
                   style={{ border: '1px solid rgba(255,255,255,0.07)' }}>
@@ -186,19 +332,11 @@ function DishForm({ dish, onSaved, onClose }: DishFormProps) {
                   onFocus={focusStyle} onBlur={blurStyle} placeholder="z.B. Spaghetti Bolognese" />
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label style={lblStyle} className={lbl}>Datum *</label>
-                  <input type="date" className={inp} style={inpStyle} value={form.date}
-                    onChange={(e) => set('date', e.target.value)}
-                    onFocus={focusStyle} onBlur={blurStyle} />
-                </div>
-                <div>
-                  <label style={lblStyle} className={lbl}>Reihenfolge</label>
-                  <input type="number" className={inp} style={inpStyle} value={form.sortOrder}
-                    onChange={(e) => set('sortOrder', Number(e.target.value))}
-                    onFocus={focusStyle} onBlur={blurStyle} min={0} />
-                </div>
+              <div>
+                <label style={lblStyle} className={lbl}>Datum *</label>
+                <input type="date" className={inp} style={inpStyle} value={form.date}
+                  onChange={(e) => set('date', e.target.value)}
+                  onFocus={focusStyle} onBlur={blurStyle} />
               </div>
 
               <div>
@@ -215,19 +353,33 @@ function DishForm({ dish, onSaved, onClose }: DishFormProps) {
                   onFocus={focusStyle} onBlur={blurStyle} placeholder="https://..." />
               </div>
 
-              <div className="flex gap-4">
-                <label className="flex items-center gap-2 cursor-pointer select-none">
-                  <input type="checkbox" checked={form.isVegetarian}
-                    onChange={(e) => set('isVegetarian', e.target.checked)} className="accent-indigo-500" />
-                  <Leaf size={14} style={{ color: '#22c55e' }} />
-                  <span className="text-sm" style={{ color: '#8b8b9b' }}>Vegetarisch</span>
-                </label>
-                <label className="flex items-center gap-2 cursor-pointer select-none">
-                  <input type="checkbox" checked={form.isVegan}
-                    onChange={(e) => set('isVegan', e.target.checked)} className="accent-indigo-500" />
-                  <Sprout size={14} style={{ color: '#86efac' }} />
-                  <span className="text-sm" style={{ color: '#8b8b9b' }}>Vegan</span>
-                </label>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => set('isVegetarian', !form.isVegetarian)}
+                  className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-all select-none"
+                  style={{
+                    background: form.isVegetarian ? 'rgba(34,197,94,0.15)' : 'rgba(255,255,255,0.04)',
+                    border: form.isVegetarian ? '1px solid rgba(34,197,94,0.4)' : '1px solid rgba(255,255,255,0.09)',
+                    color: form.isVegetarian ? '#4ade80' : '#6b6b80',
+                  }}
+                >
+                  <Leaf size={14} />
+                  Vegetarisch
+                </button>
+                <button
+                  type="button"
+                  onClick={() => set('isVegan', !form.isVegan)}
+                  className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-all select-none"
+                  style={{
+                    background: form.isVegan ? 'rgba(134,239,172,0.15)' : 'rgba(255,255,255,0.04)',
+                    border: form.isVegan ? '1px solid rgba(134,239,172,0.4)' : '1px solid rgba(255,255,255,0.09)',
+                    color: form.isVegan ? '#86efac' : '#6b6b80',
+                  }}
+                >
+                  <Sprout size={14} />
+                  Vegan
+                </button>
               </div>
 
               <div>
@@ -248,80 +400,99 @@ function DishForm({ dish, onSaved, onClose }: DishFormProps) {
             </>
           )}
 
-          {tab === 'localize' && (
-            <>
-              {(['De', 'It', 'En'] as const).map((lang) => (
-                <div key={lang} className="flex flex-col gap-3 pb-4" style={{ borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
-                  <p className="text-xs font-bold uppercase tracking-widest" style={{ color: '#4a4a5e' }}>
-                    {lang === 'De' ? 'Deutsch' : lang === 'It' ? 'Italiano' : 'English'}
-                  </p>
-                  <div>
-                    <label style={lblStyle} className={lbl}>Name</label>
-                    <input className={inp} style={inpStyle}
-                      value={form[`name${lang}` as 'nameDe' | 'nameIt' | 'nameEn']}
-                      onChange={(e) => set(`name${lang}` as 'nameDe', e.target.value)}
-                      onFocus={focusStyle} onBlur={blurStyle} />
-                  </div>
-                  <div>
-                    <label style={lblStyle} className={lbl}>Beschreibung</label>
-                    <textarea className={`${inp} resize-none`} style={{ ...inpStyle, minHeight: '80px' }}
-                      value={form[`desc${lang}` as 'descDe' | 'descIt' | 'descEn']}
-                      onChange={(e) => set(`desc${lang}` as 'descDe', e.target.value)}
-                      onFocus={focusStyle} onBlur={blurStyle} />
-                  </div>
+          {tab === 'nutrition' && (
+            <div className="grid grid-cols-2 gap-3">
+              {([
+                ['calories', 'Kalorien (kcal)'],
+                ['protein', 'Protein (g)'],
+                ['fat', 'Fett (g)'],
+              ] as const).map(([field, label]) => (
+                <div key={field}>
+                  <label style={lblStyle} className={lbl}>{label}</label>
+                  <input type="number" step="0.1" min="0" className={inp} style={inpStyle}
+                    value={form[field as keyof typeof form] as number}
+                    onChange={(e) => set(field as 'calories', Number(e.target.value))}
+                    onFocus={focusStyle} onBlur={blurStyle} />
                 </div>
               ))}
-            </>
+            </div>
           )}
 
-          {tab === 'nutrition' && (
+          {tab === 'ratings' && (
             <>
-              <div className="grid grid-cols-2 gap-3">
-                {([
-                  ['calories', 'Kalorien (kcal)'],
-                  ['price', 'Preis (€)'],
-                  ['protein', 'Protein (g)'],
-                  ['fat', 'Fett (g)'],
-                  ['prepTime', 'Zubereitungszeit (min)'],
-                ] as const).map(([field, label]) => (
-                  <div key={field}>
-                    <label style={lblStyle} className={lbl}>{label}</label>
-                    <input type="number" step="0.1" min="0" className={inp} style={inpStyle}
-                      value={form[field as keyof typeof form] as number}
-                      onChange={(e) => set(field as 'calories', Number(e.target.value))}
-                      onFocus={focusStyle} onBlur={blurStyle} />
+              {ratingData && ratingData.count > 0 ? (
+                <>
+                  {/* Summary */}
+                  <div className="flex items-center gap-3 px-4 py-3 rounded-xl"
+                    style={{ background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.15)' }}>
+                    <StarsDisplay value={Math.round(ratingData.avgStars)} size={16} />
+                    <span className="text-base font-bold" style={{ color: '#f59e0b' }}>
+                      {ratingData.avgStars.toFixed(1)}
+                    </span>
+                    <span className="text-sm" style={{ color: '#6b6b80' }}>
+                      · {ratingData.count} {ratingData.count === 1 ? 'Bewertung' : 'Bewertungen'}
+                    </span>
                   </div>
-                ))}
-              </div>
+
+                  {/* Rating rows */}
+                  <div className="flex flex-col gap-1.5">
+                    {ratingData.ratings.map((entry) => (
+                      <RatingRow
+                        key={entry.stableUid}
+                        dishId={ratingData.dishId}
+                        entry={entry}
+                        onChanged={onRatingChanged}
+                      />
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <div className="flex flex-col items-center py-10 gap-2">
+                  <Star size={28} style={{ color: '#2a2a3e' }} />
+                  <p className="text-sm" style={{ color: '#4a4a5e' }}>Noch keine Bewertungen</p>
+                </div>
+              )}
             </>
           )}
         </div>
 
-        {/* Footer */}
-        <div className="flex items-center justify-end gap-3 px-5 py-4 flex-shrink-0" style={{ borderTop: '1px solid rgba(255,255,255,0.07)' }}>
-          <button onClick={onClose} className="px-4 py-2 rounded-xl text-sm transition-colors"
-            style={{ background: 'rgba(255,255,255,0.05)', color: '#8b8b9b', border: '1px solid rgba(255,255,255,0.08)' }}>
-            Abbrechen
-          </button>
-          <button onClick={handleSave} disabled={saving}
-            className="px-5 py-2 rounded-xl text-sm font-semibold transition-all"
-            style={{
-              background: saving ? 'rgba(99,102,241,0.4)' : 'linear-gradient(135deg,#6366f1,#818cf8)',
-              color: '#fff',
-              boxShadow: saving ? 'none' : '0 4px 16px rgba(99,102,241,0.3)',
-            }}>
-            {saving ? 'Speichern...' : isEdit ? 'Speichern' : 'Erstellen'}
-          </button>
-        </div>
+        {/* Footer — only show save button on non-ratings tabs */}
+        {tab !== 'ratings' && (
+          <div className="flex items-center justify-end gap-3 px-5 py-4 flex-shrink-0" style={{ borderTop: '1px solid rgba(255,255,255,0.07)' }}>
+            <button onClick={onClose} className="px-4 py-2 rounded-xl text-sm transition-colors"
+              style={{ background: 'rgba(255,255,255,0.05)', color: '#8b8b9b', border: '1px solid rgba(255,255,255,0.08)' }}>
+              Abbrechen
+            </button>
+            <button onClick={handleSave} disabled={saving}
+              className="px-5 py-2 rounded-xl text-sm font-semibold transition-all"
+              style={{
+                background: saving ? 'rgba(99,102,241,0.4)' : 'linear-gradient(135deg,#6366f1,#818cf8)',
+                color: '#fff',
+                boxShadow: saving ? 'none' : '0 4px 16px rgba(99,102,241,0.3)',
+              }}>
+              {saving ? 'Speichern...' : isEdit ? 'Speichern' : 'Erstellen'}
+            </button>
+          </div>
+        )}
+        {tab === 'ratings' && (
+          <div className="flex items-center justify-end px-5 py-4 flex-shrink-0" style={{ borderTop: '1px solid rgba(255,255,255,0.07)' }}>
+            <button onClick={onClose} className="px-4 py-2 rounded-xl text-sm transition-colors"
+              style={{ background: 'rgba(255,255,255,0.05)', color: '#8b8b9b', border: '1px solid rgba(255,255,255,0.08)' }}>
+              Schließen
+            </button>
+          </div>
+        )}
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 
 // ─── DishCard ────────────────────────────────────────────────────────────────
 
-function DishCard({ dish, onEdit, onDelete }: {
+function DishCard({ dish, ratingData, onEdit, onDelete }: {
   dish: AdminDishFull;
+  ratingData: AdminDish | undefined;
   onEdit: (d: AdminDishFull) => void;
   onDelete: (id: string) => void;
 }) {
@@ -374,8 +545,15 @@ function DishCard({ dish, onEdit, onDelete }: {
           {dish.calories > 0 && (
             <span className="text-xs" style={{ color: '#4a4a5e' }}>{dish.calories} kcal</span>
           )}
-          {dish.price > 0 && (
-            <span className="text-xs" style={{ color: '#4a4a5e' }}>€{dish.price.toFixed(2)}</span>
+          {/* Stars */}
+          {ratingData && ratingData.count > 0 ? (
+            <div className="flex items-center gap-1">
+              <StarsDisplay value={Math.round(ratingData.avgStars)} size={11} />
+              <span className="text-xs font-semibold" style={{ color: '#f59e0b' }}>{ratingData.avgStars.toFixed(1)}</span>
+              <span className="text-xs" style={{ color: '#3a3a4e' }}>({ratingData.count})</span>
+            </div>
+          ) : (
+            <span className="text-xs" style={{ color: '#2a2a3e' }}>Keine Bewertungen</span>
           )}
         </div>
       </div>
@@ -436,9 +614,9 @@ function ImportDialog({ onDone, onClose }: { onDone: () => void; onClose: () => 
     }
   }
 
-  return (
+  return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      className="fixed inset-0 z-[9999] flex items-center justify-center p-4"
       style={{ background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)' }}
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
@@ -471,7 +649,8 @@ function ImportDialog({ onDone, onClose }: { onDone: () => void; onClose: () => 
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 
@@ -480,6 +659,7 @@ function ImportDialog({ onDone, onClose }: { onDone: () => void; onClose: () => 
 export function DishesPage() {
   const { showToast } = useToast();
   const [dishes, setDishes] = useState<AdminDishFull[]>([]);
+  const [ratingsMap, setRatingsMap] = useState<Map<string, AdminDish>>(new Map());
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [editDish, setEditDish] = useState<AdminDishFull | null | 'new'>(null);
@@ -489,7 +669,14 @@ export function DishesPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      setDishes(await adminApi.dishes());
+      const [dishData, ratingData] = await Promise.all([
+        adminApi.dishes(),
+        adminApi.dishRatings(),
+      ]);
+      setDishes(dishData);
+      const map = new Map<string, AdminDish>();
+      ratingData.forEach((r) => map.set(r.dishId, r));
+      setRatingsMap(map);
     } catch (err) {
       showToast(err instanceof Error ? err.message : 'Fehler beim Laden', 'error');
     } finally {
@@ -499,19 +686,15 @@ export function DishesPage() {
 
   useEffect(() => { load(); }, [load]);
 
-  function handleSaved(d: AdminDishFull) {
-    setDishes((prev) => {
-      const idx = prev.findIndex((x) => x.id === d.id);
-      return idx >= 0 ? prev.map((x) => x.id === d.id ? d : x) : [d, ...prev];
-    });
+  function handleSaved(_d: AdminDishFull) {
     setEditDish(null);
+    load();
   }
 
   function handleDeleted(id: string) {
     setDishes((prev) => prev.filter((d) => d.id !== id));
   }
 
-  // Filter
   const filtered = search.trim()
     ? dishes.filter((d) =>
         d.nameDe.toLowerCase().includes(search.toLowerCase()) ||
@@ -522,7 +705,6 @@ export function DishesPage() {
       )
     : dishes;
 
-  // Group by week
   const weeks = new Map<string, AdminDishFull[]>();
   for (const d of filtered) {
     const k = weekKey(d.date);
@@ -539,6 +721,10 @@ export function DishesPage() {
       return next;
     });
   }
+
+  const editRatingData = editDish && editDish !== 'new'
+    ? (ratingsMap.get((editDish as AdminDishFull).id) ?? null)
+    : null;
 
   return (
     <div className="animate-page">
@@ -612,7 +798,6 @@ export function DishesPage() {
             const collapsed = collapsedWeeks.has(wk);
             return (
               <div key={wk} className="animate-fadeInUp" style={{ animationDelay: `${wi * 40}ms` }}>
-                {/* Week header */}
                 <button
                   className="w-full flex items-center justify-between px-4 py-2.5 rounded-xl mb-2 transition-colors"
                   style={{ background: 'rgba(99,102,241,0.07)', border: '1px solid rgba(99,102,241,0.1)' }}
@@ -629,15 +814,19 @@ export function DishesPage() {
                 {!collapsed && (
                   <div className="flex flex-col gap-2">
                     {wDishes.map((dish) => (
-                      <div key={dish.id} className="ml-0">
-                        {/* Day label */}
+                      <div key={dish.id}>
                         <div className="flex items-center gap-2 mb-1 mt-2 first:mt-0">
                           <span className="text-xs font-medium" style={{ color: '#4a4a5e' }}>
                             {formatDate(dish.date)}
                           </span>
                           <div style={{ flex: 1, height: '1px', background: 'rgba(255,255,255,0.04)' }} />
                         </div>
-                        <DishCard dish={dish} onEdit={setEditDish} onDelete={handleDeleted} />
+                        <DishCard
+                          dish={dish}
+                          ratingData={ratingsMap.get(dish.id)}
+                          onEdit={setEditDish}
+                          onDelete={handleDeleted}
+                        />
                       </div>
                     ))}
                   </div>
@@ -648,17 +837,17 @@ export function DishesPage() {
         </div>
       )}
 
-      {/* Edit/Create panel */}
       {editDish !== null && (
         <DishForm
           key={editDish === 'new' ? '__new__' : (editDish as AdminDishFull).id}
           dish={editDish === 'new' ? null : editDish}
+          ratingData={editRatingData}
           onSaved={handleSaved}
           onClose={() => setEditDish(null)}
+          onRatingChanged={load}
         />
       )}
 
-      {/* Import dialog */}
       {showImport && (
         <ImportDialog
           onDone={() => { setShowImport(false); load(); }}

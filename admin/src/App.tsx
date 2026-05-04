@@ -10,7 +10,6 @@ import { ClassesPage } from './pages/ClassesPage';
 import { SessionsPage } from './pages/SessionsPage';
 import { LogsPage } from './pages/LogsPage';
 import { TunnelPage } from './pages/TunnelPage';
-import { RatingsPage } from './pages/RatingsPage';
 import { DishesPage } from './pages/DishesPage';
 import { ReactNode, Suspense, useState, useEffect } from 'react';
 import { setupApi } from './api';
@@ -78,7 +77,6 @@ export default function App() {
             <Route path="/sessions" element={<ProtectedRoute><SessionsPage /></ProtectedRoute>} />
             <Route path="/logs" element={<ProtectedRoute><LogsPage /></ProtectedRoute>} />
             <Route path="/tunnel" element={<ProtectedRoute><TunnelPage /></ProtectedRoute>} />
-            <Route path="/ratings" element={<ProtectedRoute><RatingsPage /></ProtectedRoute>} />
             <Route path="/dishes" element={<ProtectedRoute><DishesPage /></ProtectedRoute>} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
