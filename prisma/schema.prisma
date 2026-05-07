@@ -146,6 +146,15 @@ model RefreshToken {
   @@map("refresh_tokens")
 }
 
+model KnownSubject {
+  key       String   @id @db.VarChar(200)
+  longName  String   @map("long_name") @db.VarChar(200)
+  shortName String   @map("short_name") @db.VarChar(50)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("known_subjects")
+}
+
 model SubjectImage {
   subject   String   @id @db.VarChar(200)
   data      Bytes    @db.LongBlob

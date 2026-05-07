@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import { z } from 'zod';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import { v4 as uuidv4 } from 'uuid';
@@ -1097,6 +1098,77 @@ router.delete('/dish-ratings/:dishId/:stableUid', requireAdmin, async (req: Requ
     where: { dishId_stableUid: { dishId, stableUid } },
   }).catch(() => null);
 
+  res.status(204).send();
+});
+
+// ─── Subject Images (admin) ───────────────────────────────────────────────────
+
+const ALLOWED_MIME = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
+const MAX_IMG_BYTES = 3 * 1024 * 1024;
+
+function normalizeSubjectKey(s: string): string {
+  return s.toLowerCase().trim().slice(0, 200);
+}
+
+// GET /api/admin/subject-images/:subject/preview — serve image for admin panel
+router.get('/subject-images/:subject/preview', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const subject = normalizeSubjectKey(req.params['subject'] as string);
+  const row = await prisma.subjectImage.findUnique({ where: { subject } });
+  if (!row) { res.status(404).end(); return; }
+  res.setHeader('Content-Type', row.mimeType);
+  res.setHeader('Cache-Control', 'public, max-age=3600');
+  res.end(row.data);
+});
+
+// GET /api/admin/subject-images — list all known subjects with image status
+router.get('/subject-images', requireAdmin, async (_req: Request, res: Response): Promise<void> => {
+  const [subjects, images] = await Promise.all([
+    prisma.knownSubject.findMany({ orderBy: { longName: 'asc' } }),
+    prisma.subjectImage.findMany({ select: { subject: true, mimeType: true, updatedAt: true } }),
+  ]);
+  const imageMap = new Map(images.map(i => [i.subject, i]));
+  const result = subjects.map(s => ({
+    key:       s.key,
+    longName:  s.longName,
+    shortName: s.shortName,
+    hasImage:  imageMap.has(s.key),
+    mimeType:  imageMap.get(s.key)?.mimeType ?? null,
+    updatedAt: imageMap.get(s.key)?.updatedAt.toISOString() ?? null,
+  }));
+  res.json(result);
+});
+
+// PUT /api/admin/subject-images/:subject — upload or replace image
+const subjectImageUploadSchema = z.object({
+  data:     z.string().min(1),
+  mimeType: z.string(),
+});
+
+router.put('/subject-images/:subject', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const subject = normalizeSubjectKey(req.params['subject'] as string);
+  if (!subject) { res.status(400).json({ error: 'Invalid subject' }); return; }
+
+  const body = subjectImageUploadSchema.parse(req.body);
+  if (!ALLOWED_MIME.has(body.mimeType)) {
+    res.status(422).json({ error: 'Unsupported image type' }); return;
+  }
+  const buf = Buffer.from(body.data, 'base64');
+  if (buf.length > MAX_IMG_BYTES) {
+    res.status(413).json({ error: 'Image too large (max 3 MB)' }); return;
+  }
+
+  await prisma.subjectImage.upsert({
+    where:  { subject },
+    create: { subject, data: buf, mimeType: body.mimeType },
+    update: { data: buf, mimeType: body.mimeType },
+  });
+  res.json({ ok: true, subject });
+});
+
+// DELETE /api/admin/subject-images/:subject — remove image
+router.delete('/subject-images/:subject', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const subject = normalizeSubjectKey(req.params['subject'] as string);
+  await prisma.subjectImage.delete({ where: { subject } }).catch(() => null);
   res.status(204).send();
 });
 

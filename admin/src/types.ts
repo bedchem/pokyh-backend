@@ -181,3 +181,13 @@ export interface AdminDish {
   count: number;
   ratings: AdminDishRatingEntry[];
 }
+
+
+export interface AdminSubjectImage {
+  key: string;
+  longName: string;
+  shortName: string;
+  hasImage: boolean;
+  mimeType: string | null;
+  updatedAt: string | null;
+}

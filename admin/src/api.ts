@@ -205,6 +205,15 @@ export const adminApi = {
   importDishesFromUrl: (url?: string): Promise<AdminDishImportResult> =>
     request<AdminDishImportResult>('POST', '/api/admin/dishes/import-url', url ? { url } : {}),
 
+  listSubjectImages: (): Promise<import('./types').AdminSubjectImage[]> =>
+    request<import('./types').AdminSubjectImage[]>('GET', '/api/admin/subject-images'),
+
+  uploadSubjectImage: (subject: string, data: string, mimeType: string): Promise<{ ok: boolean }> =>
+    request<{ ok: boolean }>('PUT', `/api/admin/subject-images/${encodeURIComponent(subject)}`, { data, mimeType }),
+
+  deleteSubjectImage: (subject: string): Promise<void> =>
+    request<void>('DELETE', `/api/admin/subject-images/${encodeURIComponent(subject)}`),
+
   getToken,
 };
 

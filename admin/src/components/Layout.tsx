@@ -12,6 +12,7 @@ import {
   X,
   Globe,
   UtensilsCrossed,
+  Image,
 } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
 
@@ -88,6 +89,7 @@ function SidebarContent({ adminUser, onLogout, onNavClick }: SidebarContentProps
         <NavItem to="/sessions" icon={<MonitorSmartphone size={17} />} label="Sessions" onClick={onNavClick} />
         <NavItem to="/logs" icon={<ScrollText size={17} />} label="Logs" onClick={onNavClick} />
         <NavItem to="/dishes" icon={<UtensilsCrossed size={17} />} label="Speiseplan" onClick={onNavClick} />
+        <NavItem to="/subject-images" icon={<Image size={17} />} label="Fachbilder" onClick={onNavClick} />
         <NavItem to="/tunnel" icon={<Globe size={17} />} label="Tunnel" onClick={onNavClick} />
       </nav>
 
@@ -186,7 +188,7 @@ export function Layout({ children }: LayoutProps) {
         <SidebarContent adminUser={adminUser} onLogout={handleLogout} onNavClick={closeMobileMenu} />
       </aside>
 
-      <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+      <div className="flex-1 flex flex-col overflow-hidden min-w-0 min-h-0">
         <header
           className="flex md:hidden items-center justify-between px-4 flex-shrink-0"
           style={{
@@ -223,7 +225,7 @@ export function Layout({ children }: LayoutProps) {
           </button>
         </header>
 
-        <main className="flex-1 overflow-y-auto scroll-touch scrollbar-thin" style={{ background: '#08080f' }}>
+        <main className="flex-1 overflow-y-auto scroll-touch scrollbar-thin min-h-0" style={{ background: '#08080f' }}>
           <div className="p-4 sm:p-6 md:p-8 max-w-[1400px] mx-auto">{children}</div>
         </main>
       </div>

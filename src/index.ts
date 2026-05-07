@@ -73,8 +73,9 @@ app.use(
 
 // ─── Body parsing ────────────────────────────────────────────────────────────
 
-// Larger body limit for image upload route only
+// Larger body limit for image upload routes
 app.use('/subject-images', express.json({ limit: '4mb' }));
+app.use('/api/admin', express.json({ limit: '4mb' }));
 app.use(express.json({ limit: '10kb' }));
 app.use(express.urlencoded({ extended: false }));
 app.use(cookieParser());
