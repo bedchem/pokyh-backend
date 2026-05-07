@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import {
   UtensilsCrossed, Plus, Pencil, Trash2, Download, X, ChevronDown, ChevronUp, Leaf, Sprout, Star,
+  GripVertical, CalendarPlus,
 } from 'lucide-react';
 import { adminApi } from '../api';
 import type { AdminDishFull, AdminDish, AdminDishRatingEntry } from '../types';
@@ -22,8 +23,46 @@ function weekKey(iso: string) {
   return mon.toISOString().split('T')[0];
 }
 
-function emptyDish(): Omit<AdminDishFull, 'id' | 'createdAt' | 'updatedAt'> {
-  const today = new Date().toISOString().split('T')[0];
+function getDayOfWeek(iso: string): number {
+  const d = new Date(iso + 'T00:00:00');
+  const day = d.getDay();
+  return day === 0 ? 7 : day; // Mon=1 … Sun=7
+}
+
+function dateForWeekAndDow(monIso: string, dow: number): string {
+  const mon = new Date(monIso + 'T00:00:00');
+  mon.setDate(mon.getDate() + dow - 1);
+  return mon.toISOString().split('T')[0];
+}
+
+function nextWeekKey(after: string): string {
+  const d = new Date(after + 'T00:00:00');
+  d.setDate(d.getDate() + 7);
+  return d.toISOString().split('T')[0];
+}
+
+function formatWeekRange(monIso: string): string {
+  const mon = new Date(monIso + 'T00:00:00');
+  const sun = new Date(mon);
+  sun.setDate(mon.getDate() + 6);
+  return `${mon.toLocaleDateString('de-AT', { day: '2-digit', month: '2-digit' })} – ${sun.toLocaleDateString('de-AT', { day: '2-digit', month: '2-digit', year: 'numeric' })}`;
+}
+
+function buildDishPayload(dish: AdminDishFull, date: string) {
+  return {
+    nameDe: dish.nameDe, nameIt: dish.nameIt, nameEn: dish.nameEn,
+    descDe: dish.descDe, descIt: dish.descIt, descEn: dish.descEn,
+    imageUrl: dish.imageUrl, category: dish.category,
+    tags: dish.tags, allergens: dish.allergens,
+    prepTime: dish.prepTime, calories: dish.calories, price: dish.price,
+    protein: dish.protein, fat: dish.fat,
+    isVegetarian: dish.isVegetarian, isVegan: dish.isVegan,
+    sortOrder: dish.sortOrder, date,
+  };
+}
+
+function emptyDish(defaultDate?: string): Omit<AdminDishFull, 'id' | 'createdAt' | 'updatedAt'> {
+  const today = defaultDate ?? new Date().toISOString().split('T')[0];
   return {
     nameDe: '', nameIt: '', nameEn: '',
     descDe: '', descIt: '', descEn: '',
@@ -189,19 +228,20 @@ function RatingRow({
 interface DishFormProps {
   dish: AdminDishFull | null;
   ratingData: AdminDish | null;
+  initialDate?: string;
   onSaved: (d: AdminDishFull) => void;
   onClose: () => void;
   onRatingChanged: () => void;
 }
 
-function DishForm({ dish, ratingData, onSaved, onClose, onRatingChanged }: DishFormProps) {
+function DishForm({ dish, ratingData, initialDate, onSaved, onClose, onRatingChanged }: DishFormProps) {
   const { showToast } = useToast();
   const isEdit = dish !== null;
 
   const [form, setForm] = useState(() =>
     dish
       ? { ...dish, tagsText: dish.tags.join('\n'), allergensText: dish.allergens.join('\n') }
-      : { ...emptyDish(), tagsText: '', allergensText: '' }
+      : { ...emptyDish(initialDate), tagsText: '', allergensText: '' }
   );
   const [saving, setSaving] = useState(false);
   const [tab, setTab] = useState<'basic' | 'nutrition' | 'ratings'>('basic');
@@ -435,7 +475,6 @@ function DishForm({ dish, ratingData, onSaved, onClose, onRatingChanged }: DishF
             <>
               {ratingData && ratingData.count > 0 ? (
                 <>
-                  {/* Summary */}
                   <div className="flex items-center gap-3 px-4 py-3 rounded-xl"
                     style={{ background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.15)' }}>
                     <StarsDisplay value={Math.round(ratingData.avgStars)} size={16} />
@@ -447,7 +486,6 @@ function DishForm({ dish, ratingData, onSaved, onClose, onRatingChanged }: DishF
                     </span>
                   </div>
 
-                  {/* Rating rows */}
                   <div className="flex flex-col gap-1.5">
                     {ratingData.ratings.map((entry) => (
                       <RatingRow
@@ -469,7 +507,7 @@ function DishForm({ dish, ratingData, onSaved, onClose, onRatingChanged }: DishF
           )}
         </div>
 
-        {/* Footer — only show save button on non-ratings tabs */}
+        {/* Footer */}
         {tab !== 'ratings' && (
           <div className="flex items-center justify-end gap-3 px-5 py-4 flex-shrink-0" style={{ borderTop: '1px solid rgba(255,255,255,0.07)' }}>
             <button onClick={onClose} className="px-4 py-2 rounded-xl text-sm transition-colors"
@@ -503,11 +541,14 @@ function DishForm({ dish, ratingData, onSaved, onClose, onRatingChanged }: DishF
 
 // ─── DishCard ────────────────────────────────────────────────────────────────
 
-function DishCard({ dish, ratingData, onEdit, onDelete }: {
+function DishCard({ dish, ratingData, onEdit, onDelete, onDragStart, onDragEnd, isDragging }: {
   dish: AdminDishFull;
   ratingData: AdminDish | undefined;
   onEdit: (d: AdminDishFull) => void;
   onDelete: (id: string) => void;
+  onDragStart: () => void;
+  onDragEnd: () => void;
+  isDragging: boolean;
 }) {
   const [imgError, setImgError] = useState(false);
   const [confirmDel, setConfirmDel] = useState(false);
@@ -528,9 +569,31 @@ function DishCard({ dish, ratingData, onEdit, onDelete }: {
 
   return (
     <div
+      draggable
+      onDragStart={(e) => {
+        e.dataTransfer.setData('text/dish-id', dish.id);
+        e.dataTransfer.effectAllowed = 'move';
+        onDragStart();
+      }}
+      onDragEnd={onDragEnd}
       className="flex items-center gap-3 px-4 py-3 rounded-xl card-hover transition-all"
-      style={{ background: 'rgba(14,15,28,0.7)', border: '1px solid rgba(255,255,255,0.06)' }}
+      style={{
+        background: 'rgba(14,15,28,0.7)',
+        border: '1px solid rgba(255,255,255,0.06)',
+        opacity: isDragging ? 0.35 : 1,
+        cursor: isDragging ? 'grabbing' : 'default',
+        transition: 'opacity 0.15s',
+      }}
     >
+      {/* Drag grip */}
+      <div
+        className="flex-shrink-0"
+        style={{ color: '#2e2e42', cursor: 'grab' }}
+        title="Ziehen zum Verschieben"
+      >
+        <GripVertical size={15} />
+      </div>
+
       {/* Image */}
       <div className="w-12 h-12 rounded-lg flex-shrink-0 overflow-hidden flex items-center justify-center"
         style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.07)' }}>
@@ -558,7 +621,6 @@ function DishCard({ dish, ratingData, onEdit, onDelete }: {
           {dish.calories > 0 && (
             <span className="text-xs" style={{ color: '#4a4a5e' }}>{dish.calories} kcal</span>
           )}
-          {/* Stars */}
           {ratingData && ratingData.count > 0 ? (
             <div className="flex items-center gap-1">
               <StarsDisplay value={Math.round(ratingData.avgStars)} size={11} />
@@ -679,6 +741,17 @@ export function DishesPage() {
   const [showImport, setShowImport] = useState(false);
   const [collapsedWeeks, setCollapsedWeeks] = useState<Set<string>>(new Set());
 
+  // drag state
+  const [draggingDishId, setDraggingDishId] = useState<string | null>(null);
+  const [draggingWeekKey, setDraggingWeekKey] = useState<string | null>(null);
+  const [dragOverWeekKey, setDragOverWeekKey] = useState<string | null>(null);
+
+  // empty weeks (manually added via "Neue Woche" button)
+  const [emptyWeeks, setEmptyWeeks] = useState<Set<string>>(new Set());
+
+  // pre-fill date when opening "new dish" from a week's + button
+  const [newDishInitialDate, setNewDishInitialDate] = useState<string | undefined>();
+
   const load = useCallback(async () => {
     setLoading(true);
     try {
@@ -699,14 +772,102 @@ export function DishesPage() {
 
   useEffect(() => { load(); }, [load]);
 
+  // ── drag handlers ──────────────────────────────────────────────────────────
+
+  async function handleDishDropOnWeek(dishId: string, targetWk: string) {
+    const dish = dishes.find((d) => d.id === dishId);
+    if (!dish) return;
+    if (weekKey(dish.date) === targetWk) return;
+
+    const dow = getDayOfWeek(dish.date);
+    const newDate = dateForWeekAndDow(targetWk, dow);
+
+    try {
+      const updated = await adminApi.updateDish(dish.id, buildDishPayload(dish, newDate));
+      setDishes((prev) => prev.map((d) => (d.id === dish.id ? updated : d)));
+      // if the target was an empty week, it now has a dish — no need to keep it in emptyWeeks
+      setEmptyWeeks((prev) => { const s = new Set(prev); s.delete(targetWk); return s; });
+      showToast('Gericht verschoben', 'success');
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Fehler beim Verschieben', 'error');
+    }
+  }
+
+  async function handleWeekSwap(fromWk: string, toWk: string) {
+    const fromDishes = dishes.filter((d) => weekKey(d.date) === fromWk);
+    const toDishes   = dishes.filter((d) => weekKey(d.date) === toWk);
+    if (fromDishes.length === 0 && toDishes.length === 0) return;
+
+    // map dish id → new date
+    const updates = new Map<string, string>();
+    for (const d of fromDishes) updates.set(d.id, dateForWeekAndDow(toWk,   getDayOfWeek(d.date)));
+    for (const d of toDishes)   updates.set(d.id, dateForWeekAndDow(fromWk, getDayOfWeek(d.date)));
+
+    try {
+      await Promise.all(
+        [...updates.entries()].map(([id, date]) => {
+          const dish = dishes.find((d) => d.id === id)!;
+          return adminApi.updateDish(id, buildDishPayload(dish, date));
+        })
+      );
+      setDishes((prev) =>
+        prev.map((d) => {
+          const newDate = updates.get(d.id);
+          return newDate ? { ...d, date: newDate } : d;
+        })
+      );
+
+      // swap empty-week markers if applicable
+      const fromEmpty = fromDishes.length === 0 && emptyWeeks.has(fromWk);
+      const toEmpty   = toDishes.length === 0   && emptyWeeks.has(toWk);
+      if (fromEmpty || toEmpty) {
+        setEmptyWeeks((prev) => {
+          const s = new Set(prev);
+          if (fromEmpty) { s.delete(fromWk); s.add(toWk); }
+          if (toEmpty)   { s.delete(toWk);   s.add(fromWk); }
+          return s;
+        });
+      }
+
+      showToast('Wochen getauscht', 'success');
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Fehler beim Verschieben', 'error');
+      load();
+    }
+  }
+
+  function addNewWeek() {
+    const allKeys = [
+      ...new Set([...dishes.map((d) => weekKey(d.date)), ...emptyWeeks]),
+    ].sort();
+
+    let newKey: string;
+    if (allKeys.length > 0) {
+      newKey = nextWeekKey(allKeys[allKeys.length - 1]);
+    } else {
+      const today = new Date();
+      const day = today.getDay() || 7;
+      const mon = new Date(today);
+      mon.setDate(today.getDate() - day + 1);
+      newKey = mon.toISOString().split('T')[0];
+    }
+
+    setEmptyWeeks((prev) => new Set([...prev, newKey]));
+  }
+
+  // ── CRUD callbacks ─────────────────────────────────────────────────────────
+
   function handleSaved(_d: AdminDishFull) {
     setEditDish(null);
+    setNewDishInitialDate(undefined);
     load();
   }
 
   function handleDeleted(id: string) {
     setDishes((prev) => prev.filter((d) => d.id !== id));
   }
+
+  // ── derived data ───────────────────────────────────────────────────────────
 
   const filtered = search.trim()
     ? dishes.filter((d) =>
@@ -718,14 +879,20 @@ export function DishesPage() {
       )
     : dishes;
 
-  const weeks = new Map<string, AdminDishFull[]>();
+  const weeksMap = new Map<string, AdminDishFull[]>();
   for (const d of filtered) {
     const k = weekKey(d.date);
-    const arr = weeks.get(k) ?? [];
+    const arr = weeksMap.get(k) ?? [];
     arr.push(d);
-    weeks.set(k, arr);
+    weeksMap.set(k, arr);
   }
-  const sortedWeeks = [...weeks.entries()].sort(([a], [b]) => a.localeCompare(b));
+  // include manually added empty weeks (only when not searching)
+  if (!search.trim()) {
+    for (const k of emptyWeeks) {
+      if (!weeksMap.has(k)) weeksMap.set(k, []);
+    }
+  }
+  const sortedWeeks = [...weeksMap.entries()].sort(([a], [b]) => a.localeCompare(b));
 
   function toggleWeek(k: string) {
     setCollapsedWeeks((prev) => {
@@ -739,6 +906,8 @@ export function DishesPage() {
     ? (ratingsMap.get((editDish as AdminDishFull).id) ?? null)
     : null;
 
+  // ── render ─────────────────────────────────────────────────────────────────
+
   return (
     <div className="animate-page">
       {/* Header */}
@@ -749,7 +918,7 @@ export function DishesPage() {
             {dishes.length} {dishes.length === 1 ? 'Gericht' : 'Gerichte'} &middot; zentral gespeichert
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <button
             onClick={() => setShowImport(true)}
             className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-all"
@@ -760,7 +929,16 @@ export function DishesPage() {
             Importieren
           </button>
           <button
-            onClick={() => setEditDish('new')}
+            onClick={addNewWeek}
+            className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-all"
+            style={{ background: 'rgba(99,102,241,0.1)', color: '#818cf8', border: '1px solid rgba(99,102,241,0.2)' }}
+            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(99,102,241,0.18)'; }}
+            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(99,102,241,0.1)'; }}>
+            <CalendarPlus size={15} />
+            Neue Woche
+          </button>
+          <button
+            onClick={() => { setNewDishInitialDate(undefined); setEditDish('new'); }}
             className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold transition-all"
             style={{
               background: 'linear-gradient(135deg,#6366f1,#818cf8)',
@@ -808,40 +986,155 @@ export function DishesPage() {
       ) : (
         <div className="flex flex-col gap-4">
           {sortedWeeks.map(([wk, wDishes], wi) => {
-            const collapsed = collapsedWeeks.has(wk);
-            return (
-              <div key={wk} className="animate-fadeInUp" style={{ animationDelay: `${wi * 40}ms` }}>
-                <button
-                  className="w-full flex items-center justify-between px-4 py-2.5 rounded-xl mb-2 transition-colors"
-                  style={{ background: 'rgba(99,102,241,0.07)', border: '1px solid rgba(99,102,241,0.1)' }}
-                  onClick={() => toggleWeek(wk)}
-                  onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(99,102,241,0.12)'; }}
-                  onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(99,102,241,0.07)'; }}
-                >
-                  <span className="text-xs font-bold uppercase tracking-widest" style={{ color: '#6366f1' }}>
-                    Woche {wi + 1} &middot; {wDishes.length} {wDishes.length === 1 ? 'Gericht' : 'Gerichte'}
-                  </span>
-                  {collapsed ? <ChevronDown size={15} style={{ color: '#6366f1' }} /> : <ChevronUp size={15} style={{ color: '#6366f1' }} />}
-                </button>
+            const collapsed    = collapsedWeeks.has(wk);
+            const isDragTarget = dragOverWeekKey === wk;
+            const isDraggingSelf = draggingWeekKey === wk;
 
+            return (
+              <div
+                key={wk}
+                className="animate-fadeInUp"
+                style={{
+                  animationDelay: `${wi * 40}ms`,
+                  opacity: isDraggingSelf ? 0.45 : 1,
+                  borderRadius: '1rem',
+                  outline: isDragTarget ? '2px solid rgba(99,102,241,0.5)' : '2px solid transparent',
+                  outlineOffset: '3px',
+                  transition: 'opacity 0.15s, outline 0.15s',
+                }}
+                onDragOver={(e) => {
+                  if (draggingDishId || (draggingWeekKey && draggingWeekKey !== wk)) {
+                    e.preventDefault();
+                    setDragOverWeekKey(wk);
+                  }
+                }}
+                onDragLeave={(e) => {
+                  if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+                    setDragOverWeekKey(null);
+                  }
+                }}
+                onDrop={async (e) => {
+                  e.preventDefault();
+                  setDragOverWeekKey(null);
+                  const dishId  = e.dataTransfer.getData('text/dish-id');
+                  const dragWk  = e.dataTransfer.getData('text/week-key');
+                  if (dishId) {
+                    await handleDishDropOnWeek(dishId, wk);
+                  } else if (dragWk && dragWk !== wk) {
+                    await handleWeekSwap(dragWk, wk);
+                  }
+                }}
+              >
+                {/* Week header */}
+                <div
+                  className="flex items-center gap-2 px-4 py-2.5 rounded-xl mb-2 transition-colors"
+                  style={{
+                    background: isDragTarget ? 'rgba(99,102,241,0.15)' : 'rgba(99,102,241,0.07)',
+                    border: isDragTarget ? '1px solid rgba(99,102,241,0.4)' : '1px solid rgba(99,102,241,0.1)',
+                  }}
+                >
+                  {/* Week drag grip */}
+                  <div
+                    draggable
+                    onDragStart={(e) => {
+                      e.dataTransfer.setData('text/week-key', wk);
+                      e.dataTransfer.effectAllowed = 'move';
+                      setDraggingWeekKey(wk);
+                    }}
+                    onDragEnd={() => setDraggingWeekKey(null)}
+                    className="flex-shrink-0 p-0.5 rounded transition-colors"
+                    style={{ color: '#3a3a52', cursor: 'grab' }}
+                    title="Ganze Woche verschieben"
+                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#6366f1'; }}
+                    onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = '#3a3a52'; }}
+                  >
+                    <GripVertical size={15} />
+                  </div>
+
+                  {/* Clickable label → collapse */}
+                  <button
+                    className="flex-1 text-left min-w-0"
+                    onClick={() => toggleWeek(wk)}
+                  >
+                    <span className="text-xs font-bold uppercase tracking-widest" style={{ color: '#6366f1' }}>
+                      Woche {wi + 1}&nbsp;&middot;&nbsp;{formatWeekRange(wk)}&nbsp;&middot;&nbsp;{wDishes.length} {wDishes.length === 1 ? 'Gericht' : 'Gerichte'}
+                    </span>
+                  </button>
+
+                  {/* Add dish to this week */}
+                  <button
+                    onClick={() => { setNewDishInitialDate(wk); setEditDish('new'); }}
+                    className="flex-shrink-0 p-1.5 rounded-lg transition-colors"
+                    style={{ color: '#4a4a5e' }}
+                    title="Gericht zu dieser Woche hinzufügen"
+                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#818cf8'; }}
+                    onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = '#4a4a5e'; }}
+                  >
+                    <Plus size={14} />
+                  </button>
+
+                  {/* Collapse toggle */}
+                  <button
+                    onClick={() => toggleWeek(wk)}
+                    className="flex-shrink-0"
+                    style={{ color: '#6366f1' }}
+                  >
+                    {collapsed ? <ChevronDown size={15} /> : <ChevronUp size={15} />}
+                  </button>
+
+                  {/* Remove empty week */}
+                  {wDishes.length === 0 && emptyWeeks.has(wk) && (
+                    <button
+                      onClick={() => setEmptyWeeks((prev) => { const s = new Set(prev); s.delete(wk); return s; })}
+                      className="flex-shrink-0 p-1.5 rounded-lg transition-colors"
+                      style={{ color: '#4a4a5e' }}
+                      title="Leere Woche entfernen"
+                      onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#f87171'; }}
+                      onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = '#4a4a5e'; }}
+                    >
+                      <X size={14} />
+                    </button>
+                  )}
+                </div>
+
+                {/* Week body */}
                 {!collapsed && (
                   <div className="flex flex-col gap-2">
-                    {wDishes.map((dish) => (
-                      <div key={dish.id}>
-                        <div className="flex items-center gap-2 mb-1 mt-2 first:mt-0">
-                          <span className="text-xs font-medium" style={{ color: '#4a4a5e' }}>
-                            {formatDate(dish.date)}
-                          </span>
-                          <div style={{ flex: 1, height: '1px', background: 'rgba(255,255,255,0.04)' }} />
-                        </div>
-                        <DishCard
-                          dish={dish}
-                          ratingData={ratingsMap.get(dish.id)}
-                          onEdit={setEditDish}
-                          onDelete={handleDeleted}
-                        />
+                    {wDishes.length === 0 ? (
+                      <div
+                        className="py-10 rounded-xl flex flex-col items-center gap-2"
+                        style={{
+                          border: `2px dashed ${isDragTarget ? 'rgba(99,102,241,0.55)' : 'rgba(99,102,241,0.15)'}`,
+                          background: isDragTarget ? 'rgba(99,102,241,0.06)' : 'transparent',
+                          transition: 'all 0.15s',
+                        }}
+                      >
+                        <UtensilsCrossed size={22} style={{ color: isDragTarget ? '#6366f1' : '#2a2a3e' }} />
+                        <p className="text-sm select-none" style={{ color: isDragTarget ? '#818cf8' : '#3a3a4e' }}>
+                          {isDragTarget ? 'Hier loslassen' : 'Gerichte hier reinziehen'}
+                        </p>
                       </div>
-                    ))}
+                    ) : (
+                      wDishes.map((dish) => (
+                        <div key={dish.id}>
+                          <div className="flex items-center gap-2 mb-1 mt-2 first:mt-0">
+                            <span className="text-xs font-medium" style={{ color: '#4a4a5e' }}>
+                              {formatDate(dish.date)}
+                            </span>
+                            <div style={{ flex: 1, height: '1px', background: 'rgba(255,255,255,0.04)' }} />
+                          </div>
+                          <DishCard
+                            dish={dish}
+                            ratingData={ratingsMap.get(dish.id)}
+                            onEdit={setEditDish}
+                            onDelete={handleDeleted}
+                            onDragStart={() => setDraggingDishId(dish.id)}
+                            onDragEnd={() => setDraggingDishId(null)}
+                            isDragging={draggingDishId === dish.id}
+                          />
+                        </div>
+                      ))
+                    )}
                   </div>
                 )}
               </div>
@@ -853,10 +1146,11 @@ export function DishesPage() {
       {editDish !== null && (
         <DishForm
           key={editDish === 'new' ? '__new__' : (editDish as AdminDishFull).id}
-          dish={editDish === 'new' ? null : editDish}
+          dish={editDish === 'new' ? null : editDish as AdminDishFull}
           ratingData={editRatingData}
+          initialDate={editDish === 'new' ? newDishInitialDate : undefined}
           onSaved={handleSaved}
-          onClose={() => setEditDish(null)}
+          onClose={() => { setEditDish(null); setNewDishInitialDate(undefined); }}
           onRatingChanged={load}
         />
       )}
