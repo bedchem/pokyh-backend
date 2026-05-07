@@ -118,7 +118,6 @@
   /* Mobile smooth scroll */
   .scroll-touch {
     -webkit-overflow-scrolling: touch;
-    overscroll-behavior: contain;
   }
 
   /* Card hover glow */
