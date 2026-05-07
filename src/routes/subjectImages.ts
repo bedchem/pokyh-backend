@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { z } from 'zod';
+import sharp from 'sharp';
 import { prisma } from '../db';
 import { requireAuth } from '../middleware/auth';
 import { readLimiter, writeLimiter } from '../middleware/rateLimiter';
@@ -35,6 +36,12 @@ router.post('/report', writeLimiter, requireAuth, async (req: Request, res: Resp
     });
   }
   res.json({ ok: true, count: rows.length });
+});
+
+// GET /subject-images — list all subjects that have an image (for frontend cache)
+router.get('/', readLimiter, async (_req: Request, res: Response): Promise<void> => {
+  const images = await prisma.subjectImage.findMany({ select: { subject: true } });
+  res.json(images.map(i => ({ subject: i.subject })));
 });
 
 // GET /subject-images/:subject — serve binary image (API key only, for <img src>)

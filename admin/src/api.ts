@@ -208,8 +208,8 @@ export const adminApi = {
   listSubjectImages: (): Promise<import('./types').AdminSubjectImage[]> =>
     request<import('./types').AdminSubjectImage[]>('GET', '/api/admin/subject-images'),
 
-  uploadSubjectImage: (subject: string, data: string, mimeType: string): Promise<{ ok: boolean }> =>
-    request<{ ok: boolean }>('PUT', `/api/admin/subject-images/${encodeURIComponent(subject)}`, { data, mimeType }),
+  uploadSubjectImage: (subject: string, data: string, mimeType: string, crop?: { left: number; top: number; width: number; height: number }): Promise<{ ok: boolean }> =>
+    request<{ ok: boolean }>('PUT', `/api/admin/subject-images/${encodeURIComponent(subject)}`, { data, mimeType, ...(crop ? { crop } : {}) }),
 
   deleteSubjectImage: (subject: string): Promise<void> =>
     request<void>('DELETE', `/api/admin/subject-images/${encodeURIComponent(subject)}`),

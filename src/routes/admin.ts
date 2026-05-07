@@ -6,6 +6,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { rateLimit } from 'express-rate-limit';
 import https from 'https';
 import http from 'http';
+import sharp from 'sharp';
 import { config } from '../config';
 import { prisma } from '../db';
 import { requireAdmin } from '../middleware/requireAdmin';
@@ -1138,10 +1139,18 @@ router.get('/subject-images', requireAdmin, async (_req: Request, res: Response)
   res.json(result);
 });
 
-// PUT /api/admin/subject-images/:subject — upload or replace image
+// PUT /api/admin/subject-images/:subject — upload or replace image (with optional server-side crop)
+const cropSchema = z.object({
+  left:   z.number().int().min(0),
+  top:    z.number().int().min(0),
+  width:  z.number().int().min(1),
+  height: z.number().int().min(1),
+}).optional();
+
 const subjectImageUploadSchema = z.object({
   data:     z.string().min(1),
   mimeType: z.string(),
+  crop:     cropSchema,
 });
 
 router.put('/subject-images/:subject', requireAdmin, async (req: Request, res: Response): Promise<void> => {
@@ -1152,15 +1161,27 @@ router.put('/subject-images/:subject', requireAdmin, async (req: Request, res: R
   if (!ALLOWED_MIME.has(body.mimeType)) {
     res.status(422).json({ error: 'Unsupported image type' }); return;
   }
-  const buf = Buffer.from(body.data, 'base64');
+  let buf = Buffer.from(body.data, 'base64');
   if (buf.length > MAX_IMG_BYTES) {
     res.status(413).json({ error: 'Image too large (max 3 MB)' }); return;
   }
 
+  let mimeType = body.mimeType;
+  if (body.crop) {
+    buf = Buffer.from(await sharp(buf)
+      .extract({ left: body.crop.left, top: body.crop.top, width: body.crop.width, height: body.crop.height })
+      .webp({ quality: 85 })
+      .toBuffer());
+    mimeType = 'image/webp';
+  } else {
+    buf = Buffer.from(await sharp(buf).webp({ quality: 85 }).toBuffer());
+    mimeType = 'image/webp';
+  }
+
   await prisma.subjectImage.upsert({
     where:  { subject },
-    create: { subject, data: buf, mimeType: body.mimeType },
-    update: { data: buf, mimeType: body.mimeType },
+    create: { subject, data: buf, mimeType },
+    update: { data: buf, mimeType },
   });
   res.json({ ok: true, subject });
 });
