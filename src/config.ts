@@ -21,8 +21,8 @@ export const config = {
   webuntisSchool: process.env.WEBUNTIS_SCHOOL ?? 'lbs-brixen',
   isDev: (process.env.NODE_ENV ?? 'development') === 'development',
   isProd: process.env.NODE_ENV === 'production',
-  jwtExpiresIn: '7d',
-  refreshTokenExpiresInDays: 7,
+  jwtExpiresIn: '1h',
+  refreshTokenExpiresInHours: 1,
   adminUsername: process.env.ADMIN_USERNAME ?? 'admin',
   adminUsernames: (process.env.ADMIN_USERNAMES ?? process.env.ADMIN_USERNAME ?? 'admin')
     .split(',').map((u) => u.trim()).filter(Boolean),

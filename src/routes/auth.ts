@@ -35,7 +35,7 @@ async function generateRefreshToken(stableUid: string): Promise<string> {
   const raw = randomBytes(40).toString('hex');
   const hash = hashToken(raw);
   const expiresAt = new Date();
-  expiresAt.setDate(expiresAt.getDate() + config.refreshTokenExpiresInDays);
+  expiresAt.setTime(expiresAt.getTime() + config.refreshTokenExpiresInHours * 60 * 60 * 1000);
 
   // Delete all existing tokens for this user — keep DB clean, one session per user
   await prisma.refreshToken.deleteMany({

@@ -3,7 +3,7 @@
 // Auth middleware rejects any JWT whose `iat` is older than this timestamp.
 // Entries self-expire after JWT_MAX_LIFE so the map never grows unbounded.
 
-const JWT_MAX_LIFE_MS = 8 * 60 * 60 * 1000; // 8 h — matches jwtExpiresIn
+const JWT_MAX_LIFE_MS = 1 * 60 * 60 * 1000; // 1 h — matches jwtExpiresIn
 
 interface Entry {
   revokedAtSec: number; // seconds (matches JWT iat/exp)
