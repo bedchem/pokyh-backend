@@ -140,7 +140,7 @@ router.get('/stats', requireAdmin, async (_req: Request, res: Response): Promise
   ]);
 
   // Last 14 days user registrations grouped by day
-  type DayRow = { date: string; count: bigint };
+  type DayRow = { date: string | Date; count: bigint };
   const rawRows = await prisma.$queryRaw<DayRow[]>`
     SELECT DATE(created_at) as date, COUNT(*) as count
     FROM users
