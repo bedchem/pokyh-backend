@@ -191,3 +191,23 @@ export interface AdminSubjectImage {
   mimeType: string | null;
   updatedAt: string | null;
 }
+
+export interface AdminComment {
+  id: string;
+  type: 'reminder' | 'dish';
+  stableUid: string;
+  username: string;
+  body: string;
+  createdAt: string;
+  updatedAt: string;
+  contextId: string;
+  contextTitle: string;
+  classId: string | null;
+}
+
+export interface AdminCommentsResponse {
+  comments: AdminComment[];
+  total: number;
+  page: number;
+  limit: number;
+}

@@ -1139,6 +1139,91 @@ router.delete('/dish-ratings/:dishId/:stableUid', requireAdmin, async (req: Requ
   res.status(204).send();
 });
 
+// ─── GET /api/admin/comments ─────────────────────────────────────────────────
+// Returns all reminder comments + dish comments, newest first, paginated
+
+router.get('/comments', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const page = Math.max(1, parseInt(String(req.query['page'] ?? '1'), 10));
+  const limit = Math.min(100, Math.max(1, parseInt(String(req.query['limit'] ?? '50'), 10)));
+  const skip = (page - 1) * limit;
+  const type = String(req.query['type'] ?? 'all'); // 'all' | 'reminder' | 'dish'
+  const search = String(req.query['search'] ?? '').trim().toLowerCase();
+
+  const where: Record<string, unknown> = search
+    ? { OR: [{ body: { contains: search } }, { username: { contains: search } }] }
+    : {};
+
+  const [reminderComments, dishComments, totalReminder, totalDish] = await Promise.all([
+    type === 'dish' ? Promise.resolve([]) : prisma.comment.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      skip: type === 'all' ? 0 : skip,
+      take: type === 'all' ? undefined : limit,
+      include: { reminder: { select: { id: true, title: true, classId: true } } },
+    }),
+    type === 'reminder' ? Promise.resolve([]) : prisma.dishComment.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      skip: type === 'all' ? 0 : skip,
+      take: type === 'all' ? undefined : limit,
+    }),
+    type === 'dish' ? Promise.resolve(0) : prisma.comment.count({ where }),
+    type === 'reminder' ? Promise.resolve(0) : prisma.dishComment.count({ where }),
+  ]);
+
+  const allComments = [
+    ...reminderComments.map((c) => ({
+      id: c.id,
+      type: 'reminder' as const,
+      stableUid: c.stableUid,
+      username: c.username,
+      body: c.body,
+      createdAt: c.createdAt.toISOString(),
+      updatedAt: c.updatedAt.toISOString(),
+      contextId: c.reminderId,
+      contextTitle: c.reminder?.title ?? c.reminderId,
+      classId: c.classId,
+    })),
+    ...dishComments.map((c) => ({
+      id: c.id,
+      type: 'dish' as const,
+      stableUid: c.stableUid,
+      username: c.username,
+      body: c.body,
+      createdAt: c.createdAt.toISOString(),
+      updatedAt: c.updatedAt.toISOString(),
+      contextId: c.dishId,
+      contextTitle: c.dishId,
+      classId: null,
+    })),
+  ].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+
+  const paginated = type === 'all' ? allComments.slice(skip, skip + limit) : allComments;
+
+  res.json({
+    comments: paginated,
+    total: totalReminder + totalDish,
+    page,
+    limit,
+  });
+});
+
+// ─── DELETE /api/admin/comments/reminder/:id ─────────────────────────────────
+
+router.delete('/comments/reminder/:id', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const id = String(req.params['id']);
+  await prisma.comment.delete({ where: { id } }).catch(() => null);
+  res.status(204).send();
+});
+
+// ─── DELETE /api/admin/comments/dish/:id ─────────────────────────────────────
+
+router.delete('/comments/dish/:id', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const id = String(req.params['id']);
+  await prisma.dishComment.delete({ where: { id } }).catch(() => null);
+  res.status(204).send();
+});
+
 // ─── Subject Images (admin) ───────────────────────────────────────────────────
 
 const ALLOWED_MIME = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);

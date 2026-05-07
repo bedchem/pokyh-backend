@@ -1,4 +1,4 @@
-import type { AdminStats, AdminClass, AdminSession, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish, AdminDishFull, AdminDishImportResult } from './types';
+import type { AdminStats, AdminClass, AdminSession, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish, AdminDishFull, AdminDishImportResult, AdminCommentsResponse } from './types';
 
 const TOKEN_KEY = 'pokyh_admin_token';
 
@@ -219,6 +219,21 @@ export const adminApi = {
 
   deleteSubjectImage: (subject: string): Promise<void> =>
     request<void>('DELETE', `/api/admin/subject-images/${encodeURIComponent(subject)}`),
+
+  comments: (params?: { page?: number; limit?: number; type?: 'all' | 'reminder' | 'dish'; search?: string }): Promise<AdminCommentsResponse> => {
+    const p = new URLSearchParams();
+    if (params?.page) p.set('page', String(params.page));
+    if (params?.limit) p.set('limit', String(params.limit));
+    if (params?.type) p.set('type', params.type);
+    if (params?.search) p.set('search', params.search);
+    return request<AdminCommentsResponse>('GET', `/api/admin/comments?${p.toString()}`);
+  },
+
+  deleteReminderComment: (id: string): Promise<void> =>
+    request<void>('DELETE', `/api/admin/comments/reminder/${id}`),
+
+  deleteDishComment: (id: string): Promise<void> =>
+    request<void>('DELETE', `/api/admin/comments/dish/${id}`),
 
   getToken,
 };
