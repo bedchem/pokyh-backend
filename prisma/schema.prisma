@@ -146,6 +146,16 @@ model RefreshToken {
   @@map("refresh_tokens")
 }
 
+model SubjectImage {
+  subject   String   @id @db.VarChar(200)
+  data      Bytes    @db.LongBlob
+  mimeType  String   @map("mime_type") @db.VarChar(100)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("subject_images")
+}
+
 model ApiKey {
   id         String    @id @default(uuid())
   keyHash    String    @unique @map("key_hash")

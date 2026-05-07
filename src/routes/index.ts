@@ -9,6 +9,7 @@ import { dishRatingsRouter } from './dishRatings';
 import { dishesRouter } from './dishes';
 import { sseRouter } from './sse';
 import { adminRouter } from './admin';
+import { subjectImagesRouter } from './subjectImages';
 
 const router = Router();
 
@@ -34,5 +35,7 @@ router.use('/classes/:classId/reminders', remindersRouter);
 router.use('/dish-ratings', dishRatingsRouter);
 // SSE
 router.use('/sse', sseRouter);
+// Subject images (GET /:subject is API-key only; list/PUT/DELETE need auth — handled in router)
+router.use('/subject-images', subjectImagesRouter);
 
 export { router as appRouter };
