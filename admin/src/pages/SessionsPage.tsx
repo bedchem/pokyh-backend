@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
-import { Activity, RefreshCw, XCircle, Loader2 } from 'lucide-react';
+import { Activity, RefreshCw, XCircle, Loader2, Trash2 } from 'lucide-react';
 import { adminApi } from '../api';
 import { useToast } from '../components/Toast';
 import { useAutoRefresh } from '../hooks/useAutoRefresh';
@@ -45,6 +45,7 @@ export function SessionsPage() {
   const [loading, setLoading] = useState(true);
   const [revoking, setRevoking] = useState<string | null>(null);
   const [clearingAll, setClearingAll] = useState(false);
+  const [deletingInactive, setDeletingInactive] = useState(false);
   // IDs currently fading out (just revoked)
   const [fadingOut, setFadingOut] = useState<Set<string>>(new Set());
 
@@ -70,6 +71,19 @@ export function SessionsPage() {
   useEffect(() => { void fetchSessions(); }, [fetchSessions]);
 
   const { refresh, refreshing } = useAutoRefresh(fetchSessions, 10000);
+
+  async function handleDeleteInactive() {
+    setDeletingInactive(true);
+    try {
+      await adminApi.deleteInactiveSessions();
+      showToast('Old sessions deleted', 'success');
+      await fetchSessions();
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Failed to delete sessions', 'error');
+    } finally {
+      setDeletingInactive(false);
+    }
+  }
 
   async function handleClearAll() {
     setClearingAll(true);
@@ -127,6 +141,22 @@ export function SessionsPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            onClick={() => void handleDeleteInactive()}
+            disabled={deletingInactive}
+            className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-all"
+            style={{
+              background: '#111116',
+              color: deletingInactive ? '#818cf8' : '#64748b',
+              border: '1px solid rgba(255,255,255,0.08)',
+            }}
+            onMouseEnter={(e) => { if (!deletingInactive) (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.05)'; }}
+            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = '#111116'; }}
+            title="Delete all revoked/expired sessions"
+          >
+            {deletingInactive ? <Loader2 size={15} className="animate-spin" /> : <Trash2 size={15} />}
+            {deletingInactive ? 'Deleting…' : 'Delete old'}
+          </button>
           <button
             onClick={() => void handleClearAll()}
             disabled={clearingAll || activeSessions === 0}

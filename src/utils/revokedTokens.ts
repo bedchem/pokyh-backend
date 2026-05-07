@@ -26,5 +26,5 @@ export function isTokenRevoked(stableUid: string, issuedAtSec: number): boolean 
     map.delete(stableUid);
     return false;
   }
-  return issuedAtSec <= entry.revokedAtSec;
+  return issuedAtSec < entry.revokedAtSec;
 }

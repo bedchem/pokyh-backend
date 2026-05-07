@@ -504,26 +504,37 @@ router.get('/sessions', requireAdmin, async (_req: Request, res: Response): Prom
   res.json(result);
 });
 
-// ─── DELETE /api/admin/sessions ───────────────────────────────────────────────
-
+// ─── DELETE /api/admin/sessions ── revoke all active + delete all expired/revoked
 router.delete('/sessions', requireAdmin, async (_req: Request, res: Response): Promise<void> => {
-  const tokens = await prisma.refreshToken.findMany({
+  const active = await prisma.refreshToken.findMany({
     where: { revokedAt: null },
     select: { stableUid: true },
   });
 
-  await prisma.refreshToken.updateMany({
-    where: { revokedAt: null },
-    data: { revokedAt: new Date() },
-  });
+  // Delete everything (active and already-revoked/expired)
+  await prisma.refreshToken.deleteMany({});
 
   const seen = new Set<string>();
-  for (const t of tokens) {
+  for (const t of active) {
     if (!seen.has(t.stableUid)) {
       seen.add(t.stableUid);
       revokeUserTokens(t.stableUid);
     }
   }
+
+  res.status(204).send();
+});
+
+// ─── DELETE /api/admin/sessions/inactive ── delete only revoked/expired sessions
+router.delete('/sessions/inactive', requireAdmin, async (_req: Request, res: Response): Promise<void> => {
+  await prisma.refreshToken.deleteMany({
+    where: {
+      OR: [
+        { revokedAt: { not: null } },
+        { expiresAt: { lt: new Date() } },
+      ],
+    },
+  });
 
   res.status(204).send();
 });
