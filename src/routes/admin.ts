@@ -150,7 +150,9 @@ router.get('/stats', requireAdmin, async (_req: Request, res: Response): Promise
   `;
 
   const usersByDay = rawRows.map((row) => ({
-    date: String(row.date),
+    date: row.date instanceof Date
+      ? row.date.toISOString().slice(0, 10)
+      : String(row.date).slice(0, 10),
     count: Number(row.count),
   }));
 
@@ -500,6 +502,30 @@ router.get('/sessions', requireAdmin, async (_req: Request, res: Response): Prom
   }));
 
   res.json(result);
+});
+
+// ─── DELETE /api/admin/sessions ───────────────────────────────────────────────
+
+router.delete('/sessions', requireAdmin, async (_req: Request, res: Response): Promise<void> => {
+  const tokens = await prisma.refreshToken.findMany({
+    where: { revokedAt: null },
+    select: { stableUid: true },
+  });
+
+  await prisma.refreshToken.updateMany({
+    where: { revokedAt: null },
+    data: { revokedAt: new Date() },
+  });
+
+  const seen = new Set<string>();
+  for (const t of tokens) {
+    if (!seen.has(t.stableUid)) {
+      seen.add(t.stableUid);
+      revokeUserTokens(t.stableUid);
+    }
+  }
+
+  res.status(204).send();
 });
 
 // ─── DELETE /api/admin/sessions/:id ──────────────────────────────────────────
@@ -1116,8 +1142,11 @@ router.get('/subject-images/:subject/preview', requireAdmin, async (req: Request
   const subject = normalizeSubjectKey(req.params['subject'] as string);
   const row = await prisma.subjectImage.findUnique({ where: { subject } });
   if (!row) { res.status(404).end(); return; }
+  const etag = `"${row.updatedAt.getTime()}"`;
+  if (req.headers['if-none-match'] === etag) { res.status(304).end(); return; }
+  res.setHeader('ETag', etag);
   res.setHeader('Content-Type', row.mimeType);
-  res.setHeader('Cache-Control', 'public, max-age=3600');
+  res.setHeader('Cache-Control', 'private, max-age=3600');
   res.end(row.data);
 });
 

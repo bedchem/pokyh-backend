@@ -22,7 +22,7 @@ export const config = {
   isDev: (process.env.NODE_ENV ?? 'development') === 'development',
   isProd: process.env.NODE_ENV === 'production',
   jwtExpiresIn: '7d',
-  refreshTokenExpiresInDays: 30,
+  refreshTokenExpiresInDays: 7,
   adminUsername: process.env.ADMIN_USERNAME ?? 'admin',
   adminUsernames: (process.env.ADMIN_USERNAMES ?? process.env.ADMIN_USERNAME ?? 'admin')
     .split(',').map((u) => u.trim()).filter(Boolean),

@@ -242,7 +242,7 @@ function SubjectCard({
   const { showToast } = useToast();
 
   const imgUrl = row.hasImage
-    ? `/api/admin/subject-images/${encodeURIComponent(row.key)}/preview?token=${encodeURIComponent(adminApi.getToken() ?? '')}`
+    ? `/api/admin/subject-images/${encodeURIComponent(row.key)}/preview?token=${encodeURIComponent(adminApi.getToken() ?? '')}&t=${encodeURIComponent(row.updatedAt ?? '0')}`
     : null;
 
   const handleFile = useCallback((file: File) => {
@@ -355,7 +355,7 @@ export function SubjectImagesPage() {
   useEffect(() => { load(); }, [load]);
 
   const handleUploaded = useCallback((key: string) => {
-    setRows(prev => prev.map(r => r.key === key ? { ...r, hasImage: true } : r));
+    setRows(prev => prev.map(r => r.key === key ? { ...r, hasImage: true, updatedAt: new Date().toISOString() } : r));
   }, []);
 
   const handleDeleted = useCallback((key: string) => {

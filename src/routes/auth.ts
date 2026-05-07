@@ -37,6 +37,12 @@ async function generateRefreshToken(stableUid: string): Promise<string> {
   const expiresAt = new Date();
   expiresAt.setDate(expiresAt.getDate() + config.refreshTokenExpiresInDays);
 
+  // Revoke all existing active tokens — only one session per user
+  await prisma.refreshToken.updateMany({
+    where: { stableUid, revokedAt: null },
+    data: { revokedAt: new Date() },
+  });
+
   await prisma.refreshToken.create({
     data: {
       stableUid,

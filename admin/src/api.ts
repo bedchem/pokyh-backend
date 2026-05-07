@@ -130,6 +130,9 @@ export const adminApi = {
   revokeSession: (id: string): Promise<void> =>
     request<void>('DELETE', `/api/admin/sessions/${id}`),
 
+  revokeAllSessions: (): Promise<void> =>
+    request<void>('DELETE', '/api/admin/sessions'),
+
   logs: (params?: {
     page?: number;
     limit?: number;

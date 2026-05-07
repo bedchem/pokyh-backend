@@ -44,6 +44,7 @@ export function SessionsPage() {
   const [sessions, setSessions] = useState<AdminSession[]>([]);
   const [loading, setLoading] = useState(true);
   const [revoking, setRevoking] = useState<string | null>(null);
+  const [clearingAll, setClearingAll] = useState(false);
   // IDs currently fading out (just revoked)
   const [fadingOut, setFadingOut] = useState<Set<string>>(new Set());
 
@@ -69,6 +70,19 @@ export function SessionsPage() {
   useEffect(() => { void fetchSessions(); }, [fetchSessions]);
 
   const { refresh, refreshing } = useAutoRefresh(fetchSessions, 10000);
+
+  async function handleClearAll() {
+    setClearingAll(true);
+    try {
+      await adminApi.revokeAllSessions();
+      showToast('All sessions cleared', 'success');
+      await fetchSessions();
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Failed to clear sessions', 'error');
+    } finally {
+      setClearingAll(false);
+    }
+  }
 
   async function handleRevoke(session: AdminSession) {
     setRevoking(session.id);
@@ -112,21 +126,39 @@ export function SessionsPage() {
             Active refresh token sessions — revoke to force logout immediately
           </p>
         </div>
-        <button
-          onClick={() => void refresh()}
-          disabled={refreshing}
-          className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-all"
-          style={{
-            background: '#111116',
-            color: refreshing ? '#818cf8' : '#64748b',
-            border: '1px solid rgba(255,255,255,0.08)',
-          }}
-          onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.05)'; }}
-          onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = '#111116'; }}
-        >
-          <RefreshCw size={15} className={refreshing ? 'animate-spin' : ''} />
-          {refreshing ? 'Refreshing...' : 'Refresh'}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => void handleClearAll()}
+            disabled={clearingAll || activeSessions === 0}
+            className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-all font-medium"
+            style={{
+              background: 'transparent',
+              color: clearingAll || activeSessions === 0 ? '#4a4a5e' : '#ff453a',
+              border: `1px solid ${clearingAll || activeSessions === 0 ? 'rgba(255,255,255,0.06)' : 'rgba(255,69,58,0.25)'}`,
+              cursor: clearingAll || activeSessions === 0 ? 'not-allowed' : 'pointer',
+            }}
+            onMouseEnter={(e) => { if (activeSessions > 0 && !clearingAll) (e.currentTarget as HTMLElement).style.background = 'rgba(255,69,58,0.08)'; }}
+            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
+          >
+            {clearingAll ? <Loader2 size={15} className="animate-spin" /> : <XCircle size={15} />}
+            {clearingAll ? 'Clearing…' : 'Clear all'}
+          </button>
+          <button
+            onClick={() => void refresh()}
+            disabled={refreshing}
+            className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-all"
+            style={{
+              background: '#111116',
+              color: refreshing ? '#818cf8' : '#64748b',
+              border: '1px solid rgba(255,255,255,0.08)',
+            }}
+            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.05)'; }}
+            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = '#111116'; }}
+          >
+            <RefreshCw size={15} className={refreshing ? 'animate-spin' : ''} />
+            {refreshing ? 'Refreshing...' : 'Refresh'}
+          </button>
+        </div>
       </div>
 
       {/* Stats */}
