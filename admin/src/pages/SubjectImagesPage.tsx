@@ -198,12 +198,10 @@ function CropOverlay({
 
 function SubjectCard({
   row,
-  onUploaded,
   onDeleted,
   onOpenCrop,
 }: {
   row: SubjectRow;
-  onUploaded: (key: string) => void;
   onDeleted: (key: string) => void;
   onOpenCrop: (modal: Omit<CropModal, 'sel'>) => void;
 }) {
@@ -433,7 +431,7 @@ export function SubjectImagesPage() {
               </div>
               <div className="flex flex-col gap-2">
                 {withoutImg.map(r => (
-                  <SubjectCard key={r.key} row={r} onUploaded={handleUploaded} onDeleted={handleDeleted} onOpenCrop={handleOpenCrop} />
+                  <SubjectCard key={r.key} row={r} onDeleted={handleDeleted} onOpenCrop={handleOpenCrop} />
                 ))}
               </div>
             </section>
@@ -447,7 +445,7 @@ export function SubjectImagesPage() {
               </div>
               <div className="flex flex-col gap-2">
                 {withImg.map(r => (
-                  <SubjectCard key={r.key} row={r} onUploaded={handleUploaded} onDeleted={handleDeleted} onOpenCrop={handleOpenCrop} />
+                  <SubjectCard key={r.key} row={r} onDeleted={handleDeleted} onOpenCrop={handleOpenCrop} />
                 ))}
               </div>
             </section>
