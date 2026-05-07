@@ -65,6 +65,7 @@ router.get('/:subject', readLimiter, async (req: Request, res: Response): Promis
   res.setHeader('Last-Modified', row.updatedAt.toUTCString());
   res.setHeader('Content-Type', row.mimeType);
   res.setHeader('Content-Length', row.data.length);
+  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
   res.end(row.data);
 });
 
