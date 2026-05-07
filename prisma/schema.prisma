@@ -90,9 +90,39 @@ model Reminder {
   createdByUsername String   @map("created_by_username")
   createdAt         DateTime @default(now()) @map("created_at")
 
-  class Class @relation(fields: [classId], references: [id], onDelete: Cascade)
+  class    Class     @relation(fields: [classId], references: [id], onDelete: Cascade)
+  comments Comment[]
 
   @@map("reminders")
+}
+
+model Comment {
+  id         String   @id @default(uuid())
+  reminderId String   @map("reminder_id")
+  classId    String   @map("class_id")
+  stableUid  String   @map("stable_uid")
+  username   String
+  body       String   @db.VarChar(2000)
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  reminder Reminder @relation(fields: [reminderId], references: [id], onDelete: Cascade)
+
+  @@index([reminderId])
+  @@map("comments")
+}
+
+model DishComment {
+  id        String   @id @default(uuid())
+  dishId    String   @map("dish_id")
+  stableUid String   @map("stable_uid")
+  username  String
+  body      String   @db.VarChar(2000)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([dishId])
+  @@map("dish_comments")
 }
 
 model Dish {

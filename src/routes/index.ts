@@ -5,7 +5,9 @@ import { usersRouter } from './users';
 import { todosRouter } from './todos';
 import { classesRouter } from './classes';
 import { remindersRouter } from './reminders';
+import { reminderCommentsRouter } from './reminderComments';
 import { dishRatingsRouter } from './dishRatings';
+import { dishCommentsRouter } from './dishComments';
 import { dishesRouter } from './dishes';
 import { sseRouter } from './sse';
 import { adminRouter } from './admin';
@@ -31,8 +33,12 @@ router.use('/users/:username/todos', todosRouter);
 router.use('/classes', classesRouter);
 // Reminders nested under classes
 router.use('/classes/:classId/reminders', remindersRouter);
+// Reminder comments nested under reminders
+router.use('/classes/:classId/reminders/:reminderId/comments', reminderCommentsRouter);
 // Dish ratings
 router.use('/dish-ratings', dishRatingsRouter);
+// Dish comments
+router.use('/dish-comments', dishCommentsRouter);
 // SSE
 router.use('/sse', sseRouter);
 // Subject images (GET /:subject is API-key only; list/PUT/DELETE need auth — handled in router)

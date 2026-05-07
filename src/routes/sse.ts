@@ -99,4 +99,58 @@ router.get('/dish-ratings/:dishId', sseLimiter, requireAuth, async (req: Request
   }
 });
 
+// GET /sse/reminder-comments/:reminderId — stream comment changes for a reminder
+router.get('/reminder-comments/:reminderId', sseLimiter, requireAuth, async (req: Request, res: Response) => {
+  const reminderId = req.params['reminderId'] as string;
+  const { stableUid } = req.user!;
+
+  // Verify the reminder exists and the user is a class member
+  const reminder = await prisma.reminder.findUnique({ where: { id: reminderId } });
+  if (!reminder) {
+    res.status(404).json({ error: 'Reminder not found' });
+    return;
+  }
+
+  const membership = await prisma.classMember.findUnique({
+    where: { classId_stableUid: { classId: reminder.classId, stableUid } },
+  });
+  if (!membership) {
+    res.status(403).json({ error: 'Forbidden' });
+    return;
+  }
+
+  setupSseConnection(res);
+  sseManager.addClient(`reminderComments:${reminderId}`, res);
+
+  const comments = await prisma.comment.findMany({
+    where: { reminderId },
+    orderBy: { createdAt: 'asc' },
+  });
+
+  try {
+    res.write(`event: reminderComments\ndata: ${JSON.stringify(comments)}\n\n`);
+  } catch {
+    return;
+  }
+});
+
+// GET /sse/dish-comments/:dishId — stream comment changes for a dish
+router.get('/dish-comments/:dishId', sseLimiter, requireAuth, async (req: Request, res: Response) => {
+  const dishId = req.params['dishId'] as string;
+
+  setupSseConnection(res);
+  sseManager.addClient(`dishComments:${dishId}`, res);
+
+  const comments = await prisma.dishComment.findMany({
+    where: { dishId },
+    orderBy: { createdAt: 'asc' },
+  });
+
+  try {
+    res.write(`event: dishComments\ndata: ${JSON.stringify(comments)}\n\n`);
+  } catch {
+    return;
+  }
+});
+
 export { router as sseRouter };
