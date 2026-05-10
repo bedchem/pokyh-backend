@@ -22,23 +22,10 @@ services:
     depends_on:
       mysql:
         condition: service_healthy
+    env_file: .env
     environment:
       - NODE_ENV=production
       - PORT=4000
-      - DATABASE_URL
-      - JWT_SECRET
-      - REFRESH_TOKEN_SECRET
-      - API_KEY
-      - SERVER_KEY
-      - CORS_ORIGIN
-      - ADMIN_USERNAME
-      - ADMIN_USERNAMES
-      - ADMIN_PASSWORD_HASH
-      - TUNNEL_NAME
-      - TUNNEL_HOSTNAME
-      - WEBUNTIS_BASE
-      - WEBUNTIS_SCHOOL
-      - DEBUG
     volumes:
       - cloudflared_data:/root/.cloudflared
 
