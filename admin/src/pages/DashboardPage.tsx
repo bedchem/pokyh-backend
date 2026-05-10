@@ -23,66 +23,65 @@ import { adminApi } from '../api';
 import { useAutoRefresh } from '../hooks/useAutoRefresh';
 import type { AdminStats, AdminUser, RequestsChartPoint, TopEndpoint } from '../types';
 
-const AVATAR_COLORS = [
-  '#6366f1', '#8b5cf6', '#06b6d4', '#10b981', '#f59e0b', '#ef4444',
-];
+const AVATAR_COLORS = ['#0a84ff', '#bf5af2', '#40c8e0', '#30d158', '#ff9f0a', '#ff453a'];
 
 function avatarColor(username: string): string {
   let hash = 0;
-  for (let i = 0; i < username.length; i++) {
-    hash = username.charCodeAt(i) + ((hash << 5) - hash);
-  }
+  for (let i = 0; i < username.length; i++) hash = username.charCodeAt(i) + ((hash << 5) - hash);
   return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length]!;
 }
 
 function relativeDate(dateStr: string): string {
   const diff = Date.now() - new Date(dateStr).getTime();
   const days = Math.floor(diff / 86400000);
-  if (days === 0) return 'Today';
-  if (days === 1) return 'Yesterday';
-  if (days < 30) return `${days} days ago`;
-  const months = Math.floor(days / 30);
-  return `${months} month${months > 1 ? 's' : ''} ago`;
+  if (days === 0) return 'Heute';
+  if (days === 1) return 'Gestern';
+  if (days < 30) return `vor ${days} Tagen`;
+  return `vor ${Math.floor(days / 30)} Monat(en)`;
 }
 
 function greeting(): string {
   const h = new Date().getHours();
-  if (h < 12) return 'Good morning';
-  if (h < 17) return 'Good afternoon';
-  return 'Good evening';
+  if (h < 5)  return 'Nacht-Session';
+  if (h < 12) return 'Guten Morgen';
+  if (h < 17) return 'Guten Tag';
+  return 'Guten Abend';
 }
 
 function formatDate(): string {
-  return new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
+  return new Date().toLocaleDateString('de-AT', { weekday: 'long', month: 'long', day: 'numeric' });
 }
 
 interface StatCardProps {
   label: string;
   value: number;
   icon: React.ReactNode;
-  iconBg: string;
-  iconColor: string;
+  accentColor: string;
+  delay?: number;
 }
 
-function StatCard({ label, value, icon, iconBg, iconColor }: StatCardProps) {
+function StatCard({ label, value, icon, accentColor, delay = 0 }: StatCardProps) {
   return (
     <div
-      className="rounded-xl p-5 flex items-center gap-4 min-w-0 card-hover"
-      style={{
-        background: '#111116',
-        border: '1px solid rgba(255,255,255,0.07)',
-        boxShadow: '0 1px 3px rgba(0,0,0,0.4), 0 8px 24px rgba(0,0,0,0.2)',
-      }}
+      className="apple-card p-5 flex items-center gap-4 min-w-0 animate-fadeInUp cursor-default"
+      style={{ animationDelay: `${delay}ms` }}
     >
       <div
-        className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0"
-        style={{ background: iconBg, color: iconColor }}
+        className="w-10 h-10 rounded-[12px] flex items-center justify-center flex-shrink-0"
+        style={{ background: `${accentColor}1a`, color: accentColor }}
       >
         {icon}
       </div>
       <div className="min-w-0">
-        <div className="text-2xl font-bold" style={{ color: '#f0f0f5' }}>{value.toLocaleString()}</div>
-        <div className="text-sm mt-0.5 truncate" style={{ color: '#8b8b9b' }}>{label}</div>
+        <div
+          className="text-[26px] font-bold leading-none"
+          style={{ color: '#ffffff', letterSpacing: '-0.03em' }}
+        >
+          {value.toLocaleString('de-AT')}
+        </div>
+        <div className="text-[13px] mt-1 truncate" style={{ color: 'rgba(235,235,245,0.45)' }}>
+          {label}
+        </div>
       </div>
     </div>
   );
@@ -98,20 +97,23 @@ function ChartTooltip({ active, payload, label }: ChartTooltipProps) {
   if (!active || !payload?.length) return null;
   return (
     <div
-      className="px-3 py-2.5 rounded-lg text-xs"
+      className="px-3 py-2.5 rounded-[10px] text-[12px]"
       style={{
-        background: '#18181f',
+        background: 'rgba(44,44,46,0.95)',
         border: '1px solid rgba(255,255,255,0.1)',
         boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
-        color: '#f0f0f5',
+        color: '#ffffff',
+        backdropFilter: 'blur(16px)',
       }}
     >
-      <div className="mb-1.5 font-medium" style={{ color: '#8b8b9b' }}>{label}</div>
+      <div className="mb-1.5 font-medium" style={{ color: 'rgba(235,235,245,0.5)' }}>{label}</div>
       {payload.map((p) => (
         <div key={p.name} className="flex items-center gap-2">
-          <div className="w-2 h-2 rounded-full" style={{ background: p.color }} />
-          <span style={{ color: '#8b8b9b' }}>{p.name === 'count' ? 'Requests' : 'Errors'}:</span>
-          <span className="font-semibold ml-1">{p.value}</span>
+          <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: p.color }} />
+          <span style={{ color: 'rgba(235,235,245,0.55)' }}>
+            {p.name === 'count' ? 'Anfragen' : 'Fehler'}:
+          </span>
+          <span className="font-semibold ml-0.5">{p.value}</span>
         </div>
       ))}
     </div>
@@ -144,9 +146,7 @@ export function DashboardPage() {
     }).finally(() => setChartLoading(false));
   }, []);
 
-  useEffect(() => {
-    fetchAll();
-  }, [fetchAll]);
+  useEffect(() => { fetchAll(); }, [fetchAll]);
 
   const { refresh, refreshing } = useAutoRefresh(fetchAll, 15000);
 
@@ -155,10 +155,10 @@ export function DashboardPage() {
       <div className="flex items-center justify-center h-64">
         <div className="flex flex-col items-center gap-3">
           <div
-            className="w-7 h-7 border-2 rounded-full animate-spin"
-            style={{ borderColor: 'rgba(99,102,241,0.3)', borderTopColor: '#6366f1' }}
+            className="w-6 h-6 rounded-full border-2 animate-spin"
+            style={{ borderColor: 'rgba(255,255,255,0.1)', borderTopColor: '#0a84ff' }}
           />
-          <span className="text-sm" style={{ color: '#4a4a5e' }}>Loading...</span>
+          <span className="text-[13px]" style={{ color: 'rgba(235,235,245,0.3)' }}>Laden…</span>
         </div>
       </div>
     );
@@ -167,10 +167,10 @@ export function DashboardPage() {
   if (!stats) return null;
 
   const statCards = [
-    { label: 'Total Users', value: stats.totalUsers, icon: <Users size={18} />, iconBg: 'rgba(99,102,241,0.15)', iconColor: '#6366f1' },
-    { label: 'Total Admins', value: stats.totalAdmins, icon: <Shield size={18} />, iconBg: 'rgba(139,92,246,0.15)', iconColor: '#8b5cf6' },
-    { label: 'Active Sessions', value: stats.totalActiveSessions, icon: <MonitorSmartphone size={18} />, iconBg: 'rgba(48,209,88,0.15)', iconColor: '#30d158' },
-    { label: 'Total Classes', value: stats.totalClasses, icon: <Building2 size={18} />, iconBg: 'rgba(6,182,212,0.15)', iconColor: '#06b6d4' },
+    { label: 'Benutzer gesamt',   value: stats.totalUsers,          icon: <Users size={18} />,           accentColor: '#0a84ff' },
+    { label: 'Administratoren',   value: stats.totalAdmins,         icon: <Shield size={18} />,          accentColor: '#bf5af2' },
+    { label: 'Aktive Sessions',   value: stats.totalActiveSessions, icon: <MonitorSmartphone size={18}/>, accentColor: '#30d158' },
+    { label: 'Klassen gesamt',    value: stats.totalClasses,        icon: <Building2 size={18} />,       accentColor: '#40c8e0' },
   ];
 
   const regChartData = (() => {
@@ -180,7 +180,7 @@ export function DashboardPage() {
       d.setDate(d.getDate() - (13 - i));
       const key = d.toISOString().slice(0, 10);
       return {
-        date: d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+        date: d.toLocaleDateString('de-AT', { month: 'short', day: 'numeric' }),
         count: map.get(key) ?? 0,
       };
     });
@@ -188,57 +188,53 @@ export function DashboardPage() {
 
   return (
     <div className="flex flex-col gap-6 animate-page">
+      {/* Header */}
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold" style={{ color: '#f0f0f5' }}>Dashboard</h1>
-          <p className="text-sm mt-1" style={{ color: '#8b8b9b' }}>
+          <h1
+            className="text-[28px] font-bold text-white"
+            style={{ letterSpacing: '-0.03em' }}
+          >
+            Dashboard
+          </h1>
+          <p className="text-[14px] mt-1" style={{ color: 'rgba(235,235,245,0.4)' }}>
             {greeting()} &mdash; {formatDate()}
           </p>
         </div>
         <button
           onClick={() => void refresh()}
           disabled={refreshing}
-          className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-all"
-          style={{
-            background: '#111116',
-            color: refreshing ? '#818cf8' : '#64748b',
-            border: '1px solid rgba(255,255,255,0.08)',
-          }}
+          className="apple-btn-ghost flex items-center gap-2 px-3 py-2 rounded-[10px] text-[13px]"
         >
-          <RefreshCw size={15} className={refreshing ? 'animate-spin' : ''} />
-          {refreshing ? 'Refreshing...' : 'Refresh'}
+          <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
+          {refreshing ? 'Aktualisiert…' : 'Aktualisieren'}
         </button>
       </div>
 
-      <div className="grid grid-cols-2 xl:grid-cols-4 gap-3 md:gap-4">
+      {/* Stat grid */}
+      <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
         {statCards.map((c, i) => (
-          <div key={c.label} className="animate-fadeInUp" style={{ animationDelay: `${i * 60}ms` }}>
-            <StatCard {...c} />
-          </div>
+          <StatCard key={c.label} {...c} delay={i * 55} />
         ))}
       </div>
 
-      <div
-        className="rounded-xl p-5 md:p-6 min-w-0 animate-fadeInUp delay-200"
-        style={{
-          background: '#111116',
-          border: '1px solid rgba(255,255,255,0.07)',
-          boxShadow: '0 1px 3px rgba(0,0,0,0.4), 0 8px 24px rgba(0,0,0,0.2)',
-        }}
-      >
+      {/* API requests chart */}
+      <div className="apple-card p-5 md:p-6 animate-fadeInUp delay-200">
         <div className="flex items-center justify-between mb-5">
           <div>
-            <h2 className="text-sm font-semibold" style={{ color: '#f0f0f5' }}>API Requests — Last 24h</h2>
-            <p className="text-xs mt-0.5" style={{ color: '#4a4a5e' }}>Hourly breakdown</p>
+            <h2 className="text-[14px] font-semibold text-white" style={{ letterSpacing: '-0.01em' }}>
+              API-Anfragen — letzte 24 Std.
+            </h2>
+            <p className="text-[12px] mt-0.5" style={{ color: 'rgba(235,235,245,0.35)' }}>Stundenbasis</p>
           </div>
-          <div className="flex items-center gap-4 text-xs" style={{ color: '#8b8b9b' }}>
+          <div className="flex items-center gap-4 text-[12px]" style={{ color: 'rgba(235,235,245,0.4)' }}>
             <span className="flex items-center gap-1.5">
-              <span className="w-2.5 h-2.5 rounded-full inline-block" style={{ background: '#6366f1' }} />
-              Requests
+              <span className="w-2 h-2 rounded-full inline-block" style={{ background: '#0a84ff' }} />
+              Anfragen
             </span>
             <span className="flex items-center gap-1.5">
-              <span className="w-2.5 h-2.5 rounded-full inline-block" style={{ background: '#ff453a' }} />
-              Errors
+              <span className="w-2 h-2 rounded-full inline-block" style={{ background: '#ff453a' }} />
+              Fehler
             </span>
           </div>
         </div>
@@ -247,115 +243,89 @@ export function DashboardPage() {
             {Array.from({ length: 24 }).map((_, i) => (
               <div
                 key={i}
-                className="flex-1 rounded-t animate-pulse"
-                style={{ height: `${25 + (i * 13) % 55}%`, background: 'rgba(99,102,241,0.08)' }}
+                className="flex-1 rounded-t shimmer"
+                style={{ height: `${20 + (i * 11) % 55}%` }}
               />
             ))}
           </div>
         ) : (
           <ResponsiveContainer width="100%" height={200}>
-            <AreaChart data={chartData} margin={{ top: 4, right: 0, left: -28, bottom: 0 }}>
+            <AreaChart data={chartData} margin={{ top: 4, right: 0, left: -30, bottom: 0 }}>
               <defs>
                 <linearGradient id="gradCount" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#6366f1" stopOpacity={0.25} />
-                  <stop offset="100%" stopColor="#6366f1" stopOpacity={0} />
+                  <stop offset="0%"   stopColor="#0a84ff" stopOpacity={0.22} />
+                  <stop offset="100%" stopColor="#0a84ff" stopOpacity={0} />
                 </linearGradient>
                 <linearGradient id="gradErrors" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#ff453a" stopOpacity={0.2} />
+                  <stop offset="0%"   stopColor="#ff453a" stopOpacity={0.18} />
                   <stop offset="100%" stopColor="#ff453a" stopOpacity={0} />
                 </linearGradient>
               </defs>
               <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" vertical={false} />
-              <XAxis
-                dataKey="hour"
-                tick={{ fill: '#4a4a5e', fontSize: 10 }}
-                axisLine={false}
-                tickLine={false}
-                interval={3}
-              />
-              <YAxis
-                tick={{ fill: '#4a4a5e', fontSize: 10 }}
-                axisLine={false}
-                tickLine={false}
-                allowDecimals={false}
-              />
+              <XAxis dataKey="hour" tick={{ fill: 'rgba(235,235,245,0.25)', fontSize: 10 }} axisLine={false} tickLine={false} interval={3} />
+              <YAxis tick={{ fill: 'rgba(235,235,245,0.25)', fontSize: 10 }} axisLine={false} tickLine={false} allowDecimals={false} />
               <Tooltip content={<ChartTooltip />} />
-              <Area type="monotone" dataKey="count" stroke="#6366f1" strokeWidth={1.5} fill="url(#gradCount)" />
+              <Area type="monotone" dataKey="count"  stroke="#0a84ff" strokeWidth={1.5} fill="url(#gradCount)" />
               <Area type="monotone" dataKey="errors" stroke="#ff453a" strokeWidth={1.5} fill="url(#gradErrors)" />
             </AreaChart>
           </ResponsiveContainer>
         )}
       </div>
 
+      {/* Two-column cards */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 animate-fadeInUp delay-300">
-        <div
-          className="rounded-xl p-5 min-w-0"
-          style={{
-            background: '#111116',
-            border: '1px solid rgba(255,255,255,0.07)',
-            boxShadow: '0 1px 3px rgba(0,0,0,0.4), 0 8px 24px rgba(0,0,0,0.2)',
-          }}
-        >
+        {/* Recent users */}
+        <div className="apple-card p-5">
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-sm font-semibold" style={{ color: '#f0f0f5' }}>Recent Users</h2>
-            <div className="flex items-center gap-1.5 text-xs" style={{ color: '#4a4a5e' }}>
+            <h2 className="text-[14px] font-semibold text-white" style={{ letterSpacing: '-0.01em' }}>
+              Neue Benutzer
+            </h2>
+            <div className="flex items-center gap-1.5 text-[12px]" style={{ color: 'rgba(235,235,245,0.3)' }}>
               <Users size={12} />
-              <span>Last 5</span>
+              <span>Letzte 5</span>
             </div>
           </div>
           <div className="flex flex-col gap-3">
             {recentUsers.length === 0 && (
-              <p className="text-sm" style={{ color: '#4a4a5e' }}>No users yet.</p>
+              <p className="text-[13px]" style={{ color: 'rgba(235,235,245,0.3)' }}>Noch keine Benutzer.</p>
             )}
             {recentUsers.map((u) => (
               <div key={u.stableUid} className="flex items-center gap-3 min-w-0">
                 <div
-                  className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold text-white flex-shrink-0"
+                  className="w-8 h-8 rounded-full flex items-center justify-center text-[12px] font-bold text-white flex-shrink-0"
                   style={{ background: avatarColor(u.username) }}
                 >
                   {u.username[0]?.toUpperCase() ?? '?'}
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-sm font-medium truncate" style={{ color: '#f0f0f5' }}>{u.username}</span>
+                    <span className="text-[14px] font-medium truncate text-white">{u.username}</span>
                     {u.isAdmin && (
-                      <span
-                        className="text-xs px-1.5 py-0.5 font-medium flex-shrink-0"
-                        style={{
-                          background: 'rgba(99,102,241,0.15)',
-                          color: '#818cf8',
-                          border: '1px solid rgba(99,102,241,0.2)',
-                          borderRadius: '6px',
-                        }}
-                      >
+                      <span className="badge-blue text-[11px] px-1.5 py-0.5 font-medium flex-shrink-0">
                         Admin
                       </span>
                     )}
                   </div>
-                  <div className="text-xs truncate mt-0.5" style={{ color: '#4a4a5e' }}>
+                  <div className="text-[12px] truncate mt-0.5" style={{ color: 'rgba(235,235,245,0.3)' }}>
                     {u.webuntisKlasseName ?? '—'} &middot; {relativeDate(u.createdAt)}
                   </div>
                 </div>
                 <div className="flex items-center gap-1 flex-shrink-0">
-                  <CheckSquare size={12} style={{ color: '#4a4a5e' }} />
-                  <span className="text-xs" style={{ color: '#8b8b9b' }}>{u.todoCount}</span>
+                  <CheckSquare size={12} style={{ color: 'rgba(235,235,245,0.25)' }} />
+                  <span className="text-[12px]" style={{ color: 'rgba(235,235,245,0.45)' }}>{u.todoCount}</span>
                 </div>
               </div>
             ))}
           </div>
         </div>
 
-        <div
-          className="rounded-xl p-5 min-w-0"
-          style={{
-            background: '#111116',
-            border: '1px solid rgba(255,255,255,0.07)',
-            boxShadow: '0 1px 3px rgba(0,0,0,0.4), 0 8px 24px rgba(0,0,0,0.2)',
-          }}
-        >
+        {/* Top endpoints */}
+        <div className="apple-card p-5">
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-sm font-semibold" style={{ color: '#f0f0f5' }}>Top Endpoints</h2>
-            <div className="flex items-center gap-1.5 text-xs" style={{ color: '#4a4a5e' }}>
+            <h2 className="text-[14px] font-semibold text-white" style={{ letterSpacing: '-0.01em' }}>
+              Top Endpunkte
+            </h2>
+            <div className="flex items-center gap-1.5 text-[12px]" style={{ color: 'rgba(235,235,245,0.3)' }}>
               <Zap size={12} />
               <span>Top 8</span>
             </div>
@@ -364,27 +334,24 @@ export function DashboardPage() {
             <div className="flex flex-col gap-2">
               {Array.from({ length: 5 }).map((_, i) => (
                 <div key={i} className="flex items-center gap-3">
-                  <div className="h-3 flex-1 rounded animate-pulse" style={{ background: 'rgba(255,255,255,0.05)' }} />
-                  <div className="h-3 w-12 rounded animate-pulse" style={{ background: 'rgba(255,255,255,0.05)' }} />
+                  <div className="h-3 flex-1 rounded shimmer" />
+                  <div className="h-3 w-12 rounded shimmer" />
                 </div>
               ))}
             </div>
           ) : topEndpoints.length === 0 ? (
-            <p className="text-sm" style={{ color: '#4a4a5e' }}>No data yet.</p>
+            <p className="text-[13px]" style={{ color: 'rgba(235,235,245,0.3)' }}>Noch keine Daten.</p>
           ) : (
             <div className="flex flex-col gap-2">
               {topEndpoints.map((ep) => (
                 <div key={ep.path} className="flex items-center gap-3 min-w-0">
-                  <span className="text-xs font-mono truncate flex-1 min-w-0" style={{ color: '#8b8b9b' }}>
+                  <span className="text-[12px] font-mono truncate flex-1 min-w-0" style={{ color: 'rgba(235,235,245,0.5)' }}>
                     {ep.path}
                   </span>
-                  <span
-                    className="text-xs px-2 py-0.5 font-medium flex-shrink-0"
-                    style={{ background: 'rgba(99,102,241,0.12)', color: '#818cf8', borderRadius: '6px' }}
-                  >
+                  <span className="badge-blue text-[11px] px-2 py-0.5 font-medium flex-shrink-0">
                     {ep.count.toLocaleString()}
                   </span>
-                  <span className="text-xs flex-shrink-0 tabular-nums" style={{ color: '#4a4a5e', minWidth: '44px', textAlign: 'right' }}>
+                  <span className="text-[11px] flex-shrink-0 tabular-nums" style={{ color: 'rgba(235,235,245,0.3)', minWidth: '44px', textAlign: 'right' }}>
                     {ep.avgMs}ms
                   </span>
                 </div>
@@ -397,55 +364,53 @@ export function DashboardPage() {
             style={{ borderTop: '1px solid rgba(255,255,255,0.06)' }}
           >
             {[
-              { label: 'Todos', value: stats.totalTodos, icon: <CheckSquare size={14} />, color: '#30d158' },
-              { label: 'Reminders', value: stats.totalReminders, icon: <Bell size={14} />, color: '#ffd60a' },
-              { label: 'Classes', value: stats.totalClasses, icon: <Building2 size={14} />, color: '#06b6d4' },
+              { label: 'Todos',      value: stats.totalTodos,     icon: <CheckSquare size={14} />, color: '#30d158' },
+              { label: 'Erinnerungen', value: stats.totalReminders, icon: <Bell size={14} />,       color: '#ffd60a' },
+              { label: 'Klassen',    value: stats.totalClasses,   icon: <Building2 size={14} />,   color: '#40c8e0' },
             ].map((item) => (
               <div key={item.label} className="flex flex-col items-center gap-1 text-center">
                 <span style={{ color: item.color }}>{item.icon}</span>
-                <span className="text-base font-bold" style={{ color: '#f0f0f5' }}>{item.value.toLocaleString()}</span>
-                <span className="text-xs" style={{ color: '#4a4a5e' }}>{item.label}</span>
+                <span className="text-[16px] font-bold text-white" style={{ letterSpacing: '-0.02em' }}>
+                  {item.value.toLocaleString()}
+                </span>
+                <span className="text-[11px]" style={{ color: 'rgba(235,235,245,0.35)' }}>{item.label}</span>
               </div>
             ))}
           </div>
         </div>
       </div>
 
-      <div
-        className="rounded-xl p-5 min-w-0"
-        style={{
-          background: '#111116',
-          border: '1px solid rgba(255,255,255,0.07)',
-          boxShadow: '0 1px 3px rgba(0,0,0,0.4), 0 8px 24px rgba(0,0,0,0.2)',
-        }}
-      >
+      {/* Registrations chart */}
+      <div className="apple-card p-5 animate-fadeInUp delay-400">
         <div className="flex items-center gap-2 mb-4">
-          <Activity size={15} style={{ color: '#6366f1' }} />
-          <h2 className="text-sm font-semibold" style={{ color: '#f0f0f5' }}>Registrations — Last 14 Days</h2>
+          <Activity size={14} style={{ color: '#0a84ff' }} />
+          <h2 className="text-[14px] font-semibold text-white" style={{ letterSpacing: '-0.01em' }}>
+            Registrierungen — letzte 14 Tage
+          </h2>
         </div>
         <ResponsiveContainer width="100%" height={160}>
-          <AreaChart data={regChartData} margin={{ top: 4, right: 0, left: -28, bottom: 0 }}>
+          <AreaChart data={regChartData} margin={{ top: 4, right: 0, left: -30, bottom: 0 }}>
             <defs>
               <linearGradient id="gradReg" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="#6366f1" stopOpacity={0.2} />
-                <stop offset="100%" stopColor="#6366f1" stopOpacity={0} />
+                <stop offset="0%"   stopColor="#0a84ff" stopOpacity={0.2} />
+                <stop offset="100%" stopColor="#0a84ff" stopOpacity={0} />
               </linearGradient>
             </defs>
             <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" vertical={false} />
-            <XAxis dataKey="date" tick={{ fill: '#4a4a5e', fontSize: 10 }} axisLine={false} tickLine={false} interval={2} />
-            <YAxis tick={{ fill: '#4a4a5e', fontSize: 10 }} axisLine={false} tickLine={false} allowDecimals={false} />
+            <XAxis dataKey="date" tick={{ fill: 'rgba(235,235,245,0.25)', fontSize: 10 }} axisLine={false} tickLine={false} interval={2} />
+            <YAxis tick={{ fill: 'rgba(235,235,245,0.25)', fontSize: 10 }} axisLine={false} tickLine={false} allowDecimals={false} />
             <Tooltip
               contentStyle={{
-                background: '#18181f',
+                background: 'rgba(44,44,46,0.95)',
                 border: '1px solid rgba(255,255,255,0.1)',
-                borderRadius: '8px',
+                borderRadius: '10px',
                 fontSize: '12px',
-                color: '#f0f0f5',
+                color: '#ffffff',
               }}
-              labelStyle={{ color: '#8b8b9b' }}
-              itemStyle={{ color: '#818cf8' }}
+              labelStyle={{ color: 'rgba(235,235,245,0.5)' }}
+              itemStyle={{ color: '#0a84ff' }}
             />
-            <Area type="monotone" dataKey="count" stroke="#6366f1" strokeWidth={1.5} fill="url(#gradReg)" />
+            <Area type="monotone" dataKey="count" stroke="#0a84ff" strokeWidth={1.5} fill="url(#gradReg)" />
           </AreaChart>
         </ResponsiveContainer>
       </div>

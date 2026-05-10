@@ -29,13 +29,13 @@ function TerminalOutput({ lines, scrollRef }: { lines: LogLine[]; scrollRef?: Re
     <div
       ref={ref}
       className="rounded-xl p-4 font-mono text-xs overflow-y-auto max-h-52 mt-4"
-      style={{ background: '#05060f', border: '1px solid rgba(99,102,241,0.15)' }}
+      style={{ background: '#05060f', border: '1px solid rgba(10,132,255,0.15)' }}
     >
       {lines.map((l, i) => (
         <div
           key={i}
           className="leading-relaxed whitespace-pre-wrap break-words"
-          style={{ color: l.type === 'error' ? '#f87171' : l.type === 'done' ? '#34d399' : '#94a3b8' }}
+          style={{ color: l.type === 'error' ? '#f87171' : l.type === 'done' ? '#34d399' : 'rgba(235,235,245,0.55)' }}
         >
           <span style={{ color: '#4b5563', userSelect: 'none' }}>{'> '}</span>
           {l.message}
@@ -63,14 +63,14 @@ function CopyBox({ text }: { text: string }) {
       className="flex items-center gap-3 px-4 py-3 rounded-xl font-mono text-sm mt-3"
       style={{ background: '#05060f', border: '1px solid rgba(255,255,255,0.08)' }}
     >
-      <span style={{ color: '#818cf8', flex: 1 }}>{text}</span>
+      <span style={{ color: '#0a84ff', flex: 1 }}>{text}</span>
       <button
         onClick={() => { void navigator.clipboard.writeText(text); showToast('Copied!', 'success'); }}
         className="p-1 rounded"
         title="Copy"
-        style={{ color: '#4a4a5e' }}
-        onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#818cf8'; }}
-        onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = '#4a4a5e'; }}
+        style={{ color: 'rgba(235,235,245,0.3)' }}
+        onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#0a84ff'; }}
+        onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'rgba(235,235,245,0.3)'; }}
       >
         <Copy size={14} />
       </button>
@@ -174,7 +174,7 @@ export function TunnelPage() {
   }, []);
 
   const card = {
-    background: '#111116',
+    background: '#1c1c1e',
     border: '1px solid rgba(255,255,255,0.07)',
     borderRadius: '16px',
     padding: '24px',
@@ -182,7 +182,7 @@ export function TunnelPage() {
   } as const;
 
   const btnPrimary = {
-    background: 'rgba(99,102,241,0.9)',
+    background: 'rgba(10,132,255,0.9)',
     color: '#fff',
     border: 'none',
     borderRadius: '8px',
@@ -197,7 +197,7 @@ export function TunnelPage() {
 
   const btnSecondary = {
     background: 'rgba(255,255,255,0.06)',
-    color: '#8b8b9b',
+    color: 'rgba(235,235,245,0.6)',
     border: '1px solid rgba(255,255,255,0.08)',
     borderRadius: '8px',
     padding: '10px 20px',
@@ -216,13 +216,13 @@ export function TunnelPage() {
         <div className="flex items-center gap-3">
           <div
             className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0"
-            style={{ background: 'rgba(99,102,241,0.15)', border: '1px solid rgba(99,102,241,0.2)' }}
+            style={{ background: 'rgba(10,132,255,0.15)', border: '1px solid rgba(10,132,255,0.2)' }}
           >
-            <Globe size={20} style={{ color: '#818cf8' }} />
+            <Globe size={20} style={{ color: '#0a84ff' }} />
           </div>
           <div>
-            <h1 className="text-xl font-bold" style={{ color: '#f0f0f5' }}>Cloudflare Tunnel</h1>
-            <p className="text-sm mt-0.5" style={{ color: '#8b8b9b' }}>Expose your server to the internet securely</p>
+            <h1 className="text-xl font-bold" style={{ color: '#ffffff' }}>Cloudflare Tunnel</h1>
+            <p className="text-sm mt-0.5" style={{ color: 'rgba(235,235,245,0.6)' }}>Expose your server to the internet securely</p>
           </div>
         </div>
         <button
@@ -237,9 +237,9 @@ export function TunnelPage() {
 
       {/* Status overview */}
       <div style={card}>
-        <h2 className="text-sm font-semibold uppercase tracking-wider mb-4" style={{ color: '#4a4a5e' }}>Current Status</h2>
+        <h2 className="text-sm font-semibold uppercase tracking-wider mb-4" style={{ color: 'rgba(235,235,245,0.3)' }}>Current Status</h2>
         {loadingStatus ? (
-          <div className="flex items-center gap-2" style={{ color: '#4a4a5e' }}>
+          <div className="flex items-center gap-2" style={{ color: 'rgba(235,235,245,0.3)' }}>
             <Loader2 size={14} className="animate-spin" />
             <span className="text-sm">Loading...</span>
           </div>
@@ -274,24 +274,24 @@ export function TunnelPage() {
           <div
             className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0"
             style={{
-              background: status?.cloudflaredInstalled ? 'rgba(48,209,88,0.2)' : 'rgba(99,102,241,0.2)',
-              color: status?.cloudflaredInstalled ? '#30d158' : '#818cf8',
-              border: `1px solid ${status?.cloudflaredInstalled ? 'rgba(48,209,88,0.3)' : 'rgba(99,102,241,0.3)'}`,
+              background: status?.cloudflaredInstalled ? 'rgba(48,209,88,0.2)' : 'rgba(10,132,255,0.2)',
+              color: status?.cloudflaredInstalled ? '#30d158' : '#0a84ff',
+              border: `1px solid ${status?.cloudflaredInstalled ? 'rgba(48,209,88,0.3)' : 'rgba(10,132,255,0.3)'}`,
             }}
           >
             {status?.cloudflaredInstalled ? '✓' : '1'}
           </div>
-          <h2 className="text-base font-semibold" style={{ color: '#f0f0f5' }}>Install cloudflared</h2>
+          <h2 className="text-base font-semibold" style={{ color: '#ffffff' }}>Install cloudflared</h2>
         </div>
         {status?.cloudflaredInstalled ? (
           <p className="text-sm" style={{ color: '#30d158' }}>cloudflared is installed and ready.</p>
         ) : (
           <>
-            <p className="text-sm mb-3" style={{ color: '#8b8b9b' }}>
+            <p className="text-sm mb-3" style={{ color: 'rgba(235,235,245,0.6)' }}>
               Install cloudflared using Homebrew (macOS) or your system's package manager:
             </p>
             <CopyBox text="brew install cloudflare/cloudflare/cloudflared" />
-            <p className="text-xs mt-3" style={{ color: '#4a4a5e' }}>
+            <p className="text-xs mt-3" style={{ color: 'rgba(235,235,245,0.3)' }}>
               After installing, click Refresh above to update the status.
             </p>
           </>
@@ -304,20 +304,20 @@ export function TunnelPage() {
           <div
             className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0"
             style={{
-              background: status?.cloudflareAuthed ? 'rgba(48,209,88,0.2)' : 'rgba(99,102,241,0.2)',
-              color: status?.cloudflareAuthed ? '#30d158' : '#818cf8',
-              border: `1px solid ${status?.cloudflareAuthed ? 'rgba(48,209,88,0.3)' : 'rgba(99,102,241,0.3)'}`,
+              background: status?.cloudflareAuthed ? 'rgba(48,209,88,0.2)' : 'rgba(10,132,255,0.2)',
+              color: status?.cloudflareAuthed ? '#30d158' : '#0a84ff',
+              border: `1px solid ${status?.cloudflareAuthed ? 'rgba(48,209,88,0.3)' : 'rgba(10,132,255,0.3)'}`,
             }}
           >
             {status?.cloudflareAuthed ? '✓' : '2'}
           </div>
-          <h2 className="text-base font-semibold" style={{ color: '#f0f0f5' }}>Connect to Cloudflare</h2>
+          <h2 className="text-base font-semibold" style={{ color: '#ffffff' }}>Connect to Cloudflare</h2>
         </div>
         {status?.cloudflareAuthed ? (
           <p className="text-sm" style={{ color: '#30d158' }}>Already authenticated with your Cloudflare account.</p>
         ) : (
           <>
-            <p className="text-sm mb-4" style={{ color: '#8b8b9b' }}>
+            <p className="text-sm mb-4" style={{ color: 'rgba(235,235,245,0.6)' }}>
               Opens a browser window where you'll authorize this server to manage your Cloudflare tunnels.
             </p>
             <button
@@ -339,14 +339,14 @@ export function TunnelPage() {
           <div
             className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0"
             style={{
-              background: status?.tunnelConfigured ? 'rgba(48,209,88,0.2)' : 'rgba(99,102,241,0.2)',
-              color: status?.tunnelConfigured ? '#30d158' : '#818cf8',
-              border: `1px solid ${status?.tunnelConfigured ? 'rgba(48,209,88,0.3)' : 'rgba(99,102,241,0.3)'}`,
+              background: status?.tunnelConfigured ? 'rgba(48,209,88,0.2)' : 'rgba(10,132,255,0.2)',
+              color: status?.tunnelConfigured ? '#30d158' : '#0a84ff',
+              border: `1px solid ${status?.tunnelConfigured ? 'rgba(48,209,88,0.3)' : 'rgba(10,132,255,0.3)'}`,
             }}
           >
             {status?.tunnelConfigured ? '✓' : '3'}
           </div>
-          <h2 className="text-base font-semibold" style={{ color: '#f0f0f5' }}>
+          <h2 className="text-base font-semibold" style={{ color: '#ffffff' }}>
             {status?.tunnelConfigured ? 'Tunnel configured' : 'Create tunnel'}
           </h2>
         </div>
@@ -357,7 +357,7 @@ export function TunnelPage() {
               Tunnel is active at{' '}
               <span className="font-mono">{status.tunnelHostname ? `https://${status.tunnelHostname}` : 'configured hostname'}</span>
             </p>
-            <p className="text-xs" style={{ color: '#4a4a5e' }}>
+            <p className="text-xs" style={{ color: 'rgba(235,235,245,0.3)' }}>
               You can reconfigure the tunnel by entering a new hostname and clicking the button below.
             </p>
           </div>
@@ -365,7 +365,7 @@ export function TunnelPage() {
 
         <div className="flex flex-col gap-3 mt-3">
           <div>
-            <label className="text-xs font-medium block mb-1.5" style={{ color: '#8b8b9b' }}>
+            <label className="text-xs font-medium block mb-1.5" style={{ color: 'rgba(235,235,245,0.6)' }}>
               Hostname (e.g. api.yourdomain.com)
             </label>
             <input
@@ -375,11 +375,11 @@ export function TunnelPage() {
               placeholder="api.yourdomain.com"
               className="w-full py-2.5 px-3 rounded-lg text-sm outline-none"
               style={{
-                background: '#0e0f1c',
+                background: '#1c1c1e',
                 border: '1px solid rgba(255,255,255,0.08)',
-                color: '#f0f0f5',
+                color: '#ffffff',
               }}
-              onFocus={(e) => { (e.target as HTMLElement).style.borderColor = 'rgba(99,102,241,0.5)'; }}
+              onFocus={(e) => { (e.target as HTMLElement).style.borderColor = 'rgba(10,132,255,0.5)'; }}
               onBlur={(e) => { (e.target as HTMLElement).style.borderColor = 'rgba(255,255,255,0.08)'; }}
             />
           </div>
@@ -397,7 +397,7 @@ export function TunnelPage() {
               {tunnelRunning ? 'Setting up...' : status?.tunnelConfigured ? 'Reconfigure tunnel' : 'Create & start tunnel'}
             </button>
           </div>
-          <p className="text-xs" style={{ color: '#4a4a5e' }}>
+          <p className="text-xs" style={{ color: 'rgba(235,235,245,0.3)' }}>
             This will create the tunnel, configure DNS, and start routing traffic automatically. Your domain must be on Cloudflare.
           </p>
         </div>

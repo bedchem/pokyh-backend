@@ -27,7 +27,6 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   return (
     <ToastContext.Provider value={{ showToast }}>
       {children}
-      {/* Desktop: top-right · Mobile: bottom, full-width */}
       <div
         className="fixed z-[200] flex flex-col gap-2 pointer-events-none
           bottom-4 left-4 right-4
@@ -36,31 +35,37 @@ export function ToastProvider({ children }: { children: ReactNode }) {
         {toasts.map((toast) => (
           <div
             key={toast.id}
-            className="toast-item pointer-events-auto flex items-center gap-3 px-4 py-3 rounded-xl"
+            className="toast-item pointer-events-auto flex items-center gap-3 px-4 py-3 rounded-[14px]"
             style={{
-              background: '#13141f',
+              background: 'rgba(28,28,30,0.9)',
+              backdropFilter: 'blur(24px) saturate(180%)',
+              WebkitBackdropFilter: 'blur(24px) saturate(180%)',
               border: '1px solid rgba(255,255,255,0.1)',
-              boxShadow: '0 8px 32px rgba(0,0,0,0.5), 0 1px 0 rgba(255,255,255,0.05) inset',
-              borderLeft: `3px solid ${toast.type === 'success' ? '#10b981' : '#ef4444'}`,
+              boxShadow: '0 8px 32px rgba(0,0,0,0.5), 0 1px 0 rgba(255,255,255,0.06) inset',
               minWidth: '260px',
-              backdropFilter: 'blur(12px)',
+              maxWidth: '340px',
             }}
           >
-            <span className="flex-shrink-0" style={{ color: toast.type === 'success' ? '#10b981' : '#ef4444' }}>
+            <span
+              className="flex-shrink-0"
+              style={{ color: toast.type === 'success' ? '#30d158' : '#ff453a' }}
+            >
               {toast.type === 'success'
                 ? <CheckCircle2 size={16} />
                 : <XCircle size={16} />
               }
             </span>
-            <span className="text-sm flex-1" style={{ color: '#e2e8f0' }}>{toast.message}</span>
+            <span className="text-[13px] flex-1 leading-snug" style={{ color: 'rgba(235,235,245,0.85)' }}>
+              {toast.message}
+            </span>
             <button
               onClick={() => setToasts((prev) => prev.filter((t) => t.id !== toast.id))}
-              className="flex-shrink-0 p-0.5 rounded transition-colors"
-              style={{ color: '#4a4a5e' }}
-              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#e2e8f0'; }}
-              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = '#4a4a5e'; }}
+              className="flex-shrink-0 p-0.5 rounded-[6px] transition-colors"
+              style={{ color: 'rgba(235,235,245,0.3)' }}
+              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = 'rgba(235,235,245,0.75)'; }}
+              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'rgba(235,235,245,0.3)'; }}
             >
-              <X size={13} />
+              <X size={12} />
             </button>
           </div>
         ))}

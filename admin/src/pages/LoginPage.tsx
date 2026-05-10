@@ -1,6 +1,6 @@
 import { useState, FormEvent } from 'react';
 import { useNavigate, Navigate } from 'react-router-dom';
-import { Shield, Eye, EyeOff, Loader2 } from 'lucide-react';
+import { Eye, EyeOff, Loader2 } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
 
 export function LoginPage() {
@@ -22,7 +22,7 @@ export function LoginPage() {
       await login(username, password);
       navigate('/dashboard');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Login failed');
+      setError(err instanceof Error ? err.message : 'Anmeldung fehlgeschlagen');
     } finally {
       setLoading(false);
     }
@@ -31,75 +31,81 @@ export function LoginPage() {
   return (
     <div
       className="min-h-screen flex items-center justify-center relative overflow-hidden"
-      style={{ background: '#080810' }}
+      style={{ background: '#000000' }}
     >
-      {/* Animated gradient orbs */}
+      {/* Subtle ambient light — very restrained, Apple-like */}
       <div
-        className="absolute rounded-full pointer-events-none"
+        className="absolute pointer-events-none"
         style={{
-          width: '600px',
-          height: '600px',
-          background: 'radial-gradient(circle, rgba(99,102,241,0.08) 0%, transparent 70%)',
-          top: '-100px',
-          left: '-100px',
-          animation: 'float1 8s ease-in-out infinite',
+          width: '700px',
+          height: '700px',
+          background: 'radial-gradient(circle at center, rgba(10,132,255,0.055) 0%, transparent 65%)',
+          top: '50%',
+          left: '50%',
+          transform: 'translate(-50%, -62%)',
         }}
       />
       <div
-        className="absolute rounded-full pointer-events-none"
+        className="absolute pointer-events-none"
         style={{
           width: '500px',
           height: '500px',
-          background: 'radial-gradient(circle, rgba(139,92,246,0.06) 0%, transparent 70%)',
-          bottom: '-100px',
-          right: '-50px',
-          animation: 'float2 10s ease-in-out infinite',
-        }}
-      />
-      <div
-        className="absolute rounded-full pointer-events-none"
-        style={{
-          width: '300px',
-          height: '300px',
-          background: 'radial-gradient(circle, rgba(99,102,241,0.05) 0%, transparent 70%)',
-          top: '50%',
-          right: '15%',
-          animation: 'float3 7s ease-in-out infinite',
+          background: 'radial-gradient(circle at center, rgba(10,132,255,0.03) 0%, transparent 65%)',
+          bottom: '-80px',
+          right: '10%',
+          animation: 'orbit2 14s ease-in-out infinite',
         }}
       />
 
-      {/* Login card */}
+      {/* Card */}
       <div
-        className="relative z-10 w-full max-w-md mx-4 animate-scaleIn"
+        className="relative z-10 w-full max-w-[360px] mx-5 animate-scaleIn"
         style={{
-          background: 'rgba(14,15,28,0.9)',
-          backdropFilter: 'blur(20px)',
-          border: '1px solid rgba(99,102,241,0.2)',
-          borderRadius: '16px',
-          padding: '40px',
+          background: 'rgba(28,28,30,0.88)',
+          backdropFilter: 'blur(32px) saturate(180%)',
+          WebkitBackdropFilter: 'blur(32px) saturate(180%)',
+          border: '1px solid rgba(255,255,255,0.09)',
+          borderRadius: '20px',
+          padding: '44px 36px 36px',
+          boxShadow: '0 32px 80px rgba(0,0,0,0.65), 0 1px 0 rgba(255,255,255,0.06) inset',
         }}
       >
-        {/* Logo */}
+        {/* App icon */}
         <div className="flex flex-col items-center mb-8">
           <div
-            className="w-16 h-16 rounded-2xl flex items-center justify-center mb-4"
+            className="w-[56px] h-[56px] rounded-[14px] flex items-center justify-center mb-5"
             style={{
-              background: 'rgba(99,102,241,0.15)',
-              border: '1px solid rgba(99,102,241,0.3)',
-              boxShadow: '0 0 40px rgba(99,102,241,0.1)',
+              background: 'linear-gradient(145deg, rgba(10,132,255,0.22) 0%, rgba(10,132,255,0.1) 100%)',
+              border: '1px solid rgba(10,132,255,0.3)',
+              boxShadow: '0 4px 20px rgba(10,132,255,0.18)',
             }}
           >
-            <Shield size={32} className="text-indigo-400" />
+            <svg width="26" height="26" viewBox="0 0 14 14" fill="none">
+              <rect x="1"   y="1"   width="5.5" height="5.5" rx="1.5" fill="#0a84ff"/>
+              <rect x="7.5" y="1"   width="5.5" height="5.5" rx="1.5" fill="#0a84ff" opacity="0.65"/>
+              <rect x="1"   y="7.5" width="5.5" height="5.5" rx="1.5" fill="#0a84ff" opacity="0.65"/>
+              <rect x="7.5" y="7.5" width="5.5" height="5.5" rx="1.5" fill="#0a84ff"/>
+            </svg>
           </div>
-          <h1 className="text-2xl font-bold text-white">Admin Login</h1>
-          <p className="text-slate-500 text-sm mt-1">Sign in to Pokyh Admin Panel</p>
+          <h1
+            className="text-[22px] font-semibold text-white"
+            style={{ letterSpacing: '-0.025em' }}
+          >
+            Pokyh Admin
+          </h1>
+          <p className="text-[14px] mt-1" style={{ color: 'rgba(235,235,245,0.45)' }}>
+            Melde dich in deinem Panel an
+          </p>
         </div>
 
-        <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+        <form onSubmit={(e) => void handleSubmit(e)} className="flex flex-col gap-3">
           {/* Username */}
           <div className="flex flex-col gap-1.5">
-            <label className="text-xs font-medium text-slate-400 uppercase tracking-wide">
-              Username
+            <label
+              className="text-[12px] font-semibold"
+              style={{ color: 'rgba(235,235,245,0.5)', letterSpacing: '0.02em', textTransform: 'uppercase' }}
+            >
+              Benutzername
             </label>
             <input
               type="text"
@@ -108,26 +114,17 @@ export function LoginPage() {
               placeholder="admin"
               autoComplete="username"
               required
-              className="w-full px-4 py-3 rounded-lg text-slate-200 placeholder-slate-600 outline-none transition-all"
-              style={{
-                background: 'rgba(255,255,255,0.04)',
-                border: '1px solid rgba(255,255,255,0.08)',
-              }}
-              onFocus={(e) => {
-                (e.target as HTMLInputElement).style.borderColor = 'rgba(99,102,241,0.5)';
-                (e.target as HTMLInputElement).style.boxShadow = '0 0 0 3px rgba(99,102,241,0.1)';
-              }}
-              onBlur={(e) => {
-                (e.target as HTMLInputElement).style.borderColor = 'rgba(255,255,255,0.08)';
-                (e.target as HTMLInputElement).style.boxShadow = '';
-              }}
+              className="apple-input w-full px-4 py-3 text-[15px]"
             />
           </div>
 
           {/* Password */}
           <div className="flex flex-col gap-1.5">
-            <label className="text-xs font-medium text-slate-400 uppercase tracking-wide">
-              Password
+            <label
+              className="text-[12px] font-semibold"
+              style={{ color: 'rgba(235,235,245,0.5)', letterSpacing: '0.02em', textTransform: 'uppercase' }}
+            >
+              Passwort
             </label>
             <div className="relative">
               <input
@@ -137,26 +134,17 @@ export function LoginPage() {
                 placeholder="••••••••"
                 autoComplete="current-password"
                 required
-                className="w-full px-4 py-3 pr-12 rounded-lg text-slate-200 placeholder-slate-600 outline-none transition-all"
-                style={{
-                  background: 'rgba(255,255,255,0.04)',
-                  border: '1px solid rgba(255,255,255,0.08)',
-                }}
-                onFocus={(e) => {
-                  (e.target as HTMLInputElement).style.borderColor = 'rgba(99,102,241,0.5)';
-                  (e.target as HTMLInputElement).style.boxShadow = '0 0 0 3px rgba(99,102,241,0.1)';
-                }}
-                onBlur={(e) => {
-                  (e.target as HTMLInputElement).style.borderColor = 'rgba(255,255,255,0.08)';
-                  (e.target as HTMLInputElement).style.boxShadow = '';
-                }}
+                className="apple-input w-full px-4 py-3 pr-12 text-[15px]"
               />
               <button
                 type="button"
                 onClick={() => setShowPassword(!showPassword)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 transition-colors"
+                className="absolute right-3 top-1/2 -translate-y-1/2 transition-colors"
+                style={{ color: 'rgba(235,235,245,0.35)' }}
+                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = 'rgba(235,235,245,0.7)'; }}
+                onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'rgba(235,235,245,0.35)'; }}
               >
-                {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
               </button>
             </div>
           </div>
@@ -164,8 +152,12 @@ export function LoginPage() {
           {/* Error */}
           {error && (
             <div
-              className="px-4 py-3 rounded-lg text-sm text-red-400"
-              style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)' }}
+              className="px-4 py-3 rounded-[10px] text-[13px]"
+              style={{
+                background: 'rgba(255,69,58,0.1)',
+                border: '1px solid rgba(255,69,58,0.2)',
+                color: '#ff453a',
+              }}
             >
               {error}
             </div>
@@ -175,41 +167,19 @@ export function LoginPage() {
           <button
             type="submit"
             disabled={loading}
-            className="w-full py-3 px-4 rounded-lg font-semibold text-white transition-all mt-2 flex items-center justify-center gap-2"
-            style={{
-              background: loading ? 'rgba(99,102,241,0.5)' : 'linear-gradient(135deg, #6366f1 0%, #818cf8 100%)',
-              cursor: loading ? 'not-allowed' : 'pointer',
-              boxShadow: loading ? 'none' : '0 4px 24px rgba(99,102,241,0.3)',
-            }}
+            className="apple-btn w-full py-3 text-[15px] mt-1 flex items-center justify-center gap-2"
           >
             {loading ? (
               <>
-                <Loader2 size={18} className="animate-spin" />
-                Signing in...
+                <Loader2 size={16} className="animate-spin" />
+                Anmelden…
               </>
             ) : (
-              'Sign In'
+              'Anmelden'
             )}
           </button>
         </form>
       </div>
-
-      <style>{`
-        @keyframes float1 {
-          0%, 100% { transform: translate(0, 0) scale(1); }
-          33% { transform: translate(30px, -30px) scale(1.05); }
-          66% { transform: translate(-20px, 20px) scale(0.95); }
-        }
-        @keyframes float2 {
-          0%, 100% { transform: translate(0, 0) scale(1); }
-          33% { transform: translate(-40px, 20px) scale(1.08); }
-          66% { transform: translate(20px, -30px) scale(0.92); }
-        }
-        @keyframes float3 {
-          0%, 100% { transform: translate(0, -50%) scale(1); }
-          50% { transform: translate(-20px, -50%) scale(1.1); }
-        }
-      `}</style>
     </div>
   );
 }

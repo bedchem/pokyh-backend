@@ -28,6 +28,32 @@ function RootRedirect() {
   return <Navigate to={isAuthenticated ? '/dashboard' : '/login'} replace />;
 }
 
+function Spinner() {
+  return (
+    <div
+      style={{
+        minHeight: '100vh',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        background: '#000000',
+      }}
+    >
+      <div
+        style={{
+          width: '28px',
+          height: '28px',
+          borderRadius: '50%',
+          border: '2px solid rgba(255,255,255,0.1)',
+          borderTopColor: '#0a84ff',
+          animation: 'spin 0.8s linear infinite',
+        }}
+      />
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+    </div>
+  );
+}
+
 export default function App() {
   const [setupStatus, setSetupStatus] = useState<SetupStatus | null>(null);
   const [setupLoading, setSetupLoading] = useState(true);
@@ -44,13 +70,7 @@ export default function App() {
     window.location.hash = '#/dashboard';
   };
 
-  if (setupLoading) {
-    return (
-      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#080810' }}>
-        <div className="w-8 h-8 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
-      </div>
-    );
-  }
+  if (setupLoading) return <Spinner />;
 
   if (setupStatus?.needsSetup) {
     return (
@@ -71,18 +91,18 @@ export default function App() {
       <HashRouter>
         <Suspense fallback={null}>
           <Routes>
-            <Route path="/" element={<RootRedirect />} />
-            <Route path="/login" element={<LoginPage />} />
-            <Route path="/dashboard" element={<ProtectedRoute><DashboardPage /></ProtectedRoute>} />
-            <Route path="/users" element={<ProtectedRoute><UsersPage /></ProtectedRoute>} />
-            <Route path="/classes" element={<ProtectedRoute><ClassesPage /></ProtectedRoute>} />
-            <Route path="/sessions" element={<ProtectedRoute><SessionsPage /></ProtectedRoute>} />
-            <Route path="/logs" element={<ProtectedRoute><LogsPage /></ProtectedRoute>} />
-            <Route path="/tunnel" element={<ProtectedRoute><TunnelPage /></ProtectedRoute>} />
-            <Route path="/dishes" element={<ProtectedRoute><DishesPage /></ProtectedRoute>} />
+            <Route path="/"               element={<RootRedirect />} />
+            <Route path="/login"          element={<LoginPage />} />
+            <Route path="/dashboard"      element={<ProtectedRoute><DashboardPage /></ProtectedRoute>} />
+            <Route path="/users"          element={<ProtectedRoute><UsersPage /></ProtectedRoute>} />
+            <Route path="/classes"        element={<ProtectedRoute><ClassesPage /></ProtectedRoute>} />
+            <Route path="/sessions"       element={<ProtectedRoute><SessionsPage /></ProtectedRoute>} />
+            <Route path="/logs"           element={<ProtectedRoute><LogsPage /></ProtectedRoute>} />
+            <Route path="/tunnel"         element={<ProtectedRoute><TunnelPage /></ProtectedRoute>} />
+            <Route path="/dishes"         element={<ProtectedRoute><DishesPage /></ProtectedRoute>} />
             <Route path="/subject-images" element={<ProtectedRoute><SubjectImagesPage /></ProtectedRoute>} />
-            <Route path="/comments" element={<ProtectedRoute><CommentsPage /></ProtectedRoute>} />
-            <Route path="*" element={<Navigate to="/" replace />} />
+            <Route path="/comments"       element={<ProtectedRoute><CommentsPage /></ProtectedRoute>} />
+            <Route path="*"               element={<Navigate to="/" replace />} />
           </Routes>
         </Suspense>
       </HashRouter>

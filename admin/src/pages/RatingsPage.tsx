@@ -20,7 +20,7 @@ function StarSelector({ value, onChange }: { value: number; onChange: (v: number
           <Star
             size={18}
             fill={(hovered || value) >= s ? '#f59e0b' : 'transparent'}
-            stroke={(hovered || value) >= s ? '#f59e0b' : '#4a4a5e'}
+            stroke={(hovered || value) >= s ? '#f59e0b' : 'rgba(235,235,245,0.3)'}
             strokeWidth={1.5}
           />
         </button>
@@ -37,7 +37,7 @@ function StarsDisplay({ value, size = 14 }: { value: number; size?: number }) {
           key={s}
           size={size}
           fill={value >= s ? '#f59e0b' : 'transparent'}
-          stroke={value >= s ? '#f59e0b' : '#4a4a5e'}
+          stroke={value >= s ? '#f59e0b' : 'rgba(235,235,245,0.3)'}
           strokeWidth={1.5}
         />
       ))}
@@ -105,14 +105,14 @@ function RatingRow({
             onClick={handleSave}
             disabled={saving}
             className="px-3 py-1 rounded-lg text-xs font-semibold transition-colors"
-            style={{ background: 'rgba(99,102,241,0.2)', color: '#818cf8', border: '1px solid rgba(99,102,241,0.3)' }}
+            style={{ background: 'rgba(10,132,255,0.2)', color: '#0a84ff', border: '1px solid rgba(10,132,255,0.3)' }}
           >
             {saving ? '...' : 'Save'}
           </button>
           <button
             onClick={() => { setEditing(false); setEditStars(entry.stars); }}
             className="px-3 py-1 rounded-lg text-xs transition-colors"
-            style={{ background: 'rgba(255,255,255,0.05)', color: '#8b8b9b', border: '1px solid rgba(255,255,255,0.08)' }}
+            style={{ background: 'rgba(255,255,255,0.05)', color: 'rgba(235,235,245,0.6)', border: '1px solid rgba(255,255,255,0.08)' }}
           >
             Cancel
           </button>
@@ -124,7 +124,7 @@ function RatingRow({
           <button
             onClick={() => setEditing(true)}
             className="px-2.5 py-1 rounded-lg text-xs transition-colors"
-            style={{ background: 'rgba(255,255,255,0.05)', color: '#8b8b9b', border: '1px solid rgba(255,255,255,0.07)' }}
+            style={{ background: 'rgba(255,255,255,0.05)', color: 'rgba(235,235,245,0.6)', border: '1px solid rgba(255,255,255,0.07)' }}
           >
             Edit
           </button>
@@ -141,7 +141,7 @@ function RatingRow({
               <button
                 onClick={() => setConfirmDelete(false)}
                 className="px-2.5 py-1 rounded-lg text-xs transition-colors"
-                style={{ background: 'rgba(255,255,255,0.05)', color: '#8b8b9b', border: '1px solid rgba(255,255,255,0.07)' }}
+                style={{ background: 'rgba(255,255,255,0.05)', color: 'rgba(235,235,245,0.6)', border: '1px solid rgba(255,255,255,0.07)' }}
               >
                 No
               </button>
@@ -150,9 +150,9 @@ function RatingRow({
             <button
               onClick={() => setConfirmDelete(true)}
               className="p-1.5 rounded-lg transition-colors"
-              style={{ color: '#4a4a5e' }}
+              style={{ color: 'rgba(235,235,245,0.3)' }}
               onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#f87171'; }}
-              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = '#4a4a5e'; }}
+              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'rgba(235,235,245,0.3)'; }}
             >
               <Trash2 size={14} />
             </button>
@@ -178,7 +178,7 @@ function DishCard({
   return (
     <div
       className="rounded-xl overflow-hidden card-hover"
-      style={{ background: 'rgba(14,15,28,0.7)', border: '1px solid rgba(99,102,241,0.1)' }}
+      style={{ background: 'rgba(14,15,28,0.7)', border: '1px solid rgba(10,132,255,0.1)' }}
     >
       {/* Header row — click to expand */}
       <button
@@ -211,7 +211,7 @@ function DishCard({
             <div className="flex items-center gap-2 mt-0.5">
               <StarsDisplay value={Math.round(dish.avgStars)} size={12} />
               <span className="text-xs font-semibold" style={{ color: '#f59e0b' }}>{dish.avgStars.toFixed(1)}</span>
-              <span className="text-xs" style={{ color: '#4a4a5e' }}>
+              <span className="text-xs" style={{ color: 'rgba(235,235,245,0.3)' }}>
                 ({dish.count} {dish.count === 1 ? 'vote' : 'votes'})
               </span>
             </div>
@@ -220,7 +220,7 @@ function DishCard({
           )}
         </div>
 
-        <span className="flex-shrink-0" style={{ color: '#4a4a5e' }}>
+        <span className="flex-shrink-0" style={{ color: 'rgba(235,235,245,0.3)' }}>
           {expanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
         </span>
       </button>
@@ -232,10 +232,10 @@ function DishCard({
 
           {/* Dish ID badge */}
           <div className="flex items-center gap-2 mb-1">
-            <span className="text-xs" style={{ color: '#4a4a5e' }}>ID:</span>
+            <span className="text-xs" style={{ color: 'rgba(235,235,245,0.3)' }}>ID:</span>
             <span
               className="text-xs font-mono px-2 py-0.5 rounded-md break-all"
-              style={{ background: 'rgba(99,102,241,0.1)', color: '#818cf8', border: '1px solid rgba(99,102,241,0.15)' }}
+              style={{ background: 'rgba(10,132,255,0.1)', color: '#0a84ff', border: '1px solid rgba(10,132,255,0.15)' }}
             >
               {dish.dishId}
             </span>
@@ -321,7 +321,7 @@ export function RatingsPage() {
       {/* Header */}
       <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl font-bold" style={{ color: '#f0f0f5' }}>Dish Ratings</h1>
+          <h1 className="text-2xl font-bold" style={{ color: '#ffffff' }}>Dish Ratings</h1>
           <p className="text-sm mt-0.5" style={{ color: '#6b6b80' }}>
             {dishes.length} {dishes.length === 1 ? 'dish' : 'dishes'} &middot;{' '}
             {dishes.reduce((s, d) => s + d.count, 0)} total votes
@@ -331,7 +331,7 @@ export function RatingsPage() {
           onClick={load}
           disabled={loading}
           className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-all"
-          style={{ background: 'rgba(255,255,255,0.05)', color: '#8b8b9b', border: '1px solid rgba(255,255,255,0.08)' }}
+          style={{ background: 'rgba(255,255,255,0.05)', color: 'rgba(235,235,245,0.6)', border: '1px solid rgba(255,255,255,0.08)' }}
           onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.08)'; }}
           onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.05)'; }}
         >
@@ -353,8 +353,8 @@ export function RatingsPage() {
           color: '#c0c0d0',
         }}
         onFocus={(e) => {
-          (e.target as HTMLInputElement).style.borderColor = 'rgba(99,102,241,0.4)';
-          (e.target as HTMLInputElement).style.boxShadow = '0 0 0 3px rgba(99,102,241,0.08)';
+          (e.target as HTMLInputElement).style.borderColor = 'rgba(10,132,255,0.4)';
+          (e.target as HTMLInputElement).style.boxShadow = '0 0 0 3px rgba(10,132,255,0.08)';
         }}
         onBlur={(e) => {
           (e.target as HTMLInputElement).style.borderColor = 'rgba(255,255,255,0.08)';
@@ -364,7 +364,7 @@ export function RatingsPage() {
 
       {loading && dishes.length === 0 ? (
         <div className="flex justify-center py-20">
-          <div className="w-8 h-8 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+          <div className="w-8 h-8 border-2 border-[#0a84ff] border-t-transparent rounded-full animate-spin" />
         </div>
       ) : filtered.length === 0 ? (
         <div
@@ -372,7 +372,7 @@ export function RatingsPage() {
           style={{ background: 'rgba(14,15,28,0.5)', border: '1px solid rgba(255,255,255,0.06)' }}
         >
           <Star size={32} className="mx-auto mb-3" style={{ color: '#2a2a3e' }} />
-          <p className="text-sm" style={{ color: '#4a4a5e' }}>
+          <p className="text-sm" style={{ color: 'rgba(235,235,245,0.3)' }}>
             {search ? 'No dishes match your search' : 'No dish ratings yet'}
           </p>
         </div>
@@ -381,7 +381,7 @@ export function RatingsPage() {
           {/* Dishes with votes */}
           {withVotes.length > 0 && (
             <div>
-              <h2 className="text-xs font-semibold uppercase tracking-widest mb-3" style={{ color: '#4a4a5e' }}>
+              <h2 className="text-xs font-semibold uppercase tracking-widest mb-3" style={{ color: 'rgba(235,235,245,0.3)' }}>
                 Rated dishes
               </h2>
               <div className="flex flex-col gap-2">

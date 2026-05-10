@@ -141,18 +141,18 @@ function CropOverlay({
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4" style={{ borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
           <div className="flex items-center gap-2">
-            <Crop size={16} style={{ color: '#818cf8' }} />
-            <span className="font-semibold text-sm" style={{ color: '#f0f0f5' }}>Bild zuschneiden</span>
-            <span className="text-xs px-2 py-0.5 rounded-full" style={{ background: 'rgba(99,102,241,0.15)', color: '#818cf8' }}>{modal.longName}</span>
+            <Crop size={16} style={{ color: '#0a84ff' }} />
+            <span className="font-semibold text-sm" style={{ color: '#ffffff' }}>Bild zuschneiden</span>
+            <span className="text-xs px-2 py-0.5 rounded-full" style={{ background: 'rgba(10,132,255,0.15)', color: '#0a84ff' }}>{modal.longName}</span>
           </div>
-          <button onClick={onCancel} style={{ color: '#4a4a5e' }} className="hover:text-white transition-colors">
+          <button onClick={onCancel} style={{ color: 'rgba(235,235,245,0.3)' }} className="hover:text-white transition-colors">
             <X size={18} />
           </button>
         </div>
 
         {/* Image + crop box */}
         <div className="overflow-auto p-4 flex-1">
-          <p className="text-xs mb-3" style={{ color: '#4a4a5e' }}>
+          <p className="text-xs mb-3" style={{ color: 'rgba(235,235,245,0.3)' }}>
             Box verschieben oder an den Ecken ziehen — Seitenverhältnis bleibt 3:1.
           </p>
           <div className="relative inline-block" style={{ userSelect: 'none' }}>
@@ -176,7 +176,7 @@ function CropOverlay({
                 <div
                   style={{
                     position: 'absolute', left: box.x, top: box.y, width: box.w, height: box.h,
-                    border: '2px solid #818cf8', cursor: 'move', boxSizing: 'border-box',
+                    border: '2px solid #0a84ff', cursor: 'move', boxSizing: 'border-box',
                   }}
                   onMouseDown={e => startDrag('move', e)}
                 >
@@ -191,7 +191,7 @@ function CropOverlay({
                     <div
                       key={id}
                       onMouseDown={e => startDrag(id, e)}
-                      style={{ position: 'absolute', width: HANDLE, height: HANDLE, background: '#818cf8', borderRadius: 3, ...s }}
+                      style={{ position: 'absolute', width: HANDLE, height: HANDLE, background: '#0a84ff', borderRadius: 3, ...s }}
                     />
                   ))}
                 </div>
@@ -214,7 +214,7 @@ function CropOverlay({
             onClick={handleConfirm}
             disabled={uploading || !box}
             className="flex items-center gap-1.5 text-xs px-4 py-2 rounded-lg font-semibold transition-all disabled:opacity-50"
-            style={{ background: 'rgba(99,102,241,0.2)', border: '1px solid rgba(99,102,241,0.35)', color: '#818cf8' }}
+            style={{ background: 'rgba(10,132,255,0.2)', border: '1px solid rgba(10,132,255,0.35)', color: '#0a84ff' }}
           >
             {uploading
               ? <span className="w-3.5 h-3.5 border border-indigo-400 border-t-transparent rounded-full animate-spin" />
@@ -291,9 +291,9 @@ function SubjectCard({
       </div>
 
       <div className="flex-1 min-w-0">
-        <p className="text-sm font-semibold truncate" style={{ color: '#f0f0f5' }}>{row.longName}</p>
+        <p className="text-sm font-semibold truncate" style={{ color: '#ffffff' }}>{row.longName}</p>
         {row.shortName && row.shortName !== row.longName && (
-          <p className="text-xs" style={{ color: '#4a4a5e' }}>{row.shortName}</p>
+          <p className="text-xs" style={{ color: 'rgba(235,235,245,0.3)' }}>{row.shortName}</p>
         )}
       </div>
 
@@ -301,9 +301,9 @@ function SubjectCard({
         <button
           onClick={() => inputRef.current?.click()}
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all"
-          style={{ background: 'rgba(99,102,241,0.12)', border: '1px solid rgba(99,102,241,0.25)', color: '#818cf8' }}
-          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'rgba(99,102,241,0.22)'; }}
-          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'rgba(99,102,241,0.12)'; }}
+          style={{ background: 'rgba(10,132,255,0.12)', border: '1px solid rgba(10,132,255,0.25)', color: '#0a84ff' }}
+          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'rgba(10,132,255,0.22)'; }}
+          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'rgba(10,132,255,0.12)'; }}
         >
           <ImagePlus size={13} />
           {row.hasImage ? 'Ersetzen' : 'Bild hinzu'}
@@ -394,13 +394,13 @@ export function SubjectImagesPage() {
 
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-xl font-bold" style={{ color: '#f0f0f5' }}>Fachbilder</h1>
-          <p className="text-sm mt-0.5" style={{ color: '#4a4a5e' }}>Bilder für Unterrichtsfächer — sichtbar für alle User im Stundenplan-Popup</p>
+          <h1 className="text-xl font-bold" style={{ color: '#ffffff' }}>Fachbilder</h1>
+          <p className="text-sm mt-0.5" style={{ color: 'rgba(235,235,245,0.3)' }}>Bilder für Unterrichtsfächer — sichtbar für alle User im Stundenplan-Popup</p>
         </div>
         <button
           onClick={load} disabled={loading}
           className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-all disabled:opacity-50"
-          style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', color: '#8b8b9b' }}
+          style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', color: 'rgba(235,235,245,0.6)' }}
         >
           <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
           Aktualisieren
@@ -409,10 +409,10 @@ export function SubjectImagesPage() {
 
       {loading ? (
         <div className="flex items-center justify-center py-20">
-          <div className="w-7 h-7 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+          <div className="w-7 h-7 border-2 border-[#0a84ff] border-t-transparent rounded-full animate-spin" />
         </div>
       ) : rows.length === 0 ? (
-        <div className="text-center py-20" style={{ color: '#4a4a5e' }}>
+        <div className="text-center py-20" style={{ color: 'rgba(235,235,245,0.3)' }}>
           <Image size={36} className="mx-auto mb-3 opacity-40" />
           <p className="text-sm">Noch keine Fächer bekannt.<br />Stundenplan im Frontend aufrufen, dann erscheinen sie hier.</p>
         </div>
@@ -421,8 +421,8 @@ export function SubjectImagesPage() {
           {withoutImg.length > 0 && (
             <section>
               <div className="flex items-center gap-2 mb-3">
-                <span className="text-xs font-bold uppercase tracking-widest" style={{ color: '#4a4a5e' }}>Kein Bild</span>
-                <span className="text-xs font-bold px-2 py-0.5 rounded-full" style={{ background: 'rgba(255,255,255,0.06)', color: '#4a4a5e' }}>{withoutImg.length}</span>
+                <span className="text-xs font-bold uppercase tracking-widest" style={{ color: 'rgba(235,235,245,0.3)' }}>Kein Bild</span>
+                <span className="text-xs font-bold px-2 py-0.5 rounded-full" style={{ background: 'rgba(255,255,255,0.06)', color: 'rgba(235,235,245,0.3)' }}>{withoutImg.length}</span>
               </div>
               <div className="flex flex-col gap-2">
                 {withoutImg.map(r => <SubjectCard key={r.key} row={r} onDeleted={handleDeleted} onOpenCrop={setCropModal} />)}
@@ -432,8 +432,8 @@ export function SubjectImagesPage() {
           {withImg.length > 0 && (
             <section>
               <div className="flex items-center gap-2 mb-3">
-                <span className="text-xs font-bold uppercase tracking-widest" style={{ color: '#818cf8' }}>Bild hinzugefügt</span>
-                <span className="text-xs font-bold px-2 py-0.5 rounded-full" style={{ background: 'rgba(99,102,241,0.15)', color: '#818cf8' }}>{withImg.length}</span>
+                <span className="text-xs font-bold uppercase tracking-widest" style={{ color: '#0a84ff' }}>Bild hinzugefügt</span>
+                <span className="text-xs font-bold px-2 py-0.5 rounded-full" style={{ background: 'rgba(10,132,255,0.15)', color: '#0a84ff' }}>{withImg.length}</span>
               </div>
               <div className="flex flex-col gap-2">
                 {withImg.map(r => <SubjectCard key={r.key} row={r} onDeleted={handleDeleted} onOpenCrop={setCropModal} />)}

@@ -21,34 +21,34 @@ import { adminApi } from '../api';
 import { useToast } from './Toast';
 import type { AdminUserDetail, AdminTodo, AdminUserClass } from '../types';
 
-const AVATAR_COLORS = [
-  '#6366f1', '#8b5cf6', '#06b6d4', '#10b981', '#f59e0b', '#ef4444',
-];
+const AVATAR_COLORS = ['#0a84ff', '#bf5af2', '#40c8e0', '#30d158', '#ff9f0a', '#ff453a'];
+
 function avatarColor(s: string) {
   let h = 0;
   for (let i = 0; i < s.length; i++) h = s.charCodeAt(i) + ((h << 5) - h);
   return AVATAR_COLORS[Math.abs(h) % AVATAR_COLORS.length]!;
 }
+
 function relativeDate(d: string) {
   const diff = Date.now() - new Date(d).getTime();
   const days = Math.floor(diff / 86400000);
-  if (days === 0) return 'Today';
-  if (days === 1) return 'Yesterday';
-  if (days < 30) return `${days}d ago`;
-  return `${Math.floor(days / 30)}mo ago`;
+  if (days === 0) return 'Heute';
+  if (days === 1) return 'Gestern';
+  if (days < 30) return `vor ${days}T`;
+  return `vor ${Math.floor(days / 30)}M`;
 }
+
 function fmtDate(d: string | null) {
   if (!d) return null;
-  return new Date(d).toLocaleDateString('en', { month: 'short', day: 'numeric', year: 'numeric' });
+  return new Date(d).toLocaleDateString('de-AT', { month: 'short', day: 'numeric', year: 'numeric' });
 }
+
 function toDatetimeLocal(iso: string | null): string {
   if (!iso) return '';
   const d = new Date(iso);
   const pad = (n: number) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
-
-// ─── Todo row ─────────────────────────────────────────────────────────────────
 
 function TodoRow({
   todo,
@@ -71,9 +71,7 @@ function TodoRow({
   const [expanded, setExpanded] = useState(false);
   const titleInputRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => {
-    if (editing) titleInputRef.current?.focus();
-  }, [editing]);
+  useEffect(() => { if (editing) titleInputRef.current?.focus(); }, [editing]);
 
   function resetEdit() {
     setTitle(todo.title);
@@ -88,7 +86,7 @@ function TodoRow({
       const updated = await adminApi.updateTodo(stableUid, todo.id, { done: !todo.done });
       onUpdated(updated);
     } catch (e) {
-      showToast(e instanceof Error ? e.message : 'Failed to update', 'error');
+      showToast(e instanceof Error ? e.message : 'Fehler', 'error');
     } finally {
       setSaving(false);
     }
@@ -98,25 +96,18 @@ function TodoRow({
     const trimmed = title.trim();
     if (!trimmed) return;
     setSaving(true);
-
     const newDueAt = dueAtLocal ? new Date(dueAtLocal).toISOString() : null;
     const updateData: Partial<{ title: string; details: string; dueAt: string | null }> = {};
     if (trimmed !== todo.title) updateData.title = trimmed;
     if (details !== todo.details) updateData.details = details;
     if (newDueAt !== todo.dueAt) updateData.dueAt = newDueAt;
-
-    if (Object.keys(updateData).length === 0) {
-      setEditing(false);
-      setSaving(false);
-      return;
-    }
-
+    if (Object.keys(updateData).length === 0) { setEditing(false); setSaving(false); return; }
     try {
       const updated = await adminApi.updateTodo(stableUid, todo.id, updateData);
       onUpdated(updated);
       setEditing(false);
     } catch (e) {
-      showToast(e instanceof Error ? e.message : 'Failed to update', 'error');
+      showToast(e instanceof Error ? e.message : 'Fehler', 'error');
       resetEdit();
     } finally {
       setSaving(false);
@@ -129,7 +120,7 @@ function TodoRow({
       await adminApi.deleteTodo(stableUid, todo.id);
       onDeleted(todo.id);
     } catch (e) {
-      showToast(e instanceof Error ? e.message : 'Failed to delete', 'error');
+      showToast(e instanceof Error ? e.message : 'Fehler', 'error');
       setDeleting(false);
     }
   }
@@ -138,10 +129,10 @@ function TodoRow({
 
   return (
     <div
-      className="rounded-xl transition-all"
+      className="rounded-[12px] transition-all"
       style={{
-        background: todo.done ? 'rgba(255,255,255,0.02)' : '#18181f',
-        border: `1px solid ${editing ? 'rgba(99,102,241,0.3)' : isOverdue ? 'rgba(255,69,58,0.2)' : 'rgba(255,255,255,0.06)'}`,
+        background: todo.done ? 'rgba(255,255,255,0.02)' : '#2c2c2e',
+        border: `1px solid ${editing ? 'rgba(10,132,255,0.3)' : isOverdue ? 'rgba(255,69,58,0.22)' : 'rgba(255,255,255,0.07)'}`,
       }}
     >
       <div className="flex items-start gap-3 p-3">
@@ -149,9 +140,12 @@ function TodoRow({
           onClick={() => void toggleDone()}
           disabled={saving || editing}
           className="mt-0.5 flex-shrink-0 transition-opacity"
-          style={{ color: todo.done ? '#30d158' : '#4a4a5e', opacity: (saving && !editing) ? 0.5 : 1 }}
+          style={{ color: todo.done ? '#30d158' : 'rgba(235,235,245,0.28)', opacity: (saving && !editing) ? 0.5 : 1 }}
         >
-          {(saving && !editing) ? <Loader2 size={16} className="animate-spin" /> : todo.done ? <CheckSquare size={16} /> : <Square size={16} />}
+          {(saving && !editing)
+            ? <Loader2 size={16} className="animate-spin" />
+            : todo.done ? <CheckSquare size={16} /> : <Square size={16} />
+          }
         </button>
 
         <div className="flex-1 min-w-0">
@@ -162,34 +156,33 @@ function TodoRow({
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
                 onKeyDown={(e) => { if (e.key === 'Escape') resetEdit(); }}
-                className="text-sm bg-transparent outline-none border-b w-full"
-                style={{ color: '#f0f0f5', borderColor: 'rgba(99,102,241,0.5)' }}
-                placeholder="Title"
+                className="text-[14px] bg-transparent outline-none border-b w-full text-white"
+                style={{ borderColor: 'rgba(10,132,255,0.5)', paddingBottom: '4px' }}
+                placeholder="Titel"
               />
               <textarea
                 value={details}
                 onChange={(e) => setDetails(e.target.value)}
                 rows={3}
-                className="text-xs outline-none resize-none rounded p-2 w-full"
+                className="text-[12px] outline-none resize-none rounded-[8px] p-2 w-full"
                 style={{
-                  color: '#8b8b9b',
+                  color: 'rgba(235,235,245,0.55)',
                   background: 'rgba(255,255,255,0.03)',
                   border: '1px solid rgba(255,255,255,0.07)',
-                  borderRadius: '6px',
                 }}
                 placeholder="Details (optional)"
               />
               <div className="flex items-center gap-2">
-                <Clock size={11} style={{ color: '#4a4a5e' }} />
+                <Clock size={11} style={{ color: 'rgba(235,235,245,0.3)' }} />
                 <input
                   type="datetime-local"
                   value={dueAtLocal}
                   onChange={(e) => setDueAtLocal(e.target.value)}
-                  className="text-xs bg-transparent outline-none flex-1"
-                  style={{ color: '#8b8b9b', colorScheme: 'dark' }}
+                  className="text-[11px] bg-transparent outline-none flex-1"
+                  style={{ color: 'rgba(235,235,245,0.5)', colorScheme: 'dark' }}
                 />
                 {dueAtLocal && (
-                  <button onClick={() => setDueAtLocal('')} style={{ color: '#4a4a5e' }} title="Clear due date">
+                  <button onClick={() => setDueAtLocal('')} style={{ color: 'rgba(235,235,245,0.3)' }}>
                     <X size={11} />
                   </button>
                 )}
@@ -198,54 +191,54 @@ function TodoRow({
                 <button
                   onClick={() => void saveEdit()}
                   disabled={saving || !title.trim()}
-                  className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg font-medium transition-all disabled:opacity-50"
-                  style={{ background: 'rgba(99,102,241,0.2)', color: '#818cf8', border: '1px solid rgba(99,102,241,0.3)' }}
+                  className="flex items-center gap-1 text-[12px] px-2.5 py-1.5 rounded-[8px] font-medium apple-btn disabled:opacity-50"
                 >
                   {saving ? <Loader2 size={11} className="animate-spin" /> : <Check size={11} />}
-                  Save
+                  Speichern
                 </button>
                 <button
                   onClick={resetEdit}
-                  className="text-xs px-2.5 py-1.5 rounded-lg transition-all"
-                  style={{ color: '#4a4a5e', border: '1px solid rgba(255,255,255,0.06)' }}
+                  className="text-[12px] px-2.5 py-1.5 rounded-[8px] apple-btn-ghost"
                 >
-                  Cancel
+                  Abbrechen
                 </button>
               </div>
             </div>
           ) : (
             <>
               <span
-                className="text-sm leading-snug"
-                style={{ color: todo.done ? '#4a4a5e' : '#f0f0f5', textDecoration: todo.done ? 'line-through' : 'none' }}
+                className="text-[14px] leading-snug"
+                style={{
+                  color: todo.done ? 'rgba(235,235,245,0.28)' : '#ffffff',
+                  textDecoration: todo.done ? 'line-through' : 'none',
+                }}
               >
                 {todo.title}
               </span>
-
               <div className="flex items-center gap-3 mt-1 flex-wrap">
                 {todo.dueAt && (
-                  <span className="text-xs flex items-center gap-1" style={{ color: isOverdue ? '#ff453a' : '#4a4a5e' }}>
+                  <span className="text-[11px] flex items-center gap-1" style={{ color: isOverdue ? '#ff453a' : 'rgba(235,235,245,0.3)' }}>
                     {isOverdue && <AlertTriangle size={10} />}
                     <Clock size={10} />
                     {fmtDate(todo.dueAt)}
                   </span>
                 )}
-                <span className="text-xs" style={{ color: '#4a4a5e' }}>{relativeDate(todo.createdAt)}</span>
+                <span className="text-[11px]" style={{ color: 'rgba(235,235,245,0.3)' }}>
+                  {relativeDate(todo.createdAt)}
+                </span>
               </div>
-
               {todo.details && (
                 <button
                   onClick={() => setExpanded(!expanded)}
-                  className="flex items-center gap-1 text-xs mt-1 transition-opacity hover:opacity-80"
-                  style={{ color: '#818cf8' }}
+                  className="flex items-center gap-1 text-[12px] mt-1 transition-opacity hover:opacity-75"
+                  style={{ color: '#0a84ff' }}
                 >
                   {expanded ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
-                  {expanded ? 'Hide details' : 'Show details'}
+                  {expanded ? 'Weniger' : 'Details'}
                 </button>
               )}
-
               {expanded && todo.details && (
-                <p className="text-xs mt-2 whitespace-pre-wrap leading-relaxed" style={{ color: '#8b8b9b' }}>
+                <p className="text-[12px] mt-2 whitespace-pre-wrap leading-relaxed" style={{ color: 'rgba(235,235,245,0.5)' }}>
                   {todo.details}
                 </p>
               )}
@@ -257,22 +250,22 @@ function TodoRow({
           <div className="flex items-center gap-1 flex-shrink-0">
             <button
               onClick={() => setEditing(true)}
-              className="p-1 rounded transition-colors"
-              style={{ color: '#4a4a5e' }}
-              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#818cf8'; }}
-              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = '#4a4a5e'; }}
-              title="Edit"
+              className="p-1 rounded-[6px] transition-colors"
+              style={{ color: 'rgba(235,235,245,0.28)' }}
+              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#0a84ff'; }}
+              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'rgba(235,235,245,0.28)'; }}
+              title="Bearbeiten"
             >
               <Edit3 size={13} />
             </button>
             <button
               onClick={() => void handleDelete()}
               disabled={deleting}
-              className="p-1 rounded transition-colors"
-              style={{ color: '#4a4a5e', opacity: deleting ? 0.5 : 1 }}
+              className="p-1 rounded-[6px] transition-colors"
+              style={{ color: 'rgba(235,235,245,0.28)', opacity: deleting ? 0.5 : 1 }}
               onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#ff453a'; }}
-              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = '#4a4a5e'; }}
-              title="Delete"
+              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'rgba(235,235,245,0.28)'; }}
+              title="Löschen"
             >
               {deleting ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}
             </button>
@@ -282,8 +275,6 @@ function TodoRow({
     </div>
   );
 }
-
-// ─── Create todo form ─────────────────────────────────────────────────────────
 
 function CreateTodoForm({
   stableUid,
@@ -314,11 +305,9 @@ function CreateTodoForm({
         dueAt: dueAtLocal ? new Date(dueAtLocal).toISOString() : null,
       });
       onCreated(todo);
-      setTitle('');
-      setDetails('');
-      setDueAtLocal('');
+      setTitle(''); setDetails(''); setDueAtLocal('');
     } catch (e) {
-      showToast(e instanceof Error ? e.message : 'Failed to create todo', 'error');
+      showToast(e instanceof Error ? e.message : 'Fehler', 'error');
     } finally {
       setCreating(false);
     }
@@ -327,41 +316,36 @@ function CreateTodoForm({
   return (
     <form
       onSubmit={(e) => void handleSubmit(e)}
-      className="rounded-xl p-3 flex flex-col gap-2"
-      style={{ background: '#18181f', border: '1px solid rgba(99,102,241,0.25)' }}
+      className="rounded-[12px] p-3 flex flex-col gap-2"
+      style={{ background: '#2c2c2e', border: '1px solid rgba(10,132,255,0.25)' }}
     >
       <input
         ref={inputRef}
         value={title}
         onChange={(e) => setTitle(e.target.value)}
-        placeholder="Todo title *"
-        className="text-sm bg-transparent outline-none border-b w-full"
-        style={{ color: '#f0f0f5', borderColor: 'rgba(99,102,241,0.4)', paddingBottom: '4px' }}
+        placeholder="Todo-Titel *"
+        className="text-[14px] bg-transparent outline-none border-b w-full text-white"
+        style={{ borderColor: 'rgba(10,132,255,0.4)', paddingBottom: '4px' }}
       />
       <textarea
         value={details}
         onChange={(e) => setDetails(e.target.value)}
         rows={2}
-        className="text-xs outline-none resize-none rounded p-2 w-full"
-        style={{
-          color: '#8b8b9b',
-          background: 'rgba(255,255,255,0.03)',
-          border: '1px solid rgba(255,255,255,0.07)',
-          borderRadius: '6px',
-        }}
+        className="text-[12px] outline-none resize-none rounded-[8px] p-2 w-full"
+        style={{ color: 'rgba(235,235,245,0.55)', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)' }}
         placeholder="Details (optional)"
       />
       <div className="flex items-center gap-2">
-        <Clock size={11} style={{ color: '#4a4a5e' }} />
+        <Clock size={11} style={{ color: 'rgba(235,235,245,0.3)' }} />
         <input
           type="datetime-local"
           value={dueAtLocal}
           onChange={(e) => setDueAtLocal(e.target.value)}
-          className="text-xs bg-transparent outline-none flex-1"
-          style={{ color: '#8b8b9b', colorScheme: 'dark' }}
+          className="text-[11px] bg-transparent outline-none flex-1"
+          style={{ color: 'rgba(235,235,245,0.5)', colorScheme: 'dark' }}
         />
         {dueAtLocal && (
-          <button type="button" onClick={() => setDueAtLocal('')} style={{ color: '#4a4a5e' }}>
+          <button type="button" onClick={() => setDueAtLocal('')} style={{ color: 'rgba(235,235,245,0.3)' }}>
             <X size={11} />
           </button>
         )}
@@ -370,26 +354,22 @@ function CreateTodoForm({
         <button
           type="submit"
           disabled={creating || !title.trim()}
-          className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg font-medium transition-all disabled:opacity-50"
-          style={{ background: 'rgba(99,102,241,0.2)', color: '#818cf8', border: '1px solid rgba(99,102,241,0.3)' }}
+          className="apple-btn flex items-center gap-1.5 text-[12px] px-2.5 py-1.5 disabled:opacity-50"
         >
           {creating ? <Loader2 size={11} className="animate-spin" /> : <Plus size={11} />}
-          Add Todo
+          Hinzufügen
         </button>
         <button
           type="button"
           onClick={onCancel}
-          className="text-xs px-2.5 py-1.5 rounded-lg transition-all"
-          style={{ color: '#4a4a5e', border: '1px solid rgba(255,255,255,0.06)' }}
+          className="apple-btn-ghost text-[12px] px-2.5 py-1.5"
         >
-          Cancel
+          Abbrechen
         </button>
       </div>
     </form>
   );
 }
-
-// ─── Class row ────────────────────────────────────────────────────────────────
 
 function ClassRow({
   cls,
@@ -409,46 +389,43 @@ function ClassRow({
       await adminApi.removeFromClass(stableUid, cls.classId);
       onRemoved(cls.classId);
     } catch (e) {
-      showToast(e instanceof Error ? e.message : 'Failed to remove', 'error');
+      showToast(e instanceof Error ? e.message : 'Fehler', 'error');
       setRemoving(false);
     }
   }
 
   return (
     <div
-      className="flex items-center gap-3 p-3 rounded-xl"
-      style={{ background: '#18181f', border: '1px solid rgba(255,255,255,0.06)' }}
+      className="flex items-center gap-3 p-3 rounded-[12px]"
+      style={{ background: '#2c2c2e', border: '1px solid rgba(255,255,255,0.06)' }}
     >
       <div
-        className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
-        style={{ background: 'rgba(6,182,212,0.15)', color: '#06b6d4' }}
+        className="w-8 h-8 rounded-[10px] flex items-center justify-center flex-shrink-0"
+        style={{ background: 'rgba(64,200,224,0.12)', color: '#40c8e0' }}
       >
-        <Building2 size={15} />
+        <Building2 size={14} />
       </div>
       <div className="flex-1 min-w-0">
-        <div className="text-sm font-medium truncate" style={{ color: '#f0f0f5' }}>{cls.className}</div>
-        <div className="text-xs font-mono mt-0.5" style={{ color: '#06b6d4' }}>{cls.classCode}</div>
+        <div className="text-[14px] font-medium truncate text-white">{cls.className}</div>
+        <div className="text-[11px] font-mono mt-0.5" style={{ color: '#40c8e0' }}>{cls.classCode}</div>
       </div>
       <div className="flex items-center gap-2 flex-shrink-0">
-        <span className="text-xs" style={{ color: '#4a4a5e' }}>{relativeDate(cls.joinedAt)}</span>
+        <span className="text-[11px]" style={{ color: 'rgba(235,235,245,0.3)' }}>{relativeDate(cls.joinedAt)}</span>
         <button
           onClick={() => void handleRemove()}
           disabled={removing}
-          className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg transition-all font-medium"
-          style={{ color: '#ff453a', border: '1px solid rgba(255,69,58,0.2)', background: 'transparent' }}
+          className="flex items-center gap-1 text-[12px] px-2.5 py-1.5 rounded-[8px] transition-all font-medium"
+          style={{ color: '#ff453a', border: '1px solid rgba(255,69,58,0.22)', background: 'transparent' }}
           onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,69,58,0.08)'; }}
           onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
-          title="Remove from class"
         >
           {removing ? <Loader2 size={11} className="animate-spin" /> : <LogOut size={11} />}
-          Remove
+          Entfernen
         </button>
       </div>
     </div>
   );
 }
-
-// ─── Main drawer ──────────────────────────────────────────────────────────────
 
 interface UserDetailDrawerProps {
   stableUid: string;
@@ -477,7 +454,6 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
   }, []);
 
   useEffect(() => {
-    // Small delay so CSS transition fires after mount
     const raf = requestAnimationFrame(() => setMounted(true));
     return () => cancelAnimationFrame(raf);
   }, []);
@@ -486,26 +462,14 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
     setLoading(true);
     adminApi.userDetail(stableUid)
       .then(setUser)
-      .catch((e) => showToast(e instanceof Error ? e.message : 'Failed to load user', 'error'))
+      .catch((e) => showToast(e instanceof Error ? e.message : 'Laden fehlgeschlagen', 'error'))
       .finally(() => setLoading(false));
   }, [stableUid, showToast]);
 
-  function handleTodoCreated(todo: AdminTodo) {
-    setUser((prev) => prev ? { ...prev, todos: [todo, ...prev.todos] } : prev);
-    setShowCreateTodo(false);
-  }
-
-  function handleTodoUpdated(updated: AdminTodo) {
-    setUser((prev) => prev ? { ...prev, todos: prev.todos.map((t) => t.id === updated.id ? updated : t) } : prev);
-  }
-
-  function handleTodoDeleted(id: string) {
-    setUser((prev) => prev ? { ...prev, todos: prev.todos.filter((t) => t.id !== id) } : prev);
-  }
-
-  function handleClassRemoved(classId: string) {
-    setUser((prev) => prev ? { ...prev, classes: prev.classes.filter((c) => c.classId !== classId) } : prev);
-  }
+  function handleTodoCreated(todo: AdminTodo) { setUser((prev) => prev ? { ...prev, todos: [todo, ...prev.todos] } : prev); setShowCreateTodo(false); }
+  function handleTodoUpdated(updated: AdminTodo) { setUser((prev) => prev ? { ...prev, todos: prev.todos.map((t) => t.id === updated.id ? updated : t) } : prev); }
+  function handleTodoDeleted(id: string) { setUser((prev) => prev ? { ...prev, todos: prev.todos.filter((t) => t.id !== id) } : prev); }
+  function handleClassRemoved(classId: string) { setUser((prev) => prev ? { ...prev, classes: prev.classes.filter((c) => c.classId !== classId) } : prev); }
 
   async function handleToggleAdmin() {
     if (!user) return;
@@ -513,16 +477,16 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
     try {
       if (user.isAdmin) {
         await adminApi.revokeAdmin(user.stableUid);
-        showToast(`Admin revoked from ${user.username}`, 'success');
+        showToast(`Admin von ${user.username} entzogen`, 'success');
       } else {
         await adminApi.grantAdmin(user.stableUid);
-        showToast(`Admin granted to ${user.username}`, 'success');
+        showToast(`Admin an ${user.username} vergeben`, 'success');
       }
       const newIsAdmin = !user.isAdmin;
       setUser((prev) => prev ? { ...prev, isAdmin: newIsAdmin } : prev);
       onAdminToggled(user.stableUid, newIsAdmin);
     } catch (e) {
-      showToast(e instanceof Error ? e.message : 'Action failed', 'error');
+      showToast(e instanceof Error ? e.message : 'Fehler', 'error');
     } finally {
       setTogglingAdmin(false);
     }
@@ -533,16 +497,16 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
     setDeletingUser(true);
     try {
       await adminApi.deleteUser(user.stableUid);
-      showToast(`User ${user.username} deleted`, 'success');
+      showToast(`${user.username} gelöscht`, 'success');
       onUserDeleted(user.stableUid);
       onClose();
     } catch (e) {
-      showToast(e instanceof Error ? e.message : 'Failed to delete user', 'error');
+      showToast(e instanceof Error ? e.message : 'Fehler', 'error');
       setDeletingUser(false);
     }
   }
 
-  const doneTodos = user?.todos.filter((t) => t.done) ?? [];
+  const doneTodos    = user?.todos.filter((t) => t.done)  ?? [];
   const pendingTodos = user?.todos.filter((t) => !t.done) ?? [];
 
   return (
@@ -551,45 +515,43 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
       <div
         className="fixed inset-0 z-40"
         style={{
-          background: 'rgba(0,0,0,0.65)',
-          backdropFilter: 'blur(6px)',
+          background: 'rgba(0,0,0,0.7)',
+          backdropFilter: 'blur(8px)',
+          WebkitBackdropFilter: 'blur(8px)',
           transition: 'opacity 0.25s ease',
           opacity: mounted ? 1 : 0,
         }}
         onClick={onClose}
       />
 
-      {/* Drawer — right panel on desktop, bottom sheet on mobile */}
+      {/* Drawer */}
       <div
         className="fixed z-50 flex flex-col overflow-hidden"
         style={isMobile ? {
-          bottom: 0,
-          left: 0,
-          right: 0,
+          bottom: 0, left: 0, right: 0,
           height: '88vh',
-          background: '#0e0f1c',
+          background: '#1c1c1e',
           borderTop: '1px solid rgba(255,255,255,0.1)',
           borderRadius: '20px 20px 0 0',
-          boxShadow: '0 -24px 80px rgba(0,0,0,0.7)',
+          boxShadow: '0 -32px 80px rgba(0,0,0,0.7)',
           transform: mounted ? 'translateY(0)' : 'translateY(100%)',
-          transition: 'transform 0.32s cubic-bezier(0.4,0,0.2,1)',
+          transition: 'transform 0.35s cubic-bezier(0.4,0,0.2,1)',
         } : {
-          right: 0,
-          top: 0,
+          right: 0, top: 0,
           height: '100%',
           width: '480px',
           maxWidth: '100vw',
-          background: '#0e0f1c',
-          borderLeft: '1px solid rgba(255,255,255,0.07)',
-          boxShadow: '-24px 0 80px rgba(0,0,0,0.6)',
+          background: '#1c1c1e',
+          borderLeft: '1px solid rgba(255,255,255,0.08)',
+          boxShadow: '-32px 0 80px rgba(0,0,0,0.65)',
           transform: mounted ? 'translateX(0)' : 'translateX(100%)',
-          transition: 'transform 0.3s cubic-bezier(0.4,0,0.2,1)',
+          transition: 'transform 0.32s cubic-bezier(0.4,0,0.2,1)',
         }}
       >
-        {/* Mobile drag handle */}
+        {/* Mobile handle */}
         {isMobile && (
           <div className="flex justify-center pt-3 pb-1 flex-shrink-0">
-            <div className="w-10 h-1 rounded-full" style={{ background: 'rgba(255,255,255,0.15)' }} />
+            <div className="w-9 h-1 rounded-full" style={{ background: 'rgba(255,255,255,0.15)' }} />
           </div>
         )}
 
@@ -598,15 +560,17 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
           className="flex items-center justify-between px-5 py-4 flex-shrink-0"
           style={{ borderBottom: '1px solid rgba(255,255,255,0.07)' }}
         >
-          <span className="text-sm font-semibold" style={{ color: '#f0f0f5' }}>User Details</span>
+          <span className="text-[14px] font-semibold text-white" style={{ letterSpacing: '-0.01em' }}>
+            Benutzerdetails
+          </span>
           <button
             onClick={onClose}
-            className="p-2 rounded-xl transition-colors"
-            style={{ color: '#4a4a5e', background: 'rgba(255,255,255,0.04)' }}
-            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#f0f0f5'; (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.08)'; }}
-            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = '#4a4a5e'; (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.04)'; }}
+            className="p-2 rounded-[10px] transition-colors"
+            style={{ color: 'rgba(235,235,245,0.4)', background: 'rgba(255,255,255,0.05)' }}
+            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#fff'; (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.09)'; }}
+            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'rgba(235,235,245,0.4)'; (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.05)'; }}
           >
-            <X size={16} />
+            <X size={15} />
           </button>
         </div>
 
@@ -614,40 +578,41 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
         <div className="flex-1 overflow-y-auto scroll-touch scrollbar-thin p-5 flex flex-col gap-5">
           {loading ? (
             <div className="flex items-center justify-center py-16">
-              <Loader2 size={24} className="animate-spin" style={{ color: '#4a4a5e' }} />
+              <Loader2 size={22} className="animate-spin" style={{ color: 'rgba(235,235,245,0.3)' }} />
             </div>
           ) : !user ? (
-            <div className="text-center py-16" style={{ color: '#4a4a5e' }}>User not found</div>
+            <div className="text-center py-16 text-[14px]" style={{ color: 'rgba(235,235,245,0.3)' }}>
+              Benutzer nicht gefunden
+            </div>
           ) : (
             <>
-              {/* User info card */}
+              {/* User card */}
               <div
-                className="rounded-2xl p-5"
-                style={{ background: '#111116', border: '1px solid rgba(255,255,255,0.07)' }}
+                className="rounded-[16px] p-5"
+                style={{ background: '#2c2c2e', border: '1px solid rgba(255,255,255,0.07)' }}
               >
                 <div className="flex items-center gap-4">
                   <div
-                    className="w-14 h-14 rounded-2xl flex items-center justify-center text-xl font-bold text-white flex-shrink-0"
+                    className="w-14 h-14 rounded-[16px] flex items-center justify-center text-[20px] font-bold text-white flex-shrink-0"
                     style={{ background: avatarColor(user.username) }}
                   >
                     {user.username[0]?.toUpperCase() ?? '?'}
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
-                      <span className="text-lg font-bold truncate" style={{ color: '#f0f0f5' }}>{user.username}</span>
+                      <span className="text-[18px] font-bold text-white truncate" style={{ letterSpacing: '-0.02em' }}>
+                        {user.username}
+                      </span>
                       {user.isAdmin && (
-                        <span
-                          className="text-xs px-2 py-0.5 font-medium"
-                          style={{ background: 'rgba(99,102,241,0.15)', color: '#818cf8', border: '1px solid rgba(99,102,241,0.22)', borderRadius: '6px' }}
-                        >
-                          Admin
-                        </span>
+                        <span className="badge-blue text-[11px] px-2 py-0.5 font-medium">Admin</span>
                       )}
                     </div>
-                    <div className="text-xs font-mono mt-1" style={{ color: '#4a4a5e' }}>{user.stableUid}</div>
-                    <div className="flex items-center gap-3 mt-2 text-xs flex-wrap" style={{ color: '#8b8b9b' }}>
+                    <div className="text-[11px] font-mono mt-1" style={{ color: 'rgba(235,235,245,0.28)' }}>
+                      {user.stableUid}
+                    </div>
+                    <div className="flex items-center gap-3 mt-1.5 text-[12px] flex-wrap" style={{ color: 'rgba(235,235,245,0.4)' }}>
                       {user.webuntisKlasseName && <span>{user.webuntisKlasseName}</span>}
-                      <span>Joined {relativeDate(user.createdAt)}</span>
+                      <span>Beigetreten {relativeDate(user.createdAt)}</span>
                     </div>
                   </div>
                 </div>
@@ -659,16 +624,16 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
                   <button
                     onClick={() => void handleToggleAdmin()}
                     disabled={togglingAdmin}
-                    className="flex items-center gap-1.5 text-xs px-3 py-2 rounded-lg transition-all font-medium"
+                    className="flex items-center gap-1.5 text-[12px] px-3 py-2 rounded-[10px] transition-all font-medium"
                     style={user.isAdmin
                       ? { color: '#ff453a', border: '1px solid rgba(255,69,58,0.25)', background: 'transparent' }
-                      : { color: '#818cf8', border: '1px solid rgba(99,102,241,0.25)', background: 'transparent' }
+                      : { color: '#0a84ff', border: '1px solid rgba(10,132,255,0.25)', background: 'transparent' }
                     }
-                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = user.isAdmin ? 'rgba(255,69,58,0.08)' : 'rgba(99,102,241,0.1)'; }}
+                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = user.isAdmin ? 'rgba(255,69,58,0.08)' : 'rgba(10,132,255,0.1)'; }}
                     onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
                   >
                     {togglingAdmin ? <Loader2 size={12} className="animate-spin" /> : user.isAdmin ? <ShieldOff size={12} /> : <Shield size={12} />}
-                    {user.isAdmin ? 'Revoke admin' : 'Grant admin'}
+                    {user.isAdmin ? 'Admin entziehen' : 'Admin vergeben'}
                   </button>
                 </div>
               </div>
@@ -676,16 +641,19 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
               {/* Classes */}
               <section>
                 <div className="flex items-center justify-between mb-3">
-                  <h3 className="text-xs font-semibold uppercase tracking-wider" style={{ color: '#4a4a5e' }}>
-                    Classes ({user.classes.length})
+                  <h3
+                    className="text-[11px] font-semibold uppercase tracking-[0.05em]"
+                    style={{ color: 'rgba(235,235,245,0.3)' }}
+                  >
+                    Klassen ({user.classes.length})
                   </h3>
                 </div>
                 {user.classes.length === 0 ? (
                   <div
-                    className="rounded-xl p-4 text-center text-sm"
-                    style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)', color: '#4a4a5e' }}
+                    className="rounded-[12px] p-4 text-center text-[13px]"
+                    style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)', color: 'rgba(235,235,245,0.3)' }}
                   >
-                    Not in any class
+                    In keiner Klasse
                   </div>
                 ) : (
                   <div className="flex flex-col gap-2">
@@ -699,18 +667,21 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
               {/* Todos */}
               <section>
                 <div className="flex items-center justify-between mb-3">
-                  <h3 className="text-xs font-semibold uppercase tracking-wider" style={{ color: '#4a4a5e' }}>
-                    Todos — {pendingTodos.length} pending, {doneTodos.length} done
+                  <h3
+                    className="text-[11px] font-semibold uppercase tracking-[0.05em]"
+                    style={{ color: 'rgba(235,235,245,0.3)' }}
+                  >
+                    Todos &mdash; {pendingTodos.length} offen, {doneTodos.length} erledigt
                   </h3>
                   {!showCreateTodo && (
                     <button
                       onClick={() => setShowCreateTodo(true)}
-                      className="flex items-center gap-1 text-xs px-2 py-1 rounded-lg transition-all font-medium"
-                      style={{ color: '#818cf8', border: '1px solid rgba(99,102,241,0.25)', background: 'transparent' }}
-                      onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(99,102,241,0.1)'; }}
+                      className="flex items-center gap-1 text-[12px] px-2 py-1 rounded-[8px] transition-all font-medium"
+                      style={{ color: '#0a84ff', border: '1px solid rgba(10,132,255,0.25)', background: 'transparent' }}
+                      onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(10,132,255,0.1)'; }}
                       onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
                     >
-                      <Plus size={11} /> Add
+                      <Plus size={11} /> Hinzufügen
                     </button>
                   )}
                 </div>
@@ -727,10 +698,10 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
 
                 {user.todos.length === 0 && !showCreateTodo ? (
                   <div
-                    className="rounded-xl p-4 text-center text-sm"
-                    style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)', color: '#4a4a5e' }}
+                    className="rounded-[12px] p-4 text-center text-[13px]"
+                    style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)', color: 'rgba(235,235,245,0.3)' }}
                   >
-                    No todos
+                    Keine Todos
                   </div>
                 ) : (
                   <div className="flex flex-col gap-2">
@@ -740,7 +711,7 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
                     {doneTodos.length > 0 && pendingTodos.length > 0 && (
                       <div className="flex items-center gap-3 my-1">
                         <div className="flex-1 h-px" style={{ background: 'rgba(255,255,255,0.05)' }} />
-                        <span className="text-xs" style={{ color: '#4a4a5e' }}>Done</span>
+                        <span className="text-[11px]" style={{ color: 'rgba(235,235,245,0.3)' }}>Erledigt</span>
                         <div className="flex-1 h-px" style={{ background: 'rgba(255,255,255,0.05)' }} />
                       </div>
                     )}
@@ -753,44 +724,46 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
 
               {/* Danger zone */}
               <section
-                className="rounded-xl p-4"
+                className="rounded-[14px] p-4"
                 style={{ background: 'rgba(255,69,58,0.05)', border: '1px solid rgba(255,69,58,0.15)' }}
               >
-                <h3 className="text-xs font-semibold uppercase tracking-wider mb-3" style={{ color: '#ff453a' }}>
-                  Danger Zone
+                <h3
+                  className="text-[11px] font-semibold uppercase tracking-[0.05em] mb-3"
+                  style={{ color: '#ff453a' }}
+                >
+                  Gefahrenzone
                 </h3>
                 {!confirmDelete ? (
                   <button
                     onClick={() => setConfirmDelete(true)}
-                    className="flex items-center gap-2 text-sm px-3 py-2 rounded-lg transition-all font-medium"
+                    className="flex items-center gap-2 text-[13px] px-3 py-2 rounded-[10px] transition-all font-medium"
                     style={{ color: '#ff453a', border: '1px solid rgba(255,69,58,0.3)', background: 'transparent' }}
                     onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,69,58,0.08)'; }}
                     onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
                   >
-                    <Trash2 size={14} />
-                    Delete user account
+                    <Trash2 size={13} />
+                    Benutzerkonto löschen
                   </button>
                 ) : (
                   <div className="flex flex-col gap-2">
-                    <p className="text-xs" style={{ color: '#ff453a' }}>
-                      This will permanently delete <strong>{user.username}</strong> and all their data (todos, sessions, class memberships). This cannot be undone.
+                    <p className="text-[12px] leading-relaxed" style={{ color: '#ff453a' }}>
+                      <strong>{user.username}</strong> und alle zugehörigen Daten werden dauerhaft gelöscht. Diese Aktion kann nicht rückgängig gemacht werden.
                     </p>
                     <div className="flex items-center gap-2">
                       <button
                         onClick={() => void handleDeleteUser()}
                         disabled={deletingUser}
-                        className="flex items-center gap-2 text-sm px-3 py-2 rounded-lg font-medium"
-                        style={{ background: '#ff453a', color: '#fff', border: 'none', cursor: deletingUser ? 'not-allowed' : 'pointer', opacity: deletingUser ? 0.6 : 1 }}
+                        className="flex items-center gap-2 text-[13px] px-3 py-2 rounded-[10px] font-medium transition-all"
+                        style={{ background: '#ff453a', color: '#fff', opacity: deletingUser ? 0.6 : 1 }}
                       >
-                        {deletingUser ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}
-                        Confirm delete
+                        {deletingUser ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
+                        Bestätigen
                       </button>
                       <button
                         onClick={() => setConfirmDelete(false)}
-                        className="text-sm px-3 py-2 rounded-lg"
-                        style={{ color: '#8b8b9b', border: '1px solid rgba(255,255,255,0.08)', background: 'transparent' }}
+                        className="apple-btn-ghost text-[13px] px-3 py-2"
                       >
-                        Cancel
+                        Abbrechen
                       </button>
                     </div>
                   </div>

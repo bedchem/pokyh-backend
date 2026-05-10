@@ -36,9 +36,9 @@ function StepBar({ current }: { current: Step }) {
             <div
               className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold transition-all"
               style={{
-                background: i < idx ? '#10b981' : i === idx ? 'rgba(99,102,241,0.9)' : 'rgba(255,255,255,0.06)',
+                background: i < idx ? '#10b981' : i === idx ? 'rgba(10,132,255,0.9)' : 'rgba(255,255,255,0.06)',
                 color: i <= idx ? '#fff' : '#475569',
-                border: i === idx ? '2px solid #818cf8' : '2px solid transparent',
+                border: i === idx ? '2px solid #0a84ff' : '2px solid transparent',
               }}
             >
               {i < idx ? '✓' : i + 1}
@@ -67,14 +67,14 @@ function TerminalOutput({ lines }: { lines: LogLine[] }) {
     <div
       ref={ref}
       className="rounded-xl p-4 font-mono text-xs overflow-y-auto max-h-52 mt-4"
-      style={{ background: '#05060f', border: '1px solid rgba(99,102,241,0.15)' }}
+      style={{ background: '#05060f', border: '1px solid rgba(10,132,255,0.15)' }}
     >
       {lines.map((l, i) => (
         <div
           key={i}
           className="leading-relaxed whitespace-pre-wrap break-words"
           style={{
-            color: l.type === 'error' ? '#f87171' : l.type === 'done' ? '#34d399' : '#94a3b8',
+            color: l.type === 'error' ? '#f87171' : l.type === 'done' ? '#34d399' : 'rgba(235,235,245,0.55)',
           }}
         >
           <span style={{ color: '#4b5563', userSelect: 'none' }}>{'> '}</span>
@@ -94,7 +94,7 @@ function Card({ children }: { children: React.ReactNode }) {
       style={{
         background: 'rgba(14,15,28,0.95)',
         backdropFilter: 'blur(20px)',
-        border: '1px solid rgba(99,102,241,0.2)',
+        border: '1px solid rgba(10,132,255,0.2)',
         borderRadius: '20px',
         padding: '40px',
       }}
@@ -130,19 +130,19 @@ export function SetupPage({ onComplete, initialStatus }: SetupPageProps) {
 
   if (step === 'welcome') {
     return (
-      <div className="min-h-screen flex flex-col items-center justify-center p-6" style={{ background: '#080810' }}>
+      <div className="min-h-screen flex flex-col items-center justify-center p-6" style={{ background: '#000000' }}>
         <div
           className="absolute rounded-full pointer-events-none"
-          style={{ width: 600, height: 600, background: 'radial-gradient(circle, rgba(99,102,241,0.07) 0%, transparent 70%)', top: -100, left: -100 }}
+          style={{ width: 600, height: 600, background: 'radial-gradient(circle, rgba(10,132,255,0.07) 0%, transparent 70%)', top: -100, left: -100 }}
         />
         <Card>
           <StepBar current="welcome" />
           <div className="flex flex-col items-center text-center gap-6">
             <div
               className="w-20 h-20 rounded-3xl flex items-center justify-center"
-              style={{ background: 'rgba(99,102,241,0.12)', border: '1px solid rgba(99,102,241,0.25)', boxShadow: '0 0 60px rgba(99,102,241,0.12)' }}
+              style={{ background: 'rgba(10,132,255,0.12)', border: '1px solid rgba(10,132,255,0.25)', boxShadow: '0 0 60px rgba(10,132,255,0.12)' }}
             >
-              <Shield size={40} className="text-indigo-400" />
+              <Shield size={40} className="text-[#0a84ff]" />
             </div>
             <div>
               <h1 className="text-3xl font-bold text-white mb-2">Welcome to Pokyh</h1>
@@ -155,7 +155,7 @@ export function SetupPage({ onComplete, initialStatus }: SetupPageProps) {
                 { icon: <CheckCircle size={16} />, label: 'Your API goes live' },
               ].map((item, i) => (
                 <div key={i} className="flex items-center gap-3 px-4 py-3 rounded-xl" style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.05)' }}>
-                  <span className="text-indigo-400 flex-shrink-0">{item.icon}</span>
+                  <span className="text-[#0a84ff] flex-shrink-0">{item.icon}</span>
                   <span className="text-sm text-slate-300">{item.label}</span>
                 </div>
               ))}
@@ -163,7 +163,7 @@ export function SetupPage({ onComplete, initialStatus }: SetupPageProps) {
             <button
               onClick={() => setStep('credentials')}
               className="w-full py-3 px-6 rounded-xl font-semibold text-white flex items-center justify-center gap-2 transition-all"
-              style={{ background: 'linear-gradient(135deg, #6366f1 0%, #818cf8 100%)', boxShadow: '0 4px 24px rgba(99,102,241,0.3)' }}
+              style={{ background: 'linear-gradient(135deg, #0a84ff 0%, #0a84ff 100%)', boxShadow: '0 4px 24px rgba(10,132,255,0.3)' }}
             >
               Start Setup <ChevronRight size={18} />
             </button>
@@ -200,7 +200,7 @@ export function SetupPage({ onComplete, initialStatus }: SetupPageProps) {
     const inputClass = 'w-full px-4 py-3 rounded-xl text-slate-200 placeholder-slate-600 outline-none transition-all';
 
     return (
-      <div className="min-h-screen flex flex-col items-center justify-center p-6" style={{ background: '#080810' }}>
+      <div className="min-h-screen flex flex-col items-center justify-center p-6" style={{ background: '#000000' }}>
         <Card>
           <StepBar current="credentials" />
           <h2 className="text-2xl font-bold text-white mb-1">Create Admin Account</h2>
@@ -257,7 +257,7 @@ export function SetupPage({ onComplete, initialStatus }: SetupPageProps) {
               type="submit"
               disabled={credLoading}
               className="w-full py-3 px-6 rounded-xl font-semibold text-white flex items-center justify-center gap-2 mt-2"
-              style={{ background: credLoading ? 'rgba(99,102,241,0.5)' : 'linear-gradient(135deg, #6366f1 0%, #818cf8 100%)', cursor: credLoading ? 'not-allowed' : 'pointer', boxShadow: credLoading ? 'none' : '0 4px 24px rgba(99,102,241,0.3)' }}
+              style={{ background: credLoading ? 'rgba(10,132,255,0.5)' : 'linear-gradient(135deg, #0a84ff 0%, #0a84ff 100%)', cursor: credLoading ? 'not-allowed' : 'pointer', boxShadow: credLoading ? 'none' : '0 4px 24px rgba(10,132,255,0.3)' }}
             >
               {credLoading ? <><Loader2 size={18} className="animate-spin" /> Saving...</> : <>Continue <ChevronRight size={18} /></>}
             </button>
@@ -298,11 +298,11 @@ export function SetupPage({ onComplete, initialStatus }: SetupPageProps) {
     const isRunning = cfPhase === 'login' || cfPhase === 'tunnel';
 
     return (
-      <div className="min-h-screen flex flex-col items-center justify-center p-6" style={{ background: '#080810' }}>
+      <div className="min-h-screen flex flex-col items-center justify-center p-6" style={{ background: '#000000' }}>
         <Card>
           <StepBar current="cloudflare" />
           <div className="flex items-center gap-3 mb-1">
-            <Globe size={20} className="text-indigo-400" />
+            <Globe size={20} className="text-[#0a84ff]" />
             <h2 className="text-2xl font-bold text-white">Cloudflare Tunnel</h2>
           </div>
           <p className="text-slate-500 text-sm mb-6">
@@ -339,9 +339,9 @@ export function SetupPage({ onComplete, initialStatus }: SetupPageProps) {
                 disabled={isRunning || !hostname}
                 className="w-full py-3 px-6 rounded-xl font-semibold text-white flex items-center justify-center gap-2"
                 style={{
-                  background: isRunning ? 'rgba(99,102,241,0.5)' : 'linear-gradient(135deg, #6366f1 0%, #818cf8 100%)',
+                  background: isRunning ? 'rgba(10,132,255,0.5)' : 'linear-gradient(135deg, #0a84ff 0%, #0a84ff 100%)',
                   cursor: isRunning || !hostname ? 'not-allowed' : 'pointer',
-                  boxShadow: isRunning ? 'none' : '0 4px 24px rgba(99,102,241,0.3)',
+                  boxShadow: isRunning ? 'none' : '0 4px 24px rgba(10,132,255,0.3)',
                 }}
               >
                 {isRunning ? (
@@ -379,7 +379,7 @@ export function SetupPage({ onComplete, initialStatus }: SetupPageProps) {
               <button
                 onClick={() => setStep('done')}
                 className="ml-auto py-2 px-5 rounded-xl font-semibold text-white text-sm flex items-center gap-2"
-                style={{ background: 'linear-gradient(135deg, #6366f1 0%, #818cf8 100%)', boxShadow: '0 4px 20px rgba(99,102,241,0.3)' }}
+                style={{ background: 'linear-gradient(135deg, #0a84ff 0%, #0a84ff 100%)', boxShadow: '0 4px 20px rgba(10,132,255,0.3)' }}
               >
                 Continue <ChevronRight size={16} />
               </button>
@@ -393,7 +393,7 @@ export function SetupPage({ onComplete, initialStatus }: SetupPageProps) {
   // ── Done ──────────────────────────────────────────────────────────────────────
 
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center p-6" style={{ background: '#080810' }}>
+    <div className="min-h-screen flex flex-col items-center justify-center p-6" style={{ background: '#000000' }}>
       <Card>
         <StepBar current="done" />
         <div className="flex flex-col items-center text-center gap-6">
@@ -415,7 +415,7 @@ export function SetupPage({ onComplete, initialStatus }: SetupPageProps) {
             {cfDone ? (
               <div className="flex items-center gap-3 px-4 py-3 rounded-xl" style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.05)' }}>
                 <CheckCircle size={16} className="text-emerald-400 flex-shrink-0" />
-                <span className="text-slate-300">Cloudflare Tunnel active — <span className="text-indigo-400">https://{hostname}</span></span>
+                <span className="text-slate-300">Cloudflare Tunnel active — <span className="text-[#0a84ff]">https://{hostname}</span></span>
               </div>
             ) : (
               <div className="flex items-center gap-3 px-4 py-3 rounded-xl" style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.05)' }}>
@@ -427,7 +427,7 @@ export function SetupPage({ onComplete, initialStatus }: SetupPageProps) {
           <button
             onClick={onComplete}
             className="w-full py-3 px-6 rounded-xl font-semibold text-white flex items-center justify-center gap-2"
-            style={{ background: 'linear-gradient(135deg, #6366f1 0%, #818cf8 100%)', boxShadow: '0 4px 24px rgba(99,102,241,0.3)' }}
+            style={{ background: 'linear-gradient(135deg, #0a84ff 0%, #0a84ff 100%)', boxShadow: '0 4px 24px rgba(10,132,255,0.3)' }}
           >
             Open Admin Dashboard
           </button>

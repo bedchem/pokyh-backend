@@ -73,14 +73,14 @@ function CommentRow({ comment, onDeleted }: { comment: AdminComment; onDeleted: 
               : <><UtensilsCrossed size={10} /> Mensa</>
             }
           </span>
-          <span className="text-xs" style={{ color: '#4a4a5e' }}>{timeAgo(comment.createdAt)}</span>
+          <span className="text-xs" style={{ color: 'rgba(235,235,245,0.3)' }}>{timeAgo(comment.createdAt)}</span>
           {comment.updatedAt !== comment.createdAt && (
             <span className="text-[11px]" style={{ color: '#3a3a4e' }}>· edited</span>
           )}
         </div>
 
         {/* Context label */}
-        <div className="text-xs mb-1.5 truncate" style={{ color: '#4a4a5e' }}>
+        <div className="text-xs mb-1.5 truncate" style={{ color: 'rgba(235,235,245,0.3)' }}>
           on: <span style={{ color: '#6b6b80' }}>{comment.contextTitle}</span>
         </div>
 
@@ -105,7 +105,7 @@ function CommentRow({ comment, onDeleted }: { comment: AdminComment; onDeleted: 
             <button
               onClick={() => setConfirm(false)}
               className="px-2.5 py-1 rounded-lg text-xs transition-colors"
-              style={{ background: 'rgba(255,255,255,0.05)', color: '#8b8b9b', border: '1px solid rgba(255,255,255,0.08)' }}
+              style={{ background: 'rgba(255,255,255,0.05)', color: 'rgba(235,235,245,0.6)', border: '1px solid rgba(255,255,255,0.08)' }}
             >
               No
             </button>
@@ -114,9 +114,9 @@ function CommentRow({ comment, onDeleted }: { comment: AdminComment; onDeleted: 
           <button
             onClick={() => setConfirm(true)}
             className="p-1.5 rounded-lg transition-colors"
-            style={{ color: '#4a4a5e' }}
+            style={{ color: 'rgba(235,235,245,0.3)' }}
             onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#f87171'; }}
-            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = '#4a4a5e'; }}
+            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'rgba(235,235,245,0.3)'; }}
           >
             <Trash2 size={15} />
           </button>
@@ -176,7 +176,7 @@ export function CommentsPage() {
       {/* Header */}
       <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl font-bold" style={{ color: '#f0f0f5' }}>Kommentare</h1>
+          <h1 className="text-2xl font-bold" style={{ color: '#ffffff' }}>Kommentare</h1>
           <p className="text-sm mt-0.5" style={{ color: '#6b6b80' }}>
             {total} Kommentar{total !== 1 ? 'e' : ''} insgesamt
           </p>
@@ -185,7 +185,7 @@ export function CommentsPage() {
           onClick={() => load(page, type, search)}
           disabled={loading}
           className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-all"
-          style={{ background: 'rgba(255,255,255,0.05)', color: '#8b8b9b', border: '1px solid rgba(255,255,255,0.08)' }}
+          style={{ background: 'rgba(255,255,255,0.05)', color: 'rgba(235,235,245,0.6)', border: '1px solid rgba(255,255,255,0.08)' }}
           onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.08)'; }}
           onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.05)'; }}
         >
@@ -204,8 +204,8 @@ export function CommentsPage() {
               onClick={() => handleTypeChange(t)}
               className="px-4 py-2 text-sm font-medium transition-all flex items-center gap-1.5"
               style={{
-                background: type === t ? 'rgba(99,102,241,0.2)' : 'rgba(255,255,255,0.03)',
-                color: type === t ? '#818cf8' : '#6b6b80',
+                background: type === t ? 'rgba(10,132,255,0.2)' : 'rgba(255,255,255,0.03)',
+                color: type === t ? '#0a84ff' : '#6b6b80',
                 borderRight: t !== 'dish' ? '1px solid rgba(255,255,255,0.06)' : 'none',
               }}
             >
@@ -220,7 +220,7 @@ export function CommentsPage() {
         {/* Search */}
         <form onSubmit={handleSearch} className="flex-1 min-w-[200px] flex gap-2">
           <div className="relative flex-1">
-            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: '#4a4a5e' }} />
+            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: 'rgba(235,235,245,0.3)' }} />
             <input
               type="text"
               value={searchInput}
@@ -233,8 +233,8 @@ export function CommentsPage() {
                 color: '#c0c0d0',
               }}
               onFocus={(e) => {
-                (e.target as HTMLInputElement).style.borderColor = 'rgba(99,102,241,0.4)';
-                (e.target as HTMLInputElement).style.boxShadow = '0 0 0 3px rgba(99,102,241,0.08)';
+                (e.target as HTMLInputElement).style.borderColor = 'rgba(10,132,255,0.4)';
+                (e.target as HTMLInputElement).style.boxShadow = '0 0 0 3px rgba(10,132,255,0.08)';
               }}
               onBlur={(e) => {
                 (e.target as HTMLInputElement).style.borderColor = 'rgba(255,255,255,0.08)';
@@ -245,7 +245,7 @@ export function CommentsPage() {
           <button
             type="submit"
             className="px-4 py-2 rounded-xl text-sm font-medium transition-all"
-            style={{ background: 'rgba(99,102,241,0.2)', color: '#818cf8', border: '1px solid rgba(99,102,241,0.25)' }}
+            style={{ background: 'rgba(10,132,255,0.2)', color: '#0a84ff', border: '1px solid rgba(10,132,255,0.25)' }}
           >
             Suchen
           </button>
@@ -255,7 +255,7 @@ export function CommentsPage() {
       {/* List */}
       {loading && comments.length === 0 ? (
         <div className="flex justify-center py-20">
-          <div className="w-8 h-8 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+          <div className="w-8 h-8 border-2 border-[#0a84ff] border-t-transparent rounded-full animate-spin" />
         </div>
       ) : comments.length === 0 ? (
         <div
@@ -263,7 +263,7 @@ export function CommentsPage() {
           style={{ background: 'rgba(14,15,28,0.5)', border: '1px solid rgba(255,255,255,0.06)' }}
         >
           <MessageCircle size={32} className="mx-auto mb-3" style={{ color: '#2a2a3e' }} />
-          <p className="text-sm" style={{ color: '#4a4a5e' }}>
+          <p className="text-sm" style={{ color: 'rgba(235,235,245,0.3)' }}>
             {search ? 'Keine Kommentare gefunden' : 'Noch keine Kommentare'}
           </p>
         </div>
@@ -280,7 +280,7 @@ export function CommentsPage() {
       {/* Pagination */}
       {totalPages > 1 && (
         <div className="flex items-center justify-between mt-6">
-          <p className="text-sm" style={{ color: '#4a4a5e' }}>
+          <p className="text-sm" style={{ color: 'rgba(235,235,245,0.3)' }}>
             Seite {page} von {totalPages}
           </p>
           <div className="flex items-center gap-2">
@@ -288,7 +288,7 @@ export function CommentsPage() {
               onClick={() => setPage((p) => Math.max(1, p - 1))}
               disabled={page === 1 || loading}
               className="p-2 rounded-xl transition-all disabled:opacity-30"
-              style={{ background: 'rgba(255,255,255,0.05)', color: '#8b8b9b', border: '1px solid rgba(255,255,255,0.08)' }}
+              style={{ background: 'rgba(255,255,255,0.05)', color: 'rgba(235,235,245,0.6)', border: '1px solid rgba(255,255,255,0.08)' }}
             >
               <ChevronLeft size={16} />
             </button>
@@ -296,7 +296,7 @@ export function CommentsPage() {
               onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
               disabled={page === totalPages || loading}
               className="p-2 rounded-xl transition-all disabled:opacity-30"
-              style={{ background: 'rgba(255,255,255,0.05)', color: '#8b8b9b', border: '1px solid rgba(255,255,255,0.08)' }}
+              style={{ background: 'rgba(255,255,255,0.05)', color: 'rgba(235,235,245,0.6)', border: '1px solid rgba(255,255,255,0.08)' }}
             >
               <ChevronRight size={16} />
             </button>

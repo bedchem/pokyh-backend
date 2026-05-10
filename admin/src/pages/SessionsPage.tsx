@@ -135,8 +135,8 @@ export function SessionsPage() {
       {/* Header */}
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold" style={{ color: '#f0f0f5' }}>Sessions</h1>
-          <p className="text-sm mt-1" style={{ color: '#8b8b9b' }}>
+          <h1 className="text-2xl font-bold" style={{ color: '#ffffff' }}>Sessions</h1>
+          <p className="text-sm mt-1" style={{ color: 'rgba(235,235,245,0.6)' }}>
             Active refresh token sessions — revoke to force logout immediately
           </p>
         </div>
@@ -146,12 +146,12 @@ export function SessionsPage() {
             disabled={deletingInactive}
             className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-all"
             style={{
-              background: '#111116',
-              color: deletingInactive ? '#818cf8' : '#64748b',
+              background: '#1c1c1e',
+              color: deletingInactive ? '#0a84ff' : 'rgba(235,235,245,0.4)',
               border: '1px solid rgba(255,255,255,0.08)',
             }}
             onMouseEnter={(e) => { if (!deletingInactive) (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.05)'; }}
-            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = '#111116'; }}
+            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = '#1c1c1e'; }}
             title="Delete all revoked/expired sessions"
           >
             {deletingInactive ? <Loader2 size={15} className="animate-spin" /> : <Trash2 size={15} />}
@@ -163,7 +163,7 @@ export function SessionsPage() {
             className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-all font-medium"
             style={{
               background: 'transparent',
-              color: clearingAll || activeSessions === 0 ? '#4a4a5e' : '#ff453a',
+              color: clearingAll || activeSessions === 0 ? 'rgba(235,235,245,0.3)' : '#ff453a',
               border: `1px solid ${clearingAll || activeSessions === 0 ? 'rgba(255,255,255,0.06)' : 'rgba(255,69,58,0.25)'}`,
               cursor: clearingAll || activeSessions === 0 ? 'not-allowed' : 'pointer',
             }}
@@ -178,12 +178,12 @@ export function SessionsPage() {
             disabled={refreshing}
             className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-all"
             style={{
-              background: '#111116',
-              color: refreshing ? '#818cf8' : '#64748b',
+              background: '#1c1c1e',
+              color: refreshing ? '#0a84ff' : 'rgba(235,235,245,0.4)',
               border: '1px solid rgba(255,255,255,0.08)',
             }}
             onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.05)'; }}
-            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = '#111116'; }}
+            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = '#1c1c1e'; }}
           >
             <RefreshCw size={15} className={refreshing ? 'animate-spin' : ''} />
             {refreshing ? 'Refreshing...' : 'Refresh'}
@@ -195,15 +195,15 @@ export function SessionsPage() {
       <div className="flex items-center gap-4 flex-wrap">
         <div
           className="flex items-center gap-3 px-4 py-3 rounded-xl"
-          style={{ background: '#111116', border: '1px solid rgba(255,255,255,0.07)' }}
+          style={{ background: '#1c1c1e', border: '1px solid rgba(255,255,255,0.07)' }}
         >
           <Activity size={16} style={{ color: '#30d158' }} />
-          <span className="text-sm" style={{ color: '#8b8b9b' }}>
-            <span className="font-semibold" style={{ color: '#f0f0f5' }}>{activeSessions}</span>
+          <span className="text-sm" style={{ color: 'rgba(235,235,245,0.6)' }}>
+            <span className="font-semibold" style={{ color: '#ffffff' }}>{activeSessions}</span>
             {' '}active session{activeSessions !== 1 ? 's' : ''}
           </span>
         </div>
-        <div className="text-xs" style={{ color: '#4a4a5e' }}>
+        <div className="text-xs" style={{ color: 'rgba(235,235,245,0.3)' }}>
           Auto-refreshes every 10s · Revoked sessions disappear automatically
         </div>
       </div>
@@ -212,7 +212,7 @@ export function SessionsPage() {
       <div
         className="rounded-2xl overflow-hidden"
         style={{
-          background: '#111116',
+          background: '#1c1c1e',
           border: '1px solid rgba(255,255,255,0.07)',
           boxShadow: '0 1px 3px rgba(0,0,0,0.4), 0 8px 24px rgba(0,0,0,0.2)',
         }}
@@ -231,7 +231,7 @@ export function SessionsPage() {
                   <th
                     key={label}
                     className={`px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider ${cls}`}
-                    style={{ color: '#4a4a5e' }}
+                    style={{ color: 'rgba(235,235,245,0.3)' }}
                   >
                     {label}
                   </th>
@@ -257,7 +257,7 @@ export function SessionsPage() {
                 ))
               ) : visibleSessions.length === 0 ? (
                 <tr>
-                  <td colSpan={5} className="px-4 py-12 text-center text-sm" style={{ color: '#4a4a5e' }}>
+                  <td colSpan={5} className="px-4 py-12 text-center text-sm" style={{ color: 'rgba(235,235,245,0.3)' }}>
                     No sessions found
                   </td>
                 </tr>
@@ -283,19 +283,19 @@ export function SessionsPage() {
                     >
                       {/* User */}
                       <td className="px-4 py-3.5">
-                        <div className="text-sm font-medium" style={{ color: '#f0f0f5' }}>{session.username}</div>
-                        <div className="text-xs font-mono mt-0.5" style={{ color: '#4a4a5e' }}>{session.stableUid.slice(0, 10)}…</div>
+                        <div className="text-sm font-medium" style={{ color: '#ffffff' }}>{session.username}</div>
+                        <div className="text-xs font-mono mt-0.5" style={{ color: 'rgba(235,235,245,0.3)' }}>{session.stableUid.slice(0, 10)}…</div>
                       </td>
 
                       {/* Created */}
                       <td className="px-4 py-3.5 hidden md:table-cell">
-                        <div className="text-sm" style={{ color: '#8b8b9b' }}>{formatDate(session.createdAt)}</div>
-                        <div className="text-xs mt-0.5" style={{ color: '#4a4a5e' }}>{relativeTime(session.createdAt)}</div>
+                        <div className="text-sm" style={{ color: 'rgba(235,235,245,0.6)' }}>{formatDate(session.createdAt)}</div>
+                        <div className="text-xs mt-0.5" style={{ color: 'rgba(235,235,245,0.3)' }}>{relativeTime(session.createdAt)}</div>
                       </td>
 
                       {/* Expires */}
                       <td className="px-4 py-3.5 hidden md:table-cell">
-                        <span className="text-sm" style={{ color: '#8b8b9b' }}>{formatDate(session.expiresAt)}</span>
+                        <span className="text-sm" style={{ color: 'rgba(235,235,245,0.6)' }}>{formatDate(session.expiresAt)}</span>
                       </td>
 
                       {/* Status */}
@@ -334,7 +334,7 @@ export function SessionsPage() {
                             {revoking === session.id ? 'Revoking…' : 'Revoke'}
                           </button>
                         ) : (
-                          <span className="text-xs" style={{ color: '#4a4a5e' }}>—</span>
+                          <span className="text-xs" style={{ color: 'rgba(235,235,245,0.3)' }}>—</span>
                         )}
                       </td>
                     </tr>
