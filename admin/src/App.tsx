@@ -13,6 +13,7 @@ import { TunnelPage } from './pages/TunnelPage';
 import { DishesPage } from './pages/DishesPage';
 import { SubjectImagesPage } from './pages/SubjectImagesPage';
 import { CommentsPage } from './pages/CommentsPage';
+import { LogFilesPage } from './pages/LogFilesPage';
 import { ReactNode, Suspense, useState, useEffect } from 'react';
 import { setupApi } from './api';
 import type { SetupStatus } from './types';
@@ -102,6 +103,7 @@ export default function App() {
             <Route path="/dishes"         element={<ProtectedRoute><DishesPage /></ProtectedRoute>} />
             <Route path="/subject-images" element={<ProtectedRoute><SubjectImagesPage /></ProtectedRoute>} />
             <Route path="/comments"       element={<ProtectedRoute><CommentsPage /></ProtectedRoute>} />
+            <Route path="/log-files"      element={<ProtectedRoute><LogFilesPage /></ProtectedRoute>} />
             <Route path="*"               element={<Navigate to="/" replace />} />
           </Routes>
         </Suspense>

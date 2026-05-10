@@ -19,8 +19,8 @@ function StarSelector({ value, onChange }: { value: number; onChange: (v: number
         >
           <Star
             size={18}
-            fill={(hovered || value) >= s ? '#f59e0b' : 'transparent'}
-            stroke={(hovered || value) >= s ? '#f59e0b' : 'rgba(235,235,245,0.3)'}
+            fill={(hovered || value) >= s ? '#ffd60a' : 'transparent'}
+            stroke={(hovered || value) >= s ? '#ffd60a' : 'rgba(235,235,245,0.3)'}
             strokeWidth={1.5}
           />
         </button>
@@ -36,8 +36,8 @@ function StarsDisplay({ value, size = 14 }: { value: number; size?: number }) {
         <Star
           key={s}
           size={size}
-          fill={value >= s ? '#f59e0b' : 'transparent'}
-          stroke={value >= s ? '#f59e0b' : 'rgba(235,235,245,0.3)'}
+          fill={value >= s ? '#ffd60a' : 'transparent'}
+          stroke={value >= s ? '#ffd60a' : 'rgba(235,235,245,0.3)'}
           strokeWidth={1.5}
         />
       ))}
@@ -134,7 +134,7 @@ function RatingRow({
                 onClick={handleDelete}
                 disabled={deleting}
                 className="px-2.5 py-1 rounded-lg text-xs font-semibold transition-colors"
-                style={{ background: 'rgba(239,68,68,0.15)', color: '#f87171', border: '1px solid rgba(239,68,68,0.25)' }}
+                style={{ background: 'rgba(239,68,68,0.15)', color: '#ff453a', border: '1px solid rgba(239,68,68,0.25)' }}
               >
                 {deleting ? '...' : 'Sure?'}
               </button>
@@ -151,7 +151,7 @@ function RatingRow({
               onClick={() => setConfirmDelete(true)}
               className="p-1.5 rounded-lg transition-colors"
               style={{ color: 'rgba(235,235,245,0.3)' }}
-              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#f87171'; }}
+              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#ff453a'; }}
               onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'rgba(235,235,245,0.3)'; }}
             >
               <Trash2 size={14} />
@@ -210,7 +210,7 @@ function DishCard({
           {dish.count > 0 ? (
             <div className="flex items-center gap-2 mt-0.5">
               <StarsDisplay value={Math.round(dish.avgStars)} size={12} />
-              <span className="text-xs font-semibold" style={{ color: '#f59e0b' }}>{dish.avgStars.toFixed(1)}</span>
+              <span className="text-xs font-semibold" style={{ color: '#ffd60a' }}>{dish.avgStars.toFixed(1)}</span>
               <span className="text-xs" style={{ color: 'rgba(235,235,245,0.3)' }}>
                 ({dish.count} {dish.count === 1 ? 'vote' : 'votes'})
               </span>

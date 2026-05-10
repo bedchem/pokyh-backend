@@ -83,8 +83,8 @@ function StarsDisplay({ value, size = 13 }: { value: number; size?: number }) {
         <Star
           key={s}
           size={size}
-          fill={value >= s ? '#f59e0b' : 'transparent'}
-          stroke={value >= s ? '#f59e0b' : '#3a3a4e'}
+          fill={value >= s ? '#ffd60a' : 'transparent'}
+          stroke={value >= s ? '#ffd60a' : 'rgba(235,235,245,0.12)'}
           strokeWidth={1.5}
         />
       ))}
@@ -107,8 +107,8 @@ function StarSelector({ value, onChange }: { value: number; onChange: (v: number
         >
           <Star
             size={18}
-            fill={(hovered || value) >= s ? '#f59e0b' : 'transparent'}
-            stroke={(hovered || value) >= s ? '#f59e0b' : 'rgba(235,235,245,0.3)'}
+            fill={(hovered || value) >= s ? '#ffd60a' : 'transparent'}
+            stroke={(hovered || value) >= s ? '#ffd60a' : 'rgba(235,235,245,0.3)'}
             strokeWidth={1.5}
           />
         </button>
@@ -163,10 +163,10 @@ function RatingRow({
 
   return (
     <div
-      className="flex items-center gap-3 px-3 py-2.5 rounded-xl"
+      className="flex items-center gap-3 px-3 py-2.5 rounded-[12px]"
       style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.05)' }}
     >
-      <span className="flex-1 text-sm font-medium truncate" style={{ color: '#b0b0c0' }}>
+      <span className="flex-1 text-sm font-medium truncate" style={{ color: 'rgba(235,235,245,0.7)' }}>
         {entry.username}
       </span>
 
@@ -174,12 +174,12 @@ function RatingRow({
         <div className="flex items-center gap-2 flex-shrink-0">
           <StarSelector value={editStars} onChange={setEditStars} />
           <button onClick={handleSave} disabled={saving}
-            className="px-2.5 py-1 rounded-lg text-xs font-semibold"
+            className="px-2.5 py-1 rounded-[8px] text-xs font-semibold"
             style={{ background: 'rgba(10,132,255,0.2)', color: '#0a84ff', border: '1px solid rgba(10,132,255,0.3)' }}>
             {saving ? '...' : 'OK'}
           </button>
           <button onClick={() => { setEditing(false); setEditStars(entry.stars); }}
-            className="px-2.5 py-1 rounded-lg text-xs"
+            className="px-2.5 py-1 rounded-[8px] text-xs"
             style={{ background: 'rgba(255,255,255,0.05)', color: 'rgba(235,235,245,0.6)' }}>
             Abbrechen
           </button>
@@ -187,9 +187,9 @@ function RatingRow({
       ) : (
         <div className="flex items-center gap-2 flex-shrink-0">
           <StarsDisplay value={entry.stars} />
-          <span className="text-xs w-3 text-center" style={{ color: '#f59e0b' }}>{entry.stars}</span>
+          <span className="text-xs w-3 text-center" style={{ color: '#ffd60a' }}>{entry.stars}</span>
           <button onClick={() => setEditing(true)}
-            className="p-1.5 rounded-lg transition-colors"
+            className="p-1.5 rounded-[8px] transition-colors"
             style={{ color: 'rgba(235,235,245,0.3)' }}
             onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#0a84ff'; }}
             onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'rgba(235,235,245,0.3)'; }}>
@@ -198,21 +198,21 @@ function RatingRow({
           {confirmDel ? (
             <div className="flex items-center gap-1">
               <button onClick={handleDelete} disabled={deleting}
-                className="px-2 py-1 rounded-lg text-xs font-semibold"
-                style={{ background: 'rgba(239,68,68,0.15)', color: '#f87171', border: '1px solid rgba(239,68,68,0.2)' }}>
+                className="px-2 py-1 rounded-[8px] text-xs font-semibold"
+                style={{ background: 'rgba(255,69,58,0.14)', color: '#ff453a', border: '1px solid rgba(255,69,58,0.2)' }}>
                 {deleting ? '...' : 'Sicher?'}
               </button>
               <button onClick={() => setConfirmDel(false)}
-                className="px-2 py-1 rounded-lg text-xs"
+                className="px-2 py-1 rounded-[8px] text-xs"
                 style={{ background: 'rgba(255,255,255,0.05)', color: 'rgba(235,235,245,0.6)' }}>
                 Nein
               </button>
             </div>
           ) : (
             <button onClick={() => setConfirmDel(true)}
-              className="p-1.5 rounded-lg transition-colors"
+              className="p-1.5 rounded-[8px] transition-colors"
               style={{ color: 'rgba(235,235,245,0.3)' }}
-              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#f87171'; }}
+              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#ff453a'; }}
               onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'rgba(235,235,245,0.3)'; }}>
               <Trash2 size={13} />
             </button>
@@ -288,8 +288,8 @@ function DishForm({ dish, ratingData, initialDate, onSaved, onClose, onRatingCha
     }
   }
 
-  const inp = 'w-full px-3 py-2 rounded-lg text-sm outline-none transition-all';
-  const inpStyle = { background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.09)', color: '#c0c0d0' };
+  const inp = 'w-full px-3 py-2 rounded-[8px] text-sm outline-none transition-all';
+  const inpStyle = { background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.09)', color: 'rgba(235,235,245,0.8)' };
   const focusStyle = (e: React.FocusEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     (e.target as HTMLElement).style.borderColor = 'rgba(10,132,255,0.45)';
     (e.target as HTMLElement).style.boxShadow = '0 0 0 3px rgba(10,132,255,0.08)';
@@ -299,7 +299,7 @@ function DishForm({ dish, ratingData, initialDate, onSaved, onClose, onRatingCha
     (e.target as HTMLElement).style.boxShadow = '';
   };
   const lbl = 'block text-xs font-medium mb-1 uppercase tracking-wide';
-  const lblStyle = { color: '#6b6b80' };
+  const lblStyle = { color: 'rgba(235,235,245,0.4)' };
 
   const tabs = [
     { key: 'basic' as const, label: 'Allgemein' },
@@ -314,7 +314,7 @@ function DishForm({ dish, ratingData, initialDate, onSaved, onClose, onRatingCha
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
       <div
-        className="w-full max-w-lg flex flex-col animate-scaleIn overflow-hidden rounded-2xl"
+        className="w-full max-w-lg flex flex-col animate-scaleIn overflow-hidden rounded-[16px]"
         style={{
           background: '#1c1c1e',
           border: '1px solid rgba(255,255,255,0.1)',
@@ -324,10 +324,10 @@ function DishForm({ dish, ratingData, initialDate, onSaved, onClose, onRatingCha
       >
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 flex-shrink-0" style={{ borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
-          <h2 className="font-semibold" style={{ color: '#e0e0ef' }}>
+          <h2 className="font-semibold" style={{ color: 'rgba(235,235,245,0.9)' }}>
             {isEdit ? 'Gericht bearbeiten' : 'Neues Gericht'}
           </h2>
-          <button onClick={onClose} className="p-1.5 rounded-lg transition-colors" style={{ color: 'rgba(235,235,245,0.3)' }}
+          <button onClick={onClose} className="p-1.5 rounded-[8px] transition-colors" style={{ color: 'rgba(235,235,245,0.3)' }}
             onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#ffffff'; }}
             onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'rgba(235,235,245,0.3)'; }}>
             <X size={18} />
@@ -342,7 +342,7 @@ function DishForm({ dish, ratingData, initialDate, onSaved, onClose, onRatingCha
               onClick={() => setTab(t.key)}
               className="px-4 py-2 text-xs font-semibold rounded-t-lg transition-all"
               style={{
-                color: tab === t.key ? '#0a84ff' : '#6b6b80',
+                color: tab === t.key ? '#0a84ff' : 'rgba(235,235,245,0.4)',
                 borderBottom: tab === t.key ? '2px solid #0a84ff' : '2px solid transparent',
                 background: tab === t.key ? 'rgba(10,132,255,0.06)' : 'transparent',
               }}
@@ -358,7 +358,7 @@ function DishForm({ dish, ratingData, initialDate, onSaved, onClose, onRatingCha
           {tab === 'basic' && (
             <>
               {form.imageUrl && (
-                <div className="w-full h-36 rounded-xl overflow-hidden flex-shrink-0"
+                <div className="w-full h-36 rounded-[12px] overflow-hidden flex-shrink-0"
                   style={{ border: '1px solid rgba(255,255,255,0.07)' }}>
                   <img src={form.imageUrl} alt="" className="w-full h-full object-cover"
                     onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }} />
@@ -410,11 +410,11 @@ function DishForm({ dish, ratingData, initialDate, onSaved, onClose, onRatingCha
                 <button
                   type="button"
                   onClick={() => setForm((p) => ({ ...p, isVegetarian: !p.isVegetarian }))}
-                  className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-all select-none"
+                  className="flex items-center gap-2 px-4 py-2 rounded-[12px] text-sm font-medium transition-all select-none"
                   style={{
                     background: form.isVegetarian ? 'rgba(34,197,94,0.15)' : 'rgba(255,255,255,0.04)',
                     border: form.isVegetarian ? '1px solid rgba(34,197,94,0.4)' : '1px solid rgba(255,255,255,0.09)',
-                    color: form.isVegetarian ? '#4ade80' : '#6b6b80',
+                    color: form.isVegetarian ? '#4ade80' : 'rgba(235,235,245,0.4)',
                   }}
                 >
                   <Leaf size={14} />
@@ -423,11 +423,11 @@ function DishForm({ dish, ratingData, initialDate, onSaved, onClose, onRatingCha
                 <button
                   type="button"
                   onClick={() => setForm((p) => ({ ...p, isVegan: !p.isVegan }))}
-                  className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-all select-none"
+                  className="flex items-center gap-2 px-4 py-2 rounded-[12px] text-sm font-medium transition-all select-none"
                   style={{
                     background: form.isVegan ? 'rgba(134,239,172,0.15)' : 'rgba(255,255,255,0.04)',
                     border: form.isVegan ? '1px solid rgba(134,239,172,0.4)' : '1px solid rgba(255,255,255,0.09)',
-                    color: form.isVegan ? '#86efac' : '#6b6b80',
+                    color: form.isVegan ? '#30d158' : 'rgba(235,235,245,0.4)',
                   }}
                 >
                   <Sprout size={14} />
@@ -475,13 +475,13 @@ function DishForm({ dish, ratingData, initialDate, onSaved, onClose, onRatingCha
             <>
               {ratingData && ratingData.count > 0 ? (
                 <>
-                  <div className="flex items-center gap-3 px-4 py-3 rounded-xl"
+                  <div className="flex items-center gap-3 px-4 py-3 rounded-[12px]"
                     style={{ background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.15)' }}>
                     <StarsDisplay value={Math.round(ratingData.avgStars)} size={16} />
-                    <span className="text-base font-bold" style={{ color: '#f59e0b' }}>
+                    <span className="text-base font-bold" style={{ color: '#ffd60a' }}>
                       {ratingData.avgStars.toFixed(1)}
                     </span>
-                    <span className="text-sm" style={{ color: '#6b6b80' }}>
+                    <span className="text-sm" style={{ color: 'rgba(235,235,245,0.4)' }}>
                       · {ratingData.count} {ratingData.count === 1 ? 'Bewertung' : 'Bewertungen'}
                     </span>
                   </div>
@@ -499,7 +499,7 @@ function DishForm({ dish, ratingData, initialDate, onSaved, onClose, onRatingCha
                 </>
               ) : (
                 <div className="flex flex-col items-center py-10 gap-2">
-                  <Star size={28} style={{ color: '#2a2a3e' }} />
+                  <Star size={28} style={{ color: 'rgba(235,235,245,0.12)' }} />
                   <p className="text-sm" style={{ color: 'rgba(235,235,245,0.3)' }}>Noch keine Bewertungen</p>
                 </div>
               )}
@@ -510,12 +510,12 @@ function DishForm({ dish, ratingData, initialDate, onSaved, onClose, onRatingCha
         {/* Footer */}
         {tab !== 'ratings' && (
           <div className="flex items-center justify-end gap-3 px-5 py-4 flex-shrink-0" style={{ borderTop: '1px solid rgba(255,255,255,0.07)' }}>
-            <button onClick={onClose} className="px-4 py-2 rounded-xl text-sm transition-colors"
+            <button onClick={onClose} className="px-4 py-2 rounded-[12px] text-sm transition-colors"
               style={{ background: 'rgba(255,255,255,0.05)', color: 'rgba(235,235,245,0.6)', border: '1px solid rgba(255,255,255,0.08)' }}>
               Abbrechen
             </button>
             <button onClick={handleSave} disabled={saving}
-              className="px-5 py-2 rounded-xl text-sm font-semibold transition-all"
+              className="px-5 py-2 rounded-[12px] text-sm font-semibold transition-all"
               style={{
                 background: saving ? 'rgba(10,132,255,0.4)' : 'linear-gradient(135deg,#0a84ff,#0a84ff)',
                 color: '#fff',
@@ -527,7 +527,7 @@ function DishForm({ dish, ratingData, initialDate, onSaved, onClose, onRatingCha
         )}
         {tab === 'ratings' && (
           <div className="flex items-center justify-end px-5 py-4 flex-shrink-0" style={{ borderTop: '1px solid rgba(255,255,255,0.07)' }}>
-            <button onClick={onClose} className="px-4 py-2 rounded-xl text-sm transition-colors"
+            <button onClick={onClose} className="px-4 py-2 rounded-[12px] text-sm transition-colors"
               style={{ background: 'rgba(255,255,255,0.05)', color: 'rgba(235,235,245,0.6)', border: '1px solid rgba(255,255,255,0.08)' }}>
               Schließen
             </button>
@@ -576,9 +576,9 @@ function DishCard({ dish, ratingData, onEdit, onDelete, onDragStart, onDragEnd, 
         onDragStart();
       }}
       onDragEnd={onDragEnd}
-      className="flex items-center gap-3 px-4 py-3 rounded-xl card-hover transition-all"
+      className="flex items-center gap-3 px-4 py-3 rounded-[12px] card-hover transition-all"
       style={{
-        background: 'rgba(14,15,28,0.7)',
+        background: '#1c1c1e',
         border: '1px solid rgba(255,255,255,0.06)',
         opacity: isDragging ? 0.35 : 1,
         cursor: isDragging ? 'grabbing' : 'default',
@@ -588,28 +588,28 @@ function DishCard({ dish, ratingData, onEdit, onDelete, onDragStart, onDragEnd, 
       {/* Drag grip */}
       <div
         className="flex-shrink-0"
-        style={{ color: '#2e2e42', cursor: 'grab' }}
+        style={{ color: 'rgba(235,235,245,0.2)', cursor: 'grab' }}
         title="Ziehen zum Verschieben"
       >
         <GripVertical size={15} />
       </div>
 
       {/* Image */}
-      <div className="w-12 h-12 rounded-lg flex-shrink-0 overflow-hidden flex items-center justify-center"
+      <div className="w-12 h-12 rounded-[8px] flex-shrink-0 overflow-hidden flex items-center justify-center"
         style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.07)' }}>
         {dish.imageUrl && !imgError ? (
           <img src={dish.imageUrl} alt={dish.nameDe} className="w-full h-full object-cover"
             onError={() => setImgError(true)} />
         ) : (
-          <UtensilsCrossed size={18} style={{ color: '#2a2a3e' }} />
+          <UtensilsCrossed size={18} style={{ color: 'rgba(235,235,245,0.12)' }} />
         )}
       </div>
 
       {/* Info */}
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 flex-wrap">
-          <span className="text-sm font-medium truncate" style={{ color: '#d0d0e0' }}>{dish.nameDe}</span>
-          {!!dish.isVegan && <Sprout size={13} style={{ color: '#86efac' }} />}
+          <span className="text-sm font-medium truncate" style={{ color: 'rgba(235,235,245,0.85)' }}>{dish.nameDe}</span>
+          {!!dish.isVegan && <Sprout size={13} style={{ color: '#30d158' }} />}
           {!!dish.isVegetarian && !dish.isVegan && <Leaf size={13} style={{ color: '#22c55e' }} />}
         </div>
         <div className="flex items-center gap-2 mt-0.5 flex-wrap">
@@ -624,11 +624,11 @@ function DishCard({ dish, ratingData, onEdit, onDelete, onDragStart, onDragEnd, 
           {ratingData && ratingData.count > 0 ? (
             <div className="flex items-center gap-1">
               <StarsDisplay value={Math.round(ratingData.avgStars)} size={11} />
-              <span className="text-xs font-semibold" style={{ color: '#f59e0b' }}>{ratingData.avgStars.toFixed(1)}</span>
-              <span className="text-xs" style={{ color: '#3a3a4e' }}>({ratingData.count})</span>
+              <span className="text-xs font-semibold" style={{ color: '#ffd60a' }}>{ratingData.avgStars.toFixed(1)}</span>
+              <span className="text-xs" style={{ color: 'rgba(235,235,245,0.12)' }}>({ratingData.count})</span>
             </div>
           ) : (
-            <span className="text-xs" style={{ color: '#2a2a3e' }}>Keine Bewertungen</span>
+            <span className="text-xs" style={{ color: 'rgba(235,235,245,0.12)' }}>Keine Bewertungen</span>
           )}
         </div>
       </div>
@@ -636,7 +636,7 @@ function DishCard({ dish, ratingData, onEdit, onDelete, onDragStart, onDragEnd, 
       {/* Actions */}
       <div className="flex items-center gap-1 flex-shrink-0">
         <button onClick={() => onEdit(dish)}
-          className="p-2 rounded-lg transition-colors"
+          className="p-2 rounded-[8px] transition-colors"
           style={{ color: 'rgba(235,235,245,0.3)' }}
           onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#0a84ff'; }}
           onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'rgba(235,235,245,0.3)'; }}>
@@ -645,21 +645,21 @@ function DishCard({ dish, ratingData, onEdit, onDelete, onDragStart, onDragEnd, 
         {confirmDel ? (
           <div className="flex items-center gap-1">
             <button onClick={handleDelete} disabled={deleting}
-              className="px-2.5 py-1 rounded-lg text-xs font-semibold transition-colors"
-              style={{ background: 'rgba(239,68,68,0.15)', color: '#f87171', border: '1px solid rgba(239,68,68,0.2)' }}>
+              className="px-2.5 py-1 rounded-[8px] text-xs font-semibold transition-colors"
+              style={{ background: 'rgba(255,69,58,0.14)', color: '#ff453a', border: '1px solid rgba(255,69,58,0.2)' }}>
               {deleting ? '...' : 'Löschen?'}
             </button>
             <button onClick={() => setConfirmDel(false)}
-              className="px-2 py-1 rounded-lg text-xs transition-colors"
+              className="px-2 py-1 rounded-[8px] text-xs transition-colors"
               style={{ background: 'rgba(255,255,255,0.05)', color: 'rgba(235,235,245,0.6)' }}>
               Nein
             </button>
           </div>
         ) : (
           <button onClick={() => setConfirmDel(true)}
-            className="p-2 rounded-lg transition-colors"
+            className="p-2 rounded-[8px] transition-colors"
             style={{ color: 'rgba(235,235,245,0.3)' }}
-            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#f87171'; }}
+            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#ff453a'; }}
             onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'rgba(235,235,245,0.3)'; }}>
             <Trash2 size={15} />
           </button>
@@ -695,26 +695,26 @@ function ImportDialog({ onDone, onClose }: { onDone: () => void; onClose: () => 
       style={{ background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)' }}
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
-      <div className="w-full max-w-md rounded-2xl p-6 animate-scaleIn"
+      <div className="w-full max-w-md rounded-[16px] p-6 animate-scaleIn"
         style={{ background: '#1c1c1e', border: '1px solid rgba(10,132,255,0.2)' }}>
-        <h3 className="font-bold mb-1" style={{ color: '#e0e0ef' }}>Gerichte importieren</h3>
-        <p className="text-xs mb-4" style={{ color: '#6b6b80' }}>
+        <h3 className="font-bold mb-1" style={{ color: 'rgba(235,235,245,0.9)' }}>Gerichte importieren</h3>
+        <p className="text-xs mb-4" style={{ color: 'rgba(235,235,245,0.4)' }}>
           Lädt alle Gerichte von der externen URL und speichert sie lokal. Vorhandene werden aktualisiert.
         </p>
         <input
-          className="w-full px-3 py-2 rounded-lg text-sm outline-none mb-4 transition-all"
-          style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.09)', color: '#c0c0d0' }}
+          className="w-full px-3 py-2 rounded-[8px] text-sm outline-none mb-4 transition-all"
+          style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.09)', color: 'rgba(235,235,245,0.8)' }}
           value={url}
           onChange={(e) => setUrl(e.target.value)}
           placeholder="https://..."
         />
         <div className="flex items-center justify-end gap-3">
-          <button onClick={onClose} className="px-4 py-2 rounded-xl text-sm"
+          <button onClick={onClose} className="px-4 py-2 rounded-[12px] text-sm"
             style={{ background: 'rgba(255,255,255,0.05)', color: 'rgba(235,235,245,0.6)' }}>
             Abbrechen
           </button>
           <button onClick={handleImport} disabled={loading}
-            className="flex items-center gap-2 px-5 py-2 rounded-xl text-sm font-semibold transition-all"
+            className="flex items-center gap-2 px-5 py-2 rounded-[12px] text-sm font-semibold transition-all"
             style={{
               background: loading ? 'rgba(10,132,255,0.4)' : 'linear-gradient(135deg,#0a84ff,#0a84ff)',
               color: '#fff', boxShadow: loading ? 'none' : '0 4px 16px rgba(10,132,255,0.25)',
@@ -914,14 +914,14 @@ export function DishesPage() {
       <div className="flex items-center justify-between mb-5 flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold" style={{ color: '#ffffff' }}>Speiseplan</h1>
-          <p className="text-sm mt-0.5" style={{ color: '#6b6b80' }}>
+          <p className="text-sm mt-0.5" style={{ color: 'rgba(235,235,245,0.4)' }}>
             {dishes.length} {dishes.length === 1 ? 'Gericht' : 'Gerichte'} &middot; zentral gespeichert
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           <button
             onClick={() => setShowImport(true)}
-            className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-all"
+            className="flex items-center gap-2 px-4 py-2 rounded-[12px] text-sm font-medium transition-all"
             style={{ background: 'rgba(255,255,255,0.05)', color: 'rgba(235,235,245,0.6)', border: '1px solid rgba(255,255,255,0.08)' }}
             onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.09)'; }}
             onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.05)'; }}>
@@ -930,7 +930,7 @@ export function DishesPage() {
           </button>
           <button
             onClick={addNewWeek}
-            className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-all"
+            className="flex items-center gap-2 px-4 py-2 rounded-[12px] text-sm font-medium transition-all"
             style={{ background: 'rgba(10,132,255,0.1)', color: '#0a84ff', border: '1px solid rgba(10,132,255,0.2)' }}
             onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(10,132,255,0.18)'; }}
             onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(10,132,255,0.1)'; }}>
@@ -939,7 +939,7 @@ export function DishesPage() {
           </button>
           <button
             onClick={() => { setNewDishInitialDate(undefined); setEditDish('new'); }}
-            className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold transition-all"
+            className="flex items-center gap-2 px-4 py-2 rounded-[12px] text-sm font-semibold transition-all"
             style={{
               background: 'linear-gradient(135deg,#0a84ff,#0a84ff)',
               color: '#fff',
@@ -957,8 +957,8 @@ export function DishesPage() {
         value={search}
         onChange={(e) => setSearch(e.target.value)}
         placeholder="Suche nach Name, Kategorie, Datum..."
-        className="w-full px-4 py-2.5 rounded-xl text-sm mb-5 outline-none transition-all"
-        style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', color: '#c0c0d0' }}
+        className="w-full px-4 py-2.5 rounded-[12px] text-sm mb-5 outline-none transition-all"
+        style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', color: 'rgba(235,235,245,0.8)' }}
         onFocus={(e) => { (e.target as HTMLInputElement).style.borderColor = 'rgba(10,132,255,0.4)'; (e.target as HTMLInputElement).style.boxShadow = '0 0 0 3px rgba(10,132,255,0.08)'; }}
         onBlur={(e) => { (e.target as HTMLInputElement).style.borderColor = 'rgba(255,255,255,0.08)'; (e.target as HTMLInputElement).style.boxShadow = ''; }}
       />
@@ -969,14 +969,14 @@ export function DishesPage() {
           <div className="w-8 h-8 border-2 border-[#0a84ff] border-t-transparent rounded-full animate-spin" />
         </div>
       ) : sortedWeeks.length === 0 ? (
-        <div className="rounded-2xl p-12 text-center" style={{ background: 'rgba(14,15,28,0.5)', border: '1px solid rgba(255,255,255,0.06)' }}>
-          <UtensilsCrossed size={32} className="mx-auto mb-3" style={{ color: '#2a2a3e' }} />
+        <div className="rounded-[16px] p-12 text-center" style={{ background: '#1c1c1e', border: '1px solid rgba(255,255,255,0.06)' }}>
+          <UtensilsCrossed size={32} className="mx-auto mb-3" style={{ color: 'rgba(235,235,245,0.12)' }} />
           <p className="text-sm mb-3" style={{ color: 'rgba(235,235,245,0.3)' }}>
             {search ? 'Keine Gerichte gefunden' : 'Noch keine Gerichte gespeichert'}
           </p>
           {!search && (
             <button onClick={() => setShowImport(true)}
-              className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium mx-auto transition-all"
+              className="flex items-center gap-2 px-4 py-2 rounded-[12px] text-sm font-medium mx-auto transition-all"
               style={{ background: 'rgba(10,132,255,0.15)', color: '#0a84ff', border: '1px solid rgba(10,132,255,0.2)' }}>
               <Download size={15} />
               Aus externer URL importieren
@@ -1027,7 +1027,7 @@ export function DishesPage() {
               >
                 {/* Week header */}
                 <div
-                  className="flex items-center gap-2 px-4 py-2.5 rounded-xl mb-2 transition-colors"
+                  className="flex items-center gap-2 px-4 py-2.5 rounded-[12px] mb-2 transition-colors"
                   style={{
                     background: isDragTarget ? 'rgba(10,132,255,0.15)' : 'rgba(10,132,255,0.07)',
                     border: isDragTarget ? '1px solid rgba(10,132,255,0.4)' : '1px solid rgba(10,132,255,0.1)',
@@ -1043,10 +1043,10 @@ export function DishesPage() {
                     }}
                     onDragEnd={() => setDraggingWeekKey(null)}
                     className="flex-shrink-0 p-0.5 rounded transition-colors"
-                    style={{ color: '#3a3a52', cursor: 'grab' }}
+                    style={{ color: 'rgba(235,235,245,0.2)', cursor: 'grab' }}
                     title="Ganze Woche verschieben"
                     onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#0a84ff'; }}
-                    onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = '#3a3a52'; }}
+                    onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'rgba(235,235,245,0.2)'; }}
                   >
                     <GripVertical size={15} />
                   </div>
@@ -1064,7 +1064,7 @@ export function DishesPage() {
                   {/* Add dish to this week */}
                   <button
                     onClick={() => { setNewDishInitialDate(wk); setEditDish('new'); }}
-                    className="flex-shrink-0 p-1.5 rounded-lg transition-colors"
+                    className="flex-shrink-0 p-1.5 rounded-[8px] transition-colors"
                     style={{ color: 'rgba(235,235,245,0.3)' }}
                     title="Gericht zu dieser Woche hinzufügen"
                     onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#0a84ff'; }}
@@ -1086,10 +1086,10 @@ export function DishesPage() {
                   {wDishes.length === 0 && emptyWeeks.has(wk) && (
                     <button
                       onClick={() => setEmptyWeeks((prev) => { const s = new Set(prev); s.delete(wk); return s; })}
-                      className="flex-shrink-0 p-1.5 rounded-lg transition-colors"
+                      className="flex-shrink-0 p-1.5 rounded-[8px] transition-colors"
                       style={{ color: 'rgba(235,235,245,0.3)' }}
                       title="Leere Woche entfernen"
-                      onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#f87171'; }}
+                      onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#ff453a'; }}
                       onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'rgba(235,235,245,0.3)'; }}
                     >
                       <X size={14} />
@@ -1102,15 +1102,15 @@ export function DishesPage() {
                   <div className="flex flex-col gap-2">
                     {wDishes.length === 0 ? (
                       <div
-                        className="py-10 rounded-xl flex flex-col items-center gap-2"
+                        className="py-10 rounded-[12px] flex flex-col items-center gap-2"
                         style={{
                           border: `2px dashed ${isDragTarget ? 'rgba(10,132,255,0.55)' : 'rgba(10,132,255,0.15)'}`,
                           background: isDragTarget ? 'rgba(10,132,255,0.06)' : 'transparent',
                           transition: 'all 0.15s',
                         }}
                       >
-                        <UtensilsCrossed size={22} style={{ color: isDragTarget ? '#0a84ff' : '#2a2a3e' }} />
-                        <p className="text-sm select-none" style={{ color: isDragTarget ? '#0a84ff' : '#3a3a4e' }}>
+                        <UtensilsCrossed size={22} style={{ color: isDragTarget ? '#0a84ff' : 'rgba(235,235,245,0.12)' }} />
+                        <p className="text-sm select-none" style={{ color: isDragTarget ? '#0a84ff' : 'rgba(235,235,245,0.12)' }}>
                           {isDragTarget ? 'Hier loslassen' : 'Gerichte hier reinziehen'}
                         </p>
                       </div>

@@ -14,7 +14,8 @@ import { appRouter } from './routes/index';
 import { setupRouter } from './routes/setup';
 import { requestLogger } from './middleware/requestLogger';
 import { prisma } from './db';
-import { startTunnel, stopTunnel, isTunnelConfigured } from './tunnel';
+import { startTunnel, stopTunnel, isTunnelConfigured, getHostnameFromCloudflaredConfig } from './tunnel';
+import { logger } from './utils/logger';
 
 const app = express();
 
@@ -44,9 +45,10 @@ app.use(helmet({ contentSecurityPolicy: false }));
 // CORS origins — fully config-driven, zero hardcoded values
 // Always include the server's own origin (admin panel makes same-origin fetch requests
 // that browsers tag with Origin when custom headers like Authorization are present)
+const effectiveTunnelHostname = config.tunnelHostname || getHostnameFromCloudflaredConfig() || '';
 const allowedOrigins = new Set([
   ...config.corsOrigin.split(',').map((o) => o.trim()).filter(Boolean),
-  ...(config.tunnelHostname ? [`https://${config.tunnelHostname}`] : []),
+  ...(effectiveTunnelHostname ? [`https://${effectiveTunnelHostname}`] : []),
   ...(config.isDev ? ['http://localhost:3000', 'http://localhost:3001', 'http://localhost:5173'] : []),
   `http://localhost:${config.port}`,
   `https://localhost:${config.port}`,
@@ -156,36 +158,52 @@ app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
 
 // ─── Start server ─────────────────────────────────────────────────────────────
 
+const SESSION_CLEANUP_INTERVAL = 60 * 60 * 1000;
+
+async function cleanupExpiredSessions() {
+  const cutoff = new Date(Date.now() - 12 * 60 * 60 * 1000);
+  const { count } = await prisma.refreshToken.deleteMany({
+    where: {
+      AND: [
+        { OR: [{ revokedAt: { not: null } }, { expiresAt: { lt: new Date() } }] },
+        { createdAt: { lt: cutoff } },
+      ],
+    },
+  });
+  if (count > 0) logger.info(`Session cleanup: ${count} expired tokens deleted`);
+}
+
 async function start() {
   try {
     await prisma.$connect();
-    console.log('[db] Connected to MySQL');
+    logger.info('Connected to MySQL');
 
     app.listen(config.port, () => {
-      console.log(`[server] Running on port ${config.port} (${config.nodeEnv})`);
-      console.log(`[server] API: http://localhost:${config.port}`);
-      console.log(`[server] Admin: http://localhost:${config.port}/admin/`);
-      console.log(`[server] CORS origins: ${[...allowedOrigins].join(', ') || '(from CORS_ORIGIN env)'} + self`);
+      logger.info(`Server running on port ${config.port} (${config.nodeEnv})`);
+      logger.info(`API: http://localhost:${config.port}`);
+      logger.info(`Admin: http://localhost:${config.port}/admin/`);
 
       if (!config.adminPasswordHash) {
-        console.log('[server] ⚠  No admin password set — open /admin/ to complete setup');
+        logger.info('No admin password set — open /admin/ to complete setup');
       }
+
+      // Session cleanup: run immediately + every hour
+      void cleanupExpiredSessions();
+      setInterval(() => void cleanupExpiredSessions(), SESSION_CLEANUP_INTERVAL);
 
       // Auto-start Cloudflare tunnel if configured
       if (isTunnelConfigured()) {
         startTunnel(config.tunnelName);
       } else {
-        console.log('[tunnel] Not configured — open /admin/ to set up Cloudflare tunnel');
+        logger.info('Tunnel not configured — open /admin/ to set up Cloudflare tunnel');
       }
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.includes('P1001') || msg.includes('ECONNREFUSED')) {
-      console.error('[db] Cannot connect to database.');
-      console.error('[db] Check that MySQL is running and DATABASE_URL in .env is correct.');
-      console.error('[db] Current DATABASE_URL:', process.env['DATABASE_URL']?.replace(/:\/\/[^@]+@/, '://<credentials>@'));
+      logger.error('Cannot connect to database. Check that MySQL is running and DATABASE_URL in .env is correct.');
     } else {
-      console.error('[server] Failed to start:', err);
+      logger.error('Failed to start server', { error: err instanceof Error ? err.message : String(err) });
     }
     process.exit(1);
   }
@@ -193,16 +211,15 @@ async function start() {
 
 start();
 
-// Graceful shutdown
 process.on('SIGTERM', async () => {
-  console.log('[server] SIGTERM received, shutting down...');
+  logger.info('SIGTERM received, shutting down...');
   stopTunnel();
   await prisma.$disconnect();
   process.exit(0);
 });
 
 process.on('SIGINT', async () => {
-  console.log('[server] SIGINT received, shutting down...');
+  logger.info('SIGINT received, shutting down...');
   stopTunnel();
   await prisma.$disconnect();
   process.exit(0);

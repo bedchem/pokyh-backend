@@ -8,11 +8,16 @@ function requireEnv(key: string): string {
   return val;
 }
 
+const jwtSecret = requireEnv('JWT_SECRET');
+if (jwtSecret.length < 32) {
+  throw new Error('JWT_SECRET must be at least 32 characters long');
+}
+
 export const config = {
   nodeEnv: process.env.NODE_ENV ?? 'development',
   port: parseInt(process.env.PORT ?? '4000', 10),
   databaseUrl: requireEnv('DATABASE_URL'),
-  jwtSecret: requireEnv('JWT_SECRET'),
+  jwtSecret,
   refreshTokenSecret: requireEnv('REFRESH_TOKEN_SECRET'),
   apiKey: requireEnv('API_KEY'),
   serverKey: requireEnv('SERVER_KEY'),

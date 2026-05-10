@@ -44,6 +44,17 @@ export function getTunnelNameFromConfig(): string | null {
   }
 }
 
+export function getHostnameFromCloudflaredConfig(): string | null {
+  try {
+    const cfg = path.join(os.homedir(), '.cloudflared', 'config.yml');
+    const content = fs.readFileSync(cfg, 'utf8');
+    const match = content.match(/^\s*-\s+hostname:\s+(.+)$/m);
+    return match?.[1]?.trim() ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export function startTunnel(name?: string): void {
   if (name) currentTunnelName = name;
   // If no name provided, try to read from config.yml (persists across restarts)

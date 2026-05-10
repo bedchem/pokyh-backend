@@ -7,7 +7,7 @@ import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import { config } from '../config';
 import { requireAdmin } from '../middleware/requireAdmin';
-import { isCloudflaredInstalled, hasCloudflareAuth, isTunnelConfigured, startTunnel, installCloudflared } from '../tunnel';
+import { isCloudflaredInstalled, hasCloudflareAuth, isTunnelConfigured, startTunnel, installCloudflared, getHostnameFromCloudflaredConfig } from '../tunnel';
 
 const router = Router();
 
@@ -28,12 +28,13 @@ function updateEnvFile(key: string, value: string): void {
 // ─── GET /api/setup/status ────────────────────────────────────────────────────
 
 router.get('/status', (_req: Request, res: Response): void => {
+  const tunnelHostname = config.tunnelHostname || getHostnameFromCloudflaredConfig() || null;
   res.json({
     needsSetup: !config.adminPasswordHash,
     cloudflaredInstalled: isCloudflaredInstalled(),
     cloudflareAuthed: hasCloudflareAuth(),
     tunnelConfigured: isTunnelConfigured(),
-    tunnelHostname: config.tunnelHostname || null,
+    tunnelHostname,
   });
 });
 

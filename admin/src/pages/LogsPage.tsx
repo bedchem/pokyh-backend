@@ -122,31 +122,34 @@ interface AllRequestsTabProps {
   statusFilter: string;
   pathFilter: string;
   usernameFilter: string;
+  fromDate: string;
+  toDate: string;
   onNavigateToUser: (username: string) => void;
   autoRefresh: boolean;
 }
 
-function AllRequestsTab({ methodFilter, statusFilter, pathFilter, usernameFilter, onNavigateToUser, autoRefresh }: AllRequestsTabProps) {
+function AllRequestsTab({ methodFilter, statusFilter, pathFilter, usernameFilter, fromDate, toDate, onNavigateToUser, autoRefresh }: AllRequestsTabProps) {
   const { showToast } = useToast();
   const [data, setData] = useState<LogsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(1);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
   const limit = 50;
 
   const fetchLogs = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
     try {
       const statusNum = statusFilter === '2xx' ? 200 : statusFilter === '4xx' ? 400 : statusFilter === '5xx' ? 500 : undefined;
-      const res = await adminApi.logs({ page, limit, method: methodFilter || undefined, status: statusNum, path: pathFilter || undefined, username: usernameFilter || undefined });
+      const res = await adminApi.logs({ page, limit, method: methodFilter || undefined, status: statusNum, path: pathFilter || undefined, username: usernameFilter || undefined, from: fromDate || undefined, to: toDate || undefined });
       setData(res);
     } catch (err) {
       showToast(err instanceof Error ? err.message : 'Laden fehlgeschlagen', 'error');
     } finally {
       setLoading(false);
     }
-  }, [page, methodFilter, statusFilter, pathFilter, usernameFilter, showToast]);
+  }, [page, methodFilter, statusFilter, pathFilter, usernameFilter, fromDate, toDate, showToast]);
 
-  useEffect(() => { setPage(1); }, [methodFilter, statusFilter, pathFilter, usernameFilter]);
+  useEffect(() => { setPage(1); }, [methodFilter, statusFilter, pathFilter, usernameFilter, fromDate, toDate]);
   useEffect(() => { void fetchLogs(); }, [fetchLogs]);
   useEffect(() => {
     if (!autoRefresh) return;
@@ -162,10 +165,25 @@ function AllRequestsTab({ methodFilter, statusFilter, pathFilter, usernameFilter
   const avgDuration = logs.length > 0 ? Math.round(logs.reduce((s, l) => s + l.duration, 0) / logs.length) : 0;
   const uniqueUsers = new Set(logs.map((l) => l.username).filter(Boolean)).size;
 
+  function downloadCsv() {
+    const header = 'Zeit,Methode,Pfad,Status,Dauer,Benutzer,IP,UserAgent,Fehler';
+    const rows = logs.map((l) => [
+      l.createdAt, l.method, l.path, l.status, `${l.duration}ms`,
+      l.username ?? '', l.ip ?? '', (l.userAgent ?? '').replace(/,/g, ';'), l.error ?? '',
+    ].map(String).join(','));
+    const blob = new Blob([header + '\n' + rows.join('\n')], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `logs-${new Date().toISOString().slice(0,10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex gap-3 flex-wrap">
-        <StatChip label="Anfragen" value={total.toLocaleString()} />
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <StatChip label="Anfragen gesamt" value={total.toLocaleString()} />
         <StatChip label="Fehlerrate" value={`${errorRate}%`} />
         <StatChip label="Ø Dauer" value={`${avgDuration}ms`} />
         <StatChip label="Nutzer" value={uniqueUsers} />
@@ -175,16 +193,20 @@ function AllRequestsTab({ methodFilter, statusFilter, pathFilter, usernameFilter
         className="rounded-[16px] overflow-hidden"
         style={{ background: '#1c1c1e', border: '1px solid rgba(255,255,255,0.07)', boxShadow: '0 4px 20px rgba(0,0,0,0.4)' }}
       >
+        <div className="flex items-center justify-between px-4 py-2.5" style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+          <span className="text-[12px]" style={{ color: 'rgba(235,235,245,0.35)' }}>{total.toLocaleString()} Einträge</span>
+          <button onClick={downloadCsv} className="flex items-center gap-1.5 px-3 py-1.5 rounded-[8px] text-[12px] font-medium transition-colors" style={{ background: 'rgba(255,255,255,0.06)', color: 'rgba(235,235,245,0.6)' }}
+            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.1)'; }}
+            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.06)'; }}>
+            ↓ CSV Export
+          </button>
+        </div>
         <div className="overflow-x-auto">
           <table className="w-full">
             <thead>
               <tr style={{ background: 'rgba(0,0,0,0.3)', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
                 {['Zeit', 'Methode', 'Pfad', 'Status', 'Dauer', 'Benutzer', 'IP'].map((col) => (
-                  <th
-                    key={col}
-                    className={`px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.05em]${col === 'IP' || col === 'Dauer' ? ' hidden md:table-cell' : ''}`}
-                    style={{ color: 'rgba(235,235,245,0.3)' }}
-                  >
+                  <th key={col} className={`px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.05em]${col === 'IP' || col === 'Dauer' ? ' hidden md:table-cell' : ''}`} style={{ color: 'rgba(235,235,245,0.3)' }}>
                     {col}
                   </th>
                 ))}
@@ -199,41 +221,72 @@ function AllRequestsTab({ methodFilter, statusFilter, pathFilter, usernameFilter
                 logs.map((log) => {
                   const ms = methodStyle(log.method);
                   const ss = statusStyle(log.status);
+                  const isExpanded = expandedId === log.id;
                   return (
-                    <tr
-                      key={log.id}
-                      style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}
-                      className="transition-colors"
-                      onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.02)'; }}
-                      onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = ''; }}
-                    >
-                      <td className="px-4 py-3 text-[11px] whitespace-nowrap" style={{ color: 'rgba(235,235,245,0.35)' }}>{relativeTime(log.createdAt)}</td>
-                      <td className="px-4 py-3"><Badge text={log.method} style={ms} /></td>
-                      <td className="px-4 py-3 max-w-xs">
-                        <span className="text-[12px] font-mono truncate block" style={{ color: 'rgba(235,235,245,0.65)' }}>{log.path}</span>
-                        {log.error && <span className="text-[11px] truncate block mt-0.5" style={{ color: '#ff453a' }}>{log.error}</span>}
-                      </td>
-                      <td className="px-4 py-3"><Badge text={String(log.status)} style={ss} /></td>
-                      <td className="px-4 py-3 hidden md:table-cell text-[12px] whitespace-nowrap" style={{ color: 'rgba(235,235,245,0.4)' }}>{log.duration}ms</td>
-                      <td className="px-4 py-3">
-                        {log.username ? (
-                          <button
-                            className="text-[12px] font-medium transition-colors"
-                            style={{ color: '#0a84ff' }}
-                            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.opacity = '0.7'; }}
-                            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.opacity = '1'; }}
-                            onClick={() => onNavigateToUser(log.username!)}
-                          >
-                            {log.username}
-                          </button>
-                        ) : (
-                          <span className="text-[12px]" style={{ color: 'rgba(235,235,245,0.2)' }}>—</span>
-                        )}
-                      </td>
-                      <td className="px-4 py-3 hidden md:table-cell">
-                        <span className="text-[11px] font-mono" style={{ color: 'rgba(235,235,245,0.3)' }}>{log.ip ?? '—'}</span>
-                      </td>
-                    </tr>
+                    <>
+                      <tr
+                        key={log.id}
+                        style={{ borderBottom: isExpanded ? 'none' : '1px solid rgba(255,255,255,0.04)', cursor: 'pointer', background: isExpanded ? 'rgba(10,132,255,0.04)' : '' }}
+                        className="transition-colors"
+                        onClick={() => setExpandedId(isExpanded ? null : log.id)}
+                        onMouseEnter={(e) => { if (!isExpanded) (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.02)'; }}
+                        onMouseLeave={(e) => { if (!isExpanded) (e.currentTarget as HTMLElement).style.background = ''; }}
+                      >
+                        <td className="px-4 py-3 text-[11px] whitespace-nowrap" style={{ color: 'rgba(235,235,245,0.35)' }}>
+                          {new Date(log.createdAt).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                        </td>
+                        <td className="px-4 py-3"><Badge text={log.method} style={ms} /></td>
+                        <td className="px-4 py-3 max-w-xs">
+                          <span className="text-[12px] font-mono truncate block" style={{ color: 'rgba(235,235,245,0.65)' }}>{log.path}</span>
+                          {log.error && <span className="text-[11px] truncate block mt-0.5" style={{ color: '#ff453a' }}>{log.error}</span>}
+                        </td>
+                        <td className="px-4 py-3"><Badge text={String(log.status)} style={ss} /></td>
+                        <td className="px-4 py-3 hidden md:table-cell text-[12px] whitespace-nowrap" style={{ color: 'rgba(235,235,245,0.4)' }}>{log.duration}ms</td>
+                        <td className="px-4 py-3">
+                          {log.username ? (
+                            <button className="text-[12px] font-medium transition-colors" style={{ color: '#0a84ff' }}
+                              onClick={(e) => { e.stopPropagation(); onNavigateToUser(log.username!); }}>
+                              {log.username}
+                            </button>
+                          ) : <span className="text-[12px]" style={{ color: 'rgba(235,235,245,0.2)' }}>—</span>}
+                        </td>
+                        <td className="px-4 py-3 hidden md:table-cell">
+                          <span className="text-[11px] font-mono" style={{ color: 'rgba(235,235,245,0.3)' }}>{log.ip ?? '—'}</span>
+                        </td>
+                      </tr>
+                      {isExpanded && (
+                        <tr key={`${log.id}-detail`} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)', background: 'rgba(10,132,255,0.04)' }}>
+                          <td colSpan={7} className="px-4 pb-3">
+                            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-[12px] mt-1">
+                              <div>
+                                <span style={{ color: 'rgba(235,235,245,0.35)' }}>Zeitstempel</span>
+                                <div className="text-white mt-0.5 font-mono">{new Date(log.createdAt).toLocaleString('de-DE')}</div>
+                              </div>
+                              <div>
+                                <span style={{ color: 'rgba(235,235,245,0.35)' }}>IP-Adresse</span>
+                                <div className="text-white mt-0.5 font-mono">{log.ip ?? '—'}</div>
+                              </div>
+                              <div>
+                                <span style={{ color: 'rgba(235,235,245,0.35)' }}>Dauer</span>
+                                <div className="text-white mt-0.5">{log.duration}ms</div>
+                              </div>
+                              {log.userAgent && (
+                                <div className="col-span-2 sm:col-span-3">
+                                  <span style={{ color: 'rgba(235,235,245,0.35)' }}>User-Agent</span>
+                                  <div className="mt-0.5 font-mono break-all" style={{ color: 'rgba(235,235,245,0.6)', fontSize: '11px' }}>{log.userAgent}</div>
+                                </div>
+                              )}
+                              {log.error && (
+                                <div className="col-span-2 sm:col-span-3">
+                                  <span style={{ color: '#ff453a' }}>Fehler</span>
+                                  <div className="mt-0.5 font-mono text-[11px]" style={{ color: '#ff6b63' }}>{log.error}</div>
+                                </div>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </>
                   );
                 })
               )}
@@ -445,6 +498,8 @@ export function LogsPage() {
   const [pathFilter, setPathFilter] = useState('');
   const [usernameInput, setUsernameInput] = useState('');
   const [usernameFilter, setUsernameFilter] = useState('');
+  const [fromDate, setFromDate] = useState('');
+  const [toDate, setToDate] = useState('');
   const pathTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const usernameTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -465,14 +520,29 @@ export function LogsPage() {
     return () => { if (usernameTimer.current) clearTimeout(usernameTimer.current); };
   }, [usernameInput]);
 
-  function clearFilters() { setMethodFilter(''); setStatusFilter(''); setPathInput(''); setPathFilter(''); setUsernameInput(''); setUsernameFilter(''); }
+  function setQuickFilter(type: 'errors' | 'today' | 'post' | '5xx') {
+    const today = new Date().toISOString().slice(0, 10);
+    if (type === 'errors') { setStatusFilter('4xx'); setMethodFilter(''); setFromDate(''); setToDate(''); }
+    if (type === 'today')  { setFromDate(today); setToDate(today); setStatusFilter(''); setMethodFilter(''); }
+    if (type === 'post')   { setMethodFilter('POST'); setStatusFilter(''); setFromDate(''); setToDate(''); }
+    if (type === '5xx')    { setStatusFilter('5xx'); setMethodFilter(''); setFromDate(''); setToDate(''); }
+  }
 
-  const hasFilters = methodFilter || statusFilter || pathInput || usernameInput;
+  function clearFilters() { setMethodFilter(''); setStatusFilter(''); setPathInput(''); setPathFilter(''); setUsernameInput(''); setUsernameFilter(''); setFromDate(''); setToDate(''); }
+
+  const hasFilters = methodFilter || statusFilter || pathInput || usernameInput || fromDate || toDate;
   const [byUserInitial, setByUserInitial] = useState(stateUsername);
 
   function navigateToUser(username: string) { setByUserInitial(username); setActiveTab('byUser'); }
 
   const tabs = [{ key: 'all' as const, label: 'Alle Anfragen' }, { key: 'byUser' as const, label: 'Nach Benutzer' }];
+
+  const quickChips = [
+    { label: 'Heute', action: () => setQuickFilter('today') },
+    { label: 'Fehler 4xx', action: () => setQuickFilter('errors') },
+    { label: 'Fehler 5xx', action: () => setQuickFilter('5xx') },
+    { label: 'POST', action: () => setQuickFilter('post') },
+  ];
 
   return (
     <div className="flex flex-col gap-6">
@@ -481,76 +551,72 @@ export function LogsPage() {
         <div>
           <div className="flex items-center gap-2 mb-1">
             <ScrollText size={18} style={{ color: '#0a84ff' }} />
-            <h1 className="text-[28px] font-bold text-white" style={{ letterSpacing: '-0.03em' }}>
-              Request Logs
-            </h1>
+            <h1 className="text-[28px] font-bold text-white" style={{ letterSpacing: '-0.03em' }}>Request Logs</h1>
           </div>
-          <p className="text-[14px]" style={{ color: 'rgba(235,235,245,0.4)' }}>
-            Eingehende HTTP-Anfragen an die API
-          </p>
+          <p className="text-[14px]" style={{ color: 'rgba(235,235,245,0.4)' }}>Eingehende HTTP-Anfragen an die API</p>
         </div>
-        <button
-          onClick={() => setAutoRefresh((v) => !v)}
+        <button onClick={() => setAutoRefresh((v) => !v)}
           className="flex items-center gap-2 px-3 py-2 rounded-[10px] text-[13px] transition-all"
-          style={{
-            background: autoRefresh ? 'rgba(10,132,255,0.14)' : '#1c1c1e',
-            color:      autoRefresh ? '#0a84ff'               : 'rgba(235,235,245,0.5)',
-            border:     autoRefresh ? '1px solid rgba(10,132,255,0.28)' : '1px solid rgba(255,255,255,0.08)',
-          }}
-        >
+          style={{ background: autoRefresh ? 'rgba(10,132,255,0.14)' : '#1c1c1e', color: autoRefresh ? '#0a84ff' : 'rgba(235,235,245,0.5)', border: autoRefresh ? '1px solid rgba(10,132,255,0.28)' : '1px solid rgba(255,255,255,0.08)' }}>
           <RefreshCw size={13} className={autoRefresh ? 'animate-spin' : ''} />
           {autoRefresh ? 'Live (10s)' : 'Auto-Refresh'}
         </button>
       </div>
 
       {/* Filter bar */}
-      <div
-        className="flex flex-wrap gap-2 items-center p-3 rounded-[14px]"
-        style={{ background: '#1c1c1e', border: '1px solid rgba(255,255,255,0.07)' }}
-      >
-        <SelectField value={methodFilter} onChange={setMethodFilter} options={[
-          { value: '', label: 'Alle Methoden' },
-          { value: 'GET', label: 'GET' },
-          { value: 'POST', label: 'POST' },
-          { value: 'PATCH', label: 'PATCH' },
-          { value: 'DELETE', label: 'DELETE' },
-        ]} />
-        <SelectField value={statusFilter} onChange={setStatusFilter} options={[
-          { value: '', label: 'Alle Status' },
-          { value: '2xx', label: '2xx' },
-          { value: '4xx', label: '4xx' },
-          { value: '5xx', label: '5xx' },
-        ]} />
-        <div className="flex-1 min-w-[140px]">
-          <InputField value={pathInput} onChange={setPathInput} placeholder="Pfad filtern…" />
+      <div className="flex flex-col gap-2 p-3 rounded-[14px]" style={{ background: '#1c1c1e', border: '1px solid rgba(255,255,255,0.07)' }}>
+        {/* Quick chips */}
+        <div className="flex flex-wrap gap-1.5">
+          {quickChips.map((chip) => (
+            <button key={chip.label} onClick={chip.action}
+              className="px-3 py-1 rounded-full text-[12px] font-medium transition-colors"
+              style={{ background: 'rgba(255,255,255,0.06)', color: 'rgba(235,235,245,0.6)', border: '1px solid rgba(255,255,255,0.08)' }}
+              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(10,132,255,0.14)'; (e.currentTarget as HTMLElement).style.color = '#0a84ff'; }}
+              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.06)'; (e.currentTarget as HTMLElement).style.color = 'rgba(235,235,245,0.6)'; }}>
+              {chip.label}
+            </button>
+          ))}
         </div>
-        <div className="flex-1 min-w-[140px]">
-          <InputField value={usernameInput} onChange={setUsernameInput} placeholder="Benutzer filtern…" />
+        {/* Main filters */}
+        <div className="flex flex-wrap gap-2 items-center">
+          <SelectField value={methodFilter} onChange={setMethodFilter} options={[
+            { value: '', label: 'Alle Methoden' }, { value: 'GET', label: 'GET' }, { value: 'POST', label: 'POST' },
+            { value: 'PATCH', label: 'PATCH' }, { value: 'DELETE', label: 'DELETE' },
+          ]} />
+          <SelectField value={statusFilter} onChange={setStatusFilter} options={[
+            { value: '', label: 'Alle Status' }, { value: '2xx', label: '2xx' }, { value: '4xx', label: '4xx' }, { value: '5xx', label: '5xx' },
+          ]} />
+          <div className="flex-1 min-w-[130px]">
+            <InputField value={pathInput} onChange={setPathInput} placeholder="Pfad filtern…" />
+          </div>
+          <div className="flex-1 min-w-[130px]">
+            <InputField value={usernameInput} onChange={setUsernameInput} placeholder="Benutzer…" icon={<Search size={12} />} />
+          </div>
         </div>
-        {hasFilters && (
-          <button
-            onClick={clearFilters}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-[8px] text-[12px] transition-colors apple-btn-ghost"
-          >
-            <X size={11} />
-            Zurücksetzen
-          </button>
-        )}
+        {/* Date range */}
+        <div className="flex flex-wrap gap-2 items-center">
+          <span className="text-[12px]" style={{ color: 'rgba(235,235,245,0.35)' }}>Zeitraum:</span>
+          <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)}
+            className="px-3 py-1.5 rounded-[8px] text-[12px] outline-none"
+            style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', color: 'rgba(235,235,245,0.7)' }} />
+          <span className="text-[12px]" style={{ color: 'rgba(235,235,245,0.25)' }}>bis</span>
+          <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)}
+            className="px-3 py-1.5 rounded-[8px] text-[12px] outline-none"
+            style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', color: 'rgba(235,235,245,0.7)' }} />
+          {hasFilters && (
+            <button onClick={clearFilters} className="flex items-center gap-1.5 px-3 py-1.5 rounded-[8px] text-[12px] transition-colors apple-btn-ghost ml-auto">
+              <X size={11} /> Zurücksetzen
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Tabs */}
       <div className="flex gap-1" style={{ borderBottom: '1px solid rgba(255,255,255,0.06)', paddingBottom: '1px' }}>
         {tabs.map((tab) => (
-          <button
-            key={tab.key}
-            onClick={() => setActiveTab(tab.key)}
+          <button key={tab.key} onClick={() => setActiveTab(tab.key)}
             className="px-4 py-2.5 text-[13px] font-medium transition-all rounded-t-[8px]"
-            style={{
-              color:        activeTab === tab.key ? '#0a84ff'               : 'rgba(235,235,245,0.45)',
-              background:   activeTab === tab.key ? 'rgba(10,132,255,0.1)'  : 'transparent',
-              borderBottom: activeTab === tab.key ? '2px solid #0a84ff'     : '2px solid transparent',
-            }}
-          >
+            style={{ color: activeTab === tab.key ? '#0a84ff' : 'rgba(235,235,245,0.45)', background: activeTab === tab.key ? 'rgba(10,132,255,0.1)' : 'transparent', borderBottom: activeTab === tab.key ? '2px solid #0a84ff' : '2px solid transparent' }}>
             {tab.label}
           </button>
         ))}
@@ -562,6 +628,8 @@ export function LogsPage() {
           statusFilter={statusFilter}
           pathFilter={pathFilter}
           usernameFilter={usernameFilter}
+          fromDate={fromDate}
+          toDate={toDate}
           onNavigateToUser={(username) => navigateToUser(username)}
           autoRefresh={autoRefresh}
         />

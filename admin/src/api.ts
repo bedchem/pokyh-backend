@@ -1,4 +1,4 @@
-import type { AdminStats, AdminClass, AdminSession, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish, AdminDishFull, AdminDishImportResult, AdminCommentsResponse } from './types';
+import type { AdminStats, AdminClass, AdminSession, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish, AdminDishFull, AdminDishImportResult, AdminCommentsResponse, FileLogFile, FileLogResponse } from './types';
 
 const TOKEN_KEY = 'pokyh_admin_token';
 
@@ -143,6 +143,8 @@ export const adminApi = {
     status?: number;
     path?: string;
     username?: string;
+    from?: string;
+    to?: string;
   }): Promise<LogsResponse> => {
     const p = new URLSearchParams();
     if (params?.page) p.set('page', String(params.page));
@@ -151,6 +153,8 @@ export const adminApi = {
     if (params?.status) p.set('status', String(params.status));
     if (params?.path) p.set('path', params.path);
     if (params?.username) p.set('username', params.username);
+    if (params?.from) p.set('from', params.from);
+    if (params?.to) p.set('to', params.to);
     return request<LogsResponse>('GET', `/api/admin/logs?${p.toString()}`);
   },
 
@@ -220,14 +224,22 @@ export const adminApi = {
   deleteSubjectImage: (subject: string): Promise<void> =>
     request<void>('DELETE', `/api/admin/subject-images/${encodeURIComponent(subject)}`),
 
-  comments: (params?: { page?: number; limit?: number; type?: 'all' | 'reminder' | 'dish'; search?: string }): Promise<AdminCommentsResponse> => {
+  comments: (params?: { page?: number; limit?: number; type?: 'all' | 'reminder' | 'dish'; search?: string; sortBy?: 'createdAt' | 'username' | 'body'; sortOrder?: 'asc' | 'desc' }): Promise<AdminCommentsResponse> => {
     const p = new URLSearchParams();
     if (params?.page) p.set('page', String(params.page));
     if (params?.limit) p.set('limit', String(params.limit));
     if (params?.type) p.set('type', params.type);
     if (params?.search) p.set('search', params.search);
+    if (params?.sortBy) p.set('sortBy', params.sortBy);
+    if (params?.sortOrder) p.set('sortOrder', params.sortOrder);
     return request<AdminCommentsResponse>('GET', `/api/admin/comments?${p.toString()}`);
   },
+
+  fileLogList: (): Promise<FileLogFile[]> =>
+    request<FileLogFile[]>('GET', '/api/admin/file-logs'),
+
+  fileLogEntries: (date: string, page = 1, limit = 100): Promise<FileLogResponse> =>
+    request<FileLogResponse>('GET', `/api/admin/file-logs/${date}?page=${page}&limit=${limit}`),
 
   deleteReminderComment: (id: string): Promise<void> =>
     request<void>('DELETE', `/api/admin/comments/reminder/${id}`),

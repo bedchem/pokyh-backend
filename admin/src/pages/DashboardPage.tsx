@@ -9,6 +9,9 @@ import {
   Bell,
   Zap,
   RefreshCw,
+  AlertTriangle,
+  TrendingUp,
+  Clock,
 } from 'lucide-react';
 import {
   AreaChart,
@@ -46,6 +49,13 @@ function greeting(): string {
   if (h < 12) return 'Guten Morgen';
   if (h < 17) return 'Guten Tag';
   return 'Guten Abend';
+}
+
+function formatUptime(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
+  return `${Math.floor(seconds / 86400)}d ${Math.floor((seconds % 86400) / 3600)}h`;
 }
 
 function formatDate(): string {
@@ -167,10 +177,10 @@ export function DashboardPage() {
   if (!stats) return null;
 
   const statCards = [
-    { label: 'Benutzer gesamt',   value: stats.totalUsers,          icon: <Users size={18} />,           accentColor: '#0a84ff' },
-    { label: 'Administratoren',   value: stats.totalAdmins,         icon: <Shield size={18} />,          accentColor: '#bf5af2' },
-    { label: 'Aktive Sessions',   value: stats.totalActiveSessions, icon: <MonitorSmartphone size={18}/>, accentColor: '#30d158' },
-    { label: 'Klassen gesamt',    value: stats.totalClasses,        icon: <Building2 size={18} />,       accentColor: '#40c8e0' },
+    { label: 'Benutzer gesamt',    value: stats.totalUsers,          icon: <Users size={18} />,            accentColor: '#0a84ff' },
+    { label: 'Administratoren',    value: stats.totalAdmins,         icon: <Shield size={18} />,           accentColor: '#bf5af2' },
+    { label: 'Aktive Sessions',    value: stats.totalActiveSessions, icon: <MonitorSmartphone size={18} />, accentColor: '#30d158' },
+    { label: 'Klassen gesamt',     value: stats.totalClasses,        icon: <Building2 size={18} />,        accentColor: '#40c8e0' },
   ];
 
   const regChartData = (() => {
@@ -211,10 +221,34 @@ export function DashboardPage() {
         </button>
       </div>
 
-      {/* Stat grid */}
+      {/* Stat grid — primary */}
       <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
         {statCards.map((c, i) => (
           <StatCard key={c.label} {...c} delay={i * 55} />
+        ))}
+      </div>
+
+      {/* Today stats row */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        {[
+          { label: 'Anfragen heute', value: stats.requestsToday?.toLocaleString() ?? '—', icon: <TrendingUp size={15} />, color: '#0a84ff' },
+          { label: 'Fehler heute',   value: stats.errorsToday?.toLocaleString() ?? '—',   icon: <AlertTriangle size={15} />, color: stats.errorsToday > 0 ? '#ff453a' : '#30d158' },
+          { label: 'Neue Nutzer',    value: stats.newUsersToday ?? '—',                   icon: <Users size={15} />,        color: '#30d158' },
+          { label: 'Server Uptime',  value: formatUptime(stats.serverUptime ?? 0),        icon: <Clock size={15} />,        color: '#40c8e0' },
+        ].map((item, i) => (
+          <div
+            key={item.label}
+            className="apple-card px-4 py-3 flex items-center gap-3 min-w-0 animate-fadeInUp"
+            style={{ animationDelay: `${(i + 4) * 55}ms` }}
+          >
+            <div className="w-8 h-8 rounded-[10px] flex items-center justify-center flex-shrink-0" style={{ background: `${item.color}1a`, color: item.color }}>
+              {item.icon}
+            </div>
+            <div className="min-w-0">
+              <div className="text-[18px] font-bold text-white" style={{ letterSpacing: '-0.02em' }}>{item.value}</div>
+              <div className="text-[11px] truncate" style={{ color: 'rgba(235,235,245,0.4)' }}>{item.label}</div>
+            </div>
+          </div>
         ))}
       </div>
 

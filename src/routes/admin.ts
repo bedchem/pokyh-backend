@@ -6,12 +6,15 @@ import { v4 as uuidv4 } from 'uuid';
 import { rateLimit } from 'express-rate-limit';
 import https from 'https';
 import http from 'http';
+import fs from 'fs/promises';
+import path from 'path';
 import sharp from 'sharp';
 import { config } from '../config';
 import { prisma } from '../db';
 import { requireAdmin } from '../middleware/requireAdmin';
 import { generateClassCode, generateClassId } from '../utils/uid';
 import { revokeUserTokens } from '../utils/revokedTokens';
+import { logger } from '../utils/logger';
 
 function safeParseTags(raw: string): string[] {
   try { return JSON.parse(raw) as string[]; } catch { return []; }
@@ -87,8 +90,10 @@ router.post('/auth/login', loginLimiter, async (req: Request, res: Response): Pr
     ? await prisma.admin.findUnique({ where: { stableUid: user.stableUid } })
     : null;
 
+  const loginIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() ?? req.socket.remoteAddress ?? 'unknown';
   const isEnvAdmin = config.adminUsernames.includes(username);
   if (!adminRecord && !isEnvAdmin) {
+    logger.warn('Admin login failed: unknown user', { action: 'admin_login_failed', username, ip: loginIp });
     res.status(401).json({ error: 'Invalid credentials' });
     return;
   }
@@ -102,22 +107,32 @@ router.post('/auth/login', loginLimiter, async (req: Request, res: Response): Pr
 
   const valid = await bcrypt.compare(password, hashToCheck);
   if (!valid) {
+    logger.warn('Admin login failed: wrong password', { action: 'admin_login_failed', username, ip: loginIp });
     res.status(401).json({ error: 'Invalid credentials' });
     return;
   }
 
+  const ip = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() ?? req.socket.remoteAddress ?? 'unknown';
   const token = jwt.sign(
     { role: 'admin', sub: 'admin-panel', username },
     config.jwtSecret,
     { expiresIn: '7d' }
   );
 
+  logger.info('Admin login successful', { action: 'admin_login', username, ip, userAgent: req.headers['user-agent'] });
   res.json({ token });
 });
 
 // ─── GET /api/admin/stats ─────────────────────────────────────────────────────
 
 router.get('/stats', requireAdmin, async (_req: Request, res: Response): Promise<void> => {
+  const startOfToday = new Date();
+  startOfToday.setHours(0, 0, 0, 0);
+
+  const startOfWeek = new Date();
+  startOfWeek.setDate(startOfWeek.getDate() - startOfWeek.getDay());
+  startOfWeek.setHours(0, 0, 0, 0);
+
   const [
     totalUsers,
     totalAdmins,
@@ -125,36 +140,48 @@ router.get('/stats', requireAdmin, async (_req: Request, res: Response): Promise
     totalTodos,
     totalReminders,
     totalActiveSessions,
+    requestsToday,
+    newUsersToday,
+    newUsersThisWeek,
   ] = await Promise.all([
     prisma.user.count(),
     prisma.admin.count(),
     prisma.class.count(),
     prisma.todo.count(),
     prisma.reminder.count(),
-    prisma.refreshToken.count({
-      where: {
-        revokedAt: null,
-        expiresAt: { gt: new Date() },
-      },
-    }),
+    prisma.refreshToken.count({ where: { revokedAt: null, expiresAt: { gt: new Date() } } }),
+    prisma.requestLog.count({ where: { createdAt: { gte: startOfToday } } }),
+    prisma.user.count({ where: { createdAt: { gte: startOfToday } } }),
+    prisma.user.count({ where: { createdAt: { gte: startOfWeek } } }),
   ]);
 
-  // Last 14 days user registrations grouped by day
   type DayRow = { date: string | Date; count: bigint };
-  const rawRows = await prisma.$queryRaw<DayRow[]>`
-    SELECT DATE(created_at) as date, COUNT(*) as count
-    FROM users
-    WHERE created_at >= DATE_SUB(NOW(), INTERVAL 14 DAY)
-    GROUP BY DATE(created_at)
-    ORDER BY date ASC
-  `;
+  type StatRow = { errors: bigint; avgMs: number | null };
+
+  const [rawRows, todayStats] = await Promise.all([
+    prisma.$queryRaw<DayRow[]>`
+      SELECT DATE(created_at) as date, COUNT(*) as count
+      FROM users
+      WHERE created_at >= DATE_SUB(NOW(), INTERVAL 14 DAY)
+      GROUP BY DATE(created_at)
+      ORDER BY date ASC
+    `,
+    prisma.$queryRaw<StatRow[]>`
+      SELECT
+        SUM(CASE WHEN status >= 500 THEN 1 ELSE 0 END) AS errors,
+        ROUND(AVG(duration)) AS avgMs
+      FROM request_logs
+      WHERE created_at >= ${startOfToday}
+    `,
+  ]);
 
   const usersByDay = rawRows.map((row) => ({
-    date: row.date instanceof Date
-      ? row.date.toISOString().slice(0, 10)
-      : String(row.date).slice(0, 10),
+    date: row.date instanceof Date ? row.date.toISOString().slice(0, 10) : String(row.date).slice(0, 10),
     count: Number(row.count),
   }));
+
+  const errorsToday = Number(todayStats[0]?.errors ?? 0);
+  const avgResponseTimeToday = Number(todayStats[0]?.avgMs ?? 0);
 
   res.json({
     totalUsers,
@@ -163,6 +190,12 @@ router.get('/stats', requireAdmin, async (_req: Request, res: Response): Promise
     totalTodos,
     totalReminders,
     totalActiveSessions,
+    requestsToday,
+    errorsToday,
+    avgResponseTimeToday,
+    newUsersToday,
+    newUsersThisWeek,
+    serverUptime: Math.floor(process.uptime()),
     usersByDay,
   });
 });
@@ -323,8 +356,12 @@ router.get('/users/:stableUid', requireAdmin, async (req: Request, res: Response
 
 router.delete('/users/:stableUid', requireAdmin, async (req: Request, res: Response): Promise<void> => {
   const stableUid = String(req.params['stableUid']);
+  const adminJwt = req.headers['authorization']?.replace('Bearer ', '');
+  let adminUsername = 'admin';
+  try { if (adminJwt) adminUsername = (jwt.decode(adminJwt) as Record<string, string>)?.['username'] ?? 'admin'; } catch {}
   revokeUserTokens(stableUid);
   await prisma.user.delete({ where: { stableUid } }).catch(() => null);
+  logger.info('Admin action: delete user', { action: 'delete_user', adminUsername, targetUid: stableUid });
   res.status(204).send();
 });
 
@@ -424,6 +461,9 @@ router.delete('/users/:stableUid/classes/:classId', requireAdmin, async (req: Re
 
 router.post('/users/:stableUid/grant-admin', requireAdmin, async (req: Request, res: Response): Promise<void> => {
   const stableUid = String(req.params['stableUid']);
+  const adminJwt = req.headers['authorization']?.replace('Bearer ', '');
+  let adminUsername = 'admin';
+  try { if (adminJwt) adminUsername = (jwt.decode(adminJwt) as Record<string, string>)?.['username'] ?? 'admin'; } catch {}
 
   await prisma.admin.upsert({
     where: { stableUid },
@@ -431,6 +471,7 @@ router.post('/users/:stableUid/grant-admin', requireAdmin, async (req: Request, 
     update: { canCreateClass: true },
   });
 
+  logger.info('Admin action: grant admin', { action: 'grant_admin', adminUsername, targetUid: stableUid });
   res.json({ ok: true });
 });
 
@@ -438,9 +479,13 @@ router.post('/users/:stableUid/grant-admin', requireAdmin, async (req: Request, 
 
 router.delete('/users/:stableUid/revoke-admin', requireAdmin, async (req: Request, res: Response): Promise<void> => {
   const stableUid = String(req.params['stableUid']);
+  const adminJwt = req.headers['authorization']?.replace('Bearer ', '');
+  let adminUsername = 'admin';
+  try { if (adminJwt) adminUsername = (jwt.decode(adminJwt) as Record<string, string>)?.['username'] ?? 'admin'; } catch {}
 
   await prisma.admin.deleteMany({ where: { stableUid } });
 
+  logger.info('Admin action: revoke admin', { action: 'revoke_admin', adminUsername, targetUid: stableUid });
   res.status(204).send();
 });
 
@@ -505,13 +550,16 @@ router.get('/sessions', requireAdmin, async (_req: Request, res: Response): Prom
 });
 
 // ─── DELETE /api/admin/sessions ── revoke all active + delete all expired/revoked
-router.delete('/sessions', requireAdmin, async (_req: Request, res: Response): Promise<void> => {
+router.delete('/sessions', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const adminJwt = req.headers['authorization']?.replace('Bearer ', '');
+  let adminUsername = 'admin';
+  try { if (adminJwt) adminUsername = (jwt.decode(adminJwt) as Record<string, string>)?.['username'] ?? 'admin'; } catch {}
+
   const active = await prisma.refreshToken.findMany({
     where: { revokedAt: null },
     select: { stableUid: true },
   });
 
-  // Delete everything (active and already-revoked/expired)
   await prisma.refreshToken.deleteMany({});
 
   const seen = new Set<string>();
@@ -522,6 +570,7 @@ router.delete('/sessions', requireAdmin, async (_req: Request, res: Response): P
     }
   }
 
+  logger.info('Admin action: delete all sessions', { action: 'delete_all_sessions', adminUsername, affectedUsers: seen.size });
   res.status(204).send();
 });
 
@@ -566,22 +615,25 @@ router.get('/logs', requireAdmin, async (req: Request, res: Response): Promise<v
   const skip = (page - 1) * limit;
   const method = req.query['method'] ? String(req.query['method']).toUpperCase() : undefined;
   const status = req.query['status'] ? parseInt(String(req.query['status']), 10) : undefined;
-  const path = req.query['path'] ? String(req.query['path']) : undefined;
+  const pathFilter = req.query['path'] ? String(req.query['path']) : undefined;
   const username = req.query['username'] ? String(req.query['username']) : undefined;
+  const from = req.query['from'] ? new Date(String(req.query['from'])) : undefined;
+  const to = req.query['to'] ? new Date(String(req.query['to']) + 'T23:59:59.999Z') : undefined;
 
   const where: Record<string, unknown> = {};
   if (method) where['method'] = method;
   if (status) where['status'] = { gte: status, lt: status + 100 };
-  if (path) where['path'] = { contains: path };
+  if (pathFilter) where['path'] = { contains: pathFilter };
   if (username) where['username'] = { contains: username };
+  if (from || to) {
+    where['createdAt'] = {
+      ...(from && !isNaN(from.getTime()) ? { gte: from } : {}),
+      ...(to && !isNaN(to.getTime()) ? { lte: to } : {}),
+    };
+  }
 
   const [logs, total] = await Promise.all([
-    prisma.requestLog.findMany({
-      where,
-      orderBy: { createdAt: 'desc' },
-      skip,
-      take: limit,
-    }),
+    prisma.requestLog.findMany({ where, orderBy: { createdAt: 'desc' }, skip, take: limit }),
     prisma.requestLog.count({ where }),
   ]);
 
@@ -1146,24 +1198,30 @@ router.get('/comments', requireAdmin, async (req: Request, res: Response): Promi
   const page = Math.max(1, parseInt(String(req.query['page'] ?? '1'), 10));
   const limit = Math.min(100, Math.max(1, parseInt(String(req.query['limit'] ?? '50'), 10)));
   const skip = (page - 1) * limit;
-  const type = String(req.query['type'] ?? 'all'); // 'all' | 'reminder' | 'dish'
+  const type = String(req.query['type'] ?? 'all');
   const search = String(req.query['search'] ?? '').trim().toLowerCase();
+  const sortBy = (['createdAt', 'username', 'body'] as const).includes(req.query['sortBy'] as 'createdAt')
+    ? (req.query['sortBy'] as 'createdAt' | 'username' | 'body')
+    : 'createdAt';
+  const sortOrder = req.query['sortOrder'] === 'asc' ? 'asc' : 'desc';
 
   const where: Record<string, unknown> = search
     ? { OR: [{ body: { contains: search } }, { username: { contains: search } }] }
     : {};
 
+  const orderBy = { [sortBy]: sortOrder };
+
   const [reminderComments, dishComments, totalReminder, totalDish] = await Promise.all([
     type === 'dish' ? Promise.resolve([]) : prisma.comment.findMany({
       where,
-      orderBy: { createdAt: 'desc' },
+      orderBy,
       skip: type === 'all' ? 0 : skip,
       take: type === 'all' ? undefined : limit,
       include: { reminder: { select: { id: true, title: true, classId: true } } },
     }),
     type === 'reminder' ? Promise.resolve([]) : prisma.dishComment.findMany({
       where,
-      orderBy: { createdAt: 'desc' },
+      orderBy,
       skip: type === 'all' ? 0 : skip,
       take: type === 'all' ? undefined : limit,
     }),
@@ -1196,7 +1254,11 @@ router.get('/comments', requireAdmin, async (req: Request, res: Response): Promi
       contextTitle: c.dishId,
       classId: null,
     })),
-  ].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  ].sort((a, b) => {
+    const va = a[sortBy] ?? '';
+    const vb = b[sortBy] ?? '';
+    return sortOrder === 'asc' ? va.localeCompare(vb) : vb.localeCompare(va);
+  });
 
   const paginated = type === 'all' ? allComments.slice(skip, skip + limit) : allComments;
 
@@ -1222,6 +1284,65 @@ router.delete('/comments/dish/:id', requireAdmin, async (req: Request, res: Resp
   const id = String(req.params['id']);
   await prisma.dishComment.delete({ where: { id } }).catch(() => null);
   res.status(204).send();
+});
+
+// ─── GET /api/admin/file-logs ─────────────────────────────────────────────────
+
+router.get('/file-logs', requireAdmin, async (_req: Request, res: Response): Promise<void> => {
+  const logDir = path.join(process.cwd(), 'logs');
+  let files: string[] = [];
+  try { files = await fs.readdir(logDir); } catch { files = []; }
+
+  const stats = await Promise.all(
+    files
+      .filter((f) => f.startsWith('app-') && f.endsWith('.log'))
+      .map(async (f) => {
+        const stat = await fs.stat(path.join(logDir, f)).catch(() => null);
+        return {
+          filename: f,
+          date: f.replace('app-', '').replace('.log', ''),
+          size: stat?.size ?? 0,
+        };
+      })
+  );
+
+  res.json(stats.sort((a, b) => b.date.localeCompare(a.date)));
+});
+
+// ─── GET /api/admin/file-logs/:date ──────────────────────────────────────────
+
+router.get('/file-logs/:date', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const dateParam = String(req.params['date']);
+  // Path traversal protection
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateParam)) {
+    res.status(400).json({ error: 'Invalid date format' });
+    return;
+  }
+
+  const filename = `app-${dateParam}.log`;
+  const filePath = path.join(process.cwd(), 'logs', filename);
+
+  const page = Math.max(1, parseInt(String(req.query['page'] ?? '1'), 10));
+  const limit = Math.min(500, Math.max(1, parseInt(String(req.query['limit'] ?? '100'), 10)));
+
+  let content: string;
+  try {
+    content = await fs.readFile(filePath, 'utf8');
+  } catch {
+    res.status(404).json({ error: 'Log file not found' });
+    return;
+  }
+
+  const lines = content.split('\n').filter(Boolean);
+  const entries = lines.map((line) => {
+    try { return JSON.parse(line); } catch { return { raw: line }; }
+  });
+
+  const total = entries.length;
+  const skip = (page - 1) * limit;
+  const paginated = entries.slice(skip, skip + limit);
+
+  res.json({ entries: paginated, total, page, limit, date: dateParam });
 });
 
 // ─── Subject Images (admin) ───────────────────────────────────────────────────

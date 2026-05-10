@@ -45,7 +45,34 @@ export interface AdminStats {
   totalTodos: number;
   totalReminders: number;
   totalActiveSessions: number;
+  requestsToday: number;
+  errorsToday: number;
+  avgResponseTimeToday: number;
+  newUsersToday: number;
+  newUsersThisWeek: number;
+  serverUptime: number;
   usersByDay: Array<{ date: string; count: number }>;
+}
+
+export interface FileLogEntry {
+  timestamp?: string;
+  level?: string;
+  message?: string;
+  [key: string]: unknown;
+}
+
+export interface FileLogFile {
+  filename: string;
+  date: string;
+  size: number;
+}
+
+export interface FileLogResponse {
+  entries: FileLogEntry[];
+  total: number;
+  page: number;
+  limit: number;
+  date: string;
 }
 
 export interface AdminReminder {
