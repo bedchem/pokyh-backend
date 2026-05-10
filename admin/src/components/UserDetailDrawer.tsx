@@ -478,13 +478,14 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
       if (user.isAdmin) {
         await adminApi.revokeAdmin(user.stableUid);
         showToast(`Admin von ${user.username} entzogen`, 'success');
+        onAdminToggled(user.stableUid, false);
+        onClose();
       } else {
         await adminApi.grantAdmin(user.stableUid);
         showToast(`Admin an ${user.username} vergeben`, 'success');
+        setUser((prev) => prev ? { ...prev, isAdmin: true } : prev);
+        onAdminToggled(user.stableUid, true);
       }
-      const newIsAdmin = !user.isAdmin;
-      setUser((prev) => prev ? { ...prev, isAdmin: newIsAdmin } : prev);
-      onAdminToggled(user.stableUid, newIsAdmin);
     } catch (e) {
       showToast(e instanceof Error ? e.message : 'Fehler', 'error');
     } finally {

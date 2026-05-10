@@ -7,7 +7,7 @@ import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import { config } from '../config';
 import { requireAdmin } from '../middleware/requireAdmin';
-import { isCloudflaredInstalled, hasCloudflareAuth, isTunnelConfigured, startTunnel, installCloudflared, getHostnameFromCloudflaredConfig } from '../tunnel';
+import { isCloudflaredInstalled, hasCloudflareAuth, isTunnelConfigured, startTunnel, installCloudflared, getHostnameFromCloudflaredConfig, getTunnelNameFromConfig } from '../tunnel';
 
 const router = Router();
 
@@ -149,8 +149,8 @@ router.get('/cloudflare/tunnel-stream', requireAdmin, (req: Request, res: Respon
   res.flushHeaders();
 
   const send = (data: object) => res.write(`data: ${JSON.stringify(data)}\n\n`);
-  const hostname = typeof req.query['hostname'] === 'string' ? req.query['hostname'] : 'api.pokyh.com';
-  const tunnelName = 'pokyh-api';
+  const hostname = typeof req.query['hostname'] === 'string' ? req.query['hostname'] : (config.tunnelHostname || getHostnameFromCloudflaredConfig() || '');
+  const tunnelName = config.tunnelName || getTunnelNameFromConfig() || '';
 
   async function run() {
     send({ type: 'log', message: `Setting up tunnel '${tunnelName}' → ${hostname}` });

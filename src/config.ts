@@ -22,17 +22,17 @@ export const config = {
   apiKey: requireEnv('API_KEY'),
   serverKey: requireEnv('SERVER_KEY'),
   corsOrigin: process.env.CORS_ORIGIN ?? 'http://localhost:3000',
-  webuntisBase: process.env.WEBUNTIS_BASE ?? 'https://lbs-brixen.webuntis.com/WebUntis',
-  webuntisSchool: process.env.WEBUNTIS_SCHOOL ?? 'lbs-brixen',
+  webuntisBase: process.env.WEBUNTIS_BASE ?? '',
+  webuntisSchool: process.env.WEBUNTIS_SCHOOL ?? '',
   isDev: (process.env.NODE_ENV ?? 'development') === 'development',
   isProd: process.env.NODE_ENV === 'production',
   jwtExpiresIn: '1h',
   refreshTokenExpiresInHours: 1,
-  adminUsername: process.env.ADMIN_USERNAME ?? 'admin',
-  adminUsernames: (process.env.ADMIN_USERNAMES ?? process.env.ADMIN_USERNAME ?? 'admin')
+  adminUsername: process.env.ADMIN_USERNAME ?? '',
+  adminUsernames: (process.env.ADMIN_USERNAMES ?? process.env.ADMIN_USERNAME ?? '')
     .split(',').map((u) => u.trim()).filter(Boolean),
   adminPasswordHash: process.env.ADMIN_PASSWORD_HASH ?? '',
   debug: process.env.DEBUG === 'true',
-  tunnelName: process.env.TUNNEL_NAME ?? 'pokyh-api',
+  tunnelName: process.env.TUNNEL_NAME ?? '',
   tunnelHostname: process.env.TUNNEL_HOSTNAME ?? '',
 };

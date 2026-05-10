@@ -1,4 +1,4 @@
-import type { AdminStats, AdminClass, AdminSession, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish, AdminDishFull, AdminDishImportResult, AdminCommentsResponse, FileLogFile, FileLogResponse } from './types';
+import type { AdminStats, AdminClass, AdminSession, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish, AdminDishFull, AdminDishImportResult, AdminCommentsResponse, FileLogFile, FileLogResponse, FileLogEntry } from './types';
 
 const TOKEN_KEY = 'pokyh_admin_token';
 
@@ -240,6 +240,9 @@ export const adminApi = {
 
   fileLogEntries: (date: string, page = 1, limit = 100): Promise<FileLogResponse> =>
     request<FileLogResponse>('GET', `/api/admin/file-logs/${date}?page=${page}&limit=${limit}`),
+
+  auditLog: (limit = 100): Promise<{ entries: FileLogEntry[]; total: number }> =>
+    request<{ entries: FileLogEntry[]; total: number }>('GET', `/api/admin/audit-log?limit=${limit}`),
 
   deleteReminderComment: (id: string): Promise<void> =>
     request<void>('DELETE', `/api/admin/comments/reminder/${id}`),

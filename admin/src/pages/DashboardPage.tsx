@@ -229,27 +229,41 @@ export function DashboardPage() {
       </div>
 
       {/* Today stats row */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        {[
-          { label: 'Anfragen heute', value: stats.requestsToday?.toLocaleString() ?? '—', icon: <TrendingUp size={15} />, color: '#0a84ff' },
-          { label: 'Fehler heute',   value: stats.errorsToday?.toLocaleString() ?? '—',   icon: <AlertTriangle size={15} />, color: stats.errorsToday > 0 ? '#ff453a' : '#30d158' },
-          { label: 'Neue Nutzer',    value: stats.newUsersToday ?? '—',                   icon: <Users size={15} />,        color: '#30d158' },
-          { label: 'Server Uptime',  value: formatUptime(stats.serverUptime ?? 0),        icon: <Clock size={15} />,        color: '#40c8e0' },
-        ].map((item, i) => (
-          <div
-            key={item.label}
-            className="apple-card px-4 py-3 flex items-center gap-3 min-w-0 animate-fadeInUp"
-            style={{ animationDelay: `${(i + 4) * 55}ms` }}
-          >
-            <div className="w-8 h-8 rounded-[10px] flex items-center justify-center flex-shrink-0" style={{ background: `${item.color}1a`, color: item.color }}>
-              {item.icon}
+      <div
+        className="rounded-[16px] p-4 animate-fadeInUp"
+        style={{ background: '#1c1c1e', border: '1px solid rgba(255,255,255,0.07)', animationDelay: '220ms' }}
+      >
+        <div className="flex items-center gap-2 mb-3">
+          <TrendingUp size={13} style={{ color: '#0a84ff' }} />
+          <span className="text-[12px] font-semibold uppercase tracking-[0.05em]" style={{ color: 'rgba(235,235,245,0.35)' }}>
+            Heute
+          </span>
+        </div>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          {[
+            { label: 'Anfragen',    value: stats.requestsToday?.toLocaleString('de-AT') ?? '—', icon: <TrendingUp size={15} />,    color: '#0a84ff' },
+            { label: 'Fehler',      value: stats.errorsToday?.toLocaleString('de-AT') ?? '—',   icon: <AlertTriangle size={15} />, color: stats.errorsToday > 0 ? '#ff453a' : '#30d158' },
+            { label: 'Neue Nutzer', value: String(stats.newUsersToday ?? '—'),                   icon: <Users size={15} />,         color: '#30d158' },
+            { label: 'Uptime',      value: formatUptime(stats.serverUptime ?? 0),               icon: <Clock size={15} />,         color: '#40c8e0' },
+          ].map((item) => (
+            <div key={item.label} className="flex items-center gap-3 min-w-0">
+              <div
+                className="w-9 h-9 rounded-[10px] flex items-center justify-center flex-shrink-0"
+                style={{ background: `${item.color}18`, color: item.color }}
+              >
+                {item.icon}
+              </div>
+              <div className="min-w-0">
+                <div className="text-[20px] font-bold text-white leading-none" style={{ letterSpacing: '-0.025em' }}>
+                  {item.value}
+                </div>
+                <div className="text-[11px] mt-0.5 truncate" style={{ color: 'rgba(235,235,245,0.38)' }}>
+                  {item.label}
+                </div>
+              </div>
             </div>
-            <div className="min-w-0">
-              <div className="text-[18px] font-bold text-white" style={{ letterSpacing: '-0.02em' }}>{item.value}</div>
-              <div className="text-[11px] truncate" style={{ color: 'rgba(235,235,245,0.4)' }}>{item.label}</div>
-            </div>
-          </div>
-        ))}
+          ))}
+        </div>
       </div>
 
       {/* API requests chart */}

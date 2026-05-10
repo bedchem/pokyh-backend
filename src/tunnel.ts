@@ -8,7 +8,7 @@ import { createWriteStream } from 'fs';
 
 let tunnelProcess: ChildProcess | null = null;
 let restartTimer: NodeJS.Timeout | null = null;
-let currentTunnelName = 'pokyh-api';
+let currentTunnelName = '';
 
 export function isTunnelConfigured(): boolean {
   return fs.existsSync(path.join(os.homedir(), '.cloudflared', 'config.yml'));
@@ -59,9 +59,9 @@ export function startTunnel(name?: string): void {
   if (name) currentTunnelName = name;
   // If no name provided, try to read from config.yml (persists across restarts)
   if (!currentTunnelName) {
-    currentTunnelName = getTunnelNameFromConfig() ?? 'pokyh-api';
+    currentTunnelName = getTunnelNameFromConfig() ?? '';
   }
-  if (!isTunnelConfigured()) return;
+  if (!currentTunnelName || !isTunnelConfigured()) return;
   if (tunnelProcess && !tunnelProcess.killed) return;
   if (restartTimer) { clearTimeout(restartTimer); restartTimer = null; }
 

@@ -91,6 +91,8 @@ export function UsersPage() {
 
   async function handleToggleAdmin(user: AdminUser) {
     setPendingAdmin(user.stableUid);
+    const newIsAdmin = !user.isAdmin;
+    setUsers((prev) => prev.map((u) => u.stableUid === user.stableUid ? { ...u, isAdmin: newIsAdmin } : u));
     try {
       if (user.isAdmin) {
         await adminApi.revokeAdmin(user.stableUid);
@@ -99,8 +101,8 @@ export function UsersPage() {
         await adminApi.grantAdmin(user.stableUid);
         showToast(`Admin-Rechte an ${user.username} vergeben`, 'success');
       }
-      setUsers((prev) => prev.map((u) => u.stableUid === user.stableUid ? { ...u, isAdmin: !u.isAdmin } : u));
     } catch (err) {
+      setUsers((prev) => prev.map((u) => u.stableUid === user.stableUid ? { ...u, isAdmin: user.isAdmin } : u));
       showToast(err instanceof Error ? err.message : 'Aktion fehlgeschlagen', 'error');
     } finally {
       setPendingAdmin(null);

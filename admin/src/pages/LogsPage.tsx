@@ -7,6 +7,7 @@ import {
   X,
   ChevronLeft,
   ChevronRight,
+  Shield,
 } from 'lucide-react';
 import { adminApi } from '../api';
 import { useToast } from '../components/Toast';
@@ -485,12 +486,121 @@ function ByUserTab({ initialUsername }: { initialUsername?: string }) {
   );
 }
 
+const ACTION_LABELS: Record<string, string> = {
+  admin_login:           'Login erfolgreich',
+  admin_login_failed:    'Login fehlgeschlagen',
+  delete_user:           'Benutzer gelöscht',
+  grant_admin:           'Admin vergeben',
+  revoke_admin:          'Admin entzogen',
+  delete_all_sessions:   'Sessions gelöscht',
+};
+
+const ACTION_COLORS: Record<string, string> = {
+  admin_login:           '#30d158',
+  admin_login_failed:    '#ff453a',
+  delete_user:           '#ff453a',
+  grant_admin:           '#0a84ff',
+  revoke_admin:          '#ff9f0a',
+  delete_all_sessions:   '#ff9f0a',
+};
+
+function AuditLogTab() {
+  const { showToast } = useToast();
+  const [entries, setEntries] = useState<import('../types').FileLogEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const data = await adminApi.auditLog(100);
+      setEntries(data.entries);
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Fehler', 'error');
+    } finally {
+      setLoading(false);
+    }
+  }, [showToast]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex items-center justify-between">
+        <p className="text-[13px]" style={{ color: 'rgba(235,235,245,0.4)' }}>
+          Admin-Aktionen der letzten 3 Tage
+        </p>
+        <button onClick={() => void load()} disabled={loading}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-[8px] text-[12px] font-medium transition-colors"
+          style={{ background: 'rgba(255,255,255,0.06)', color: 'rgba(235,235,245,0.6)' }}>
+          <RefreshCw size={12} className={loading ? 'animate-spin' : ''} /> Aktualisieren
+        </button>
+      </div>
+
+      <div className="rounded-[16px] overflow-hidden" style={{ background: '#1c1c1e', border: '1px solid rgba(255,255,255,0.07)' }}>
+        {loading ? (
+          <div className="px-4 py-8 flex flex-col gap-2">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <div key={i} className="h-12 rounded-[8px] shimmer" />
+            ))}
+          </div>
+        ) : entries.length === 0 ? (
+          <div className="px-4 py-16 text-center">
+            <Shield size={28} className="mx-auto mb-3" style={{ color: 'rgba(235,235,245,0.15)' }} />
+            <p className="text-[13px]" style={{ color: 'rgba(235,235,245,0.35)' }}>Noch keine Admin-Aktionen</p>
+          </div>
+        ) : (
+          <div className="divide-y" style={{ borderColor: 'rgba(255,255,255,0.04)' }}>
+            {entries.map((entry, idx) => {
+              const action = String(entry['action'] ?? '');
+              const label = ACTION_LABELS[action] ?? action;
+              const color = ACTION_COLORS[action] ?? '#0a84ff';
+              const time = entry.timestamp
+                ? new Date(String(entry.timestamp)).toLocaleString('de-DE')
+                : '—';
+              const { action: _a, timestamp: _t, level: _l, message: _m, ...rest } = entry;
+              return (
+                <div key={idx} className="flex items-start gap-3 px-4 py-3">
+                  <div className="w-2 h-2 rounded-full mt-1.5 flex-shrink-0" style={{ background: color }} />
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-[13px] font-semibold" style={{ color }}>{label}</span>
+                      {Boolean(rest['adminUsername']) && (
+                        <span className="text-[12px]" style={{ color: 'rgba(235,235,245,0.55)' }}>
+                          von <span className="text-white">{String(rest['adminUsername'])}</span>
+                        </span>
+                      )}
+                      {Boolean(rest['targetUid']) && (
+                        <span className="text-[11px] font-mono px-1.5 py-0.5 rounded" style={{ background: 'rgba(255,255,255,0.06)', color: 'rgba(235,235,245,0.4)' }}>
+                          {String(rest['targetUid']).slice(0, 8)}…
+                        </span>
+                      )}
+                      {Boolean(rest['username']) && !rest['adminUsername'] && (
+                        <span className="text-[12px]" style={{ color: 'rgba(235,235,245,0.55)' }}>
+                          <span className="text-white">{String(rest['username'])}</span>
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-3 mt-0.5 text-[11px]" style={{ color: 'rgba(235,235,245,0.3)' }}>
+                      <span>{time}</span>
+                      {Boolean(rest['ip']) && <span className="font-mono">{String(rest['ip'])}</span>}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function LogsPage() {
   const location = useLocation();
   const navigate = useNavigate();
   const stateUsername = (location.state as { username?: string } | null)?.username ?? '';
 
-  const [activeTab, setActiveTab] = useState<'all' | 'byUser'>(stateUsername ? 'byUser' : 'all');
+  const [activeTab, setActiveTab] = useState<'all' | 'byUser' | 'audit'>(stateUsername ? 'byUser' : 'all');
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [methodFilter, setMethodFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
@@ -535,7 +645,11 @@ export function LogsPage() {
 
   function navigateToUser(username: string) { setByUserInitial(username); setActiveTab('byUser'); }
 
-  const tabs = [{ key: 'all' as const, label: 'Alle Anfragen' }, { key: 'byUser' as const, label: 'Nach Benutzer' }];
+  const tabs = [
+    { key: 'all' as const,    label: 'Alle Anfragen' },
+    { key: 'byUser' as const, label: 'Nach Benutzer' },
+    { key: 'audit' as const,  label: 'Admin-Aktivität' },
+  ];
 
   const quickChips = [
     { label: 'Heute', action: () => setQuickFilter('today') },
@@ -563,8 +677,8 @@ export function LogsPage() {
         </button>
       </div>
 
-      {/* Filter bar */}
-      <div className="flex flex-col gap-2 p-3 rounded-[14px]" style={{ background: '#1c1c1e', border: '1px solid rgba(255,255,255,0.07)' }}>
+      {/* Filter bar — hidden on audit tab */}
+      {activeTab !== 'audit' && <div className="flex flex-col gap-2 p-3 rounded-[14px]" style={{ background: '#1c1c1e', border: '1px solid rgba(255,255,255,0.07)' }}>
         {/* Quick chips */}
         <div className="flex flex-wrap gap-1.5">
           {quickChips.map((chip) => (
@@ -609,7 +723,7 @@ export function LogsPage() {
             </button>
           )}
         </div>
-      </div>
+      </div>}
 
       {/* Tabs */}
       <div className="flex gap-1" style={{ borderBottom: '1px solid rgba(255,255,255,0.06)', paddingBottom: '1px' }}>
@@ -633,8 +747,10 @@ export function LogsPage() {
           onNavigateToUser={(username) => navigateToUser(username)}
           autoRefresh={autoRefresh}
         />
-      ) : (
+      ) : activeTab === 'byUser' ? (
         <ByUserTab key={byUserInitial} initialUsername={byUserInitial} />
+      ) : (
+        <AuditLogTab />
       )}
     </div>
   );

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { MessageCircle, Trash2, RefreshCw, Bell, UtensilsCrossed, Search, ChevronLeft, ChevronRight, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react';
+import { MessageCircle, Trash2, RefreshCw, Bell, UtensilsCrossed, Search, ChevronLeft, ChevronRight } from 'lucide-react';
 import { adminApi } from '../api';
 import type { AdminComment } from '../types';
 import { useToast } from '../components/Toast';
@@ -99,7 +99,20 @@ function CommentRow({ comment, onDeleted }: { comment: AdminComment; onDeleted: 
 }
 
 const PAGE_SIZE = 25;
-type SortBy = 'createdAt' | 'username' | 'body';
+
+type SortOption = 'createdAt_desc' | 'createdAt_asc' | 'username_asc' | 'username_desc' | 'body_asc' | 'body_desc';
+
+const SORT_OPTIONS: { value: SortOption; label: string }[] = [
+  { value: 'createdAt_desc', label: 'Neueste zuerst' },
+  { value: 'createdAt_asc',  label: 'Älteste zuerst' },
+  { value: 'username_asc',   label: 'Benutzer A–Z' },
+  { value: 'username_desc',  label: 'Benutzer Z–A' },
+];
+
+function parseSortOption(opt: SortOption): { sortBy: 'createdAt' | 'username' | 'body'; sortOrder: 'asc' | 'desc' } {
+  const [sb, so] = opt.split('_') as ['createdAt' | 'username' | 'body', 'asc' | 'desc'];
+  return { sortBy: sb, sortOrder: so };
+}
 
 export function CommentsPage() {
   const { showToast } = useToast();
@@ -110,10 +123,11 @@ export function CommentsPage() {
   const [type, setType] = useState<'all' | 'reminder' | 'dish'>('all');
   const [search, setSearch] = useState('');
   const [searchInput, setSearchInput] = useState('');
-  const [sortBy, setSortBy] = useState<SortBy>('createdAt');
-  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
+  const [sortOption, setSortOption] = useState<SortOption>('createdAt_desc');
 
-  const load = useCallback(async (p: number, t: typeof type, s: string, sb: SortBy, so: 'asc' | 'desc') => {
+  const { sortBy, sortOrder } = parseSortOption(sortOption);
+
+  const load = useCallback(async (p: number, t: typeof type, s: string, sb: 'createdAt' | 'username' | 'body', so: 'asc' | 'desc') => {
     setLoading(true);
     try {
       const data = await adminApi.comments({ page: p, limit: PAGE_SIZE, type: t, search: s || undefined, sortBy: sb, sortOrder: so });
@@ -130,13 +144,10 @@ export function CommentsPage() {
 
   function handleSearch(e: React.FormEvent) { e.preventDefault(); setPage(1); setSearch(searchInput); }
   function handleTypeChange(t: typeof type) { setType(t); setPage(1); }
-  function handleSortBy(sb: SortBy) { setSortBy(sb); setPage(1); }
-  function toggleSortOrder() { setSortOrder((o) => o === 'asc' ? 'desc' : 'asc'); setPage(1); }
+  function handleSortChange(opt: SortOption) { setSortOption(opt); setPage(1); }
   function handleDeleted(id: string) { setComments((prev) => prev.filter((c) => c.id !== id)); setTotal((prev) => prev - 1); }
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-
-  const sortLabels: Record<SortBy, string> = { createdAt: 'Datum', username: 'Benutzer', body: 'Inhalt' };
 
   return (
     <div className="flex flex-col gap-6">
@@ -170,22 +181,14 @@ export function CommentsPage() {
         </div>
 
         {/* Sort */}
-        <div className="flex items-center gap-1.5">
-          <span className="text-[12px]" style={{ color: 'rgba(235,235,245,0.35)' }}>Sortieren:</span>
-          <div className="flex rounded-[8px] overflow-hidden" style={{ border: '1px solid rgba(255,255,255,0.08)' }}>
-            {(['createdAt', 'username', 'body'] as SortBy[]).map((sb, idx) => (
-              <button key={sb} onClick={() => handleSortBy(sb)}
-                className="px-3 py-1.5 text-[12px] font-medium transition-all"
-                style={{ background: sortBy === sb ? 'rgba(10,132,255,0.18)' : 'transparent', color: sortBy === sb ? '#0a84ff' : 'rgba(235,235,245,0.5)', borderRight: idx < 2 ? '1px solid rgba(255,255,255,0.06)' : 'none' }}>
-                {sortLabels[sb]}
-              </button>
-            ))}
-          </div>
-          <button onClick={toggleSortOrder} className="p-1.5 rounded-[8px] transition-colors" style={{ background: 'rgba(255,255,255,0.06)', color: 'rgba(235,235,245,0.6)' }}
-            title={sortOrder === 'asc' ? 'Aufsteigend' : 'Absteigend'}>
-            {sortOrder === 'asc' ? <ArrowUp size={13} /> : sortOrder === 'desc' ? <ArrowDown size={13} /> : <ArrowUpDown size={13} />}
-          </button>
-        </div>
+        <select
+          value={sortOption}
+          onChange={(e) => handleSortChange(e.target.value as SortOption)}
+          className="px-3 py-1.5 rounded-[10px] text-[13px] outline-none"
+          style={{ background: '#2c2c2e', border: '1px solid rgba(255,255,255,0.08)', color: 'rgba(235,235,245,0.7)' }}
+        >
+          {SORT_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
 
         {/* Search */}
         <form onSubmit={handleSearch} className="flex gap-2 flex-1 min-w-[200px]">

@@ -1439,4 +1439,30 @@ router.delete('/subject-images/:subject', requireAdmin, async (req: Request, res
   res.status(204).send();
 });
 
+// GET /api/admin/audit-log — recent admin actions from file logs (last 3 days)
+router.get('/audit-log', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const limit = Math.min(200, parseInt(String(req.query['limit'] ?? '100'), 10) || 100);
+  const logDir = path.join(process.cwd(), 'logs');
+  const entries: unknown[] = [];
+
+  for (let dayOffset = 0; dayOffset < 3; dayOffset++) {
+    const d = new Date(Date.now() - dayOffset * 86400000).toISOString().slice(0, 10);
+    const filename = `app-${d}.log`;
+    if (path.basename(filename) !== filename) continue;
+    const filePath = path.join(logDir, filename);
+    const content = await fs.readFile(filePath, 'utf8').catch(() => '');
+    const lines = content.trim().split('\n').filter(Boolean);
+    for (const line of lines) {
+      try {
+        const parsed = JSON.parse(line);
+        if (parsed && typeof parsed === 'object' && 'action' in parsed) entries.push(parsed);
+      } catch { /* skip malformed */ }
+    }
+    if (entries.length >= limit * 2) break;
+  }
+
+  entries.reverse();
+  res.json({ entries: entries.slice(0, limit), total: entries.length });
+});
+
 export { router as adminRouter };
