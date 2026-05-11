@@ -12,6 +12,7 @@ import { dishesRouter } from './dishes';
 import { sseRouter } from './sse';
 import { adminRouter } from './admin';
 import { subjectImagesRouter } from './subjectImages';
+import { activityLogRouter } from './activityLog';
 
 const router = Router();
 
@@ -43,5 +44,7 @@ router.use('/dish-comments', dishCommentsRouter);
 router.use('/sse', sseRouter);
 // Subject images (GET /:subject is API-key only; list/PUT/DELETE need auth — handled in router)
 router.use('/subject-images', subjectImagesRouter);
+// Frontend activity tracking
+router.use('/activity-log', activityLogRouter);
 
 export { router as appRouter };

@@ -8,10 +8,11 @@ import {
   ChevronLeft,
   ChevronRight,
   Shield,
+  Monitor,
 } from 'lucide-react';
 import { adminApi } from '../api';
 import { useToast } from '../components/Toast';
-import type { RequestLog, LogsResponse } from '../types';
+import type { RequestLog, LogsResponse, FrontendActivityLog, FrontendActivityStats } from '../types';
 
 function relativeTime(dateStr: string): string {
   const diff = Date.now() - new Date(dateStr).getTime();
@@ -595,12 +596,269 @@ function AuditLogTab() {
   );
 }
 
+const EVENT_LABELS: Record<string, string> = {
+  page_view: 'Seitenaufruf',
+  download:  'Download',
+  login:     'Login',
+  logout:    'Logout',
+};
+
+const EVENT_COLORS: Record<string, string> = {
+  page_view: '#0a84ff',
+  download:  '#30d158',
+  login:     '#30d158',
+  logout:    '#ff9f0a',
+};
+
+function FrontendActivityTab({ autoRefresh }: { autoRefresh: boolean }) {
+  const { showToast } = useToast();
+  const [data, setData] = useState<{ logs: FrontendActivityLog[]; total: number } | null>(null);
+  const [stats, setStats] = useState<FrontendActivityStats | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [page, setPage] = useState(1);
+  const [eventFilter, setEventFilter] = useState('');
+  const [usernameInput, setUsernameInput] = useState('');
+  const [usernameFilter, setUsernameFilter] = useState('');
+  const [fromDate, setFromDate] = useState('');
+  const [toDate, setToDate] = useState('');
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const usernameTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const limit = 50;
+
+  useEffect(() => {
+    if (usernameTimer.current) clearTimeout(usernameTimer.current);
+    usernameTimer.current = setTimeout(() => setUsernameFilter(usernameInput), 500);
+    return () => { if (usernameTimer.current) clearTimeout(usernameTimer.current); };
+  }, [usernameInput]);
+
+  const fetchData = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
+    try {
+      const [logsRes, statsRes] = await Promise.all([
+        adminApi.activityLogs({ page, limit, event: eventFilter || undefined, username: usernameFilter || undefined, from: fromDate || undefined, to: toDate || undefined }),
+        adminApi.activityStats(),
+      ]);
+      setData(logsRes);
+      setStats(statsRes);
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Fehler', 'error');
+    } finally {
+      setLoading(false);
+    }
+  }, [page, eventFilter, usernameFilter, fromDate, toDate, showToast]);
+
+  useEffect(() => { setPage(1); }, [eventFilter, usernameFilter, fromDate, toDate]);
+  useEffect(() => { void fetchData(); }, [fetchData]);
+  useEffect(() => {
+    if (!autoRefresh) return;
+    const interval = setInterval(() => void fetchData(true), 10000);
+    return () => clearInterval(interval);
+  }, [autoRefresh, fetchData]);
+
+  const logs = data?.logs ?? [];
+  const total = data?.total ?? 0;
+  const totalPages = Math.max(1, Math.ceil(total / limit));
+
+  function downloadCsv() {
+    const header = 'Zeit,Event,Seite,Detail,Benutzer,IP,UserAgent';
+    const rows = logs.map((l) => [
+      l.createdAt, l.event, l.page ?? '', l.detail ?? '', l.username ?? '', l.ip ?? '',
+      (l.userAgent ?? '').replace(/,/g, ';'),
+    ].map(String).join(','));
+    const blob = new Blob([header + '\n' + rows.join('\n')], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `frontend-logs-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  return (
+    <div className="flex flex-col gap-4">
+      {/* Stats */}
+      {stats && (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <StatChip label="Events heute" value={stats.totalToday.toLocaleString()} />
+          <StatChip label="Nutzer heute" value={stats.uniqueUsersToday.toLocaleString()} />
+          <StatChip label="Einträge gesamt" value={total.toLocaleString()} />
+          <StatChip label="Event-Typen" value={stats.eventBreakdown.length} />
+        </div>
+      )}
+
+      {/* Top pages */}
+      {stats && stats.topPages.length > 0 && (
+        <div className="rounded-[14px] px-4 py-3" style={{ background: '#1c1c1e', border: '1px solid rgba(255,255,255,0.07)' }}>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.05em] mb-2" style={{ color: 'rgba(235,235,245,0.3)' }}>Top Seiten (24h)</p>
+          <div className="flex flex-wrap gap-2">
+            {stats.topPages.map((p) => (
+              <span key={p.page} className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px]"
+                style={{ background: 'rgba(10,132,255,0.1)', color: '#0a84ff', border: '1px solid rgba(10,132,255,0.2)' }}>
+                <span className="font-mono">{p.page}</span>
+                <span className="font-semibold">{p.count}</span>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Filter bar */}
+      <div className="flex flex-col gap-2 p-3 rounded-[14px]" style={{ background: '#1c1c1e', border: '1px solid rgba(255,255,255,0.07)' }}>
+        <div className="flex flex-wrap gap-2 items-center">
+          <SelectField value={eventFilter} onChange={setEventFilter} options={[
+            { value: '', label: 'Alle Events' },
+            { value: 'page_view', label: 'Seitenaufruf' },
+            { value: 'download',  label: 'Download' },
+            { value: 'login',     label: 'Login' },
+            { value: 'logout',    label: 'Logout' },
+          ]} />
+          <div className="flex-1 min-w-[150px]">
+            <InputField value={usernameInput} onChange={setUsernameInput} placeholder="Benutzer…" icon={<Search size={12} />} />
+          </div>
+          <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)}
+            className="px-3 py-1.5 rounded-[8px] text-[12px] outline-none"
+            style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', color: 'rgba(235,235,245,0.7)' }} />
+          <span className="text-[12px]" style={{ color: 'rgba(235,235,245,0.25)' }}>bis</span>
+          <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)}
+            className="px-3 py-1.5 rounded-[8px] text-[12px] outline-none"
+            style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', color: 'rgba(235,235,245,0.7)' }} />
+          {(eventFilter || usernameInput || fromDate || toDate) && (
+            <button onClick={() => { setEventFilter(''); setUsernameInput(''); setFromDate(''); setToDate(''); }}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-[8px] text-[12px] transition-colors apple-btn-ghost ml-auto">
+              <X size={11} /> Zurücksetzen
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Table */}
+      <div className="rounded-[16px] overflow-hidden" style={{ background: '#1c1c1e', border: '1px solid rgba(255,255,255,0.07)', boxShadow: '0 4px 20px rgba(0,0,0,0.4)' }}>
+        <div className="flex items-center justify-between px-4 py-2.5" style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+          <span className="text-[12px]" style={{ color: 'rgba(235,235,245,0.35)' }}>{total.toLocaleString()} Einträge</span>
+          <button onClick={downloadCsv} className="flex items-center gap-1.5 px-3 py-1.5 rounded-[8px] text-[12px] font-medium transition-colors"
+            style={{ background: 'rgba(255,255,255,0.06)', color: 'rgba(235,235,245,0.6)' }}
+            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.1)'; }}
+            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.06)'; }}>
+            ↓ CSV Export
+          </button>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full">
+            <thead>
+              <tr style={{ background: 'rgba(0,0,0,0.3)', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+                {['Zeit', 'Event', 'Seite', 'Detail', 'Benutzer', 'IP'].map((col) => (
+                  <th key={col} className={`px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.05em]${col === 'IP' || col === 'Detail' ? ' hidden md:table-cell' : ''}`}
+                    style={{ color: 'rgba(235,235,245,0.3)' }}>{col}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {loading ? (
+                <SkeletonRows cols={6} />
+              ) : logs.length === 0 ? (
+                <tr><td colSpan={6} className="px-4 py-12 text-center text-[13px]" style={{ color: 'rgba(235,235,245,0.35)' }}>Keine Einträge gefunden</td></tr>
+              ) : (
+                logs.map((log) => {
+                  const color = EVENT_COLORS[log.event] ?? '#0a84ff';
+                  const label = EVENT_LABELS[log.event]  ?? log.event;
+                  const isExpanded = expandedId === log.id;
+                  return (
+                    <>
+                      <tr key={log.id}
+                        style={{ borderBottom: isExpanded ? 'none' : '1px solid rgba(255,255,255,0.04)', cursor: 'pointer', background: isExpanded ? 'rgba(10,132,255,0.04)' : '' }}
+                        className="transition-colors"
+                        onClick={() => setExpandedId(isExpanded ? null : log.id)}
+                        onMouseEnter={(e) => { if (!isExpanded) (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.02)'; }}
+                        onMouseLeave={(e) => { if (!isExpanded) (e.currentTarget as HTMLElement).style.background = ''; }}>
+                        <td className="px-4 py-3 text-[11px] whitespace-nowrap" style={{ color: 'rgba(235,235,245,0.35)' }}>
+                          {new Date(log.createdAt).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                        </td>
+                        <td className="px-4 py-3">
+                          <span className="inline-block text-[11px] px-2 py-0.5 rounded-[6px] font-semibold"
+                            style={{ background: `${color}22`, color, border: `1px solid ${color}44` }}>
+                            {label}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 max-w-xs">
+                          <span className="text-[12px] font-mono truncate block" style={{ color: 'rgba(235,235,245,0.65)' }}>{log.page ?? '—'}</span>
+                        </td>
+                        <td className="px-4 py-3 hidden md:table-cell max-w-xs">
+                          <span className="text-[12px] truncate block" style={{ color: 'rgba(235,235,245,0.5)' }}>{log.detail ?? '—'}</span>
+                        </td>
+                        <td className="px-4 py-3">
+                          {log.username
+                            ? <span className="text-[12px] font-medium" style={{ color: '#0a84ff' }}>{log.username}</span>
+                            : <span className="text-[12px]" style={{ color: 'rgba(235,235,245,0.2)' }}>anonym</span>}
+                        </td>
+                        <td className="px-4 py-3 hidden md:table-cell">
+                          <span className="text-[11px] font-mono" style={{ color: 'rgba(235,235,245,0.3)' }}>{log.ip ?? '—'}</span>
+                        </td>
+                      </tr>
+                      {isExpanded && (
+                        <tr key={`${log.id}-detail`} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)', background: 'rgba(10,132,255,0.04)' }}>
+                          <td colSpan={6} className="px-4 pb-3">
+                            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-[12px] mt-1">
+                              <div>
+                                <span style={{ color: 'rgba(235,235,245,0.35)' }}>Zeitstempel</span>
+                                <div className="text-white mt-0.5 font-mono">{new Date(log.createdAt).toLocaleString('de-DE')}</div>
+                              </div>
+                              <div>
+                                <span style={{ color: 'rgba(235,235,245,0.35)' }}>IP-Adresse</span>
+                                <div className="text-white mt-0.5 font-mono">{log.ip ?? '—'}</div>
+                              </div>
+                              {log.detail && (
+                                <div>
+                                  <span style={{ color: 'rgba(235,235,245,0.35)' }}>Detail</span>
+                                  <div className="text-white mt-0.5">{log.detail}</div>
+                                </div>
+                              )}
+                              {log.userAgent && (
+                                <div className="col-span-2 sm:col-span-3">
+                                  <span style={{ color: 'rgba(235,235,245,0.35)' }}>User-Agent</span>
+                                  <div className="mt-0.5 font-mono break-all" style={{ color: 'rgba(235,235,245,0.6)', fontSize: '11px' }}>{log.userAgent}</div>
+                                </div>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+        {totalPages > 1 && (
+          <div className="flex items-center justify-between px-4 py-3" style={{ borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+            <span className="text-[12px]" style={{ color: 'rgba(235,235,245,0.3)' }}>Seite {page} von {totalPages}</span>
+            <div className="flex items-center gap-2">
+              <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1}
+                className="p-1.5 rounded-[8px] transition-colors disabled:opacity-25" style={{ color: 'rgba(235,235,245,0.55)' }}
+                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.05)'; }}
+                onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = ''; }}>
+                <ChevronLeft size={16} />
+              </button>
+              <button onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page === totalPages}
+                className="p-1.5 rounded-[8px] transition-colors disabled:opacity-25" style={{ color: 'rgba(235,235,245,0.55)' }}
+                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.05)'; }}
+                onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = ''; }}>
+                <ChevronRight size={16} />
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function LogsPage() {
   const location = useLocation();
   const navigate = useNavigate();
   const stateUsername = (location.state as { username?: string } | null)?.username ?? '';
 
-  const [activeTab, setActiveTab] = useState<'all' | 'byUser' | 'audit'>(stateUsername ? 'byUser' : 'all');
+  const [activeTab, setActiveTab] = useState<'all' | 'byUser' | 'audit' | 'frontend'>(stateUsername ? 'byUser' : 'all');
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [methodFilter, setMethodFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
@@ -646,9 +904,10 @@ export function LogsPage() {
   function navigateToUser(username: string) { setByUserInitial(username); setActiveTab('byUser'); }
 
   const tabs = [
-    { key: 'all' as const,    label: 'Alle Anfragen' },
-    { key: 'byUser' as const, label: 'Nach Benutzer' },
-    { key: 'audit' as const,  label: 'Admin-Aktivität' },
+    { key: 'all'      as const, label: 'Alle Anfragen' },
+    { key: 'byUser'   as const, label: 'Nach Benutzer' },
+    { key: 'frontend' as const, label: 'Frontend-Aktivität' },
+    { key: 'audit'    as const, label: 'Admin-Aktivität' },
   ];
 
   const quickChips = [
@@ -664,10 +923,14 @@ export function LogsPage() {
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
           <div className="flex items-center gap-2 mb-1">
-            <ScrollText size={18} style={{ color: '#0a84ff' }} />
-            <h1 className="text-[28px] font-bold text-white" style={{ letterSpacing: '-0.03em' }}>Request Logs</h1>
+            {activeTab === 'frontend' ? <Monitor size={18} style={{ color: '#0a84ff' }} /> : <ScrollText size={18} style={{ color: '#0a84ff' }} />}
+            <h1 className="text-[28px] font-bold text-white" style={{ letterSpacing: '-0.03em' }}>
+              {activeTab === 'frontend' ? 'Frontend-Aktivität' : 'Request Logs'}
+            </h1>
           </div>
-          <p className="text-[14px]" style={{ color: 'rgba(235,235,245,0.4)' }}>Eingehende HTTP-Anfragen an die API</p>
+          <p className="text-[14px]" style={{ color: 'rgba(235,235,245,0.4)' }}>
+            {activeTab === 'frontend' ? 'Seitenaufrufe, Downloads und Aktionen im Frontend' : 'Eingehende HTTP-Anfragen an die API'}
+          </p>
         </div>
         <button onClick={() => setAutoRefresh((v) => !v)}
           className="flex items-center gap-2 px-3 py-2 rounded-[10px] text-[13px] transition-all"
@@ -677,8 +940,8 @@ export function LogsPage() {
         </button>
       </div>
 
-      {/* Filter bar — hidden on audit tab */}
-      {activeTab !== 'audit' && <div className="flex flex-col gap-2 p-3 rounded-[14px]" style={{ background: '#1c1c1e', border: '1px solid rgba(255,255,255,0.07)' }}>
+      {/* Filter bar — hidden on audit + frontend tab (they have their own) */}
+      {activeTab !== 'audit' && activeTab !== 'frontend' && <div className="flex flex-col gap-2 p-3 rounded-[14px]" style={{ background: '#1c1c1e', border: '1px solid rgba(255,255,255,0.07)' }}>
         {/* Quick chips */}
         <div className="flex flex-wrap gap-1.5">
           {quickChips.map((chip) => (
@@ -749,6 +1012,8 @@ export function LogsPage() {
         />
       ) : activeTab === 'byUser' ? (
         <ByUserTab key={byUserInitial} initialUsername={byUserInitial} />
+      ) : activeTab === 'frontend' ? (
+        <FrontendActivityTab autoRefresh={autoRefresh} />
       ) : (
         <AuditLogTab />
       )}

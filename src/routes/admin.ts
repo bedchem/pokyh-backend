@@ -1439,6 +1439,71 @@ router.delete('/subject-images/:subject', requireAdmin, async (req: Request, res
   res.status(204).send();
 });
 
+// ─── GET /api/admin/activity-logs ────────────────────────────────────────────
+// Frontend activity logs (page views, downloads, logins, etc.)
+
+router.get('/activity-logs', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const page  = Math.max(1, parseInt(String(req.query['page']  ?? '1'),   10));
+  const limit = Math.min(200, Math.max(1, parseInt(String(req.query['limit'] ?? '50'), 10)));
+  const skip  = (page - 1) * limit;
+  const event    = req.query['event']    ? String(req.query['event'])    : undefined;
+  const username = req.query['username'] ? String(req.query['username']) : undefined;
+  const from = req.query['from'] ? new Date(String(req.query['from']))                        : undefined;
+  const to   = req.query['to']   ? new Date(String(req.query['to']) + 'T23:59:59.999Z')       : undefined;
+
+  const where: Record<string, unknown> = {};
+  if (event)    where['event']    = event;
+  if (username) where['username'] = { contains: username };
+  if (from || to) {
+    where['createdAt'] = {
+      ...(from && !isNaN(from.getTime()) ? { gte: from } : {}),
+      ...(to   && !isNaN(to.getTime())   ? { lte: to   } : {}),
+    };
+  }
+
+  const [logs, total] = await Promise.all([
+    prisma.frontendActivityLog.findMany({ where, orderBy: { createdAt: 'desc' }, skip, take: limit }),
+    prisma.frontendActivityLog.count({ where }),
+  ]);
+
+  res.json({ logs, total, page, limit });
+});
+
+// ─── GET /api/admin/activity-logs/stats ──────────────────────────────────────
+
+router.get('/activity-logs/stats', requireAdmin, async (_req: Request, res: Response): Promise<void> => {
+  const startOfToday = new Date();
+  startOfToday.setHours(0, 0, 0, 0);
+
+  type EventRow = { event: string; count: bigint };
+  type PageRow  = { page: string; count: bigint };
+
+  const [totalToday, uniqueUsersToday, eventBreakdown, topPages] = await Promise.all([
+    prisma.frontendActivityLog.count({ where: { createdAt: { gte: startOfToday } } }),
+    prisma.$queryRaw<{ cnt: bigint }[]>`
+      SELECT COUNT(DISTINCT username) AS cnt FROM frontend_activity_logs
+      WHERE created_at >= ${startOfToday} AND username IS NOT NULL
+    `,
+    prisma.$queryRaw<EventRow[]>`
+      SELECT event, COUNT(*) AS count FROM frontend_activity_logs
+      WHERE created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+      GROUP BY event ORDER BY count DESC
+    `,
+    prisma.$queryRaw<PageRow[]>`
+      SELECT page, COUNT(*) AS count FROM frontend_activity_logs
+      WHERE page IS NOT NULL AND created_at >= DATE_SUB(NOW(), INTERVAL 1 DAY)
+      GROUP BY page ORDER BY count DESC LIMIT 10
+    `,
+  ]);
+
+  res.json({
+    totalToday,
+    uniqueUsersToday: Number(uniqueUsersToday[0]?.cnt ?? 0),
+    eventBreakdown: eventBreakdown.map((r: EventRow) => ({ event: r.event, count: Number(r.count) })),
+    topPages: topPages.map((r: PageRow) => ({ page: r.page, count: Number(r.count) })),
+  });
+});
+
 // GET /api/admin/audit-log — recent admin actions from file logs (last 3 days)
 router.get('/audit-log', requireAdmin, async (req: Request, res: Response): Promise<void> => {
   const limit = Math.min(200, parseInt(String(req.query['limit'] ?? '100'), 10) || 100);

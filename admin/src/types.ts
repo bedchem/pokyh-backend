@@ -238,3 +238,29 @@ export interface AdminCommentsResponse {
   page: number;
   limit: number;
 }
+
+export interface FrontendActivityLog {
+  id: string;
+  event: string;
+  page: string | null;
+  detail: string | null;
+  stableUid: string | null;
+  username: string | null;
+  ip: string | null;
+  userAgent: string | null;
+  createdAt: string;
+}
+
+export interface FrontendActivityLogsResponse {
+  logs: FrontendActivityLog[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
+export interface FrontendActivityStats {
+  totalToday: number;
+  uniqueUsersToday: number;
+  eventBreakdown: Array<{ event: string; count: number }>;
+  topPages: Array<{ page: string; count: number }>;
+}

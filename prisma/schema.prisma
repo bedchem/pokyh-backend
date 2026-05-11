@@ -223,3 +223,21 @@ model RequestLog {
   @@index([createdAt])
   @@map("request_logs")
 }
+
+model FrontendActivityLog {
+  id        String   @id @default(uuid())
+  event     String   @db.VarChar(50)
+  page      String?  @db.VarChar(500)
+  detail    String?  @db.VarChar(500)
+  stableUid String?  @map("stable_uid") @db.VarChar(64)
+  username  String?  @db.VarChar(100)
+  ip        String?  @db.VarChar(45)
+  userAgent String?  @map("user_agent") @db.VarChar(500)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([stableUid])
+  @@index([username])
+  @@index([createdAt])
+  @@index([event])
+  @@map("frontend_activity_logs")
+}

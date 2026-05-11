@@ -1,4 +1,4 @@
-import type { AdminStats, AdminClass, AdminSession, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish, AdminDishFull, AdminDishImportResult, AdminCommentsResponse, FileLogFile, FileLogResponse, FileLogEntry } from './types';
+import type { AdminStats, AdminClass, AdminSession, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish, AdminDishFull, AdminDishImportResult, AdminCommentsResponse, FileLogFile, FileLogResponse, FileLogEntry, FrontendActivityLogsResponse, FrontendActivityStats } from './types';
 
 const TOKEN_KEY = 'pokyh_admin_token';
 
@@ -249,6 +249,27 @@ export const adminApi = {
 
   deleteDishComment: (id: string): Promise<void> =>
     request<void>('DELETE', `/api/admin/comments/dish/${id}`),
+
+  activityLogs: (params?: {
+    page?: number;
+    limit?: number;
+    event?: string;
+    username?: string;
+    from?: string;
+    to?: string;
+  }): Promise<FrontendActivityLogsResponse> => {
+    const p = new URLSearchParams();
+    if (params?.page)     p.set('page',     String(params.page));
+    if (params?.limit)    p.set('limit',    String(params.limit));
+    if (params?.event)    p.set('event',    params.event);
+    if (params?.username) p.set('username', params.username);
+    if (params?.from)     p.set('from',     params.from);
+    if (params?.to)       p.set('to',       params.to);
+    return request<FrontendActivityLogsResponse>('GET', `/api/admin/activity-logs?${p.toString()}`);
+  },
+
+  activityStats: (): Promise<FrontendActivityStats> =>
+    request<FrontendActivityStats>('GET', '/api/admin/activity-logs/stats'),
 
   getToken,
 };
