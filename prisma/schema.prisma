@@ -15,8 +15,10 @@ model User {
   id                  String    @id @default(uuid())
   stableUid           String    @unique @map("stable_uid")
   username            String    @unique
-  webuntisKlasseId    Int       @map("webuntis_klasse_id")
-  webuntisKlasseName  String    @map("webuntis_klasse_name")
+  webuntisKlasseId    Int       @default(0) @map("webuntis_klasse_id")
+  webuntisKlasseName  String    @default("") @map("webuntis_klasse_name")
+  passwordHash        String?   @map("password_hash") @db.VarChar(100)
+  isUntisUser         Boolean   @default(true) @map("is_untis_user")
   createdAt           DateTime  @default(now()) @map("created_at")
   updatedAt           DateTime  @updatedAt @map("updated_at")
 

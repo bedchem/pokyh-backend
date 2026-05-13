@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import jwt from 'jsonwebtoken';
+import bcrypt from 'bcrypt';
 import { createHash, randomBytes, timingSafeEqual } from 'crypto';
 import { z } from 'zod';
 import { prisma } from '../db';
@@ -25,6 +26,7 @@ function signJwt(payload: {
   username: string;
   klasseId: number;
   klasseName: string;
+  isUntisUser?: boolean;
 }): string {
   return jwt.sign(payload, config.jwtSecret, {
     expiresIn: config.jwtExpiresIn,
@@ -159,11 +161,57 @@ const loginSchema = z.object({
   klasseName: z.string().min(0).max(100),
 });
 
+const localLoginSchema = z.object({
+  username: z.string().min(1).max(100).trim().toLowerCase(),
+  password: z.string().min(1).max(200),
+});
+
 router.post('/login', authLimiter, async (req: Request, res: Response) => {
-  // Verify X-Server-Key header
   const serverKey = req.headers['x-server-key'];
-  if (!serverKey || typeof serverKey !== 'string') {
-    throw new UnauthorizedError('Missing X-Server-Key header');
+
+  // ── Local password login (no server key) ──────────────────────────────────
+  if (!serverKey) {
+    const body = localLoginSchema.parse(req.body);
+    const { username, password } = body;
+
+    const user = await prisma.user.findUnique({ where: { username } });
+    if (!user || !user.passwordHash || user.isUntisUser) {
+      throw new UnauthorizedError('Ungültige Zugangsdaten');
+    }
+
+    const valid = await bcrypt.compare(password, user.passwordHash);
+    if (!valid) {
+      throw new UnauthorizedError('Ungültige Zugangsdaten');
+    }
+
+    const admin = await prisma.admin.findUnique({ where: { stableUid: user.stableUid } });
+    const token = signJwt({
+      stableUid: user.stableUid,
+      username: user.username,
+      klasseId: 0,
+      klasseName: '',
+      isUntisUser: false,
+    });
+    const refreshToken = await generateRefreshToken(user.stableUid);
+
+    return res.json({
+      token,
+      refreshToken,
+      user: {
+        stableUid: user.stableUid,
+        username: user.username,
+        webuntisKlasseId: 0,
+        webuntisKlasseName: '',
+        classId: null,
+        isAdmin: admin !== null,
+        isUntisUser: false,
+      },
+    });
+  }
+
+  // ── Server-to-server Untis login ──────────────────────────────────────────
+  if (typeof serverKey !== 'string') {
+    throw new UnauthorizedError('Invalid X-Server-Key header');
   }
 
   const expectedBuf = Buffer.from(config.serverKey, 'utf8');
@@ -194,6 +242,7 @@ router.post('/login', authLimiter, async (req: Request, res: Response) => {
         username,
         webuntisKlasseId: klasseId,
         webuntisKlasseName: klasseName,
+        isUntisUser: true,
       },
     });
   } else {
@@ -202,6 +251,7 @@ router.post('/login', authLimiter, async (req: Request, res: Response) => {
       data: {
         webuntisKlasseId: klasseId,
         webuntisKlasseName: klasseName,
+        isUntisUser: true,
       },
     });
   }
@@ -221,6 +271,7 @@ router.post('/login', authLimiter, async (req: Request, res: Response) => {
     username: user.username,
     klasseId: user.webuntisKlasseId,
     klasseName: user.webuntisKlasseName,
+    isUntisUser: true,
   });
   const refreshToken = await generateRefreshToken(user.stableUid);
 
@@ -234,6 +285,66 @@ router.post('/login', authLimiter, async (req: Request, res: Response) => {
       webuntisKlasseName: user.webuntisKlasseName,
       classId,
       isAdmin,
+      isUntisUser: true,
+    },
+  });
+});
+
+// ─── POST /auth/register ─────────────────────────────────────────────────────
+
+const registerSchema = z.object({
+  username: z
+    .string()
+    .min(3, 'Benutzername muss mindestens 3 Zeichen lang sein')
+    .max(30, 'Benutzername darf maximal 30 Zeichen lang sein')
+    .regex(/^[a-z0-9_-]+$/, 'Nur Kleinbuchstaben, Zahlen, _ und - erlaubt')
+    .trim(),
+  password: z.string().min(8, 'Passwort muss mindestens 8 Zeichen lang sein').max(200),
+});
+
+router.post('/register', authLimiter, async (req: Request, res: Response) => {
+  const body = registerSchema.parse(req.body);
+  const { username, password } = body;
+
+  const existing = await prisma.user.findUnique({ where: { username } });
+  if (existing) {
+    return res.status(409).json({ error: 'Benutzername bereits vergeben' });
+  }
+
+  const passwordHash = await bcrypt.hash(password, 12);
+  const stableUid = generateStableUid();
+
+  const user = await prisma.user.create({
+    data: {
+      stableUid,
+      username,
+      webuntisKlasseId: 0,
+      webuntisKlasseName: '',
+      passwordHash,
+      isUntisUser: false,
+    },
+  });
+
+  const token = signJwt({
+    stableUid: user.stableUid,
+    username: user.username,
+    klasseId: 0,
+    klasseName: '',
+    isUntisUser: false,
+  });
+  const refreshToken = await generateRefreshToken(user.stableUid);
+
+  res.status(201).json({
+    token,
+    refreshToken,
+    user: {
+      stableUid: user.stableUid,
+      username: user.username,
+      webuntisKlasseId: 0,
+      webuntisKlasseName: '',
+      classId: null,
+      isAdmin: false,
+      isUntisUser: false,
     },
   });
 });
@@ -309,6 +420,7 @@ router.get('/me', requireAuth, async (req: Request, res: Response) => {
     webuntisKlasseName: user.webuntisKlasseName,
     classId: membership?.classId ?? null,
     isAdmin: admin !== null,
+    isUntisUser: user.isUntisUser,
   });
 });
 
