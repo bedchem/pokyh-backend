@@ -22,11 +22,29 @@ model User {
   createdAt           DateTime  @default(now()) @map("created_at")
   updatedAt           DateTime  @updatedAt @map("updated_at")
 
-  todos         Todo[]
-  classMembers  ClassMember[]
-  refreshTokens RefreshToken[]
+  todos              Todo[]
+  classMembers       ClassMember[]
+  refreshTokens      RefreshToken[]
+  pushSubscriptions  PushSubscription[]
 
   @@map("users")
+}
+
+model PushSubscription {
+  id           String   @id @default(uuid())
+  stableUid    String   @map("stable_uid")
+  endpoint     String   @unique @db.VarChar(500)
+  p256dh       String   @db.VarChar(255)
+  auth         String   @db.VarChar(255)
+  jsessionid   String   @db.VarChar(100)
+  bearerToken  String   @map("bearer_token") @db.VarChar(1000)
+  knownUnread  Int      @default(-1) @map("known_unread")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [stableUid], references: [stableUid], onDelete: Cascade)
+
+  @@map("push_subscriptions")
 }
 
 model Admin {

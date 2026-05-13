@@ -13,6 +13,7 @@ import { sseRouter } from './sse';
 import { adminRouter } from './admin';
 import { subjectImagesRouter } from './subjectImages';
 import { activityLogRouter } from './activityLog';
+import { pushRouter } from './push';
 
 const router = Router();
 
@@ -46,5 +47,7 @@ router.use('/sse', sseRouter);
 router.use('/subject-images', subjectImagesRouter);
 // Frontend activity tracking
 router.use('/activity-log', activityLogRouter);
+// Push notification registration
+router.use('/push', pushRouter);
 
 export { router as appRouter };

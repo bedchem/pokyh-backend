@@ -15,6 +15,7 @@ import { setupRouter } from './routes/setup';
 import { requestLogger } from './middleware/requestLogger';
 import { prisma } from './db';
 import { startTunnel, stopTunnel, isTunnelConfigured, getHostnameFromCloudflaredConfig } from './tunnel';
+import { startPushPoller } from './services/pushPoller';
 import { logger } from './utils/logger';
 
 const app = express();
@@ -190,6 +191,9 @@ async function start() {
       // Session cleanup: run immediately + every hour
       void cleanupExpiredSessions();
       setInterval(() => void cleanupExpiredSessions(), SESSION_CLEANUP_INTERVAL);
+
+      // Push notification poller (no-op if VAPID keys not configured)
+      startPushPoller();
 
       // Auto-start Cloudflare tunnel if configured
       if (isTunnelConfigured()) {

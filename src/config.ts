@@ -35,4 +35,8 @@ export const config = {
   debug: process.env.DEBUG === 'true',
   tunnelName: process.env.TUNNEL_NAME ?? '',
   tunnelHostname: process.env.TUNNEL_HOSTNAME ?? '',
+  vapidPublicKey: process.env.VAPID_PUBLIC_KEY ?? '',
+  vapidPrivateKey: process.env.VAPID_PRIVATE_KEY ?? '',
+  vapidEmail: process.env.VAPID_EMAIL ?? 'contact@pokyh.com',
+  webuntisBase: process.env.WEBUNTIS_BASE ?? 'https://lbs-brixen.webuntis.com/WebUntis',
 };
