@@ -22,7 +22,6 @@ export const config = {
   apiKey: requireEnv('API_KEY'),
   serverKey: requireEnv('SERVER_KEY'),
   corsOrigin: process.env.CORS_ORIGIN ?? 'http://localhost:3000',
-  webuntisBase: process.env.WEBUNTIS_BASE ?? '',
   webuntisSchool: process.env.WEBUNTIS_SCHOOL ?? '',
   isDev: (process.env.NODE_ENV ?? 'development') === 'development',
   isProd: process.env.NODE_ENV === 'production',
