@@ -16,6 +16,7 @@ import {
   Clock,
   AlertTriangle,
   Plus,
+  Key,
 } from 'lucide-react';
 import { adminApi } from '../api';
 import { useToast } from './Toast';
@@ -443,6 +444,9 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
   const [togglingAdmin, setTogglingAdmin] = useState(false);
   const [mounted, setMounted] = useState(false);
   const [showCreateTodo, setShowCreateTodo] = useState(false);
+  const [showPasswordModal, setShowPasswordModal] = useState(false);
+  const [newPassword, setNewPassword] = useState('');
+  const [settingPassword, setSettingPassword] = useState(false);
   const [isMobile, setIsMobile] = useState(() => typeof window !== 'undefined' && window.innerWidth < 640);
 
   useEffect(() => {
@@ -493,6 +497,26 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
     }
   }
 
+  async function handleSetPassword(e: React.FormEvent) {
+    e.preventDefault();
+    if (!user) return;
+    if (newPassword.length < 8) {
+      showToast('Passwort muss mindestens 8 Zeichen lang sein', 'error');
+      return;
+    }
+    setSettingPassword(true);
+    try {
+      await adminApi.setUserPassword(user.stableUid, newPassword);
+      showToast(`Passwort für ${user.username} gesetzt`, 'success');
+      setShowPasswordModal(false);
+      setNewPassword('');
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Fehler', 'error');
+    } finally {
+      setSettingPassword(false);
+    }
+  }
+
   async function handleDeleteUser() {
     if (!user) return;
     setDeletingUser(true);
@@ -512,6 +536,79 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
 
   return (
     <>
+      {/* Password modal */}
+      {showPasswordModal && user && (
+        <div
+          className="fixed inset-0 z-[60] flex items-start justify-center p-4 pt-20 overflow-y-auto"
+          style={{ background: 'rgba(0,0,0,0.75)', backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)' }}
+          onClick={() => { if (!settingPassword) { setShowPasswordModal(false); setNewPassword(''); } }}
+        >
+          <div
+            className="w-full max-w-md rounded-[20px] p-6 flex flex-col gap-5 animate-scaleIn"
+            style={{ background: '#1c1c1e', border: '1px solid rgba(255,255,255,0.1)', boxShadow: '0 32px 80px rgba(0,0,0,0.65)' }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-[18px] font-bold text-white" style={{ letterSpacing: '-0.02em' }}>
+                  Passwort setzen
+                </h2>
+                <p className="text-[13px] mt-0.5" style={{ color: 'rgba(235,235,245,0.4)' }}>
+                  Für {user.username}
+                </p>
+              </div>
+              <button
+                onClick={() => { setShowPasswordModal(false); setNewPassword(''); }}
+                style={{ color: 'rgba(235,235,245,0.35)' }}
+                className="p-1.5 rounded-[8px] transition-colors hover:bg-white/5"
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <form onSubmit={(e) => void handleSetPassword(e)} className="flex flex-col gap-4">
+              <div className="flex flex-col gap-1.5">
+                <label
+                  className="text-[11px] font-semibold uppercase tracking-[0.05em]"
+                  style={{ color: 'rgba(235,235,245,0.4)' }}
+                >
+                  Neues Passwort *
+                </label>
+                <input
+                  type="password"
+                  placeholder="Min. 8 Zeichen"
+                  required
+                  minLength={8}
+                  autoComplete="new-password"
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  className="apple-input w-full px-3 py-2.5 text-[14px]"
+                />
+              </div>
+              <div className="flex gap-3 pt-1">
+                <button
+                  type="button"
+                  onClick={() => { setShowPasswordModal(false); setNewPassword(''); }}
+                  className="apple-btn-ghost flex-1 py-2.5 rounded-[10px] text-[14px]"
+                >
+                  Abbrechen
+                </button>
+                <button
+                  type="submit"
+                  disabled={settingPassword || newPassword.length < 8}
+                  className="apple-btn flex-1 py-2.5 text-[14px] flex items-center justify-center gap-2"
+                >
+                  {settingPassword
+                    ? <Loader2 size={14} className="animate-spin" />
+                    : <Key size={14} />
+                  }
+                  {settingPassword ? 'Speichere…' : 'Speichern'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* Backdrop */}
       <div
         className="fixed inset-0 z-40"
@@ -635,6 +732,16 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
                   >
                     {togglingAdmin ? <Loader2 size={12} className="animate-spin" /> : user.isAdmin ? <ShieldOff size={12} /> : <Shield size={12} />}
                     {user.isAdmin ? 'Admin entziehen' : 'Admin vergeben'}
+                  </button>
+                  <button
+                    onClick={() => setShowPasswordModal(true)}
+                    className="flex items-center gap-1.5 text-[12px] px-3 py-2 rounded-[10px] transition-all font-medium"
+                    style={{ color: '#bf5af2', border: '1px solid rgba(191,90,242,0.25)', background: 'transparent' }}
+                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(191,90,242,0.08)'; }}
+                    onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
+                  >
+                    <Key size={12} />
+                    Passwort setzen
                   </button>
                 </div>
               </div>

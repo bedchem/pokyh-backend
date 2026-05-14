@@ -103,6 +103,9 @@ export const adminApi = {
   deleteUser: (stableUid: string): Promise<void> =>
     request<void>('DELETE', `/api/admin/users/${stableUid}`),
 
+  setUserPassword: (stableUid: string, password: string): Promise<void> =>
+    request<void>('PATCH', `/api/admin/users/${stableUid}/password`, { password }),
+
   createTodo: (stableUid: string, data: { title: string; details?: string; dueAt?: string | null }): Promise<AdminTodo> =>
     request<AdminTodo>('POST', `/api/admin/users/${stableUid}/todos`, data),
 

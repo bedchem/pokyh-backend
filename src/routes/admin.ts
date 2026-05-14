@@ -254,6 +254,37 @@ router.post('/users', requireAdmin, async (req: Request, res: Response): Promise
   });
 });
 
+// ─── PATCH /api/admin/users/:stableUid/password ───────────────────────────────
+
+router.patch('/users/:stableUid/password', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const stableUid = String(req.params['stableUid'] ?? '');
+  const { password } = req.body as { password?: unknown };
+
+  if (!stableUid) {
+    res.status(400).json({ error: 'stableUid required' });
+    return;
+  }
+
+  if (typeof password !== 'string' || password.length < 8) {
+    res.status(400).json({ error: 'Passwort muss mindestens 8 Zeichen lang sein' });
+    return;
+  }
+
+  const user = await prisma.user.findUnique({ where: { stableUid } });
+  if (!user) {
+    res.status(404).json({ error: 'User not found' });
+    return;
+  }
+
+  const passwordHash = await bcrypt.hash(password, 12);
+  await prisma.user.update({
+    where: { stableUid },
+    data: { passwordHash, isUntisUser: false },
+  });
+
+  res.status(204).end();
+});
+
 // ─── GET /api/admin/users ─────────────────────────────────────────────────────
 
 router.get('/users', requireAdmin, async (req: Request, res: Response): Promise<void> => {
