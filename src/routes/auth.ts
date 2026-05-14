@@ -175,7 +175,7 @@ router.post('/login', authLimiter, async (req: Request, res: Response) => {
     const { username, password } = body;
 
     const user = await prisma.user.findUnique({ where: { username } });
-    if (!user || !user.passwordHash || user.isUntisUser) {
+    if (!user || !user.passwordHash) {
       throw new UnauthorizedError('Ungültige Zugangsdaten');
     }
 
