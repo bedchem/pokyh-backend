@@ -203,8 +203,9 @@ router.get('/stats', requireAdmin, async (_req: Request, res: Response): Promise
 // ─── POST /api/admin/users ────────────────────────────────────────────────────
 
 router.post('/users', requireAdmin, async (req: Request, res: Response): Promise<void> => {
-  const { username, webuntisKlasseId, webuntisKlasseName } = req.body as {
+  const { username, password, webuntisKlasseId, webuntisKlasseName } = req.body as {
     username?: string;
+    password?: string;
     webuntisKlasseId?: number;
     webuntisKlasseName?: string;
   };
@@ -214,20 +215,28 @@ router.post('/users', requireAdmin, async (req: Request, res: Response): Promise
     return;
   }
 
-  const existing = await prisma.user.findUnique({ where: { username: username.trim() } });
+  if (password !== undefined && password !== '' && password.length < 8) {
+    res.status(400).json({ error: 'Passwort muss mindestens 8 Zeichen lang sein' });
+    return;
+  }
+
+  const existing = await prisma.user.findUnique({ where: { username: username.trim().toLowerCase() } });
   if (existing) {
     res.status(409).json({ error: `User "${username}" already exists` });
     return;
   }
 
+  const passwordHash = password ? await bcrypt.hash(password, 12) : undefined;
   const stableUid = uuidv4();
   const user = await prisma.user.create({
     data: {
       id: uuidv4(),
       stableUid,
-      username: username.trim(),
+      username: username.trim().toLowerCase(),
       webuntisKlasseId: webuntisKlasseId ?? 0,
-      webuntisKlasseName: webuntisKlasseName?.trim() || 'Unknown',
+      webuntisKlasseName: webuntisKlasseName?.trim() || '',
+      isUntisUser: !passwordHash,
+      ...(passwordHash ? { passwordHash } : {}),
     },
   });
 

@@ -97,7 +97,7 @@ export const adminApi = {
   userDetail: (stableUid: string): Promise<AdminUserDetail> =>
     request<AdminUserDetail>('GET', `/api/admin/users/${stableUid}`),
 
-  createUser: (data: { username: string; webuntisKlasseId?: number; webuntisKlasseName?: string }): Promise<import('./types').AdminUser> =>
+  createUser: (data: { username: string; password?: string; webuntisKlasseId?: number; webuntisKlasseName?: string }): Promise<import('./types').AdminUser> =>
     request<import('./types').AdminUser>('POST', '/api/admin/users', data),
 
   deleteUser: (stableUid: string): Promise<void> =>

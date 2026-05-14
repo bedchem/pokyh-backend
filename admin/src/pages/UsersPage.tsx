@@ -53,7 +53,7 @@ export function UsersPage() {
   const [confirmDeleteUid, setConfirmDeleteUid] = useState<string | null>(null);
   const [selectedUid, setSelectedUid] = useState<string | null>(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
-  const [createForm, setCreateForm] = useState({ username: '', webuntisKlasseId: '', webuntisKlasseName: '' });
+  const [createForm, setCreateForm] = useState({ username: '', password: '', webuntisKlasseId: '', webuntisKlasseName: '' });
   const [creating, setCreating] = useState(false);
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const limit = 20;
@@ -136,13 +136,14 @@ export function UsersPage() {
     try {
       const user = await adminApi.createUser({
         username: createForm.username.trim(),
+        password: createForm.password.trim() || undefined,
         webuntisKlasseId: createForm.webuntisKlasseId ? parseInt(createForm.webuntisKlasseId, 10) : 0,
-        webuntisKlasseName: createForm.webuntisKlasseName.trim() || 'Unknown',
+        webuntisKlasseName: createForm.webuntisKlasseName.trim() || undefined,
       });
       setUsers((prev) => [user, ...prev]);
       setTotal((t) => t + 1);
       setShowCreateModal(false);
-      setCreateForm({ username: '', webuntisKlasseId: '', webuntisKlasseName: '' });
+      setCreateForm({ username: '', password: '', webuntisKlasseId: '', webuntisKlasseName: '' });
       showToast(`Benutzer "${user.username}" erstellt`, 'success');
     } catch (err) {
       showToast(err instanceof Error ? err.message : 'Erstellen fehlgeschlagen', 'error');
@@ -194,10 +195,11 @@ export function UsersPage() {
             </div>
             <form onSubmit={(e) => void handleCreate(e)} className="flex flex-col gap-4">
               {[
-                { label: 'Benutzername', key: 'username', placeholder: 'z.B. max.muster', required: true },
-                { label: 'WebUntis Klassen-ID', key: 'webuntisKlasseId', placeholder: '0', required: false },
-                { label: 'Klassenname', key: 'webuntisKlasseName', placeholder: 'z.B. 4AHIF', required: false },
-              ].map(({ label, key, placeholder, required }) => (
+                { label: 'Benutzername', key: 'username', placeholder: 'z.B. max.muster', required: true, type: 'text' },
+                { label: 'Passwort', key: 'password', placeholder: 'Min. 8 Zeichen (optional)', required: false, type: 'password' },
+                { label: 'WebUntis Klassen-ID', key: 'webuntisKlasseId', placeholder: '0', required: false, type: 'number' },
+                { label: 'Klassenname', key: 'webuntisKlasseName', placeholder: 'z.B. 4AHIF', required: false, type: 'text' },
+              ].map(({ label, key, placeholder, required, type }) => (
                 <div key={key} className="flex flex-col gap-1.5">
                   <label
                     className="text-[11px] font-semibold uppercase tracking-[0.05em]"
@@ -206,7 +208,7 @@ export function UsersPage() {
                     {label}{required && ' *'}
                   </label>
                   <input
-                    type={key === 'webuntisKlasseId' ? 'number' : 'text'}
+                    type={type}
                     placeholder={placeholder}
                     required={required}
                     value={createForm[key as keyof typeof createForm]}
