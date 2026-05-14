@@ -4,6 +4,7 @@ import { logger } from '../utils/logger';
 import { config } from '../config';
 
 const POLL_INTERVAL_MS = 5 * 60 * 1000;
+const DUE_CHECK_INTERVAL_MS = 60 * 1000;
 const SCHOOL_COOKIE = '_' + Buffer.from(config.webuntisSchool || 'lbs-brixen').toString('base64');
 
 interface PushSub {
@@ -93,6 +94,49 @@ async function pollAll() {
   await Promise.allSettled(subs.map(pollSubscription));
 }
 
+async function sendPushToUser(stableUid: string, payload: { title: string; body: string; url: string }) {
+  const subs = await prisma.pushSubscription.findMany({ where: { stableUid } });
+  await Promise.allSettled(subs.map((sub) => sendPush(sub, payload)));
+}
+
+async function checkDueItems() {
+  const now = new Date();
+
+  const dueTodos = await prisma.todo.findMany({
+    where: { dueAt: { lte: now }, notifiedAt: null, done: false },
+  });
+
+  for (const todo of dueTodos) {
+    await sendPushToUser(todo.stableUid, {
+      title: `Todo fällig: ${todo.title}`,
+      body: 'Tippe um es zu sehen',
+      url: '/todos',
+    });
+    await prisma.todo.update({ where: { id: todo.id }, data: { notifiedAt: now } });
+    logger.debug(`[push] Todo due notification sent: ${todo.id}`);
+  }
+
+  const dueReminders = await prisma.reminder.findMany({
+    where: { remindAt: { lte: now }, notifiedAt: null },
+    include: { class: { include: { members: true } } },
+  });
+
+  for (const reminder of dueReminders) {
+    const memberUids = reminder.class.members.map((m) => m.stableUid);
+    await Promise.allSettled(
+      memberUids.map((uid) =>
+        sendPushToUser(uid, {
+          title: `Erinnerung: ${reminder.title}`,
+          body: reminder.body || 'Tippe um sie zu sehen',
+          url: '/reminders',
+        }),
+      ),
+    );
+    await prisma.reminder.update({ where: { id: reminder.id }, data: { notifiedAt: now } });
+    logger.debug(`[push] Reminder notification sent: ${reminder.id} to ${memberUids.length} members`);
+  }
+}
+
 export function startPushPoller() {
   if (!config.vapidPublicKey || !config.vapidPrivateKey) {
     logger.info('[push] VAPID keys not set — push notifications disabled');
@@ -107,5 +151,9 @@ export function startPushPoller() {
 
   void pollAll();
   setInterval(() => void pollAll(), POLL_INTERVAL_MS);
-  logger.info('[push] Poller started (5 min interval)');
+
+  void checkDueItems();
+  setInterval(() => void checkDueItems(), DUE_CHECK_INTERVAL_MS);
+
+  logger.info('[push] Poller started (messages: 5 min, due items: 1 min)');
 }
