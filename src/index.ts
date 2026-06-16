@@ -22,6 +22,13 @@ import { logger } from './utils/logger';
 
 const app = express();
 
+// ─── Proxy trust ─────────────────────────────────────────────────────────────
+// Behind the Cloudflare tunnel the real client IP arrives via X-Forwarded-For.
+// Declaring the trusted proxy lets express-rate-limit identify clients correctly
+// (and stops it from throwing ERR_ERL_UNEXPECTED_X_FORWARDED_FOR). Config-driven
+// via TRUST_PROXY; defaults to 'loopback' for the in-container cloudflared proxy.
+app.set('trust proxy', config.trustProxy);
+
 // ─── Debug logging ───────────────────────────────────────────────────────────
 
 if (config.debug) {

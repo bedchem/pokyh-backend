@@ -6,6 +6,7 @@ export interface AdminUser {
   classId: string | null;
   classCode: string | null;
   isAdmin: boolean;
+  role: 'student' | 'parent';
   todoCount: number;
   createdAt: string;
   updatedAt: string;

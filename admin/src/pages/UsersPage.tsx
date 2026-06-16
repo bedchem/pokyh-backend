@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { Search, Shield, ShieldOff, ChevronLeft, ChevronRight, ScrollText, Users, RefreshCw, UserPlus, Trash2, X } from 'lucide-react';
+import { Search, Shield, ShieldOff, ChevronLeft, ChevronRight, ScrollText, Users, RefreshCw, UserPlus, Trash2, X, Download, Upload, GraduationCap, UserCog } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { adminApi } from '../api';
 import { useToast } from '../components/Toast';
@@ -24,7 +24,15 @@ function relativeDate(dateStr: string): string {
   return `${Math.floor(days / 30)}M`;
 }
 
-type FilterTab = 'all' | 'admins' | 'regular';
+type FilterTab = 'all' | 'students' | 'parents' | 'admins';
+
+// Tabs that map to a server-side role filter (Schüler/Eltern). 'admins' is
+// filtered client-side on the already-fetched page (admin is a separate flag).
+function roleForFilter(filter: FilterTab): 'student' | 'parent' | undefined {
+  if (filter === 'students') return 'student';
+  if (filter === 'parents') return 'parent';
+  return undefined;
+}
 
 function SkeletonRow() {
   return (
@@ -53,8 +61,12 @@ export function UsersPage() {
   const [confirmDeleteUid, setConfirmDeleteUid] = useState<string | null>(null);
   const [selectedUid, setSelectedUid] = useState<string | null>(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
-  const [createForm, setCreateForm] = useState({ username: '', password: '', webuntisKlasseId: '', webuntisKlasseName: '' });
+  const [createForm, setCreateForm] = useState<{ username: string; password: string; webuntisKlasseId: string; webuntisKlasseName: string; role: 'student' | 'parent' }>({ username: '', password: '', webuntisKlasseId: '', webuntisKlasseName: '', role: 'student' });
   const [creating, setCreating] = useState(false);
+  const [pendingRole, setPendingRole] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const importInputRef = useRef<HTMLInputElement>(null);
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const limit = 20;
 
@@ -67,7 +79,7 @@ export function UsersPage() {
   const fetchUsers = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await adminApi.users(debouncedSearch || undefined, page, limit);
+      const res = await adminApi.users(debouncedSearch || undefined, page, limit, roleForFilter(filter));
       setUsers(res.users);
       setTotal(res.total);
     } catch (err) {
@@ -75,17 +87,17 @@ export function UsersPage() {
     } finally {
       setLoading(false);
     }
-  }, [debouncedSearch, page, showToast]);
+  }, [debouncedSearch, page, filter, showToast]);
+
+  // Reset to page 1 whenever the active filter changes.
+  useEffect(() => { setPage(1); }, [filter]);
 
   useEffect(() => { void fetchUsers(); }, [fetchUsers]);
 
   const { refresh, refreshing } = useAutoRefresh(fetchUsers, 30000);
 
-  const filteredUsers = users.filter((u) => {
-    if (filter === 'admins') return u.isAdmin;
-    if (filter === 'regular') return !u.isAdmin;
-    return true;
-  });
+  // 'admins' narrows the fetched page client-side; role tabs filter server-side.
+  const filteredUsers = filter === 'admins' ? users.filter((u) => u.isAdmin) : users;
 
   const totalPages = Math.ceil(total / limit);
 
@@ -139,11 +151,12 @@ export function UsersPage() {
         password: createForm.password.trim() || undefined,
         webuntisKlasseId: createForm.webuntisKlasseId ? parseInt(createForm.webuntisKlasseId, 10) : 0,
         webuntisKlasseName: createForm.webuntisKlasseName.trim() || undefined,
+        role: createForm.role,
       });
       setUsers((prev) => [user, ...prev]);
       setTotal((t) => t + 1);
       setShowCreateModal(false);
-      setCreateForm({ username: '', password: '', webuntisKlasseId: '', webuntisKlasseName: '' });
+      setCreateForm({ username: '', password: '', webuntisKlasseId: '', webuntisKlasseName: '', role: 'student' });
       showToast(`Benutzer "${user.username}" erstellt`, 'success');
     } catch (err) {
       showToast(err instanceof Error ? err.message : 'Erstellen fehlgeschlagen', 'error');
@@ -152,10 +165,60 @@ export function UsersPage() {
     }
   }
 
+  async function handleToggleRole(user: AdminUser) {
+    const newRole: 'student' | 'parent' = user.role === 'parent' ? 'student' : 'parent';
+    setPendingRole(user.stableUid);
+    setUsers((prev) => prev.map((u) => u.stableUid === user.stableUid ? { ...u, role: newRole } : u));
+    try {
+      await adminApi.setUserRole(user.stableUid, newRole);
+      showToast(`${user.username} ist jetzt ${newRole === 'parent' ? 'Elternteil' : 'Schüler:in'}`, 'success');
+      // If a role filter is active, the row may no longer belong on this page.
+      if (roleForFilter(filter)) void fetchUsers();
+    } catch (err) {
+      setUsers((prev) => prev.map((u) => u.stableUid === user.stableUid ? { ...u, role: user.role } : u));
+      showToast(err instanceof Error ? err.message : 'Aktion fehlgeschlagen', 'error');
+    } finally {
+      setPendingRole(null);
+    }
+  }
+
+  async function handleExport() {
+    setExporting(true);
+    try {
+      await adminApi.exportDatabase();
+      showToast('Export gestartet — Download läuft', 'success');
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Export fehlgeschlagen', 'error');
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  async function handleImportFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // allow re-selecting the same file
+    if (!file) return;
+    if (!window.confirm('Import überschreibt ALLE vorhandenen Daten. Fortfahren?')) return;
+    setImporting(true);
+    try {
+      const text = await file.text();
+      const payload = JSON.parse(text) as unknown;
+      await adminApi.importDatabase(payload);
+      showToast('Import erfolgreich — Daten wiederhergestellt', 'success');
+      setPage(1);
+      void fetchUsers();
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Import fehlgeschlagen', 'error');
+    } finally {
+      setImporting(false);
+    }
+  }
+
   const tabs: { key: FilterTab; label: string }[] = [
-    { key: 'all',     label: 'Alle' },
-    { key: 'admins',  label: 'Admin' },
-    { key: 'regular', label: 'Standard' },
+    { key: 'all',      label: 'Alle' },
+    { key: 'students', label: 'Schüler' },
+    { key: 'parents',  label: 'Eltern' },
+    { key: 'admins',   label: 'Admin' },
   ];
 
   return (
@@ -217,6 +280,37 @@ export function UsersPage() {
                   />
                 </div>
               ))}
+              {/* Account type — Schüler vs. Eltern */}
+              <div className="flex flex-col gap-1.5">
+                <label
+                  className="text-[11px] font-semibold uppercase tracking-[0.05em]"
+                  style={{ color: 'rgba(235,235,245,0.4)' }}
+                >
+                  Kontotyp
+                </label>
+                <div
+                  className="flex p-1 gap-0.5 rounded-[10px]"
+                  style={{ background: '#0f0f10', border: '1px solid rgba(255,255,255,0.07)' }}
+                >
+                  {([
+                    { value: 'student' as const, label: 'Schüler:in' },
+                    { value: 'parent' as const,  label: 'Elternteil' },
+                  ]).map((opt) => (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      onClick={() => setCreateForm((f) => ({ ...f, role: opt.value }))}
+                      className="flex-1 px-3 py-1.5 text-[13px] font-medium transition-all rounded-[8px]"
+                      style={{
+                        background: createForm.role === opt.value ? 'rgba(10,132,255,0.16)' : 'transparent',
+                        color:      createForm.role === opt.value ? '#0a84ff'               : 'rgba(235,235,245,0.45)',
+                      }}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
               <div className="flex gap-3 pt-1">
                 <button
                   type="button"
@@ -259,7 +353,7 @@ export function UsersPage() {
             Konten und Admin-Berechtigungen verwalten
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap justify-end">
           <button
             onClick={() => setShowCreateModal(true)}
             className="apple-btn flex items-center gap-2 px-3 py-2 text-[13px]"
@@ -267,6 +361,35 @@ export function UsersPage() {
             <UserPlus size={14} />
             Neu
           </button>
+          <button
+            onClick={() => void handleExport()}
+            disabled={exporting}
+            className="apple-btn-ghost flex items-center gap-2 px-3 py-2 text-[13px]"
+            title="Vollständiges Backup als JSON herunterladen"
+          >
+            {exporting
+              ? <div className="w-3.5 h-3.5 border-2 border-current border-t-transparent rounded-full animate-spin" />
+              : <Download size={14} />}
+            Export
+          </button>
+          <button
+            onClick={() => importInputRef.current?.click()}
+            disabled={importing}
+            className="apple-btn-ghost flex items-center gap-2 px-3 py-2 text-[13px]"
+            title="Backup-JSON importieren (überschreibt alle Daten)"
+          >
+            {importing
+              ? <div className="w-3.5 h-3.5 border-2 border-current border-t-transparent rounded-full animate-spin" />
+              : <Upload size={14} />}
+            Import
+          </button>
+          <input
+            ref={importInputRef}
+            type="file"
+            accept="application/json,.json"
+            className="hidden"
+            onChange={(e) => void handleImportFile(e)}
+          />
           <button
             onClick={() => void refresh()}
             disabled={refreshing}
@@ -416,11 +539,26 @@ export function UsersPage() {
                     </td>
 
                     <td className="px-4 py-3.5">
-                      {user.isAdmin ? (
-                        <span className="badge-blue text-[11px] px-2 py-0.5 font-medium">Admin</span>
-                      ) : (
-                        <span className="text-[12px]" style={{ color: 'rgba(235,235,245,0.3)' }}>User</span>
-                      )}
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        {user.isAdmin && (
+                          <span className="badge-blue text-[11px] px-2 py-0.5 font-medium">Admin</span>
+                        )}
+                        {user.role === 'parent' ? (
+                          <span
+                            className="text-[11px] px-2 py-0.5 font-medium rounded-[6px]"
+                            style={{ background: 'rgba(191,90,242,0.14)', color: '#bf5af2', border: '1px solid rgba(191,90,242,0.25)' }}
+                          >
+                            Eltern
+                          </span>
+                        ) : (
+                          <span
+                            className="text-[11px] px-2 py-0.5 font-medium rounded-[6px]"
+                            style={{ background: 'rgba(48,209,88,0.12)', color: '#30d158', border: '1px solid rgba(48,209,88,0.22)' }}
+                          >
+                            Schüler
+                          </span>
+                        )}
+                      </div>
                     </td>
 
                     <td className="px-4 py-3.5 hidden sm:table-cell">
@@ -450,6 +588,25 @@ export function UsersPage() {
                             <><ShieldOff size={12} /><span className="hidden sm:inline">Entziehen</span></>
                           ) : (
                             <><Shield size={12} /><span className="hidden sm:inline">Vergeben</span></>
+                          )}
+                        </button>
+
+                        {/* Toggle role: Schüler ⇄ Eltern */}
+                        <button
+                          onClick={() => void handleToggleRole(user)}
+                          disabled={pendingRole === user.stableUid}
+                          className="flex items-center gap-1 text-[12px] px-2.5 py-1.5 rounded-[8px] transition-all font-medium"
+                          style={{ color: '#bf5af2', border: '1px solid rgba(191,90,242,0.28)', background: 'transparent' }}
+                          onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(191,90,242,0.1)'; }}
+                          onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+                          title={user.role === 'parent' ? 'Zu Schüler:in machen' : 'Zu Elternteil machen'}
+                        >
+                          {pendingRole === user.stableUid ? (
+                            <div className="w-3 h-3 border border-current border-t-transparent rounded-full animate-spin" />
+                          ) : user.role === 'parent' ? (
+                            <><GraduationCap size={12} /><span className="hidden sm:inline">Schüler</span></>
+                          ) : (
+                            <><UserCog size={12} /><span className="hidden sm:inline">Eltern</span></>
                           )}
                         </button>
 

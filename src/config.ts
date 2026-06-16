@@ -22,6 +22,19 @@ function strEnv(key: string, fallback: string): string {
   return raw === undefined || raw.trim() === '' ? fallback : raw.trim();
 }
 
+// Resolve the express `trust proxy` value from TRUST_PROXY. Accepts a boolean
+// ('true'/'false'), a numeric hop count, or a named value ('loopback', etc.).
+// Defaults to 'loopback' which trusts only the in-container cloudflared proxy.
+function parseTrustProxy(raw: string | undefined): boolean | number | string {
+  const val = (raw ?? '').trim();
+  if (val === '') return 'loopback';
+  if (val.toLowerCase() === 'true') return true;
+  if (val.toLowerCase() === 'false') return false;
+  const n = parseInt(val, 10);
+  if (String(n) === val && Number.isFinite(n)) return n;
+  return val;
+}
+
 // Build a MySQL connection string from discrete DB_* env vars. Lets the database
 // be configured field-by-field (host/port/user/password/name) instead of one URL.
 // User & password are URL-encoded so special characters (e.g. "!") are safe.
@@ -54,6 +67,13 @@ if (jwtSecret.length < 32) {
 export const config = {
   nodeEnv: process.env.NODE_ENV ?? 'development',
   port: intEnv('PORT', 4000),
+  // Express `trust proxy` setting. Behind the Cloudflare tunnel (cloudflared
+  // runs in-container and proxies to localhost) the client IP arrives via the
+  // X-Forwarded-For header — express-rate-limit refuses to run unless we declare
+  // how many proxies to trust. Default 'loopback' trusts only the in-container
+  // proxy (secure: external clients can't spoof XFF). Override with TRUST_PROXY:
+  // 'true'/'false', a hop count ('1'), or any valid express trust-proxy value.
+  trustProxy: parseTrustProxy(process.env['TRUST_PROXY']),
   databaseUrl: requireEnv('DATABASE_URL'),
   db: {
     host: process.env['DB_HOST'] ?? '',

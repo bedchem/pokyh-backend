@@ -86,9 +86,10 @@ export const adminApi = {
   stats: (): Promise<AdminStats> =>
     request<AdminStats>('GET', '/api/admin/stats'),
 
-  users: (search?: string, page = 1, limit = 20): Promise<UsersResponse> => {
+  users: (search?: string, page = 1, limit = 20, role?: 'student' | 'parent'): Promise<UsersResponse> => {
     const params = new URLSearchParams();
     if (search) params.set('search', search);
+    if (role) params.set('role', role);
     params.set('page', String(page));
     params.set('limit', String(limit));
     return request<UsersResponse>('GET', `/api/admin/users?${params.toString()}`);
@@ -97,8 +98,33 @@ export const adminApi = {
   userDetail: (stableUid: string): Promise<AdminUserDetail> =>
     request<AdminUserDetail>('GET', `/api/admin/users/${stableUid}`),
 
-  createUser: (data: { username: string; password?: string; webuntisKlasseId?: number; webuntisKlasseName?: string }): Promise<import('./types').AdminUser> =>
+  createUser: (data: { username: string; password?: string; webuntisKlasseId?: number; webuntisKlasseName?: string; role?: 'student' | 'parent' }): Promise<import('./types').AdminUser> =>
     request<import('./types').AdminUser>('POST', '/api/admin/users', data),
+
+  setUserRole: (stableUid: string, role: 'student' | 'parent'): Promise<{ stableUid: string; role: string }> =>
+    request<{ stableUid: string; role: string }>('PATCH', `/api/admin/users/${stableUid}/role`, { role }),
+
+  // Full DB backup: requires the Bearer token, so we fetch as a blob and trigger
+  // a client-side download (a plain <a href> can't send the Authorization header).
+  exportDatabase: async (): Promise<void> => {
+    const token = getToken();
+    const res = await fetch('/api/admin/export', {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!res.ok) throw new Error(`Export fehlgeschlagen (HTTP ${res.status})`);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `pokyh-export-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  },
+
+  importDatabase: (payload: unknown): Promise<{ ok: boolean }> =>
+    request<{ ok: boolean }>('POST', '/api/admin/import', payload),
 
   deleteUser: (stableUid: string): Promise<void> =>
     request<void>('DELETE', `/api/admin/users/${stableUid}`),

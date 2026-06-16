@@ -204,12 +204,16 @@ router.get('/stats', requireAdmin, async (_req: Request, res: Response): Promise
 // ─── POST /api/admin/users ────────────────────────────────────────────────────
 
 router.post('/users', requireAdmin, async (req: Request, res: Response): Promise<void> => {
-  const { username, password, webuntisKlasseId, webuntisKlasseName } = req.body as {
+  const { username, password, webuntisKlasseId, webuntisKlasseName, role } = req.body as {
     username?: string;
     password?: string;
     webuntisKlasseId?: number;
     webuntisKlasseName?: string;
+    role?: string;
   };
+
+  // Only the two known account roles are accepted; default to "student".
+  const accountRole = role === 'parent' ? 'parent' : 'student';
 
   if (!username || username.trim().length < 1) {
     res.status(400).json({ error: 'Username is required' });
@@ -237,6 +241,7 @@ router.post('/users', requireAdmin, async (req: Request, res: Response): Promise
       webuntisKlasseId: webuntisKlasseId ?? 0,
       webuntisKlasseName: webuntisKlasseName?.trim() || '',
       isUntisUser: !passwordHash,
+      role: accountRole,
       ...(passwordHash ? { passwordHash } : {}),
     },
   });
@@ -247,12 +252,44 @@ router.post('/users', requireAdmin, async (req: Request, res: Response): Promise
     webuntisKlasseId: user.webuntisKlasseId,
     webuntisKlasseName: user.webuntisKlasseName,
     isAdmin: false,
+    role: user.role,
     todoCount: 0,
     classId: null,
     classCode: null,
     createdAt: user.createdAt.toISOString(),
     updatedAt: user.updatedAt.toISOString(),
   });
+});
+
+// ─── PATCH /api/admin/users/:stableUid/role ───────────────────────────────────
+// Switch an account between "student" and "parent". Class memberships are kept
+// in sync so a parent never appears in member lists (see ClassMember.role).
+
+router.patch('/users/:stableUid/role', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const stableUid = String(req.params['stableUid'] ?? '');
+  const { role } = req.body as { role?: unknown };
+
+  if (role !== 'student' && role !== 'parent') {
+    res.status(400).json({ error: 'role must be "student" or "parent"' });
+    return;
+  }
+
+  const user = await prisma.user.findUnique({ where: { stableUid } });
+  if (!user) {
+    res.status(404).json({ error: 'User not found' });
+    return;
+  }
+
+  await prisma.$transaction([
+    prisma.user.update({ where: { stableUid }, data: { role } }),
+    // Keep the membership role aligned with the account role.
+    prisma.classMember.updateMany({ where: { stableUid }, data: { role } }),
+  ]);
+
+  const adminUsername = adminUsernameFromReq(req.headers['authorization']);
+  logger.info('Admin action: set user role', { action: 'set_user_role', adminUsername, stableUid, role });
+
+  res.json({ stableUid, role });
 });
 
 // ─── PATCH /api/admin/users/:stableUid/password ───────────────────────────────
@@ -290,13 +327,17 @@ router.patch('/users/:stableUid/password', requireAdmin, async (req: Request, re
 
 router.get('/users', requireAdmin, async (req: Request, res: Response): Promise<void> => {
   const search = typeof req.query['search'] === 'string' ? req.query['search'] : undefined;
+  // Optional role filter: 'student' or 'parent'. Anything else means "no filter".
+  const roleRaw = typeof req.query['role'] === 'string' ? req.query['role'] : undefined;
+  const roleFilter = roleRaw === 'student' || roleRaw === 'parent' ? roleRaw : undefined;
   const page = Math.max(1, parseInt(String(req.query['page'] ?? '1'), 10));
   const limit = Math.min(100, Math.max(1, parseInt(String(req.query['limit'] ?? '20'), 10)));
   const skip = (page - 1) * limit;
 
-  const where = search
-    ? { username: { contains: search } }
-    : {};
+  const where = {
+    ...(search ? { username: { contains: search } } : {}),
+    ...(roleFilter ? { role: roleFilter } : {}),
+  };
 
   const [users, total] = await Promise.all([
     prisma.user.findMany({
