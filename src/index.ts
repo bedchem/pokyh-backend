@@ -5,6 +5,7 @@ import cors from 'cors';
 import cookieParser from 'cookie-parser';
 import morgan from 'morgan';
 import path from 'path';
+import { spawn } from 'child_process';
 import { ZodError } from 'zod';
 import { Prisma } from '@prisma/client';
 import { config } from './config';
@@ -16,6 +17,7 @@ import { requestLogger } from './middleware/requestLogger';
 import { prisma } from './db';
 import { startTunnel, stopTunnel, isTunnelConfigured, getHostnameFromCloudflaredConfig } from './tunnel';
 import { startPushPoller } from './services/pushPoller';
+import { startArchiver } from './services/archiver';
 import { logger } from './utils/logger';
 
 const app = express();
@@ -76,10 +78,11 @@ app.use(
 
 // ─── Body parsing ────────────────────────────────────────────────────────────
 
-// Larger body limit for image upload routes
-app.use('/subject-images', express.json({ limit: '4mb' }));
-app.use('/api/admin', express.json({ limit: '4mb' }));
-app.use(express.json({ limit: '10kb' }));
+// Larger body limit for image upload routes; biggest for full-DB JSON import
+app.use('/api/admin/import', express.json({ limit: config.bodyLimitImport }));
+app.use('/subject-images', express.json({ limit: config.bodyLimitUpload }));
+app.use('/api/admin', express.json({ limit: config.bodyLimitUpload }));
+app.use(express.json({ limit: config.bodyLimit }));
 app.use(express.urlencoded({ extended: false }));
 app.use(cookieParser());
 
@@ -159,7 +162,7 @@ app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
 
 // ─── Start server ─────────────────────────────────────────────────────────────
 
-const SESSION_CLEANUP_INTERVAL = 60 * 60 * 1000;
+const SESSION_CLEANUP_INTERVAL = config.sessionCleanupIntervalMs;
 
 async function cleanupExpiredSessions() {
   const cutoff = new Date(Date.now() - 12 * 60 * 60 * 1000);
@@ -174,43 +177,102 @@ async function cleanupExpiredSessions() {
   if (count > 0) logger.info(`Session cleanup: ${count} expired tokens deleted`);
 }
 
-async function start() {
-  try {
-    await prisma.$connect();
-    logger.info('Connected to MySQL');
+let backgroundJobsStarted = false;
 
-    app.listen(config.port, () => {
-      logger.info(`Server running on port ${config.port} (${config.nodeEnv})`);
-      logger.info(`API: http://localhost:${config.port}`);
-      logger.info(`Admin: http://localhost:${config.port}/admin/`);
+// Starts the periodic background jobs exactly once, after the DB is reachable.
+function startBackgroundJobs() {
+  if (backgroundJobsStarted) return;
+  backgroundJobsStarted = true;
 
-      if (!config.adminPasswordHash) {
-        logger.info('No admin password set — open /admin/ to complete setup');
-      }
+  // Session cleanup: deferred first run + interval.
+  setTimeout(() => void cleanupExpiredSessions().catch(() => {}), 5000);
+  setInterval(() => void cleanupExpiredSessions().catch(() => {}), SESSION_CLEANUP_INTERVAL);
 
-      // Session cleanup: run immediately + every hour
-      void cleanupExpiredSessions();
-      setInterval(() => void cleanupExpiredSessions(), SESSION_CLEANUP_INTERVAL);
+  // Archive expired todos/reminders (>24h) — server-only, admin-viewable.
+  startArchiver();
 
-      // Push notification poller (no-op if VAPID keys not configured)
-      startPushPoller();
+  // Push notification poller (no-op if VAPID keys not configured)
+  startPushPoller();
+}
 
-      // Auto-start Cloudflare tunnel if configured
-      if (isTunnelConfigured()) {
-        startTunnel(config.tunnelName);
-      } else {
-        logger.info('Tunnel not configured — open /admin/ to set up Cloudflare tunnel');
-      }
+// Create the database (if missing) and apply the schema via `prisma db push`.
+// Idempotent and additive — safe to run on every boot. Returns true on success.
+function pushSchema(): Promise<boolean> {
+  return new Promise((resolve) => {
+    // No --accept-data-loss: db push then refuses any destructive change
+    // (safe — only additive schema updates are applied automatically).
+    const child = spawn('npx', ['prisma', 'db', 'push', '--skip-generate'], {
+      cwd: process.cwd(),
+      env: process.env,
+      stdio: ['ignore', 'pipe', 'pipe'],
     });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (msg.includes('P1001') || msg.includes('ECONNREFUSED')) {
-      logger.error('Cannot connect to database. Check that MySQL is running and DATABASE_URL in .env is correct.');
-    } else {
-      logger.error('Failed to start server', { error: err instanceof Error ? err.message : String(err) });
+    let out = '';
+    const onData = (b: Buffer) => { out += b.toString(); };
+    child.stdout.on('data', onData);
+    child.stderr.on('data', onData);
+    const timer = setTimeout(() => { child.kill('SIGKILL'); }, config.dbPushTimeoutMs);
+    child.on('error', () => { clearTimeout(timer); resolve(false); });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      if (code !== 0) {
+        const last = out.split('\n').filter(Boolean).slice(-2).join(' | ');
+        logger.warn(`prisma db push failed (code ${code}): ${last}`);
+      }
+      resolve(code === 0);
+    });
+  });
+}
+
+// Bring the database up in the background with retry/backoff so the HTTP server
+// is never blocked by a slow/unavailable/uninitialised database. Each round
+// ensures the schema (creating the DB if needed) and then connects. The process
+// stays alive across failures — reliable for first boot and rolling restarts.
+async function connectDatabaseWithRetry() {
+  let attempt = 0;
+  for (;;) {
+    try {
+      if (config.dbAutoPush) {
+        const ok = await pushSchema();
+        if (!ok) throw new Error('schema push not ready');
+      }
+      await prisma.$connect();
+      logger.info('Database ready (schema applied, connected)');
+      startBackgroundJobs();
+      return;
+    } catch (err) {
+      attempt++;
+      const delay = Math.min(
+        config.dbConnectBaseDelayMs * 2 ** Math.min(attempt, 5),
+        config.dbConnectMaxDelayMs,
+      );
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.warn(`DB init attempt ${attempt} failed (${msg.split('\n')[0]}). Retrying in ${delay}ms…`);
+      await new Promise((r) => setTimeout(r, delay));
     }
-    process.exit(1);
   }
+}
+
+function start() {
+  // Listen immediately — startup never waits on the database.
+  app.listen(config.port, () => {
+    logger.info(`Server running on port ${config.port} (${config.nodeEnv})`);
+    logger.info(`API: http://localhost:${config.port}`);
+    logger.info(`Admin: http://localhost:${config.port}/admin/`);
+
+    if (!config.adminPasswordHash) {
+      logger.info('No admin password set — open /admin/ to complete setup');
+    }
+
+    // Connect to the DB and start background jobs in the background (non-blocking).
+    void connectDatabaseWithRetry();
+
+    // Auto-start Cloudflare tunnel if configured
+    if (isTunnelConfigured()) {
+      startTunnel(config.tunnelName);
+    } else {
+      logger.info('Tunnel not configured — open /admin/ to set up Cloudflare tunnel');
+    }
+  });
 }
 
 start();

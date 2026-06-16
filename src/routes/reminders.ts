@@ -10,9 +10,16 @@ const router = Router({ mergeParams: true });
 
 async function getRemindersForClass(classId: string) {
   return prisma.reminder.findMany({
-    where: { classId },
+    where: { classId, archivedAt: null },
     orderBy: { remindAt: 'asc' },
   });
+}
+
+// Parents have no reminders — block them from the entire reminders surface.
+function assertNotParent(req: Request): void {
+  if (req.user!.role === 'parent') {
+    throw new ForbiddenError('Eltern-Accounts haben keinen Zugriff auf Erinnerungen');
+  }
 }
 
 function broadcastReminders(classId: string, reminders: unknown[]): void {
@@ -30,6 +37,8 @@ async function checkMembership(classId: string, stableUid: string): Promise<bool
 router.get('/', readLimiter, requireAuth, async (req: Request, res: Response) => {
   const classId = req.params['classId'] as string;
   const { stableUid } = req.user!;
+
+  assertNotParent(req);
 
   const isMember = await checkMembership(classId, stableUid);
   if (!isMember) {
@@ -50,6 +59,8 @@ const createReminderSchema = z.object({
 router.post('/', writeLimiter, requireAuth, async (req: Request, res: Response) => {
   const classId = req.params['classId'] as string;
   const { stableUid, username } = req.user!;
+
+  assertNotParent(req);
 
   const isMember = await checkMembership(classId, stableUid);
   if (!isMember) {
@@ -81,6 +92,8 @@ router.delete('/:reminderId', writeLimiter, requireAuth, async (req: Request, re
   const classId = req.params['classId'] as string;
   const reminderId = req.params['reminderId'] as string;
   const { stableUid } = req.user!;
+
+  assertNotParent(req);
 
   const isMember = await checkMembership(classId, stableUid);
   if (!isMember) {

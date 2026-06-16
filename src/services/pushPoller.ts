@@ -3,8 +3,8 @@ import { prisma } from '../db';
 import { logger } from '../utils/logger';
 import { config } from '../config';
 
-const POLL_INTERVAL_MS = 5 * 60 * 1000;
-const DUE_CHECK_INTERVAL_MS = 60 * 1000;
+const POLL_INTERVAL_MS = config.pushPollIntervalMs;
+const DUE_CHECK_INTERVAL_MS = config.pushDueCheckIntervalMs;
 const SCHOOL_COOKIE = '_' + Buffer.from(config.webuntisSchool || 'lbs-brixen').toString('base64');
 
 interface PushSub {
@@ -103,7 +103,7 @@ async function checkDueItems() {
   const now = new Date();
 
   const dueTodos = await prisma.todo.findMany({
-    where: { dueAt: { lte: now }, notifiedAt: null, done: false },
+    where: { dueAt: { lte: now }, notifiedAt: null, done: false, archivedAt: null },
   });
 
   for (const todo of dueTodos) {
@@ -117,12 +117,15 @@ async function checkDueItems() {
   }
 
   const dueReminders = await prisma.reminder.findMany({
-    where: { remindAt: { lte: now }, notifiedAt: null },
+    where: { remindAt: { lte: now }, notifiedAt: null, archivedAt: null },
     include: { class: { include: { members: true } } },
   });
 
   for (const reminder of dueReminders) {
-    const memberUids = reminder.class.members.map((m) => m.stableUid);
+    // Parents have no reminders — never notify them.
+    const memberUids = reminder.class.members
+      .filter((m) => m.role !== 'parent')
+      .map((m) => m.stableUid);
     await Promise.allSettled(
       memberUids.map((uid) =>
         sendPushToUser(uid, {

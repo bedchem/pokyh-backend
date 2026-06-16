@@ -48,7 +48,9 @@ export async function validateWebUntis(
   }
 
   const { personId: studentId, klasseId } = rpcJson.result;
-  const cookie = `JSESSIONID=${sessionId}; schoolname="_bGJzLWJyaXhlbg=="`;
+  // schoolname cookie is "_" + base64(school) — derived from config, not hardcoded.
+  const schoolCookie = '_' + Buffer.from(school).toString('base64');
+  const cookie = `JSESSIONID=${sessionId}; schoolname="${schoolCookie}"`;
 
   // 2. Fetch class name
   const klassenRes = await fetch(`${base}/jsonrpc.do?school=${school}`, {

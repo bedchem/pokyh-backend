@@ -8,6 +8,7 @@ export interface JwtPayload {
   username: string;
   klasseId: number;
   klasseName: string;
+  role: string;
 }
 
 // Extend Express Request
@@ -42,6 +43,7 @@ function verifyToken(token: string): JwtPayload | null {
       username: decoded.username,
       klasseId: decoded.klasseId,
       klasseName: decoded.klasseName,
+      role: decoded.role ?? 'student',
     };
   } catch {
     return null;

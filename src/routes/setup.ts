@@ -60,7 +60,7 @@ router.post('/password', async (req: Request, res: Response): Promise<void> => {
     return;
   }
 
-  const hash = await bcrypt.hash(password, 12);
+  const hash = await bcrypt.hash(password, config.bcryptRounds);
   updateEnvFile('ADMIN_USERNAME', username);
   updateEnvFile('ADMIN_PASSWORD_HASH', hash);
 

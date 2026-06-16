@@ -4,7 +4,7 @@ services:
     restart: unless-stopped
     environment:
       - MYSQL_ROOT_PASSWORD
-      - MYSQL_DATABASE=pokyh
+      - MYSQL_DATABASE=${DB_NAME:-pokyh}
     volumes:
       - mysql_data:/var/lib/mysql
     healthcheck:
@@ -18,14 +18,15 @@ services:
     build: .
     restart: unless-stopped
     ports:
-      - "4000:4000"
+      # Host:container port both driven by PORT in .env (defaults to 4000)
+      - "${PORT:-4000}:${PORT:-4000}"
     depends_on:
       mysql:
         condition: service_healthy
     env_file: .env
     environment:
-      - NODE_ENV=production
-      - PORT=4000
+      - NODE_ENV=${NODE_ENV:-production}
+      - PORT=${PORT:-4000}
     volumes:
       - cloudflared_data:/root/.cloudflared
 

@@ -25,6 +25,7 @@ router.get('/me', readLimiter, requireAuth, async (req: Request, res: Response) 
     webuntisKlasseName: user.webuntisKlasseName,
     classId: membership?.classId ?? null,
     isAdmin: admin !== null,
+    role: user.role,
   });
 });
 
@@ -56,6 +57,7 @@ router.get('/:userId', readLimiter, requireAuth, async (req: Request, res: Respo
     webuntisKlasseName: user.webuntisKlasseName,
     classId: membership?.classId ?? null,
     isAdmin: admin !== null,
+    role: user.role,
   });
 });
 

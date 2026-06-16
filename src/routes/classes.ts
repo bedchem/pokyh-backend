@@ -19,7 +19,13 @@ router.get('/mine', readLimiter, requireAuth, async (req: Request, res: Response
     },
     include: {
       class: {
-        include: { members: { select: { stableUid: true, username: true } } },
+        include: {
+          // Parent members are hidden — they never appear in the member list.
+          members: {
+            where: { role: { not: 'parent' } },
+            select: { stableUid: true, username: true },
+          },
+        },
       },
     },
   });
@@ -47,7 +53,13 @@ router.get('/:classId', readLimiter, requireAuth, async (req: Request, res: Resp
 
   const cls = await prisma.class.findUnique({
     where: { id: classId },
-    include: { members: { select: { stableUid: true, username: true, joinedAt: true } } },
+    include: {
+      // Parent members are hidden — they never appear in the member list.
+      members: {
+        where: { role: { not: 'parent' } },
+        select: { stableUid: true, username: true, joinedAt: true },
+      },
+    },
   });
 
   if (!cls) {
@@ -104,7 +116,7 @@ const joinSchema = z.object({
 });
 
 router.post('/join', writeLimiter, requireAuth, async (req: Request, res: Response) => {
-  const { stableUid, username } = req.user!;
+  const { stableUid, username, role } = req.user!;
   const body = joinSchema.parse(req.body);
 
   const cls = await prisma.class.findUnique({ where: { code: body.code } });
@@ -121,8 +133,9 @@ router.post('/join', writeLimiter, requireAuth, async (req: Request, res: Respon
     return;
   }
 
+  // Parents join as hidden "parent" members (class name only, never listed).
   await prisma.classMember.create({
-    data: { classId: cls.id, stableUid, username },
+    data: { classId: cls.id, stableUid, username, role },
   });
 
   res.json({ classId: cls.id });

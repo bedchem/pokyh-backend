@@ -26,6 +26,7 @@ function signJwt(payload: {
   username: string;
   klasseId: number;
   klasseName: string;
+  role: string;
   isUntisUser?: boolean;
 }): string {
   return jwt.sign(payload, config.jwtSecret, {
@@ -55,12 +56,15 @@ async function generateRefreshToken(stableUid: string): Promise<string> {
   return raw;
 }
 
-// Auto-join / leave / create class based on webuntisKlasseId
+// Auto-join / leave / create class based on webuntisKlasseId.
+// `role` marks the membership: "parent" members are hidden everywhere students
+// see the class (they only get the class name, never appear in member lists).
 async function syncUserClass(
   stableUid: string,
   username: string,
   klasseId: number,
-  klasseName: string
+  klasseName: string,
+  role: string = 'student'
 ): Promise<string | null> {
   // 1. Check if user is already in a class with this webuntisKlasseId
   const existingMembership = await prisma.classMember.findFirst({
@@ -110,8 +114,8 @@ async function syncUserClass(
     // Join existing class
     await prisma.classMember.upsert({
       where: { classId_stableUid: { classId: targetClass.id, stableUid } },
-      create: { classId: targetClass.id, stableUid, username },
-      update: { username },
+      create: { classId: targetClass.id, stableUid, username, role },
+      update: { username, role },
     });
     return targetClass.id;
   }
@@ -130,7 +134,7 @@ async function syncUserClass(
         createdBy: stableUid,
         createdByName: username,
         members: {
-          create: { stableUid, username },
+          create: { stableUid, username, role },
         },
       },
     });
@@ -144,8 +148,8 @@ async function syncUserClass(
     if (existing) {
       await prisma.classMember.upsert({
         where: { classId_stableUid: { classId: existing.id, stableUid } },
-        create: { classId: existing.id, stableUid, username },
-        update: { username },
+        create: { classId: existing.id, stableUid, username, role },
+        update: { username, role },
       });
       return existing.id;
     }
@@ -159,6 +163,9 @@ const loginSchema = z.object({
   username: z.string().min(1).max(100).trim().toLowerCase(),
   klasseId: z.number().int().positive(),
   klasseName: z.string().min(0).max(100),
+  // "parent" → invisible class member with own todos and no reminders.
+  // The caller (WebUntis login proxy) resolves the child's klasseId for parents.
+  role: z.enum(['student', 'parent']).optional().default('student'),
 });
 
 const localLoginSchema = z.object({
@@ -185,11 +192,13 @@ router.post('/login', authLimiter, async (req: Request, res: Response) => {
     }
 
     const admin = await prisma.admin.findUnique({ where: { stableUid: user.stableUid } });
+    const membership = await prisma.classMember.findFirst({ where: { stableUid: user.stableUid } });
     const token = signJwt({
       stableUid: user.stableUid,
       username: user.username,
-      klasseId: 0,
-      klasseName: '',
+      klasseId: user.webuntisKlasseId,
+      klasseName: user.webuntisKlasseName,
+      role: user.role,
       isUntisUser: false,
     });
     const refreshToken = await generateRefreshToken(user.stableUid);
@@ -200,11 +209,12 @@ router.post('/login', authLimiter, async (req: Request, res: Response) => {
       user: {
         stableUid: user.stableUid,
         username: user.username,
-        webuntisKlasseId: 0,
-        webuntisKlasseName: '',
-        classId: null,
+        webuntisKlasseId: user.webuntisKlasseId,
+        webuntisKlasseName: user.webuntisKlasseName,
+        classId: membership?.classId ?? null,
         isAdmin: admin !== null,
         isUntisUser: false,
+        role: user.role,
       },
     });
   }
@@ -229,7 +239,7 @@ router.post('/login', authLimiter, async (req: Request, res: Response) => {
   }
 
   const body = loginSchema.parse(req.body);
-  const { username, klasseId, klasseName } = body;
+  const { username, klasseId, klasseName, role } = body;
 
   // Upsert user — create with new stableUid, update keeps existing stableUid
   let user = await prisma.user.findUnique({ where: { username } });
@@ -243,6 +253,7 @@ router.post('/login', authLimiter, async (req: Request, res: Response) => {
         webuntisKlasseId: klasseId,
         webuntisKlasseName: klasseName,
         isUntisUser: true,
+        role,
       },
     });
   } else {
@@ -252,12 +263,14 @@ router.post('/login', authLimiter, async (req: Request, res: Response) => {
         webuntisKlasseId: klasseId,
         webuntisKlasseName: klasseName,
         isUntisUser: true,
+        role,
       },
     });
   }
 
-  // Sync class membership
-  const classId = await syncUserClass(user.stableUid, username, klasseId, klasseName);
+  // Sync class membership (parents join as hidden "parent" members of the
+  // child's class — resolved klasseId is supplied by the caller).
+  const classId = await syncUserClass(user.stableUid, username, klasseId, klasseName, role);
 
   // Check admin status
   const admin = await prisma.admin.findUnique({
@@ -271,6 +284,7 @@ router.post('/login', authLimiter, async (req: Request, res: Response) => {
     username: user.username,
     klasseId: user.webuntisKlasseId,
     klasseName: user.webuntisKlasseName,
+    role: user.role,
     isUntisUser: true,
   });
   const refreshToken = await generateRefreshToken(user.stableUid);
@@ -286,6 +300,7 @@ router.post('/login', authLimiter, async (req: Request, res: Response) => {
       classId,
       isAdmin,
       isUntisUser: true,
+      role: user.role,
     },
   });
 });
@@ -311,7 +326,7 @@ router.post('/register', authLimiter, async (req: Request, res: Response) => {
     return res.status(409).json({ error: 'Benutzername bereits vergeben' });
   }
 
-  const passwordHash = await bcrypt.hash(password, 12);
+  const passwordHash = await bcrypt.hash(password, config.bcryptRounds);
   const stableUid = generateStableUid();
 
   const user = await prisma.user.create({
@@ -330,6 +345,7 @@ router.post('/register', authLimiter, async (req: Request, res: Response) => {
     username: user.username,
     klasseId: 0,
     klasseName: '',
+    role: user.role,
     isUntisUser: false,
   });
   const refreshToken = await generateRefreshToken(user.stableUid);
@@ -345,6 +361,7 @@ router.post('/register', authLimiter, async (req: Request, res: Response) => {
       classId: null,
       isAdmin: false,
       isUntisUser: false,
+      role: user.role,
     },
   });
 });
@@ -375,6 +392,7 @@ router.post('/refresh', authLimiter, async (req: Request, res: Response) => {
     username: user.username,
     klasseId: user.webuntisKlasseId,
     klasseName: user.webuntisKlasseName,
+    role: user.role,
   });
 
   res.json({ token });
@@ -421,6 +439,7 @@ router.get('/me', requireAuth, async (req: Request, res: Response) => {
     classId: membership?.classId ?? null,
     isAdmin: admin !== null,
     isUntisUser: user.isUntisUser,
+    role: user.role,
   });
 });
 

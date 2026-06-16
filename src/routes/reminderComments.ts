@@ -26,11 +26,20 @@ async function checkMembership(classId: string, stableUid: string): Promise<bool
   return m !== null;
 }
 
+// Parents have no reminders → no reminder comments either.
+function assertNotParent(req: Request): void {
+  if (req.user!.role === 'parent') {
+    throw new ForbiddenError('Eltern-Accounts haben keinen Zugriff auf Erinnerungen');
+  }
+}
+
 // GET /classes/:classId/reminders/:reminderId/comments
 router.get('/', readLimiter, requireAuth, async (req: Request, res: Response) => {
   const classId = req.params['classId'] as string;
   const reminderId = req.params['reminderId'] as string;
   const { stableUid } = req.user!;
+
+  assertNotParent(req);
 
   if (!(await checkMembership(classId, stableUid))) {
     throw new ForbiddenError('You are not a member of this class');
@@ -49,6 +58,8 @@ router.post('/', writeLimiter, requireAuth, async (req: Request, res: Response) 
   const classId = req.params['classId'] as string;
   const reminderId = req.params['reminderId'] as string;
   const { stableUid, username } = req.user!;
+
+  assertNotParent(req);
 
   if (!(await checkMembership(classId, stableUid))) {
     throw new ForbiddenError('You are not a member of this class');
@@ -74,6 +85,8 @@ router.patch('/:commentId', writeLimiter, requireAuth, async (req: Request, res:
   const commentId = req.params['commentId'] as string;
   const { stableUid } = req.user!;
 
+  assertNotParent(req);
+
   if (!(await checkMembership(classId, stableUid))) {
     throw new ForbiddenError('You are not a member of this class');
   }
@@ -96,6 +109,8 @@ router.delete('/:commentId', writeLimiter, requireAuth, async (req: Request, res
   const reminderId = req.params['reminderId'] as string;
   const commentId = req.params['commentId'] as string;
   const { stableUid } = req.user!;
+
+  assertNotParent(req);
 
   if (!(await checkMembership(classId, stableUid))) {
     throw new ForbiddenError('You are not a member of this class');

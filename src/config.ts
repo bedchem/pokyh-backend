@@ -8,6 +8,44 @@ function requireEnv(key: string): string {
   return val;
 }
 
+// Parse an integer env var with a fallback. Ignores empty/invalid values so a
+// blank line in .env never silently turns into NaN.
+function intEnv(key: string, fallback: number): number {
+  const raw = process.env[key];
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function strEnv(key: string, fallback: string): string {
+  const raw = process.env[key];
+  return raw === undefined || raw.trim() === '' ? fallback : raw.trim();
+}
+
+// Build a MySQL connection string from discrete DB_* env vars. Lets the database
+// be configured field-by-field (host/port/user/password/name) instead of one URL.
+// User & password are URL-encoded so special characters (e.g. "!") are safe.
+function buildDatabaseUrl(): string | undefined {
+  const host = process.env['DB_HOST'];
+  const name = process.env['DB_NAME'];
+  if (!host || !name) return undefined;
+  const port = process.env['DB_PORT'] ?? '3306';
+  const user = encodeURIComponent(process.env['DB_USER'] ?? 'root');
+  const pass = process.env['DB_PASSWORD'] ?? '';
+  const auth = pass ? `${user}:${encodeURIComponent(pass)}` : user;
+  // Connection pool sizing for higher concurrency (built-URL path only — when a
+  // full DATABASE_URL is given the operator controls its params themselves).
+  const limit = process.env['DB_CONNECTION_LIMIT'];
+  const query = limit && limit.trim() !== '' ? `?connection_limit=${parseInt(limit, 10) || 10}` : '';
+  return `mysql://${auth}@${host}:${port}/${name}${query}`;
+}
+
+// DATABASE_URL wins if set (Prisma CLI also reads it directly); otherwise fall
+// back to the discrete DB_* fields. Whichever we resolve is written back to the
+// environment so the Prisma client (created later) picks it up.
+const resolvedDatabaseUrl = process.env['DATABASE_URL'] || buildDatabaseUrl();
+if (resolvedDatabaseUrl) process.env['DATABASE_URL'] = resolvedDatabaseUrl;
+
 const jwtSecret = requireEnv('JWT_SECRET');
 if (jwtSecret.length < 32) {
   throw new Error('JWT_SECRET must be at least 32 characters long');
@@ -15,8 +53,14 @@ if (jwtSecret.length < 32) {
 
 export const config = {
   nodeEnv: process.env.NODE_ENV ?? 'development',
-  port: parseInt(process.env.PORT ?? '4000', 10),
+  port: intEnv('PORT', 4000),
   databaseUrl: requireEnv('DATABASE_URL'),
+  db: {
+    host: process.env['DB_HOST'] ?? '',
+    port: intEnv('DB_PORT', 3306),
+    user: process.env['DB_USER'] ?? '',
+    name: process.env['DB_NAME'] ?? '',
+  },
   jwtSecret,
   refreshTokenSecret: requireEnv('REFRESH_TOKEN_SECRET'),
   apiKey: requireEnv('API_KEY'),
@@ -25,8 +69,13 @@ export const config = {
   webuntisSchool: process.env.WEBUNTIS_SCHOOL ?? '',
   isDev: (process.env.NODE_ENV ?? 'development') === 'development',
   isProd: process.env.NODE_ENV === 'production',
-  jwtExpiresIn: '1h',
-  refreshTokenExpiresInHours: 1,
+
+  // ── Auth / tokens (all env-overridable) ────────────────────────────────────
+  jwtExpiresIn: strEnv('JWT_EXPIRES_IN', '1h'),
+  adminJwtExpiresIn: strEnv('ADMIN_JWT_EXPIRES_IN', '7d'),
+  refreshTokenExpiresInHours: intEnv('REFRESH_TOKEN_EXPIRES_HOURS', 1),
+  bcryptRounds: intEnv('BCRYPT_ROUNDS', 12),
+
   adminUsername: process.env.ADMIN_USERNAME ?? '',
   adminUsernames: (process.env.ADMIN_USERNAMES ?? process.env.ADMIN_USERNAME ?? '')
     .split(',').map((u) => u.trim()).filter(Boolean),
@@ -38,4 +87,52 @@ export const config = {
   vapidPrivateKey: process.env.VAPID_PRIVATE_KEY ?? '',
   vapidEmail: process.env.VAPID_EMAIL ?? 'contact@pokyh.com',
   webuntisBase: process.env.WEBUNTIS_BASE ?? 'https://lbs-brixen.webuntis.com/WebUntis',
+
+  // ── Rate limiting (per-limiter, env-overridable) ───────────────────────────
+  rateLimit: {
+    globalMax: intEnv('RATE_LIMIT_GLOBAL_MAX', 500),
+    globalWindowMs: intEnv('RATE_LIMIT_GLOBAL_WINDOW_MS', 60 * 1000),
+    authMax: intEnv('RATE_LIMIT_AUTH_MAX', 10),
+    authWindowMs: intEnv('RATE_LIMIT_AUTH_WINDOW_MS', 15 * 60 * 1000),
+    writeMax: intEnv('RATE_LIMIT_WRITE_MAX', 60),
+    writeWindowMs: intEnv('RATE_LIMIT_WRITE_WINDOW_MS', 60 * 1000),
+    readMax: intEnv('RATE_LIMIT_READ_MAX', 300),
+    readWindowMs: intEnv('RATE_LIMIT_READ_WINDOW_MS', 60 * 1000),
+    sseMax: intEnv('RATE_LIMIT_SSE_MAX', 10),
+    sseWindowMs: intEnv('RATE_LIMIT_SSE_WINDOW_MS', 60 * 1000),
+    adminLoginMax: intEnv('RATE_LIMIT_ADMIN_LOGIN_MAX', 10),
+    adminLoginWindowMs: intEnv('RATE_LIMIT_ADMIN_LOGIN_WINDOW_MS', 15 * 60 * 1000),
+  },
+
+  // ── Request body size limits ───────────────────────────────────────────────
+  bodyLimit: strEnv('BODY_LIMIT', '10kb'),
+  bodyLimitUpload: strEnv('BODY_LIMIT_UPLOAD', '4mb'),
+  bodyLimitImport: strEnv('BODY_LIMIT_IMPORT', '100mb'),
+
+  // ── Database bootstrap / connection resilience ────────────────────────────
+  // On startup, create the database (if missing) and apply the schema via
+  // `prisma db push` before connecting. All knobs are env-configurable.
+  dbAutoPush: (process.env['DB_AUTO_PUSH'] ?? 'true') !== 'false',
+  dbPushTimeoutMs: intEnv('DB_PUSH_TIMEOUT_MS', 120 * 1000),
+  dbConnectBaseDelayMs: intEnv('DB_CONNECT_BASE_DELAY_MS', 2 * 1000),
+  dbConnectMaxDelayMs: intEnv('DB_CONNECT_MAX_DELAY_MS', 30 * 1000),
+
+  // ── Background job intervals ───────────────────────────────────────────────
+  pushPollIntervalMs: intEnv('PUSH_POLL_INTERVAL_MS', 5 * 60 * 1000),
+  pushDueCheckIntervalMs: intEnv('PUSH_DUE_CHECK_INTERVAL_MS', 60 * 1000),
+  sessionCleanupIntervalMs: intEnv('SESSION_CLEANUP_INTERVAL_MS', 60 * 60 * 1000),
+
+  // ── Archiving of expired todos/reminders ───────────────────────────────────
+  archiveAfterHours: intEnv('ARCHIVE_AFTER_HOURS', 24),
+  archiveCheckIntervalMs: intEnv('ARCHIVE_CHECK_INTERVAL_MS', 60 * 60 * 1000),
+
+  // ── In-memory cache TTL (ms) ───────────────────────────────────────────────
+  cacheTtlMs: intEnv('CACHE_TTL_MS', 5 * 60 * 1000),
+
+  // ── Misc tunables (no hardcoded values) ────────────────────────────────────
+  sseHeartbeatMs: intEnv('SSE_HEARTBEAT_MS', 30 * 1000),
+  mensaImportUrl: strEnv('MENSA_IMPORT_URL', 'https://mensa.plattnericus.dev/mensa.json'),
+  // Absolute base for self-hosted asset URLs (e.g. uploaded dish images). When
+  // empty, a relative path is stored instead. No hardcoded domain.
+  publicBaseUrl: (process.env['PUBLIC_BASE_URL'] ?? '').replace(/\/$/, ''),
 };

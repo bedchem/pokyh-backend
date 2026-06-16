@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { prisma } from '../db';
 import { readLimiter } from '../middleware/rateLimiter';
+import { dishesCache, DISHES_CACHE_KEY } from '../utils/cache';
 
 const router = Router();
 
@@ -47,13 +48,34 @@ function dishToJson(d: {
   };
 }
 
-// GET /dishes — mensa.json-compatible response
+// GET /dishes — mensa.json-compatible response (cached in-memory, TTL via env)
 router.get('/', readLimiter, async (_req: Request, res: Response): Promise<void> => {
+  const cached = dishesCache.get(DISHES_CACHE_KEY);
+  if (cached !== undefined) {
+    res.json(cached);
+    return;
+  }
+
   const dishes = await prisma.dish.findMany({
     orderBy: [{ date: 'asc' }, { sortOrder: 'asc' }, { nameDe: 'asc' }],
   });
 
-  res.json({ menu: { dishes: dishes.map(dishToJson) } });
+  const payload = { menu: { dishes: dishes.map(dishToJson) } };
+  dishesCache.set(DISHES_CACHE_KEY, payload);
+  res.json(payload);
+});
+
+// GET /dishes/:id/image — serve an uploaded dish image (public, cacheable)
+router.get('/:id/image', readLimiter, async (req: Request, res: Response): Promise<void> => {
+  const id = String(req.params['id']);
+  const row = await prisma.dishImage.findUnique({ where: { dishId: id } });
+  if (!row) { res.status(404).end(); return; }
+  const etag = `"${row.updatedAt.getTime()}"`;
+  if (req.headers['if-none-match'] === etag) { res.status(304).end(); return; }
+  res.setHeader('ETag', etag);
+  res.setHeader('Content-Type', row.mimeType);
+  res.setHeader('Cache-Control', 'public, max-age=86400');
+  res.end(row.data);
 });
 
 export { router as dishesRouter };

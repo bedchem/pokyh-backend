@@ -1,4 +1,5 @@
 import { Response } from 'express';
+import { config } from '../config';
 
 interface SseClient {
   res: Response;
@@ -19,7 +20,7 @@ class SseManager {
       } catch {
         this.removeClientByRes(key, res);
       }
-    }, 30000);
+    }, config.sseHeartbeatMs);
 
     const client: SseClient = { res, heartbeatInterval };
     this.clients.get(key)!.add(client);

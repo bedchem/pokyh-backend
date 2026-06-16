@@ -15,6 +15,7 @@ import { requireAdmin } from '../middleware/requireAdmin';
 import { generateClassCode, generateClassId } from '../utils/uid';
 import { revokeUserTokens } from '../utils/revokedTokens';
 import { logger } from '../utils/logger';
+import { dishesCache, DISHES_CACHE_KEY } from '../utils/cache';
 
 function safeParseTags(raw: string): string[] {
   try { return JSON.parse(raw) as string[]; } catch { return []; }
@@ -65,10 +66,10 @@ function fetchUrl(url: string): Promise<string> {
 
 const router = Router();
 
-// Rate limiter for login: max 10 per 15 minutes per IP
+// Rate limiter for login (env-overridable, default 10 per 15 minutes per IP)
 const loginLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 10,
+  windowMs: config.rateLimit.adminLoginWindowMs,
+  max: config.rateLimit.adminLoginMax,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many login attempts, please try again later' },
@@ -116,7 +117,7 @@ router.post('/auth/login', loginLimiter, async (req: Request, res: Response): Pr
   const token = jwt.sign(
     { role: 'admin', sub: 'admin-panel', username },
     config.jwtSecret,
-    { expiresIn: '7d' }
+    { expiresIn: config.adminJwtExpiresIn } as jwt.SignOptions
   );
 
   logger.info('Admin login successful', { action: 'admin_login', username, ip, userAgent: req.headers['user-agent'] });
@@ -226,7 +227,7 @@ router.post('/users', requireAdmin, async (req: Request, res: Response): Promise
     return;
   }
 
-  const passwordHash = password ? await bcrypt.hash(password, 12) : undefined;
+  const passwordHash = password ? await bcrypt.hash(password, config.bcryptRounds) : undefined;
   const stableUid = uuidv4();
   const user = await prisma.user.create({
     data: {
@@ -276,7 +277,7 @@ router.patch('/users/:stableUid/password', requireAdmin, async (req: Request, re
     return;
   }
 
-  const passwordHash = await bcrypt.hash(password, 12);
+  const passwordHash = await bcrypt.hash(password, config.bcryptRounds);
   await prisma.user.update({
     where: { stableUid },
     data: { passwordHash, isUntisUser: false },
@@ -333,6 +334,7 @@ router.get('/users', requireAdmin, async (req: Request, res: Response): Promise<
       classId: membership?.classId ?? null,
       classCode: membership?.class?.code ?? null,
       isAdmin: adminSet.has(u.stableUid),
+      role: u.role,
       todoCount: u._count.todos,
       createdAt: u.createdAt.toISOString(),
       updatedAt: u.updatedAt.toISOString(),
@@ -372,6 +374,7 @@ router.get('/users/:stableUid', requireAdmin, async (req: Request, res: Response
     webuntisKlasseId: user.webuntisKlasseId,
     webuntisKlasseName: user.webuntisKlasseName,
     isAdmin: !!isAdmin,
+    role: user.role,
     createdAt: user.createdAt.toISOString(),
     updatedAt: user.updatedAt.toISOString(),
     todos: user.todos.map((t) => ({
@@ -381,6 +384,7 @@ router.get('/users/:stableUid', requireAdmin, async (req: Request, res: Response
       dueAt: t.dueAt ? t.dueAt.toISOString() : null,
       done: t.done,
       doneAt: t.doneAt ? t.doneAt.toISOString() : null,
+      archivedAt: t.archivedAt ? t.archivedAt.toISOString() : null,
       createdAt: t.createdAt.toISOString(),
     })),
     classes: user.classMembers.map((m) => ({
@@ -771,6 +775,7 @@ router.get('/classes/:id/reminders', requireAdmin, async (req: Request, res: Res
     createdBy: r.createdBy,
     createdByName: r.createdByName,
     createdByUsername: r.createdByUsername,
+    archivedAt: r.archivedAt ? r.archivedAt.toISOString() : null,
     createdAt: r.createdAt.toISOString(),
   })));
 });
@@ -971,6 +976,7 @@ router.get('/classes/:id/todos', requireAdmin, async (req: Request, res: Respons
     dueAt: t.dueAt ? t.dueAt.toISOString() : null,
     done: t.done,
     doneAt: t.doneAt ? t.doneAt.toISOString() : null,
+    archivedAt: t.archivedAt ? t.archivedAt.toISOString() : null,
     createdAt: t.createdAt.toISOString(),
   })));
 });
@@ -1021,6 +1027,7 @@ router.post('/dishes', requireAdmin, async (req: Request, res: Response): Promis
     },
   });
 
+  dishesCache.delete(DISHES_CACHE_KEY);
   res.status(201).json(dishRow(dish));
 });
 
@@ -1054,6 +1061,7 @@ router.patch('/dishes/:id', requireAdmin, async (req: Request, res: Response): P
   const dish = await prisma.dish.update({ where: { id }, data }).catch(() => null);
   if (!dish) { res.status(404).json({ error: 'Dish not found' }); return; }
 
+  dishesCache.delete(DISHES_CACHE_KEY);
   res.json(dishRow(dish));
 });
 
@@ -1062,6 +1070,7 @@ router.patch('/dishes/:id', requireAdmin, async (req: Request, res: Response): P
 router.delete('/dishes/:id', requireAdmin, async (req: Request, res: Response): Promise<void> => {
   const id = String(req.params['id']);
   await prisma.dish.delete({ where: { id } }).catch(() => null);
+  dishesCache.delete(DISHES_CACHE_KEY);
   res.status(204).send();
 });
 
@@ -1069,7 +1078,7 @@ router.delete('/dishes/:id', requireAdmin, async (req: Request, res: Response): 
 // Fetches the external mensa.json URL and bulk-upserts all dishes
 
 router.post('/dishes/import-url', requireAdmin, async (req: Request, res: Response): Promise<void> => {
-  const url = String(req.body?.url ?? 'https://mensa.plattnericus.dev/mensa.json');
+  const url = String(req.body?.url ?? config.mensaImportUrl);
 
   let raw: string;
   try {
@@ -1146,6 +1155,7 @@ router.post('/dishes/import-url', requireAdmin, async (req: Request, res: Respon
     }
   }
 
+  dishesCache.delete(DISHES_CACHE_KEY);
   res.json({ imported, updated, total: imported + updated });
 });
 
@@ -1479,6 +1489,56 @@ router.delete('/subject-images/:subject', requireAdmin, async (req: Request, res
   res.status(204).send();
 });
 
+// ─── Dish images (admin upload) ───────────────────────────────────────────────
+// Builds the public URL a client uses to load a dish image (absolute when
+// PUBLIC_BASE_URL is set, otherwise relative). Cache-busted on every upload.
+function dishImageUrl(dishId: string): string {
+  return `${config.publicBaseUrl}/dishes/${encodeURIComponent(dishId)}/image?v=${Date.now()}`;
+}
+
+// PUT /api/admin/dishes/:id/image — upload/replace a dish image (optional crop).
+// Stored as WebP in the DB; the dish's imageUrl is pointed at the served route.
+router.put('/dishes/:id/image', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const id = String(req.params['id']);
+  const dish = await prisma.dish.findUnique({ where: { id } });
+  if (!dish) { res.status(404).json({ error: 'Dish not found' }); return; }
+
+  const body = subjectImageUploadSchema.parse(req.body);
+  if (!ALLOWED_MIME.has(body.mimeType)) {
+    res.status(422).json({ error: 'Unsupported image type' }); return;
+  }
+  let buf = Buffer.from(body.data, 'base64');
+  if (buf.length > MAX_IMG_BYTES) {
+    res.status(413).json({ error: 'Image too large (max 3 MB)' }); return;
+  }
+
+  buf = body.crop
+    ? Buffer.from(await sharp(buf)
+        .extract({ left: body.crop.left, top: body.crop.top, width: body.crop.width, height: body.crop.height })
+        .webp({ quality: 85 }).toBuffer())
+    : Buffer.from(await sharp(buf).webp({ quality: 85 }).toBuffer());
+
+  await prisma.dishImage.upsert({
+    where: { dishId: id },
+    create: { dishId: id, data: buf, mimeType: 'image/webp' },
+    update: { data: buf, mimeType: 'image/webp' },
+  });
+  const imageUrl = dishImageUrl(id);
+  await prisma.dish.update({ where: { id }, data: { imageUrl } });
+  dishesCache.delete(DISHES_CACHE_KEY);
+
+  res.json({ ok: true, imageUrl });
+});
+
+// DELETE /api/admin/dishes/:id/image — remove the uploaded image
+router.delete('/dishes/:id/image', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const id = String(req.params['id']);
+  await prisma.dishImage.delete({ where: { dishId: id } }).catch(() => null);
+  await prisma.dish.update({ where: { id }, data: { imageUrl: '' } }).catch(() => null);
+  dishesCache.delete(DISHES_CACHE_KEY);
+  res.status(204).send();
+});
+
 // ─── GET /api/admin/activity-logs ────────────────────────────────────────────
 // Frontend activity logs (page views, downloads, logins, etc.)
 
@@ -1568,6 +1628,245 @@ router.get('/audit-log', requireAdmin, async (req: Request, res: Response): Prom
 
   entries.reverse();
   res.json({ entries: entries.slice(0, limit), total: entries.length });
+});
+
+// ─── GET /api/admin/archive/todos ────────────────────────────────────────────
+// Archived (expired >24h) todos — server-only, admin-viewable.
+
+router.get('/archive/todos', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const page = Math.max(1, parseInt(String(req.query['page'] ?? '1'), 10));
+  const limit = Math.min(200, Math.max(1, parseInt(String(req.query['limit'] ?? '50'), 10)));
+  const skip = (page - 1) * limit;
+
+  const [todos, total] = await Promise.all([
+    prisma.todo.findMany({
+      where: { archivedAt: { not: null } },
+      orderBy: { archivedAt: 'desc' },
+      skip,
+      take: limit,
+    }),
+    prisma.todo.count({ where: { archivedAt: { not: null } } }),
+  ]);
+
+  const uids = [...new Set(todos.map((t) => t.stableUid))];
+  const users = uids.length
+    ? await prisma.user.findMany({ where: { stableUid: { in: uids } }, select: { stableUid: true, username: true } })
+    : [];
+  const uidToUsername: Record<string, string> = Object.fromEntries(users.map((u) => [u.stableUid, u.username]));
+
+  res.json({
+    todos: todos.map((t) => ({
+      id: t.id,
+      stableUid: t.stableUid,
+      username: uidToUsername[t.stableUid] ?? '',
+      title: t.title,
+      details: t.details,
+      dueAt: t.dueAt ? t.dueAt.toISOString() : null,
+      done: t.done,
+      doneAt: t.doneAt ? t.doneAt.toISOString() : null,
+      archivedAt: t.archivedAt ? t.archivedAt.toISOString() : null,
+      createdAt: t.createdAt.toISOString(),
+    })),
+    total, page, limit,
+  });
+});
+
+// ─── GET /api/admin/archive/reminders ────────────────────────────────────────
+
+router.get('/archive/reminders', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const page = Math.max(1, parseInt(String(req.query['page'] ?? '1'), 10));
+  const limit = Math.min(200, Math.max(1, parseInt(String(req.query['limit'] ?? '50'), 10)));
+  const skip = (page - 1) * limit;
+
+  const [reminders, total] = await Promise.all([
+    prisma.reminder.findMany({
+      where: { archivedAt: { not: null } },
+      orderBy: { archivedAt: 'desc' },
+      skip,
+      take: limit,
+    }),
+    prisma.reminder.count({ where: { archivedAt: { not: null } } }),
+  ]);
+
+  res.json({
+    reminders: reminders.map((r) => ({
+      id: r.id,
+      classId: r.classId,
+      title: r.title,
+      body: r.body,
+      remindAt: r.remindAt.toISOString(),
+      createdBy: r.createdBy,
+      createdByName: r.createdByName,
+      createdByUsername: r.createdByUsername,
+      archivedAt: r.archivedAt ? r.archivedAt.toISOString() : null,
+      createdAt: r.createdAt.toISOString(),
+    })),
+    total, page, limit,
+  });
+});
+
+// ─── GET /api/admin/export ────────────────────────────────────────────────────
+// Full database dump as a single JSON document (complete backup).
+
+router.get('/export', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const [
+    users, admins, classes, classMembers, todos, reminders, comments,
+    dishComments, dishes, dishRatings, refreshTokens, pushSubscriptions,
+    knownSubjects, subjectImages, dishImages, apiKeys, requestLogs, frontendActivityLogs,
+  ] = await Promise.all([
+    prisma.user.findMany(),
+    prisma.admin.findMany(),
+    prisma.class.findMany(),
+    prisma.classMember.findMany(),
+    prisma.todo.findMany(),
+    prisma.reminder.findMany(),
+    prisma.comment.findMany(),
+    prisma.dishComment.findMany(),
+    prisma.dish.findMany(),
+    prisma.dishRating.findMany(),
+    prisma.refreshToken.findMany(),
+    prisma.pushSubscription.findMany(),
+    prisma.knownSubject.findMany(),
+    prisma.subjectImage.findMany(),
+    prisma.dishImage.findMany(),
+    prisma.apiKey.findMany(),
+    prisma.requestLog.findMany(),
+    prisma.frontendActivityLog.findMany(),
+  ]);
+
+  // Binary columns (image blobs) — encode as base64 so they survive JSON.
+  const subjectImagesJson = subjectImages.map((s) => ({
+    ...s,
+    data: Buffer.from(s.data).toString('base64'),
+  }));
+  const dishImagesJson = dishImages.map((s) => ({
+    ...s,
+    data: Buffer.from(s.data).toString('base64'),
+  }));
+
+  const adminUsername = adminUsernameFromReq(req.headers['authorization']);
+  logger.info('Admin action: export database', { action: 'export_db', adminUsername });
+
+  res.setHeader('Content-Type', 'application/json');
+  res.setHeader('Content-Disposition', `attachment; filename="pokyh-export-${new Date().toISOString().slice(0, 10)}.json"`);
+  res.json({
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    data: {
+      users, admins, classes, classMembers, todos, reminders, comments,
+      dishComments, dishes, dishRatings, refreshTokens, pushSubscriptions,
+      knownSubjects, subjectImages: subjectImagesJson, dishImages: dishImagesJson,
+      apiKeys, requestLogs, frontendActivityLogs,
+    },
+  });
+});
+
+// Helper: resolve the acting admin's username from the Bearer token (audit log).
+function adminUsernameFromReq(authHeader: string | undefined): string {
+  const jwtRaw = authHeader?.replace('Bearer ', '');
+  try { if (jwtRaw) return (jwt.decode(jwtRaw) as Record<string, string>)?.['username'] ?? 'admin'; } catch { /* ignore */ }
+  return 'admin';
+}
+
+// ─── POST /api/admin/import ───────────────────────────────────────────────────
+// Restores a full database dump produced by /export. Wipes existing data and
+// re-inserts everything in one transaction (all-or-nothing).
+
+const importSchema = z.object({
+  version: z.number(),
+  data: z.record(z.array(z.record(z.any()))),
+});
+
+router.post('/import', requireAdmin, async (req2: Request, res: Response): Promise<void> => {
+  const parsed = importSchema.safeParse(req2.body);
+  if (!parsed.success) {
+    res.status(422).json({ error: 'Invalid import format' });
+    return;
+  }
+  const d = parsed.data.data as Record<string, Record<string, unknown>[]>;
+
+  // Revive types JSON can't carry: ISO date strings → Date, base64 → Buffer.
+  const reviveDates = (rows: Record<string, unknown>[]): Record<string, unknown>[] =>
+    rows.map((row) => {
+      const out: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(row)) {
+        if (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(v)) {
+          const dt = new Date(v);
+          out[k] = isNaN(dt.getTime()) ? v : dt;
+        } else {
+          out[k] = v;
+        }
+      }
+      return out;
+    });
+
+  const decodeImageRows = (rows: Record<string, unknown>[] | undefined) =>
+    (rows ?? []).map((s) => ({
+      ...s,
+      data: Buffer.from(String(s['data'] ?? ''), 'base64'),
+      createdAt: s['createdAt'] ? new Date(String(s['createdAt'])) : undefined,
+      updatedAt: s['updatedAt'] ? new Date(String(s['updatedAt'])) : undefined,
+    }));
+  const subjectImages = decodeImageRows(d['subjectImages']);
+  const dishImages = decodeImageRows(d['dishImages']);
+
+  try {
+    await prisma.$transaction(async (tx) => {
+      // Delete children first (FK-safe order).
+      await tx.comment.deleteMany();
+      await tx.classMember.deleteMany();
+      await tx.reminder.deleteMany();
+      await tx.todo.deleteMany();
+      await tx.refreshToken.deleteMany();
+      await tx.pushSubscription.deleteMany();
+      await tx.dishRating.deleteMany();
+      await tx.dishComment.deleteMany();
+      await tx.dishImage.deleteMany();
+      await tx.dish.deleteMany();
+      await tx.knownSubject.deleteMany();
+      await tx.subjectImage.deleteMany();
+      await tx.apiKey.deleteMany();
+      await tx.requestLog.deleteMany();
+      await tx.frontendActivityLog.deleteMany();
+      await tx.admin.deleteMany();
+      await tx.class.deleteMany();
+      await tx.user.deleteMany();
+
+      // Insert parents first.
+      const ins = async (rows: Record<string, unknown>[] | undefined, fn: (data: Record<string, unknown>[]) => Promise<unknown>) => {
+        if (rows && rows.length) await fn(reviveDates(rows));
+      };
+      await ins(d['users'], (data) => tx.user.createMany({ data: data as never, skipDuplicates: true }));
+      await ins(d['classes'], (data) => tx.class.createMany({ data: data as never, skipDuplicates: true }));
+      await ins(d['admins'], (data) => tx.admin.createMany({ data: data as never, skipDuplicates: true }));
+      await ins(d['classMembers'], (data) => tx.classMember.createMany({ data: data as never, skipDuplicates: true }));
+      await ins(d['todos'], (data) => tx.todo.createMany({ data: data as never, skipDuplicates: true }));
+      await ins(d['reminders'], (data) => tx.reminder.createMany({ data: data as never, skipDuplicates: true }));
+      await ins(d['comments'], (data) => tx.comment.createMany({ data: data as never, skipDuplicates: true }));
+      await ins(d['pushSubscriptions'], (data) => tx.pushSubscription.createMany({ data: data as never, skipDuplicates: true }));
+      await ins(d['refreshTokens'], (data) => tx.refreshToken.createMany({ data: data as never, skipDuplicates: true }));
+      await ins(d['dishes'], (data) => tx.dish.createMany({ data: data as never, skipDuplicates: true }));
+      if (dishImages.length) await tx.dishImage.createMany({ data: dishImages as never, skipDuplicates: true });
+      await ins(d['dishComments'], (data) => tx.dishComment.createMany({ data: data as never, skipDuplicates: true }));
+      await ins(d['dishRatings'], (data) => tx.dishRating.createMany({ data: data as never, skipDuplicates: true }));
+      await ins(d['knownSubjects'], (data) => tx.knownSubject.createMany({ data: data as never, skipDuplicates: true }));
+      if (subjectImages.length) await tx.subjectImage.createMany({ data: subjectImages as never, skipDuplicates: true });
+      await ins(d['apiKeys'], (data) => tx.apiKey.createMany({ data: data as never, skipDuplicates: true }));
+      await ins(d['requestLogs'], (data) => tx.requestLog.createMany({ data: data as never, skipDuplicates: true }));
+      await ins(d['frontendActivityLogs'], (data) => tx.frontendActivityLog.createMany({ data: data as never, skipDuplicates: true }));
+    }, { timeout: 120000, maxWait: 20000 });
+  } catch (err) {
+    logger.error('Import failed', { error: err instanceof Error ? err.message : String(err) });
+    res.status(500).json({ error: 'Import failed — database left unchanged' });
+    return;
+  }
+
+  // The dish catalog cache may now be stale.
+  dishesCache.delete(DISHES_CACHE_KEY);
+
+  const adminUsername = adminUsernameFromReq(req2.headers['authorization']);
+  logger.info('Admin action: import database', { action: 'import_db', adminUsername });
+  res.json({ ok: true });
 });
 
 export { router as adminRouter };

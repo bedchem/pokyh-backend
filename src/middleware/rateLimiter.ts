@@ -1,8 +1,9 @@
 import rateLimit from 'express-rate-limit';
+import { config } from '../config';
 
 export const globalLimiter = rateLimit({
-  windowMs: 60 * 1000, // 1 minute
-  max: 500,
+  windowMs: config.rateLimit.globalWindowMs,
+  max: config.rateLimit.globalMax,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many requests, please try again later.' },
@@ -10,32 +11,32 @@ export const globalLimiter = rateLimit({
 });
 
 export const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 10,
+  windowMs: config.rateLimit.authWindowMs,
+  max: config.rateLimit.authMax,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many authentication attempts, please try again later.' },
 });
 
 export const writeLimiter = rateLimit({
-  windowMs: 60 * 1000, // 1 minute
-  max: 60,
+  windowMs: config.rateLimit.writeWindowMs,
+  max: config.rateLimit.writeMax,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many write requests, please slow down.' },
 });
 
 export const readLimiter = rateLimit({
-  windowMs: 60 * 1000, // 1 minute
-  max: 300,
+  windowMs: config.rateLimit.readWindowMs,
+  max: config.rateLimit.readMax,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many read requests, please slow down.' },
 });
 
 export const sseLimiter = rateLimit({
-  windowMs: 60 * 1000, // 1 minute
-  max: 10,
+  windowMs: config.rateLimit.sseWindowMs,
+  max: config.rateLimit.sseMax,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many SSE connections from this IP.' },

@@ -14,7 +14,7 @@ function broadcastTodos(stableUid: string, todos: unknown[]): void {
 
 async function getTodosForUser(stableUid: string) {
   return prisma.todo.findMany({
-    where: { stableUid },
+    where: { stableUid, archivedAt: null },
     orderBy: { createdAt: 'asc' },
   });
 }

@@ -19,6 +19,9 @@ model User {
   webuntisKlasseName  String    @default("") @map("webuntis_klasse_name")
   passwordHash        String?   @map("password_hash") @db.VarChar(100)
   isUntisUser         Boolean   @default(true) @map("is_untis_user")
+  // Account role: "student" (default) or "parent". Parents have their own todos,
+  // see only the class name (never appear in member lists) and have no reminders.
+  role                String    @default("student") @db.VarChar(20)
   createdAt           DateTime  @default(now()) @map("created_at")
   updatedAt           DateTime  @updatedAt @map("updated_at")
 
@@ -75,12 +78,16 @@ model ClassMember {
   classId   String   @map("class_id")
   stableUid String   @map("stable_uid")
   username  String
+  // "student" members are visible in the class; "parent" members are hidden
+  // (they can see the class name but never appear in the member list).
+  role      String   @default("student") @db.VarChar(20)
   joinedAt  DateTime @default(now()) @map("joined_at")
 
   class Class @relation(fields: [classId], references: [id], onDelete: Cascade)
   user  User  @relation(fields: [stableUid], references: [stableUid], onDelete: Cascade)
 
   @@id([classId, stableUid])
+  @@index([stableUid])
   @@map("class_members")
 }
 
@@ -93,10 +100,17 @@ model Todo {
   done        Boolean   @default(false)
   doneAt      DateTime? @map("done_at")
   notifiedAt  DateTime? @map("notified_at")
+  // Set once a todo has been expired (overdue) for >24h. Archived todos are
+  // hidden from users and live on the server only — viewable by admins.
+  archivedAt  DateTime? @map("archived_at")
   createdAt   DateTime  @default(now()) @map("created_at")
 
   user User @relation(fields: [stableUid], references: [stableUid], onDelete: Cascade)
 
+  @@index([stableUid, archivedAt])
+  @@index([archivedAt])
+  // Speeds the per-minute "due todos" notification scan.
+  @@index([notifiedAt, dueAt])
   @@map("todos")
 }
 
@@ -110,11 +124,18 @@ model Reminder {
   createdByName     String    @map("created_by_name")
   createdByUsername String    @map("created_by_username")
   notifiedAt        DateTime? @map("notified_at")
+  // Set once a reminder has been expired for >24h. Archived reminders are hidden
+  // from class members and live on the server only — viewable by admins.
+  archivedAt        DateTime? @map("archived_at")
   createdAt         DateTime  @default(now()) @map("created_at")
 
   class    Class     @relation(fields: [classId], references: [id], onDelete: Cascade)
   comments Comment[]
 
+  @@index([classId, archivedAt])
+  @@index([archivedAt])
+  // Speeds the per-minute "due reminders" notification scan.
+  @@index([notifiedAt, remindAt])
   @@map("reminders")
 }
 
@@ -172,6 +193,16 @@ model Dish {
   updatedAt    DateTime @updatedAt @map("updated_at")
 
   @@map("dishes")
+}
+
+model DishImage {
+  dishId    String   @id @map("dish_id")
+  data      Bytes    @db.LongBlob
+  mimeType  String   @map("mime_type") @db.VarChar(100)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("dish_images")
 }
 
 model DishRating {

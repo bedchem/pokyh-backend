@@ -24,9 +24,9 @@ router.get('/todos', sseLimiter, requireAuth, async (req: Request, res: Response
   const key = `todos:${stableUid}`;
   sseManager.addClient(key, res);
 
-  // Send current todos on connect
+  // Send current todos on connect (archived items are hidden from users)
   const todos = await prisma.todo.findMany({
-    where: { stableUid },
+    where: { stableUid, archivedAt: null },
     orderBy: { createdAt: 'asc' },
   });
 
@@ -41,7 +41,12 @@ router.get('/todos', sseLimiter, requireAuth, async (req: Request, res: Response
 // GET /sse/reminders/:classId — stream reminder changes for a class
 router.get('/reminders/:classId', sseLimiter, requireAuth, async (req: Request, res: Response) => {
   const classId = req.params['classId'] as string;
-  const { stableUid } = req.user!;
+  const { stableUid, role } = req.user!;
+
+  // Parents have no reminders.
+  if (role === 'parent') {
+    throw new ForbiddenError('Eltern-Accounts haben keinen Zugriff auf Erinnerungen');
+  }
 
   // Check membership
   const membership = await prisma.classMember.findUnique({
@@ -57,9 +62,9 @@ router.get('/reminders/:classId', sseLimiter, requireAuth, async (req: Request, 
   const key = `reminders:${classId}`;
   sseManager.addClient(key, res);
 
-  // Send current reminders on connect
+  // Send current reminders on connect (archived items are hidden)
   const reminders = await prisma.reminder.findMany({
-    where: { classId },
+    where: { classId, archivedAt: null },
     orderBy: { remindAt: 'asc' },
   });
 
@@ -102,7 +107,12 @@ router.get('/dish-ratings/:dishId', sseLimiter, requireAuth, async (req: Request
 // GET /sse/reminder-comments/:reminderId — stream comment changes for a reminder
 router.get('/reminder-comments/:reminderId', sseLimiter, requireAuth, async (req: Request, res: Response) => {
   const reminderId = req.params['reminderId'] as string;
-  const { stableUid } = req.user!;
+  const { stableUid, role } = req.user!;
+
+  if (role === 'parent') {
+    res.status(403).json({ error: 'Eltern-Accounts haben keinen Zugriff auf Erinnerungen' });
+    return;
+  }
 
   // Verify the reminder exists and the user is a class member
   const reminder = await prisma.reminder.findUnique({ where: { id: reminderId } });
