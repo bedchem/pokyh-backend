@@ -14,6 +14,8 @@ import { DishesPage } from './pages/DishesPage';
 import { SubjectImagesPage } from './pages/SubjectImagesPage';
 import { CommentsPage } from './pages/CommentsPage';
 import { LogFilesPage } from './pages/LogFilesPage';
+import { TodosRemindersPage } from './pages/TodosRemindersPage';
+import { SettingsPage } from './pages/SettingsPage';
 import { ReactNode, Suspense, useState, useEffect } from 'react';
 import { setupApi } from './api';
 import type { SetupStatus } from './types';
@@ -102,9 +104,11 @@ export default function App() {
             <Route path="/tunnel"         element={<ProtectedRoute><TunnelPage /></ProtectedRoute>} />
             <Route path="/dishes"         element={<ProtectedRoute><DishesPage /></ProtectedRoute>} />
             <Route path="/subject-images" element={<ProtectedRoute><SubjectImagesPage /></ProtectedRoute>} />
-            <Route path="/comments"       element={<ProtectedRoute><CommentsPage /></ProtectedRoute>} />
-            <Route path="/log-files"      element={<ProtectedRoute><LogFilesPage /></ProtectedRoute>} />
-            <Route path="*"               element={<Navigate to="/" replace />} />
+            <Route path="/comments"          element={<ProtectedRoute><CommentsPage /></ProtectedRoute>} />
+            <Route path="/log-files"         element={<ProtectedRoute><LogFilesPage /></ProtectedRoute>} />
+            <Route path="/todos-reminders"   element={<ProtectedRoute><TodosRemindersPage /></ProtectedRoute>} />
+            <Route path="/settings"          element={<ProtectedRoute><SettingsPage /></ProtectedRoute>} />
+            <Route path="*"                  element={<Navigate to="/" replace />} />
           </Routes>
         </Suspense>
       </HashRouter>

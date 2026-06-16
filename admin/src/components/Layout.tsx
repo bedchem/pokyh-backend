@@ -14,6 +14,8 @@ import {
   Image,
   MessageCircle,
   FileText,
+  CheckSquare,
+  Settings,
 } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
 
@@ -98,9 +100,10 @@ function SidebarContent({ adminUser, onLogout, onNavClick }: SidebarContentProps
             Content
           </span>
         </div>
-        <NavItem to="/dishes"         icon={<UtensilsCrossed size={16} />}   label="Speiseplan"   onClick={onNavClick} />
-        <NavItem to="/comments"       icon={<MessageCircle size={16} />}     label="Kommentare"   onClick={onNavClick} />
-        <NavItem to="/subject-images" icon={<Image size={16} />}             label="Fachbilder"   onClick={onNavClick} />
+        <NavItem to="/dishes"            icon={<UtensilsCrossed size={16} />}   label="Speiseplan"        onClick={onNavClick} />
+        <NavItem to="/comments"          icon={<MessageCircle size={16} />}     label="Kommentare"        onClick={onNavClick} />
+        <NavItem to="/subject-images"    icon={<Image size={16} />}             label="Fachbilder"        onClick={onNavClick} />
+        <NavItem to="/todos-reminders"   icon={<CheckSquare size={16} />}       label="Todos &amp; Erinnerungen" onClick={onNavClick} />
 
         <div className="px-4 pb-1 pt-3">
           <span className="text-[10px] font-semibold uppercase tracking-[0.06em]" style={{ color: 'rgba(235,235,245,0.25)' }}>
@@ -110,6 +113,7 @@ function SidebarContent({ adminUser, onLogout, onNavClick }: SidebarContentProps
         <NavItem to="/logs"           icon={<ScrollText size={16} />}        label="Logs"         onClick={onNavClick} />
         <NavItem to="/log-files"      icon={<FileText size={16} />}          label="Logdateien"   onClick={onNavClick} />
         <NavItem to="/tunnel"         icon={<Globe size={16} />}             label="Tunnel"       onClick={onNavClick} />
+        <NavItem to="/settings"       icon={<Settings size={16} />}          label="Einstellungen" onClick={onNavClick} />
       </nav>
 
       {/* User */}

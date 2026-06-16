@@ -1671,6 +1671,91 @@ router.get('/audit-log', requireAdmin, async (req: Request, res: Response): Prom
   res.json({ entries: entries.slice(0, limit), total: entries.length });
 });
 
+// ─── GET /api/admin/todos ─────────────────────────────────────────────────────
+// All todos across all users, server-side paginated. status=active|done|archived|all
+
+router.get('/todos', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const page    = Math.max(1, parseInt(String(req.query['page']  ?? '1'),  10));
+  const limit   = Math.min(200, Math.max(1, parseInt(String(req.query['limit'] ?? '50'), 10)));
+  const skip    = (page - 1) * limit;
+  const search  = String(req.query['search'] ?? '').trim();
+  const status  = String(req.query['status'] ?? 'all');
+  const uid     = String(req.query['stableUid'] ?? '').trim();
+
+  const where: Record<string, unknown> = {};
+  if (search) where['title'] = { contains: search };
+  if (uid) where['stableUid'] = uid;
+  if (status === 'active')        { where['done'] = false; where['archivedAt'] = null; }
+  else if (status === 'done')     { where['done'] = true;  where['archivedAt'] = null; }
+  else if (status === 'archived') { where['archivedAt'] = { not: null }; }
+  // 'all' → no filter
+
+  const [todos, total] = await Promise.all([
+    prisma.todo.findMany({ where: where as never, orderBy: { createdAt: 'desc' }, skip, take: limit }),
+    prisma.todo.count({ where: where as never }),
+  ]);
+
+  const uids = [...new Set(todos.map((t) => t.stableUid))];
+  const users = uids.length
+    ? await prisma.user.findMany({ where: { stableUid: { in: uids } }, select: { stableUid: true, username: true } })
+    : [];
+  const uidToUsername: Record<string, string> = Object.fromEntries(users.map((u) => [u.stableUid, u.username]));
+
+  res.json({
+    todos: todos.map((t) => ({
+      id: t.id, stableUid: t.stableUid, username: uidToUsername[t.stableUid] ?? '',
+      title: t.title, details: t.details,
+      dueAt: t.dueAt ? t.dueAt.toISOString() : null,
+      done: t.done,
+      doneAt: t.doneAt ? t.doneAt.toISOString() : null,
+      archivedAt: t.archivedAt ? t.archivedAt.toISOString() : null,
+      createdAt: t.createdAt.toISOString(),
+    })),
+    total, page, limit,
+  });
+});
+
+// ─── GET /api/admin/reminders ─────────────────────────────────────────────────
+// All reminders across all classes, server-side paginated. status=active|archived|all
+
+router.get('/reminders', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const page    = Math.max(1, parseInt(String(req.query['page']  ?? '1'),  10));
+  const limit   = Math.min(200, Math.max(1, parseInt(String(req.query['limit'] ?? '50'), 10)));
+  const skip    = (page - 1) * limit;
+  const search  = String(req.query['search'] ?? '').trim();
+  const status  = String(req.query['status'] ?? 'all');
+  const classId = String(req.query['classId'] ?? '').trim();
+
+  const where: Record<string, unknown> = {};
+  if (search) where['title'] = { contains: search };
+  if (classId) where['classId'] = classId;
+  if (status === 'active')        { where['archivedAt'] = null; }
+  else if (status === 'archived') { where['archivedAt'] = { not: null }; }
+
+  const [reminders, total] = await Promise.all([
+    prisma.reminder.findMany({ where: where as never, orderBy: { remindAt: 'desc' }, skip, take: limit }),
+    prisma.reminder.count({ where: where as never }),
+  ]);
+
+  const classIds = [...new Set(reminders.map((r) => r.classId))];
+  const classes = classIds.length
+    ? await prisma.class.findMany({ where: { id: { in: classIds } }, select: { id: true, name: true } })
+    : [];
+  const classMap: Record<string, string> = Object.fromEntries(classes.map((c) => [c.id, c.name]));
+
+  res.json({
+    reminders: reminders.map((r) => ({
+      id: r.id, classId: r.classId, className: classMap[r.classId] ?? '',
+      title: r.title, body: r.body,
+      remindAt: r.remindAt.toISOString(),
+      createdBy: r.createdBy, createdByName: r.createdByName, createdByUsername: r.createdByUsername,
+      archivedAt: r.archivedAt ? r.archivedAt.toISOString() : null,
+      createdAt: r.createdAt.toISOString(),
+    })),
+    total, page, limit,
+  });
+});
+
 // ─── GET /api/admin/archive/todos ────────────────────────────────────────────
 // Archived (expired >24h) todos — server-only, admin-viewable.
 

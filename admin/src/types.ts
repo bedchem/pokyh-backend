@@ -265,3 +265,28 @@ export interface FrontendActivityStats {
   eventBreakdown: Array<{ event: string; count: number }>;
   topPages: Array<{ page: string; count: number }>;
 }
+
+export interface AdminAllTodo extends AdminTodo {
+  stableUid: string;
+  username: string;
+  archivedAt: string | null;
+}
+
+export interface AllTodosResponse {
+  todos: AdminAllTodo[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
+export interface AdminAllReminder extends AdminReminder {
+  className: string;
+  archivedAt: string | null;
+}
+
+export interface AllRemindersResponse {
+  reminders: AdminAllReminder[];
+  total: number;
+  page: number;
+  limit: number;
+}

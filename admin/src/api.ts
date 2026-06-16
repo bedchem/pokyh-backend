@@ -1,4 +1,4 @@
-import type { AdminStats, AdminClass, AdminSession, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish, AdminDishFull, AdminDishImportResult, AdminCommentsResponse, FileLogFile, FileLogResponse, FileLogEntry, FrontendActivityLogsResponse, FrontendActivityStats } from './types';
+import type { AdminStats, AdminClass, AdminSession, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish, AdminDishFull, AdminDishImportResult, AdminCommentsResponse, FileLogFile, FileLogResponse, FileLogEntry, FrontendActivityLogsResponse, FrontendActivityStats, AllTodosResponse, AllRemindersResponse } from './types';
 
 const TOKEN_KEY = 'pokyh_admin_token';
 
@@ -299,6 +299,26 @@ export const adminApi = {
 
   activityStats: (): Promise<FrontendActivityStats> =>
     request<FrontendActivityStats>('GET', '/api/admin/activity-logs/stats'),
+
+  allTodos: (params?: { page?: number; limit?: number; search?: string; status?: 'all' | 'active' | 'done' | 'archived'; stableUid?: string }): Promise<AllTodosResponse> => {
+    const p = new URLSearchParams();
+    if (params?.page)     p.set('page',      String(params.page));
+    if (params?.limit)    p.set('limit',     String(params.limit));
+    if (params?.search)   p.set('search',    params.search);
+    if (params?.status)   p.set('status',    params.status);
+    if (params?.stableUid) p.set('stableUid', params.stableUid);
+    return request<AllTodosResponse>('GET', `/api/admin/todos?${p.toString()}`);
+  },
+
+  allReminders: (params?: { page?: number; limit?: number; search?: string; status?: 'all' | 'active' | 'archived'; classId?: string }): Promise<AllRemindersResponse> => {
+    const p = new URLSearchParams();
+    if (params?.page)    p.set('page',    String(params.page));
+    if (params?.limit)   p.set('limit',   String(params.limit));
+    if (params?.search)  p.set('search',  params.search);
+    if (params?.status)  p.set('status',  params.status);
+    if (params?.classId) p.set('classId', params.classId);
+    return request<AllRemindersResponse>('GET', `/api/admin/reminders?${p.toString()}`);
+  },
 
   getToken,
 };
