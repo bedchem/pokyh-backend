@@ -66,6 +66,23 @@ async function syncUserClass(
   klasseName: string,
   role: string = 'student'
 ): Promise<string | null> {
+  // 0. No class assigned (klasseId 0 / missing) — common for parents, teachers
+  // and staff accounts. They get no class, but must still be able to log in.
+  // We also clean up any stale memberships so they aren't left in an old class.
+  if (!klasseId || klasseId <= 0) {
+    const stale = await prisma.classMember.findMany({ where: { stableUid } });
+    for (const m of stale) {
+      await prisma.classMember.delete({
+        where: { classId_stableUid: { classId: m.classId, stableUid } },
+      }).catch(() => {});
+      const remaining = await prisma.classMember.count({ where: { classId: m.classId } });
+      if (remaining === 0) {
+        await prisma.class.delete({ where: { id: m.classId } }).catch(() => {});
+      }
+    }
+    return null;
+  }
+
   // 1. Check if user is already in a class with this webuntisKlasseId
   const existingMembership = await prisma.classMember.findFirst({
     where: {
@@ -161,8 +178,10 @@ async function syncUserClass(
 
 const loginSchema = z.object({
   username: z.string().min(1).max(100).trim().toLowerCase(),
-  klasseId: z.number().int().positive(),
-  klasseName: z.string().min(0).max(100),
+  // 0 = no class (parents/teachers/staff). syncUserClass handles the no-class case.
+  // Coerce + default so a missing/string klasseId never 422s a valid login.
+  klasseId: z.coerce.number().int().nonnegative().default(0),
+  klasseName: z.string().min(0).max(100).default(''),
   // "parent" → invisible class member with own todos and no reminders.
   // The caller (WebUntis login proxy) resolves the child's klasseId for parents.
   role: z.enum(['student', 'parent']).optional().default('student'),
