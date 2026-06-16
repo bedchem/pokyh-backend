@@ -1995,4 +1995,138 @@ router.post('/import', requireAdmin, async (req2: Request, res: Response): Promi
   res.json({ ok: true });
 });
 
+// ─── GET /api/admin/school-years ─────────────────────────────────────────────
+
+import { computeSchoolYear, performRollover } from '../services/schoolYearArchiver';
+
+router.get('/school-years', requireAdmin, async (_req: Request, res: Response): Promise<void> => {
+  const years = await prisma.schoolYear.findMany({ orderBy: { startYear: 'desc' } });
+  const current = computeSchoolYear(new Date());
+  res.json({
+    current: { label: current.label, startYear: current.startYear },
+    archived: years.map((y) => ({
+      id: y.id, label: y.label, startYear: y.startYear,
+      rolledAt: y.rolledAt.toISOString(), note: y.note, createdAt: y.createdAt.toISOString(),
+    })),
+  });
+});
+
+// ─── GET /api/admin/school-years/:id/users ────────────────────────────────────
+
+router.get('/school-years/:id/users', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const id      = String(req.params['id']);
+  const page    = Math.max(1, parseInt(String(req.query['page']  ?? '1'),  10));
+  const limit   = Math.min(200, Math.max(1, parseInt(String(req.query['limit'] ?? '50'), 10)));
+  const skip    = (page - 1) * limit;
+  const search  = String(req.query['search'] ?? '').trim();
+  const role    = String(req.query['role']   ?? '').trim();
+
+  const where: Record<string, unknown> = { schoolYearId: id };
+  if (search) where['username'] = { contains: search };
+  if (role === 'student' || role === 'parent') where['role'] = role;
+
+  const [users, total] = await Promise.all([
+    prisma.archivedUser.findMany({ where: where as never, orderBy: { username: 'asc' }, skip, take: limit }),
+    prisma.archivedUser.count({ where: where as never }),
+  ]);
+  res.json({ users, total, page, limit });
+});
+
+// ─── GET /api/admin/school-years/:id/classes ──────────────────────────────────
+
+router.get('/school-years/:id/classes', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const id = String(req.params['id']);
+  const classes = await prisma.archivedClass.findMany({
+    where: { schoolYearId: id }, orderBy: { name: 'asc' },
+  });
+  res.json(classes.map((c) => ({
+    id: c.id, originalId: c.originalId, name: c.name, code: c.code,
+    webuntisKlasseId: c.webuntisKlasseId, createdBy: c.createdBy,
+    createdByName: c.createdByName, memberCount: c.memberCount,
+    members: JSON.parse(c.membersJson) as unknown[],
+    createdAt: c.createdAt.toISOString(),
+  })));
+});
+
+// ─── GET /api/admin/school-years/:id/todos ────────────────────────────────────
+
+router.get('/school-years/:id/todos', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const id      = String(req.params['id']);
+  const page    = Math.max(1, parseInt(String(req.query['page']  ?? '1'),  10));
+  const limit   = Math.min(200, Math.max(1, parseInt(String(req.query['limit'] ?? '50'), 10)));
+  const skip    = (page - 1) * limit;
+  const search  = String(req.query['search'] ?? '').trim();
+  const status  = String(req.query['status'] ?? 'all');
+
+  const where: Record<string, unknown> = { schoolYearId: id };
+  if (search) where['title'] = { contains: search };
+  if (status === 'active')        { where['done'] = false; where['archivedAt'] = null; }
+  else if (status === 'done')     { where['done'] = true;  where['archivedAt'] = null; }
+  else if (status === 'archived') { where['archivedAt'] = { not: null }; }
+
+  const [todos, total] = await Promise.all([
+    prisma.archivedTodo.findMany({ where: where as never, orderBy: { createdAt: 'desc' }, skip, take: limit }),
+    prisma.archivedTodo.count({ where: where as never }),
+  ]);
+  res.json({
+    todos: todos.map((t) => ({
+      id: t.id, originalId: t.originalId, stableUid: t.stableUid, username: t.username,
+      title: t.title, details: t.details,
+      dueAt: t.dueAt ? t.dueAt.toISOString() : null,
+      done: t.done,
+      doneAt: t.doneAt ? t.doneAt.toISOString() : null,
+      archivedAt: t.archivedAt ? t.archivedAt.toISOString() : null,
+      createdAt: t.createdAt.toISOString(),
+    })),
+    total, page, limit,
+  });
+});
+
+// ─── GET /api/admin/school-years/:id/reminders ────────────────────────────────
+
+router.get('/school-years/:id/reminders', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const id      = String(req.params['id']);
+  const page    = Math.max(1, parseInt(String(req.query['page']  ?? '1'),  10));
+  const limit   = Math.min(200, Math.max(1, parseInt(String(req.query['limit'] ?? '50'), 10)));
+  const skip    = (page - 1) * limit;
+  const search  = String(req.query['search'] ?? '').trim();
+  const status  = String(req.query['status'] ?? 'all');
+
+  const where: Record<string, unknown> = { schoolYearId: id };
+  if (search) where['title'] = { contains: search };
+  if (status === 'active')        { where['archivedAt'] = null; }
+  else if (status === 'archived') { where['archivedAt'] = { not: null }; }
+
+  const [reminders, total] = await Promise.all([
+    prisma.archivedReminder.findMany({ where: where as never, orderBy: { remindAt: 'desc' }, skip, take: limit }),
+    prisma.archivedReminder.count({ where: where as never }),
+  ]);
+  res.json({
+    reminders: reminders.map((r) => ({
+      id: r.id, originalId: r.originalId, classId: r.classId, className: r.className,
+      title: r.title, body: r.body,
+      remindAt: r.remindAt.toISOString(),
+      createdBy: r.createdBy, createdByName: r.createdByName, createdByUsername: r.createdByUsername,
+      archivedAt: r.archivedAt ? r.archivedAt.toISOString() : null,
+      comments: JSON.parse(r.commentsJson) as unknown[],
+      createdAt: r.createdAt.toISOString(),
+    })),
+    total, page, limit,
+  });
+});
+
+// ─── POST /api/admin/school-years/rollover ────────────────────────────────────
+
+router.post('/school-years/rollover', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const note = String(req.body?.['note'] ?? '').slice(0, 500);
+  try {
+    const result = await performRollover(note || 'Manuell');
+    const adminUsername = adminUsernameFromReq(req.headers['authorization']);
+    logger.info('Admin action: school year rollover', { action: 'school_year_rollover', adminUsername, result });
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    res.status(409).json({ error: err instanceof Error ? err.message : 'Rollover fehlgeschlagen' });
+  }
+});
+
 export { router as adminRouter };

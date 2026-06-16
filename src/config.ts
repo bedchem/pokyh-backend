@@ -149,6 +149,15 @@ export const config = {
   // ── In-memory cache TTL (ms) ───────────────────────────────────────────────
   cacheTtlMs: intEnv('CACHE_TTL_MS', 5 * 60 * 1000),
 
+  // ── School year rollover ──────────────────────────────────────────────────
+  // On Aug 1 the live non-admin users/classes/todos/reminders are archived into
+  // the school_years snapshot tables and the live tables are reset for the new year.
+  schoolYearRolloverAuto: (process.env['SCHOOL_YEAR_ROLLOVER_AUTO'] ?? 'true') !== 'false',
+  schoolYearRolloverCheckIntervalMs: intEnv('SCHOOL_YEAR_ROLLOVER_CHECK_INTERVAL_MS', 60 * 60 * 1000),
+  // Month (1-12) and day on which the rollover fires. Defaults to August 1st.
+  schoolYearRolloverMonth: intEnv('SCHOOL_YEAR_ROLLOVER_MONTH', 8),
+  schoolYearRolloverDay:   intEnv('SCHOOL_YEAR_ROLLOVER_DAY',   1),
+
   // ── Misc tunables (no hardcoded values) ────────────────────────────────────
   sseHeartbeatMs: intEnv('SSE_HEARTBEAT_MS', 30 * 1000),
   mensaImportUrl: strEnv('MENSA_IMPORT_URL', 'https://mensa.plattnericus.dev/mensa.json'),

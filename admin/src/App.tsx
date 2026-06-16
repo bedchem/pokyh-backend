@@ -16,6 +16,7 @@ import { CommentsPage } from './pages/CommentsPage';
 import { LogFilesPage } from './pages/LogFilesPage';
 import { TodosRemindersPage } from './pages/TodosRemindersPage';
 import { SettingsPage } from './pages/SettingsPage';
+import { SchoolYearsPage } from './pages/SchoolYearsPage';
 import { ReactNode, Suspense, useState, useEffect } from 'react';
 import { setupApi } from './api';
 import type { SetupStatus } from './types';
@@ -108,6 +109,7 @@ export default function App() {
             <Route path="/log-files"         element={<ProtectedRoute><LogFilesPage /></ProtectedRoute>} />
             <Route path="/todos-reminders"   element={<ProtectedRoute><TodosRemindersPage /></ProtectedRoute>} />
             <Route path="/settings"          element={<ProtectedRoute><SettingsPage /></ProtectedRoute>} />
+            <Route path="/school-years"      element={<ProtectedRoute><SchoolYearsPage /></ProtectedRoute>} />
             <Route path="*"                  element={<Navigate to="/" replace />} />
           </Routes>
         </Suspense>

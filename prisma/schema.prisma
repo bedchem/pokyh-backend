@@ -277,6 +277,109 @@ model RequestLog {
   @@map("request_logs")
 }
 
+// ─── School year archive ──────────────────────────────────────────────────────
+// On August 1st each year the live non-admin users, classes, todos and reminders
+// are snapshotted here and then removed from the live tables so the new school
+// year starts fresh. Admins (Admin table) keep their User records untouched.
+
+model SchoolYear {
+  id        String   @id @default(uuid())
+  label     String   @unique           // "2025/2026"
+  startYear Int      @unique           @map("start_year")  // 2025
+  rolledAt  DateTime @map("rolled_at") // when rollover was performed
+  note      String   @default("") @db.VarChar(500)
+  createdAt DateTime @default(now())   @map("created_at")
+
+  archivedUsers     ArchivedUser[]
+  archivedClasses   ArchivedClass[]
+  archivedTodos     ArchivedTodo[]
+  archivedReminders ArchivedReminder[]
+
+  @@map("school_years")
+}
+
+model ArchivedUser {
+  id                 String   @id @default(uuid())
+  schoolYearId       String   @map("school_year_id")
+  stableUid          String   @map("stable_uid")
+  username           String
+  role               String   @default("student") @db.VarChar(20)
+  webuntisKlasseId   Int      @default(0) @map("webuntis_klasse_id")
+  webuntisKlasseName String   @default("") @db.VarChar(255) @map("webuntis_klasse_name")
+  classId            String?  @map("class_id")
+  classCode          String?  @map("class_code")
+  className          String?  @map("class_name")
+  createdAt          DateTime @map("created_at")
+
+  schoolYear SchoolYear @relation(fields: [schoolYearId], references: [id], onDelete: Cascade)
+
+  @@index([schoolYearId])
+  @@index([schoolYearId, stableUid])
+  @@map("archived_users")
+}
+
+model ArchivedClass {
+  id               String   @id @default(uuid())
+  schoolYearId     String   @map("school_year_id")
+  originalId       String   @map("original_id")
+  name             String
+  code             String   @db.Char(6)
+  webuntisKlasseId Int      @default(0) @map("webuntis_klasse_id")
+  createdBy        String   @map("created_by")
+  createdByName    String   @default("") @map("created_by_name")
+  memberCount      Int      @default(0) @map("member_count")
+  membersJson      String   @default("[]") @db.Text @map("members_json")
+  createdAt        DateTime @map("created_at")
+
+  schoolYear SchoolYear @relation(fields: [schoolYearId], references: [id], onDelete: Cascade)
+
+  @@index([schoolYearId])
+  @@map("archived_classes")
+}
+
+model ArchivedTodo {
+  id           String    @id @default(uuid())
+  schoolYearId String    @map("school_year_id")
+  originalId   String    @map("original_id")
+  stableUid    String    @map("stable_uid")
+  username     String    @default("")
+  title        String    @db.VarChar(500)
+  details      String    @default("") @db.VarChar(5000)
+  dueAt        DateTime? @map("due_at")
+  done         Boolean   @default(false)
+  doneAt       DateTime? @map("done_at")
+  archivedAt   DateTime? @map("archived_at")
+  createdAt    DateTime  @map("created_at")
+
+  schoolYear SchoolYear @relation(fields: [schoolYearId], references: [id], onDelete: Cascade)
+
+  @@index([schoolYearId])
+  @@index([schoolYearId, stableUid])
+  @@map("archived_todos")
+}
+
+model ArchivedReminder {
+  id                String    @id @default(uuid())
+  schoolYearId      String    @map("school_year_id")
+  originalId        String    @map("original_id")
+  classId           String    @map("class_id")
+  className         String    @default("") @map("class_name")
+  title             String    @db.VarChar(500)
+  body              String    @default("") @db.VarChar(5000)
+  remindAt          DateTime  @map("remind_at")
+  createdBy         String    @map("created_by")
+  createdByName     String    @default("") @map("created_by_name")
+  createdByUsername String    @default("") @map("created_by_username")
+  archivedAt        DateTime? @map("archived_at")
+  commentsJson      String    @default("[]") @db.Text @map("comments_json")
+  createdAt         DateTime  @map("created_at")
+
+  schoolYear SchoolYear @relation(fields: [schoolYearId], references: [id], onDelete: Cascade)
+
+  @@index([schoolYearId])
+  @@map("archived_reminders")
+}
+
 model FrontendActivityLog {
   id        String   @id @default(uuid())
   event     String   @db.VarChar(50)

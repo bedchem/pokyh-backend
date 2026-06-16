@@ -1,4 +1,4 @@
-import type { AdminStats, AdminClass, AdminSession, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish, AdminDishFull, AdminDishImportResult, AdminCommentsResponse, FileLogFile, FileLogResponse, FileLogEntry, FrontendActivityLogsResponse, FrontendActivityStats, AllTodosResponse, AllRemindersResponse } from './types';
+import type { AdminStats, AdminClass, AdminSession, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish, AdminDishFull, AdminDishImportResult, AdminCommentsResponse, FileLogFile, FileLogResponse, FileLogEntry, FrontendActivityLogsResponse, FrontendActivityStats, AllTodosResponse, AllRemindersResponse, SchoolYearsResponse, ArchivedUsersResponse, ArchivedClass, ArchivedTodosResponse, ArchivedRemindersResponse, RolloverResult } from './types';
 
 const TOKEN_KEY = 'pokyh_admin_token';
 
@@ -319,6 +319,42 @@ export const adminApi = {
     if (params?.classId) p.set('classId', params.classId);
     return request<AllRemindersResponse>('GET', `/api/admin/reminders?${p.toString()}`);
   },
+
+  schoolYears: (): Promise<SchoolYearsResponse> =>
+    request<SchoolYearsResponse>('GET', '/api/admin/school-years'),
+
+  archivedUsers: (yearId: string, params?: { page?: number; limit?: number; search?: string; role?: string }): Promise<ArchivedUsersResponse> => {
+    const p = new URLSearchParams();
+    if (params?.page)   p.set('page',   String(params.page));
+    if (params?.limit)  p.set('limit',  String(params.limit));
+    if (params?.search) p.set('search', params.search);
+    if (params?.role)   p.set('role',   params.role);
+    return request<ArchivedUsersResponse>('GET', `/api/admin/school-years/${yearId}/users?${p.toString()}`);
+  },
+
+  archivedClasses: (yearId: string): Promise<ArchivedClass[]> =>
+    request<ArchivedClass[]>('GET', `/api/admin/school-years/${yearId}/classes`),
+
+  archivedTodos: (yearId: string, params?: { page?: number; limit?: number; search?: string; status?: string }): Promise<ArchivedTodosResponse> => {
+    const p = new URLSearchParams();
+    if (params?.page)   p.set('page',   String(params.page));
+    if (params?.limit)  p.set('limit',  String(params.limit));
+    if (params?.search) p.set('search', params.search);
+    if (params?.status) p.set('status', params.status);
+    return request<ArchivedTodosResponse>('GET', `/api/admin/school-years/${yearId}/todos?${p.toString()}`);
+  },
+
+  archivedReminders: (yearId: string, params?: { page?: number; limit?: number; search?: string; status?: string }): Promise<ArchivedRemindersResponse> => {
+    const p = new URLSearchParams();
+    if (params?.page)   p.set('page',   String(params.page));
+    if (params?.limit)  p.set('limit',  String(params.limit));
+    if (params?.search) p.set('search', params.search);
+    if (params?.status) p.set('status', params.status);
+    return request<ArchivedRemindersResponse>('GET', `/api/admin/school-years/${yearId}/reminders?${p.toString()}`);
+  },
+
+  rolloverSchoolYear: (note?: string): Promise<RolloverResult> =>
+    request<RolloverResult>('POST', '/api/admin/school-years/rollover', { note }),
 
   getToken,
 };

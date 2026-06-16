@@ -18,6 +18,7 @@ import { prisma } from './db';
 import { startTunnel, stopTunnel, isTunnelConfigured, getHostnameFromCloudflaredConfig } from './tunnel';
 import { startPushPoller } from './services/pushPoller';
 import { startArchiver } from './services/archiver';
+import { startSchoolYearArchiver } from './services/schoolYearArchiver';
 import { logger } from './utils/logger';
 
 const app = express();
@@ -200,6 +201,9 @@ function startBackgroundJobs() {
 
   // Push notification poller (no-op if VAPID keys not configured)
   startPushPoller();
+
+  // School year rollover: on August 1st, snapshot non-admin users/classes/todos/reminders
+  startSchoolYearArchiver();
 }
 
 // Create the database (if missing) and apply the schema via `prisma db push`.

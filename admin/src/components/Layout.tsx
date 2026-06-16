@@ -16,6 +16,7 @@ import {
   FileText,
   CheckSquare,
   Settings,
+  Archive,
 } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
 
@@ -110,6 +111,7 @@ function SidebarContent({ adminUser, onLogout, onNavClick }: SidebarContentProps
             System
           </span>
         </div>
+        <NavItem to="/school-years"   icon={<Archive size={16} />}          label="Schuljahre"   onClick={onNavClick} />
         <NavItem to="/logs"           icon={<ScrollText size={16} />}        label="Logs"         onClick={onNavClick} />
         <NavItem to="/log-files"      icon={<FileText size={16} />}          label="Logdateien"   onClick={onNavClick} />
         <NavItem to="/tunnel"         icon={<Globe size={16} />}             label="Tunnel"       onClick={onNavClick} />

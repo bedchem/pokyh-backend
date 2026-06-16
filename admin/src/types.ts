@@ -290,3 +290,121 @@ export interface AllRemindersResponse {
   page: number;
   limit: number;
 }
+
+// ── School year archive ───────────────────────────────────────────────────────
+
+export interface SchoolYearMeta {
+  id: string;
+  label: string;
+  startYear: number;
+  rolledAt: string;
+  note: string;
+  createdAt: string;
+}
+
+export interface SchoolYearsResponse {
+  current: { label: string; startYear: number };
+  archived: SchoolYearMeta[];
+}
+
+export interface ArchivedUser {
+  id: string;
+  schoolYearId: string;
+  stableUid: string;
+  username: string;
+  role: 'student' | 'parent';
+  webuntisKlasseId: number;
+  webuntisKlasseName: string;
+  classId: string | null;
+  classCode: string | null;
+  className: string | null;
+  createdAt: string;
+}
+
+export interface ArchivedUsersResponse {
+  users: ArchivedUser[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
+export interface ArchivedClassMember {
+  stableUid: string;
+  username: string;
+  role: string;
+  joinedAt: string;
+}
+
+export interface ArchivedClass {
+  id: string;
+  originalId: string;
+  name: string;
+  code: string;
+  webuntisKlasseId: number;
+  createdBy: string;
+  createdByName: string;
+  memberCount: number;
+  members: ArchivedClassMember[];
+  createdAt: string;
+}
+
+export interface ArchivedTodo {
+  id: string;
+  originalId: string;
+  stableUid: string;
+  username: string;
+  title: string;
+  details: string;
+  dueAt: string | null;
+  done: boolean;
+  doneAt: string | null;
+  archivedAt: string | null;
+  createdAt: string;
+}
+
+export interface ArchivedTodosResponse {
+  todos: ArchivedTodo[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
+export interface ArchivedComment {
+  id: string;
+  stableUid: string;
+  username: string;
+  body: string;
+  createdAt: string;
+}
+
+export interface ArchivedReminder {
+  id: string;
+  originalId: string;
+  classId: string;
+  className: string;
+  title: string;
+  body: string;
+  remindAt: string;
+  createdBy: string;
+  createdByName: string;
+  createdByUsername: string;
+  archivedAt: string | null;
+  comments: ArchivedComment[];
+  createdAt: string;
+}
+
+export interface ArchivedRemindersResponse {
+  reminders: ArchivedReminder[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
+export interface RolloverResult {
+  ok: boolean;
+  label: string;
+  usersArchived: number;
+  classesArchived: number;
+  todosArchived: number;
+  remindersArchived: number;
+}
