@@ -114,6 +114,12 @@ export const config = {
     globalWindowMs: intEnv('RATE_LIMIT_GLOBAL_WINDOW_MS', 60 * 1000),
     authMax: intEnv('RATE_LIMIT_AUTH_MAX', 10),
     authWindowMs: intEnv('RATE_LIMIT_AUTH_WINDOW_MS', 15 * 60 * 1000),
+    // Token refresh is authenticated by an unguessable refresh token (not a
+    // brute-forceable password), so it gets a far more generous per-IP budget.
+    // Whole schools share one public IP via NAT, so a strict auth limit here
+    // would 429 hundreds of legitimate users at once.
+    refreshMax: intEnv('RATE_LIMIT_REFRESH_MAX', 600),
+    refreshWindowMs: intEnv('RATE_LIMIT_REFRESH_WINDOW_MS', 15 * 60 * 1000),
     writeMax: intEnv('RATE_LIMIT_WRITE_MAX', 60),
     writeWindowMs: intEnv('RATE_LIMIT_WRITE_WINDOW_MS', 60 * 1000),
     readMax: intEnv('RATE_LIMIT_READ_MAX', 300),

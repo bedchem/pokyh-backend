@@ -6,7 +6,7 @@ import { z } from 'zod';
 import { prisma } from '../db';
 import { config } from '../config';
 import { requireAuth } from '../middleware/auth';
-import { authLimiter } from '../middleware/rateLimiter';
+import { authLimiter, refreshLimiter } from '../middleware/rateLimiter';
 import { generateStableUid, generateClassCode, generateClassId } from '../utils/uid';
 import {
   UnauthorizedError,
@@ -372,7 +372,7 @@ const refreshSchema = z.object({
   refreshToken: z.string().min(1),
 });
 
-router.post('/refresh', authLimiter, async (req: Request, res: Response) => {
+router.post('/refresh', refreshLimiter, async (req: Request, res: Response) => {
   const { refreshToken: rawToken } = refreshSchema.parse(req.body);
   const tokenHash = hashToken(rawToken);
 
