@@ -66,21 +66,16 @@ async function syncUserClass(
   klasseName: string,
   role: string = 'student'
 ): Promise<string | null> {
-  // 0. No class assigned (klasseId 0 / missing) — common for parents, teachers
-  // and staff accounts. They get no class, but must still be able to log in.
-  // We also clean up any stale memberships so they aren't left in an old class.
+  // 0. No class assigned (klasseId 0 / missing) — common for parents/teachers,
+  // but also a transient client-side resolution miss. Do NOT wipe an existing
+  // membership in that case (that would unenrol a user whose class simply failed
+  // to resolve on one login). Keep any existing class; otherwise no class.
   if (!klasseId || klasseId <= 0) {
-    const stale = await prisma.classMember.findMany({ where: { stableUid } });
-    for (const m of stale) {
-      await prisma.classMember.delete({
-        where: { classId_stableUid: { classId: m.classId, stableUid } },
-      }).catch(() => {});
-      const remaining = await prisma.classMember.count({ where: { classId: m.classId } });
-      if (remaining === 0) {
-        await prisma.class.delete({ where: { id: m.classId } }).catch(() => {});
-      }
-    }
-    return null;
+    const existing = await prisma.classMember.findFirst({
+      where: { stableUid },
+      select: { classId: true },
+    });
+    return existing?.classId ?? null;
   }
 
   // 1. Check if user is already in a class with this webuntisKlasseId

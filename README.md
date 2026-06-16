@@ -1,176 +1,347 @@
-# pokyh-backend
+<div align="center">
 
-REST API + admin panel for the POKYH school app. **Express 5 · Prisma · MySQL 8 · JWT · SSE · React admin UI at `/admin/`.**
+# POKYH — Backend
 
-Powers the [Next.js web app](../pokyh-frontend) and the [iOS app](../POKYH_IOS): todos, class reminders, the Mensa (canteen) catalog with ratings & comments, and WebUntis-backed accounts.
+**The API, realtime layer and admin panel behind POKYH — the school companion app for LBS Brixen.**
 
----
+Node.js · Express 5 · TypeScript · Prisma · MySQL · Server-Sent Events · Web Push · self-hosted via Docker + Cloudflare Tunnel
 
-## Stack
-
-| | |
-|---|---|
-| Runtime | Node.js 22, Express 5, TypeScript |
-| Database | MySQL 8 via Prisma ORM |
-| Auth | JWT + refresh tokens + in-memory revocation |
-| Real-time | Server-Sent Events (SSE) |
-| Admin UI | React 19 + Vite + Tailwind (served from the same process at `/admin/`) |
-| Deployment | Docker + docker-compose, optional Cloudflare Tunnel |
+</div>
 
 ---
 
-## Highlights
+## Table of contents
 
-- 🔐 **Stateless, fully `.env`-driven config** — ports, rate limits, token lifetimes, body limits, job intervals, cache TTLs, DB connection: nothing is hardcoded.
-- 🚀 **Resilient startup** — the HTTP server listens immediately; the database is created (if missing), migrated (`prisma db push`) and connected **in the background with retry/backoff**. A slow or not-yet-ready DB never blocks or crashes boot.
-- 👪 **Parent accounts** — guardians get a POKYH account with their own todos and read-only access to the child's class **name** (auto-resolved from WebUntis). They have **no reminders** and never appear in the class member list.
-- 🗄️ **Auto-archiving** — todos/reminders that have been expired for more than 24 h (configurable) are archived: kept on the server, hidden from users, **viewable by admins only**.
-- 💾 **Full JSON export / import** — one-click complete database backup & restore from the admin panel (binary image blobs included, transactional restore).
-- 🖼️ **Dish image uploads** — upload/crop images for Mensa dishes (stored as WebP, served with caching).
-- ⚡ **Performance** — in-memory TTL cache for the public dish catalog, targeted DB indexes, configurable connection pool — built for ~1000 concurrent users.
+- [What this is](#what-this-is)
+- [Architecture](#architecture)
+- [Tech stack](#tech-stack)
+- [Quick start](#quick-start)
+- [Configuration](#configuration)
+- [Database](#database)
+- [Authentication & security](#authentication--security)
+- [API overview](#api-overview)
+- [Realtime (SSE)](#realtime-sse)
+- [Background jobs](#background-jobs)
+- [Admin panel](#admin-panel)
+- [Deployment](#deployment)
+- [Operations & maintenance](#operations--maintenance)
+- [Project layout](#project-layout)
+- [Troubleshooting](#troubleshooting)
 
 ---
 
-## Local development
+## What this is
 
-**Prerequisites:** Node 22+, a reachable MySQL 8.
+POKYH adds a social/organisational layer on top of [WebUntis](https://www.untis.at/): shared class
+reminders, personal to-dos, the cafeteria menu with ratings & comments, and push notifications.
+This backend is the **single source of truth** for everything that is *not* WebUntis data.
 
-```sh
-cp .env.example .env          # fill in your values
+Users never log in here with a password. They authenticate against WebUntis in the
+**web frontend** or the **iOS app**, which then perform a trusted **server-to-server**
+login here (guarded by a shared `SERVER_KEY`) to mint a POKYH session. Parents/guardians get a
+hidden "parent" membership in their child's class.
+
+It also serves a built-in **React admin panel** at `/admin/` and can expose itself to the
+internet through an in-container **Cloudflare Tunnel** — no open ports required.
+
+---
+
+## Architecture
+
+```
+┌──────────────┐         ┌──────────────┐
+│  Web (Next)  │         │  iOS (Swift) │
+└──────┬───────┘         └──────┬───────┘
+       │  X-API-Key + (X-Server-Key for login)
+       │  Bearer <JWT> for user requests
+       ▼                        ▼
+┌─────────────────────────────────────────────┐
+│                POKYH Backend                  │
+│  Express 5  ·  JWT auth  ·  rate limiting     │
+│  REST  +  SSE (realtime)  +  Web Push         │
+│  /admin/  (React SPA, JWT-protected)          │
+└───────────────┬───────────────────┬──────────┘
+                │                   │
+        ┌───────▼──────┐    ┌───────▼────────┐
+        │  MySQL 8     │    │ Cloudflare      │
+        │  (Prisma)    │    │ Tunnel (egress) │
+        └──────────────┘    └─────────────────┘
+```
+
+- **Stateless HTTP** — horizontally scalable; JWTs carry identity, refresh tokens live in MySQL.
+- **Non-blocking boot** — the HTTP server starts immediately; the database is created, migrated
+  (`prisma db push`) and connected in the background with retry/backoff. A cold or missing DB
+  never blocks startup.
+- **Config-driven, zero hardcoded hosts** — CORS origins, the public hostname and every limit are
+  derived from environment variables.
+
+---
+
+## Tech stack
+
+| Concern            | Choice                                                        |
+| ------------------ | ------------------------------------------------------------- |
+| Runtime            | Node.js 22 (Alpine in production)                             |
+| Web framework      | Express 5                                                     |
+| Language           | TypeScript (strict)                                           |
+| ORM / DB           | Prisma 5 · MySQL 8                                            |
+| Auth               | JWT access tokens + opaque, hashed refresh tokens (bcrypt admin password) |
+| Realtime           | Server-Sent Events (`/sse/*`)                                 |
+| Push               | Web Push (VAPID)                                              |
+| Images             | `sharp` (dish images, subject icons)                          |
+| Hardening          | `helmet`, `cors`, `express-rate-limit`                        |
+| Logging            | `winston` + daily-rotate files                                |
+| Ingress            | Cloudflare Tunnel (`cloudflared`, in-container)               |
+
+---
+
+## Quick start
+
+### Prerequisites
+- Node.js ≥ 22
+- A MySQL 8 database (local or the bundled Docker service)
+
+### Local development
+
+```bash
+# 1. Install dependencies
 npm install
-cd admin && npm install && cd ..
-npm run dev                   # hot-reload dev server
+
+# 2. Create your environment file
+cp .env.example .env
+#    → fill in DATABASE_URL and generate the secrets (see Configuration)
+
+# 3. Generate the Prisma client + apply the schema
+npx prisma generate
+npm run db:push
+
+# 4. Run in watch mode
+npm run dev
 ```
 
-On first boot the server **creates the database and applies the schema automatically** (`DB_AUTO_PUSH=true`). No manual migration step is needed. Open the admin panel at **http://localhost:4000/admin/** — the first visit runs the setup wizard (admin password + optional tunnel).
+The API is now on `http://localhost:4000`, the admin panel on `http://localhost:4000/admin/`.
+On first run, open `/admin/` to complete the setup wizard (admin account + optional tunnel).
 
-> Tip: configure the database either as a single `DATABASE_URL` **or** as discrete fields (`DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`). When `DATABASE_URL` is blank it is built from the discrete fields (credentials URL-encoded automatically).
+### Run everything with Docker (recommended for parity with prod)
+
+```bash
+cp .env.example .env        # set MYSQL_ROOT_PASSWORD, secrets, etc.
+docker compose up --build
+```
+
+This starts MySQL (with a healthcheck) and the app, which auto-creates and migrates the database.
 
 ---
 
-## Docker (production)
+## Configuration
 
-```sh
-cp .env.example .env          # fill in secrets
-docker compose up -d --build
+All configuration is environment-driven. See **`.env.example`** for the complete, commented list.
+Required values fail fast on boot if missing.
+
+### Generate the secrets
+
+```bash
+# Each of these:
+openssl rand -hex 32      # JWT_SECRET, REFRESH_TOKEN_SECRET, API_KEY, SERVER_KEY
+
+# Web Push (VAPID) key pair:
+npx web-push generate-vapid-keys
 ```
 
-MySQL starts first; the app starts immediately and bootstraps the schema itself once the DB is reachable. The published port follows `PORT` from `.env`.
+### The keys that matter most
+
+| Variable                 | Purpose                                                                                  |
+| ------------------------ | ---------------------------------------------------------------------------------------- |
+| `DATABASE_URL`           | MySQL connection string. If blank, it is built from the `DB_*` fields.                   |
+| `JWT_SECRET`             | Signs access tokens.                                                                     |
+| `REFRESH_TOKEN_SECRET`   | Secret for refresh-token handling.                                                       |
+| `API_KEY`                | Public-ish key every client must send as `X-API-Key`. Must match the frontend/iOS key.  |
+| `SERVER_KEY`             | **Secret.** Trusted server-to-server login key (`X-Server-Key`). Only the web/iOS servers hold it. |
+| `CORS_ORIGIN`            | Comma-separated allowed origins (e.g. `https://pokyh.com,https://api.pokyh.com`).        |
+| `TRUST_PROXY`            | `loopback` behind the in-container tunnel — required so per-IP rate limits see the real client IP. |
+| `TUNNEL_NAME` / `TUNNEL_HOSTNAME` | Cloudflare Tunnel identity & public hostname (auto-derives the parent domain for CORS). |
+| `VAPID_*`                | Web Push key pair + contact e-mail.                                                      |
+
+> **Trusted callers bypass the auth/refresh rate limiters.** A request carrying a valid
+> `X-Server-Key` skips the per-IP brute-force limiter — because every user's login is proxied
+> through one frontend-server IP, and a shared bucket would lock everyone out at scale.
 
 ---
 
-## Environment variables
+## Database
 
-Everything is configurable from `.env`. Required secrets first; everything else has a sensible default and is listed in [`.env.example`](.env.example).
+Prisma is the single schema source (`prisma/schema.prisma`). Key models:
 
-### Required
+- **Identity** — `User`, `Admin`, `RefreshToken`, `ApiKey`
+- **Classes** — `Class`, `ClassMember` (a `role` of `parent` marks a hidden member)
+- **Content** — `Todo`, `Reminder`, `Comment`, `DishComment`
+- **Cafeteria** — `Dish`, `DishImage`, `DishRating`
+- **Subjects** — `KnownSubject`, `SubjectImage`
+- **School-year archiving** — `SchoolYear`, `ArchivedUser`, `ArchivedClass`, `ArchivedTodo`, `ArchivedReminder`
+- **Telemetry** — `RequestLog`, `FrontendActivityLog`
 
-| Variable | Description |
-|---|---|
-| `JWT_SECRET` | ≥32-byte hex — `openssl rand -hex 32` |
-| `REFRESH_TOKEN_SECRET` | same format |
-| `API_KEY` | sent by clients in `X-API-Key` |
-| `SERVER_KEY` | server-to-server key (WebUntis login proxy → backend) |
-| `DATABASE_URL` **or** `DB_HOST`+`DB_NAME`(+`DB_USER`/`DB_PASSWORD`/`DB_PORT`) | database connection |
+```bash
+npm run db:push      # apply schema to the database (idempotent, additive)
+npm run db:studio    # open Prisma Studio (visual DB browser)
+npm run db:migrate   # create a dev migration
+npm run db:reset     # ⚠ drop & recreate (destroys all data)
+```
 
-### Common optional (defaults shown)
-
-| Variable | Default | Description |
-|---|---|---|
-| `PORT` | `4000` | HTTP port (host + container in Docker) |
-| `CORS_ORIGIN` | `http://localhost:3000` | comma-separated allowed origins |
-| `ADMIN_USERNAMES` | — | comma-separated admin usernames |
-| `ADMIN_PASSWORD_HASH` | — | bcrypt hash (set via setup wizard) |
-| `BCRYPT_ROUNDS` | `12` | password hashing cost |
-| `JWT_EXPIRES_IN` / `ADMIN_JWT_EXPIRES_IN` | `1h` / `7d` | token lifetimes |
-| `REFRESH_TOKEN_EXPIRES_HOURS` | `1` | refresh token lifetime |
-| `DB_CONNECTION_LIMIT` | `20` | Prisma pool size (when URL is built from `DB_*`) |
-| `DB_AUTO_PUSH` | `true` | create DB + apply schema on startup |
-| `ARCHIVE_AFTER_HOURS` | `24` | archive items expired longer than this |
-| `ARCHIVE_CHECK_INTERVAL_MS` | `3600000` | archiver run interval |
-| `CACHE_TTL_MS` | `300000` | in-memory cache TTL (dish catalog) |
-| `RATE_LIMIT_*` | see example | per-limiter request caps + windows |
-| `BODY_LIMIT` / `BODY_LIMIT_UPLOAD` / `BODY_LIMIT_IMPORT` | `10kb` / `4mb` / `100mb` | request body size limits |
-| `PUSH_POLL_INTERVAL_MS` / `PUSH_DUE_CHECK_INTERVAL_MS` | `300000` / `60000` | push poller intervals |
-| `WEBUNTIS_BASE` / `WEBUNTIS_SCHOOL` | — | WebUntis instance |
-| `PUBLIC_BASE_URL` | — | absolute base for uploaded asset URLs (e.g. dish images) |
-| `MENSA_IMPORT_URL` | mensa.json URL | default source for the dish import |
-| `TUNNEL_NAME` / `TUNNEL_HOSTNAME` | — | Cloudflare Tunnel (set via admin wizard) |
-| `DEBUG` | `false` | verbose request logging |
+On boot the server runs a **non-destructive** `prisma db push` automatically (`DB_AUTO_PUSH=true`),
+so additive schema changes are applied on every deploy.
 
 ---
 
-## Scripts
+## Authentication & security
 
-```sh
-npm run dev          # dev server with hot-reload
-npm run build        # prisma generate + compile TS
-npm start            # start compiled server (dist/)
-npm run db:push      # sync schema to DB manually
-npm run db:studio    # Prisma Studio GUI
-npm run admin:build  # build the admin panel only
-```
+**Two layers, clearly separated:**
+
+1. **API key** — every non-admin route requires `X-API-Key: <API_KEY>`. Coarse gate that keeps
+   anonymous traffic off the API.
+2. **User session** — clients exchange a trusted WebUntis login (`POST /auth/login` with
+   `X-Server-Key`) for a short-lived **JWT access token** + a long-lived, hashed **refresh token**.
+   User requests then send `Authorization: Bearer <JWT>`.
+
+**Hardening highlights**
+- `helmet` security headers; strict, allow-list **CORS** (auto-includes the tunnel host and its parent domain).
+- Tiered **rate limiting**: global, auth (strict, per-IP brute-force), refresh (generous — refresh
+  is gated by an unguessable token), read, write, SSE and admin-login limiters. Trusted server-key
+  callers bypass auth/refresh limits.
+- Refresh tokens are stored **hashed (SHA-256)**; one active session per user.
+- Admin password stored as a **bcrypt** hash; admin routes require a JWT + admin membership.
+- `timingSafeEqual` for all key comparisons.
 
 ---
 
 ## API overview
 
-All non-admin/non-public routes require `X-API-Key`; authenticated routes require `Authorization: Bearer <jwt>`.
+> Base URL: your tunnel hostname (e.g. `https://api.pokyh.com`). All times are ISO-8601 UTC.
 
-| Route prefix | Auth | Purpose |
-|---|---|---|
-| `/auth/*` | API key | login (password / WebUntis server-to-server), register, refresh, logout, `/me` |
-| `/users/:username/todos/*` | JWT | personal todo CRUD (students **and** parents) |
-| `/classes/*` | JWT | class get/join/leave (parents see name only, hidden from members) |
-| `/classes/:id/reminders/*` | JWT | class reminders (**blocked for parents**) |
-| `/classes/:id/reminders/:rid/comments/*` | JWT | reminder comments (blocked for parents) |
-| `/dishes` · `/dishes/:id/image` | public | Mensa catalog (cached) + dish images |
-| `/dish-ratings/*` · `/dish-comments/*` | JWT | ratings (1–5★) and comments |
-| `/sse/*` | JWT | real-time streams (todos, reminders, ratings, comments) |
-| `/api/admin/*` | Admin JWT | admin panel endpoints (see below) |
-| `/api/setup/*` | — | first-time setup wizard |
-| `/health` | — | liveness probe (always responds, even before DB is up) |
-
-### Notable admin endpoints
-
-| Endpoint | Purpose |
-|---|---|
-| `GET /api/admin/export` | full database dump as one JSON (complete backup) |
-| `POST /api/admin/import` | restore a dump (transactional, all-or-nothing) |
-| `GET /api/admin/archive/todos` · `…/reminders` | view archived (expired) items |
-| `PUT /api/admin/dishes/:id/image` | upload/crop a dish image (→ WebP) |
+| Group              | Mount                                             | Notes                                  |
+| ------------------ | ------------------------------------------------- | -------------------------------------- |
+| Auth               | `/auth/login` · `/refresh` · `/logout` · `/me` · `/register` | Server-to-server + token lifecycle |
+| Users              | `/users/:username`                                | Profile lookup                          |
+| To-dos             | `/users/:username/todos`                          | Per-user, CRUD + SSE                    |
+| Classes            | `/classes` · `/classes/mine` · `/classes/:id`     | Auto join/create by WebUntis class id   |
+| Reminders          | `/classes/:classId/reminders`                     | Class-wide, CRUD + SSE                  |
+| Reminder comments  | `/classes/:classId/reminders/:reminderId/comments`| Threaded comments + SSE                 |
+| Dishes             | `/dishes`                                         | **Public** read-only menu               |
+| Dish ratings       | `/dish-ratings` (`/:id`, `/batch`)                | Stars + SSE                             |
+| Dish comments      | `/dish-comments/:dishId`                          | Comments + SSE                          |
+| Subject images     | `/subject-images`                                 | Icon catalog (GET public, write = admin)|
+| Push               | `/push`                                           | Web Push subscription registration      |
+| Activity log       | `/activity-log`                                   | Frontend telemetry                      |
+| Admin              | `/api/admin/*`                                    | JWT + admin only (no API key)           |
+| Setup              | `/api/setup`                                      | First-run wizard                        |
+| Health             | `/health`                                         | Liveness probe                          |
 
 ---
 
-## Roles & visibility
+## Realtime (SSE)
 
-| | Todos | Reminders | Class | Listed as member |
-|---|---|---|---|---|
-| **Student** | ✅ own | ✅ class | ✅ full | ✅ |
-| **Parent / guardian** | ✅ own | ❌ | name only | ❌ (hidden) |
-| **Admin** | ✅ + all (incl. archived) | ✅ + all | ✅ all | — |
-
-Parent accounts are created automatically at WebUntis login: the login proxy resolves the **child's** class id and sends `role: "parent"`, and the backend joins the parent to that class as a hidden member.
+Live updates are delivered via **Server-Sent Events** under `/sse/*` (to-dos, reminders,
+reminder comments, dish ratings, dish comments). Because `EventSource` cannot set headers, SSE
+endpoints accept the token and API key as query parameters and emit periodic heartbeats
+(`SSE_HEARTBEAT_MS`). Clients reconnect automatically.
 
 ---
 
-## Security
+## Background jobs
 
-- **Helmet** + strict CORS allowlist.
-- **Rate limiting** — every limiter (global / auth / read / write / SSE / admin-login) is `.env`-configurable.
-- **JWT revocation** — in-memory map invalidates access tokens instantly on session revoke or user delete.
-- **Refresh tokens** — hashed at rest, individually revocable, auto-cleaned.
-- **Input validation** — Zod on request bodies.
-- **Timing-safe** server-key comparison via `crypto.timingSafeEqual`.
-- **Parent isolation** — reminders surface fully blocked server-side for `role=parent`, not just hidden in the UI.
-- **Safe auto-migration** — startup `prisma db push` runs without `--accept-data-loss`, so only additive schema changes are applied automatically.
+Started once the DB is reachable (`src/index.ts` → `startBackgroundJobs`):
+
+- **Session cleanup** — prunes expired/revoked refresh tokens.
+- **Archiver** — moves to-dos/reminders overdue by `ARCHIVE_AFTER_HOURS` into an admin-viewable archive.
+- **Push poller** — sends due reminder notifications (no-op without VAPID keys).
+- **School-year rollover** — on the configured date (default **1 August**), snapshots all non-admin
+  users, classes, to-dos and reminders into the `school_years` archive tables and clears the live
+  tables so the new year starts fresh. Idempotent; configurable month/day.
 
 ---
 
-## Performance (built for ~1000 users)
+## Admin panel
 
-- Non-blocking startup + background DB connect with backoff.
-- In-memory TTL cache for the public dish catalog (invalidated on every dish write).
-- Targeted indexes: `class_members(stable_uid)`, `todos(stable_uid, archived_at)`, `reminders(class_id, archived_at)`, plus due-scan indexes on `todos(notified_at, due_at)` and `reminders(notified_at, remind_at)`.
-- Configurable Prisma connection pool (`DB_CONNECTION_LIMIT`).
-- Archiving runs as a batched background job and broadcasts updated lists over SSE.
+A React + Vite SPA is built into the image and served at **`/admin/`** (same-origin, JWT-protected).
+It covers users, classes, sessions, dishes & images, comments, to-dos/reminders across all classes,
+logs, the Cloudflare tunnel, **full DB export/import**, and **school-year archives**.
+
+```bash
+npm run admin:dev      # run the admin panel in dev (Vite)
+npm run admin:build    # build it into admin/dist (also done by the Docker build)
+```
+
+---
+
+## Deployment
+
+Production runs as a Docker image (multi-stage `Dockerfile`) that:
+
+1. Builds the API (`tsc`) **and** the admin panel.
+2. Installs `cloudflared` (arch auto-detected) and `openssl` (Prisma engine on Alpine).
+3. On start (`entrypoint.sh`), launches the server, which **self-bootstraps the database** and,
+   if configured, starts the Cloudflare Tunnel — so no inbound ports need to be opened.
+
+```bash
+docker compose up --build -d
+```
+
+On the bundled compose stack the app waits for the MySQL healthcheck, then comes up on `PORT`.
+The tunnel exposes it publicly at `TUNNEL_HOSTNAME`.
+
+---
+
+## Operations & maintenance
+
+Helper scripts (run inside the container or locally with a valid `.env`):
+
+```bash
+npm run make-admin <username>            # grant admin
+npm run revoke-admin <username>          # revoke admin
+npm run set-admin-password               # set/replace the admin password (bcrypt)
+npm run create-user                      # create a local (non-WebUntis) user
+npm run tunnel                           # run the Cloudflare tunnel manually
+```
+
+Logs are written to rotating files (winston) and stdout; the admin panel exposes a log viewer.
+
+---
+
+## Project layout
+
+```
+src/
+├── index.ts            # app bootstrap, middleware, CORS, boot/retry, background jobs
+├── config.ts           # all env parsing (fail-fast on required secrets)
+├── db.ts               # Prisma client singleton
+├── tunnel.ts           # Cloudflare Tunnel lifecycle
+├── middleware/         # apiKey, auth (JWT), rateLimiter, requireAdmin, requestLogger
+├── routes/             # auth, users, todos, classes, reminders(+comments),
+│                       # dishes/ratings/comments, subjectImages, sse, admin, setup, push
+├── services/           # webuntis, sse, archiver, schoolYearArchiver, pushPoller
+└── utils/              # cache, errors, logger, uid, revokedTokens
+prisma/schema.prisma    # database schema (source of truth)
+admin/                  # React + Vite admin panel (built into admin/dist)
+scripts/                # admin/user management CLIs
+Dockerfile · docker-compose.yml · entrypoint.sh
+```
+
+---
+
+## Troubleshooting
+
+| Symptom                                   | Likely cause / fix                                                                 |
+| ----------------------------------------- | ---------------------------------------------------------------------------------- |
+| Logins fail with **429** at scale         | `TRUST_PROXY` unset → all clients share one IP bucket. Set `TRUST_PROXY=loopback`. Server-to-server logins must send a valid `X-Server-Key` (those bypass the limiter). |
+| Browser **CORS** error from the frontend  | Add the frontend origin to `CORS_ORIGIN` (the tunnel host & its parent domain are auto-added). |
+| `/auth/me` returns **401** right after login | The frontend/iOS didn't receive a token — check the server-to-server login response and `X-Server-Key`/`X-API-Key`. |
+| **422** on `/auth/login`                  | Body validation failed — `klasseId` may be `0` (no class); the schema accepts that, but check the logged Zod error. |
+| Prisma **"property does not exist"**      | Run `npx prisma generate` after schema changes.                                    |
+| DB unreachable on boot                    | Non-fatal — the server retries with backoff. Check `DATABASE_URL` and the MySQL healthcheck. |
+
+---
+
+<div align="center">
+
+Part of the **POKYH** project · Frontend (Next.js) · iOS (SwiftUI) · Backend (this repo)
+
+</div>
