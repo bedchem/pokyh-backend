@@ -57,9 +57,20 @@ app.use(helmet({ contentSecurityPolicy: false }));
 // Always include the server's own origin (admin panel makes same-origin fetch requests
 // that browsers tag with Origin when custom headers like Authorization are present)
 const effectiveTunnelHostname = config.tunnelHostname || getHostnameFromCloudflaredConfig() || '';
+
+// When the tunnel is on a subdomain (e.g. api.pokyh.com), the frontend typically
+// lives on the parent domain (pokyh.com). Auto-derive it so operators don't have
+// to set CORS_ORIGIN manually in the common API-subdomain + frontend-on-root setup.
+function parentDomainOrigin(hostname: string): string | null {
+  const parts = hostname.split('.');
+  return parts.length > 2 ? `https://${parts.slice(1).join('.')}` : null;
+}
+
 const allowedOrigins = new Set([
   ...config.corsOrigin.split(',').map((o) => o.trim()).filter(Boolean),
   ...(effectiveTunnelHostname ? [`https://${effectiveTunnelHostname}`] : []),
+  // Also allow the parent domain of the tunnel (e.g. pokyh.com when tunnel is api.pokyh.com)
+  ...(effectiveTunnelHostname ? [parentDomainOrigin(effectiveTunnelHostname)].filter(Boolean) as string[] : []),
   ...(config.isDev ? ['http://localhost:3000', 'http://localhost:3001', 'http://localhost:5173'] : []),
   `http://localhost:${config.port}`,
   `https://localhost:${config.port}`,
