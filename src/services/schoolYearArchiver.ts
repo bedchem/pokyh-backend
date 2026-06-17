@@ -25,9 +25,14 @@ export interface RolloverResult {
 //   1. Snapshot non-admin users, classes, todos, reminders → archive tables
 //   2. Delete the live rows (cascade removes class_members, reminder comments, etc.)
 // Idempotent per startYear (throws if the year has already been rolled over).
-export async function performRollover(note = ''): Promise<RolloverResult> {
+// `target` overrides which school year is being closed; defaults to the current
+// running year (`computeSchoolYear(now)`), which is what a manual rollover uses.
+export async function performRollover(
+  note = '',
+  target?: { startYear: number; label: string },
+): Promise<RolloverResult> {
   const now = new Date();
-  const { startYear, label } = computeSchoolYear(now);
+  const { startYear, label } = target ?? computeSchoolYear(now);
 
   // Guard: only one rollover per school year
   const existing = await prisma.schoolYear.findUnique({ where: { startYear } });
@@ -192,21 +197,188 @@ export async function performRollover(note = ''): Promise<RolloverResult> {
   return result;
 }
 
+// Restores a previously archived school year back into the live tables and
+// removes the archive (cascade-deletes the snapshot rows). This undoes a
+// rollover. Restore is additive — records that already exist live (e.g. created
+// after the rollover) are skipped — so it can be run safely.
+//
+// Note: login credentials are NOT recoverable. Password hashes, refresh tokens
+// and push subscriptions are not part of the snapshot, so WebUntis users simply
+// log back in and any manual-password accounts must have a new password set.
+export interface RollbackResult {
+  label: string;
+  usersRestored: number;
+  classesRestored: number;
+  membersRestored: number;
+  todosRestored: number;
+  remindersRestored: number;
+  commentsRestored: number;
+}
+
+export async function rollbackRollover(schoolYearId: string): Promise<RollbackResult> {
+  const sy = await prisma.schoolYear.findUnique({ where: { id: schoolYearId } });
+  if (!sy) throw new Error('Archiviertes Schuljahr nicht gefunden');
+
+  // Only the most recently archived year may be rolled back — restoring an older
+  // year into a newer live dataset would mix two cohorts together.
+  const latest = await prisma.schoolYear.findFirst({ orderBy: { startYear: 'desc' } });
+  if (latest && latest.id !== sy.id) {
+    throw new Error(`Nur das zuletzt archivierte Schuljahr (${latest.label}) kann rückgängig gemacht werden`);
+  }
+
+  logger.info(`School year rollback starting for ${sy.label}…`);
+
+  const [users, classes, todos, reminders] = await Promise.all([
+    prisma.archivedUser.findMany({ where: { schoolYearId } }),
+    prisma.archivedClass.findMany({ where: { schoolYearId } }),
+    prisma.archivedTodo.findMany({ where: { schoolYearId } }),
+    prisma.archivedReminder.findMany({ where: { schoolYearId } }),
+  ]);
+
+  interface MemberSnap { stableUid: string; username: string; role: string; joinedAt: string }
+  interface CommentSnap { id: string; stableUid: string; username: string; body: string; createdAt: string }
+
+  const result: RollbackResult = {
+    label: sy.label,
+    usersRestored: 0, classesRestored: 0, membersRestored: 0,
+    todosRestored: 0, remindersRestored: 0, commentsRestored: 0,
+  };
+
+  await prisma.$transaction(async (tx) => {
+    // 1. Users (credentials are not archived — restored as WebUntis accounts).
+    if (users.length > 0) {
+      const r = await tx.user.createMany({
+        skipDuplicates: true,
+        data: users.map((u) => ({
+          stableUid:          u.stableUid,
+          username:           u.username,
+          role:               u.role,
+          webuntisKlasseId:   u.webuntisKlasseId,
+          webuntisKlasseName: u.webuntisKlasseName,
+          createdAt:          u.createdAt,
+        })),
+      });
+      result.usersRestored = r.count;
+    }
+
+    // 2. Classes + their member rows.
+    if (classes.length > 0) {
+      const rc = await tx.class.createMany({
+        skipDuplicates: true,
+        data: classes.map((c) => ({
+          id:               c.originalId,
+          name:             c.name,
+          code:             c.code,
+          webuntisKlasseId: c.webuntisKlasseId,
+          createdBy:        c.createdBy,
+          createdByName:    c.createdByName,
+          createdAt:        c.createdAt,
+        })),
+      });
+      result.classesRestored = rc.count;
+
+      const members = classes.flatMap((c) =>
+        (JSON.parse(c.membersJson) as MemberSnap[]).map((m) => ({
+          classId:   c.originalId,
+          stableUid: m.stableUid,
+          username:  m.username,
+          role:      m.role,
+          joinedAt:  new Date(m.joinedAt),
+        })),
+      );
+      if (members.length > 0) {
+        const rm = await tx.classMember.createMany({ skipDuplicates: true, data: members });
+        result.membersRestored = rm.count;
+      }
+    }
+
+    // 3. Todos.
+    if (todos.length > 0) {
+      const rt = await tx.todo.createMany({
+        skipDuplicates: true,
+        data: todos.map((t) => ({
+          id:         t.originalId,
+          stableUid:  t.stableUid,
+          title:      t.title,
+          details:    t.details,
+          dueAt:      t.dueAt,
+          done:       t.done,
+          doneAt:     t.doneAt,
+          archivedAt: t.archivedAt,
+          createdAt:  t.createdAt,
+        })),
+      });
+      result.todosRestored = rt.count;
+    }
+
+    // 4. Reminders + their comments.
+    if (reminders.length > 0) {
+      const rr = await tx.reminder.createMany({
+        skipDuplicates: true,
+        data: reminders.map((r) => ({
+          id:                r.originalId,
+          classId:           r.classId,
+          title:             r.title,
+          body:              r.body,
+          remindAt:          r.remindAt,
+          createdBy:         r.createdBy,
+          createdByName:     r.createdByName,
+          createdByUsername: r.createdByUsername,
+          archivedAt:        r.archivedAt,
+          createdAt:         r.createdAt,
+        })),
+      });
+      result.remindersRestored = rr.count;
+
+      const comments = reminders.flatMap((r) =>
+        (JSON.parse(r.commentsJson) as CommentSnap[]).map((c) => ({
+          id:         c.id,
+          reminderId: r.originalId,
+          classId:    r.classId,
+          stableUid:  c.stableUid,
+          username:   c.username,
+          body:       c.body,
+          createdAt:  new Date(c.createdAt),
+        })),
+      );
+      if (comments.length > 0) {
+        const rcm = await tx.comment.createMany({ skipDuplicates: true, data: comments });
+        result.commentsRestored = rcm.count;
+      }
+    }
+
+    // 5. Drop the archive — cascade removes all archived_* rows for this year.
+    await tx.schoolYear.delete({ where: { id: schoolYearId } });
+  }, { timeout: 180_000, maxWait: 30_000 });
+
+  logger.info('School year rollback complete', { result });
+  return result;
+}
+
 // ─── Background checker ───────────────────────────────────────────────────────
 
+// Auto-rollover fires throughout the configured rollover month (default: all of
+// August, from the configured day onward) rather than only on the exact day, so
+// short downtime around the 1st can't skip it. It always closes the school year
+// that has just ended, and is idempotent: if that year was already archived —
+// manually or by an earlier run — it does nothing.
 async function checkAndRollover() {
   const now   = new Date();
   const month = now.getMonth() + 1;
   const day   = now.getDate();
-  if (month !== config.schoolYearRolloverMonth || day !== config.schoolYearRolloverDay) return;
+  if (month !== config.schoolYearRolloverMonth || day < config.schoolYearRolloverDay) return;
 
-  const { startYear, label } = computeSchoolYear(now);
+  // We are in/after the rollover boundary, so computeSchoolYear(now) already
+  // points at the NEW year — the year being closed is the previous one.
+  const startYear = computeSchoolYear(now).startYear - 1;
+  const label     = `${startYear}/${startYear + 1}`;
+
   const existing = await prisma.schoolYear.findUnique({ where: { startYear } });
-  if (existing) return; // already done this year
+  if (existing) return; // already archived (manually or by a prior auto-run)
 
-  logger.info(`Auto-rollover triggered for ${label} (${config.schoolYearRolloverMonth}/${config.schoolYearRolloverDay})`);
+  logger.info(`Auto-rollover triggered for ${label}`);
   try {
-    await performRollover('Automatisch');
+    await performRollover('Automatisch', { startYear, label });
   } catch (err) {
     logger.error('Auto school year rollover failed', { error: err instanceof Error ? err.message : String(err) });
   }

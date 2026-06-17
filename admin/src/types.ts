@@ -408,3 +408,14 @@ export interface RolloverResult {
   todosArchived: number;
   remindersArchived: number;
 }
+
+export interface RollbackResult {
+  ok: boolean;
+  label: string;
+  usersRestored: number;
+  classesRestored: number;
+  membersRestored: number;
+  todosRestored: number;
+  remindersRestored: number;
+  commentsRestored: number;
+}

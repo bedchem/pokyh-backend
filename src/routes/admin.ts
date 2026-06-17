@@ -1997,7 +1997,7 @@ router.post('/import', requireAdmin, async (req2: Request, res: Response): Promi
 
 // ─── GET /api/admin/school-years ─────────────────────────────────────────────
 
-import { computeSchoolYear, performRollover } from '../services/schoolYearArchiver';
+import { computeSchoolYear, performRollover, rollbackRollover } from '../services/schoolYearArchiver';
 
 router.get('/school-years', requireAdmin, async (_req: Request, res: Response): Promise<void> => {
   const years = await prisma.schoolYear.findMany({ orderBy: { startYear: 'desc' } });
@@ -2126,6 +2126,22 @@ router.post('/school-years/rollover', requireAdmin, async (req: Request, res: Re
     res.json({ ok: true, ...result });
   } catch (err) {
     res.status(409).json({ error: err instanceof Error ? err.message : 'Rollover fehlgeschlagen' });
+  }
+});
+
+// ─── POST /api/admin/school-years/:id/rollback ────────────────────────────────
+// Undo a rollover: restore the archived year into the live tables and delete the
+// archive. Only the most recently archived year may be rolled back.
+
+router.post('/school-years/:id/rollback', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const id = String(req.params['id']);
+  try {
+    const result = await rollbackRollover(id);
+    const adminUsername = adminUsernameFromReq(req.headers['authorization']);
+    logger.info('Admin action: school year rollback', { action: 'school_year_rollback', adminUsername, result });
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    res.status(409).json({ error: err instanceof Error ? err.message : 'Rollback fehlgeschlagen' });
   }
 });
 

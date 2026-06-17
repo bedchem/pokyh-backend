@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Archive, Users, Building2, CheckSquare, Bell, Search,
   ChevronLeft, ChevronRight, RefreshCw, AlertTriangle, CheckCircle2,
-  Clock, RotateCcw,
+  Clock, RotateCcw, Undo2,
 } from 'lucide-react';
 import { adminApi } from '../api';
 import type {
@@ -354,6 +354,7 @@ export function SchoolYearsPage() {
   const [rolling, setRolling] = useState(false);
   const [rolloverError, setRolloverError] = useState<string | null>(null);
   const [rolloverSuccess, setRolloverSuccess] = useState<string | null>(null);
+  const [rollingBack, setRollingBack] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -381,7 +382,27 @@ export function SchoolYearsPage() {
     } finally { setRolling(false); }
   }
 
+  async function handleRollback(year: SchoolYearMeta) {
+    const ok = window.confirm(
+      `↩️ Schuljahreswechsel rückgängig machen?\n\nDie archivierten Daten von ${year.label} werden zurück in die Live-Tabellen geschrieben und das Archiv wird gelöscht.\n\nHinweis: Passwörter und Logins werden NICHT wiederhergestellt — WebUntis-Nutzer melden sich einfach neu an, manuelle Passwörter müssen neu gesetzt werden.`
+    );
+    if (!ok) return;
+    setRollingBack(true); setRolloverError(null); setRolloverSuccess(null);
+    try {
+      const r = await adminApi.rollbackSchoolYear(year.id);
+      setRolloverSuccess(`Schuljahr ${r.label} wiederhergestellt: ${r.usersRestored} Nutzer, ${r.classesRestored} Klassen, ${r.todosRestored} Todos, ${r.remindersRestored} Erinnerungen`);
+      setSelectedId(null);
+      await load();
+    } catch (err) {
+      setRolloverError(err instanceof Error ? err.message : 'Fehler beim Rückgängigmachen');
+    } finally { setRollingBack(false); }
+  }
+
   const selectedYear = archived.find((y) => y.id === selectedId);
+  // Only the most recently archived year (highest startYear) can be rolled back.
+  const latestYearId = archived.length > 0
+    ? archived.reduce((a, b) => (a.startYear >= b.startYear ? a : b)).id
+    : null;
 
   const dataTabs: { key: DataTab; label: string; icon: React.ReactNode }[] = [
     { key: 'users',     label: 'Schüler',       icon: <Users size={14} /> },
@@ -476,7 +497,7 @@ export function SchoolYearsPage() {
             {selectedId && selectedYear && (
               <div>
                 {/* Year meta */}
-                <div className="mb-4 flex items-center justify-between">
+                <div className="mb-4 flex items-center justify-between gap-4">
                   <div>
                     <h2 className="text-[17px] font-bold text-white">Schuljahr {selectedYear.label}</h2>
                     <p className="text-[12px] mt-0.5" style={dimText}>
@@ -484,6 +505,18 @@ export function SchoolYearsPage() {
                       {selectedYear.note ? ` · ${selectedYear.note}` : ''}
                     </p>
                   </div>
+                  {selectedYear.id === latestYearId && (
+                    <button
+                      onClick={() => void handleRollback(selectedYear)}
+                      disabled={rollingBack || rolling}
+                      title="Diesen Schuljahreswechsel rückgängig machen"
+                      className="flex items-center gap-2 px-3.5 py-2 rounded-[10px] text-[12px] font-medium transition-all disabled:opacity-50 flex-shrink-0"
+                      style={{ background: 'rgba(255,159,10,0.12)', color: '#ff9f0a', border: '1px solid rgba(255,159,10,0.22)' }}
+                    >
+                      <Undo2 size={13} />
+                      {rollingBack ? 'Läuft…' : 'Rückgängig machen'}
+                    </button>
+                  )}
                 </div>
 
                 {/* Data tabs */}

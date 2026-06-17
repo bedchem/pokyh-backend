@@ -1,4 +1,4 @@
-import type { AdminStats, AdminClass, AdminSession, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish, AdminDishFull, AdminDishImportResult, AdminCommentsResponse, FileLogFile, FileLogResponse, FileLogEntry, FrontendActivityLogsResponse, FrontendActivityStats, AllTodosResponse, AllRemindersResponse, SchoolYearsResponse, ArchivedUsersResponse, ArchivedClass, ArchivedTodosResponse, ArchivedRemindersResponse, RolloverResult } from './types';
+import type { AdminStats, AdminClass, AdminSession, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish, AdminDishFull, AdminDishImportResult, AdminCommentsResponse, FileLogFile, FileLogResponse, FileLogEntry, FrontendActivityLogsResponse, FrontendActivityStats, AllTodosResponse, AllRemindersResponse, SchoolYearsResponse, ArchivedUsersResponse, ArchivedClass, ArchivedTodosResponse, ArchivedRemindersResponse, RolloverResult, RollbackResult } from './types';
 
 const TOKEN_KEY = 'pokyh_admin_token';
 
@@ -355,6 +355,9 @@ export const adminApi = {
 
   rolloverSchoolYear: (note?: string): Promise<RolloverResult> =>
     request<RolloverResult>('POST', '/api/admin/school-years/rollover', { note }),
+
+  rollbackSchoolYear: (yearId: string): Promise<RollbackResult> =>
+    request<RollbackResult>('POST', `/api/admin/school-years/${yearId}/rollback`),
 
   getToken,
 };

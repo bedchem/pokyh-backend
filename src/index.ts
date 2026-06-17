@@ -19,6 +19,7 @@ import { startTunnel, stopTunnel, isTunnelConfigured, getHostnameFromCloudflared
 import { startPushPoller } from './services/pushPoller';
 import { startArchiver } from './services/archiver';
 import { startSchoolYearArchiver } from './services/schoolYearArchiver';
+import { applyAdditiveSchema } from './services/schemaSync';
 import { logger } from './utils/logger';
 
 const app = express();
@@ -255,7 +256,19 @@ async function connectDatabaseWithRetry() {
     try {
       if (config.dbAutoPush) {
         const ok = await pushSchema();
-        if (!ok) throw new Error('schema push not ready');
+        if (!ok) {
+          // `db push` refused — most often because the diff contains a
+          // destructive step, which blocks the additive changes too. Apply the
+          // additive part of the diff (new tables/columns) without dropping any
+          // data, so features like the school-year archive keep working. This is
+          // best-effort; `$connect` below is the real readiness gate, so a DB
+          // that is simply not up yet still retries cleanly.
+          try {
+            await applyAdditiveSchema();
+          } catch (err) {
+            logger.warn(`Additive schema sync skipped: ${err instanceof Error ? err.message.split('\n')[0] : String(err)}`);
+          }
+        }
       }
       await prisma.$connect();
       logger.info('Database ready (schema applied, connected)');
