@@ -3,15 +3,23 @@ import { config } from '../config';
 import { logger } from '../utils/logger';
 import { sseManager } from './sse';
 
-// Archives todos and reminders that have been expired (past their due/remind
-// time) for longer than ARCHIVE_AFTER_HOURS. Archived items keep living in the
+// Archives todos and reminders that have been expired (overdue, completed, or
+// past their remind time) for longer than ARCHIVE_AFTER_HOURS. Archived items keep living in the
 // database but disappear from every user/class API — only admins can view them.
 export async function archiveExpiredItems(): Promise<void> {
   const cutoff = new Date(Date.now() - config.archiveAfterHours * 60 * 60 * 1000);
 
-  // ── Todos: overdue (dueAt set and older than the cutoff) and not yet archived
+  // ── Todos: archived once either condition has held longer than the cutoff:
+  //   • overdue   — dueAt set and older than the cutoff, or
+  //   • completed — checked off (doneAt set) longer than the cutoff ago.
   const todosToArchive = await prisma.todo.findMany({
-    where: { archivedAt: null, dueAt: { not: null, lt: cutoff } },
+    where: {
+      archivedAt: null,
+      OR: [
+        { dueAt: { not: null, lt: cutoff } },
+        { done: true, doneAt: { not: null, lt: cutoff } },
+      ],
+    },
     select: { id: true, stableUid: true },
   });
 

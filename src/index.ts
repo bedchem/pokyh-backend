@@ -289,7 +289,9 @@ async function connectDatabaseWithRetry() {
 
 function start() {
   // Listen immediately — startup never waits on the database.
-  app.listen(config.port, () => {
+  // Bind to 0.0.0.0 so the server is reachable on every network interface
+  // (LAN/containers), not just loopback.
+  app.listen(config.port, '0.0.0.0', () => {
     logger.info(`Server running on port ${config.port} (${config.nodeEnv})`);
     logger.info(`API: http://localhost:${config.port}`);
     logger.info(`Admin: http://localhost:${config.port}/admin/`);
