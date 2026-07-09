@@ -64,7 +64,7 @@ credentials-file: /root/.cloudflared/$TUNNEL_ID.json
 
 ingress:
   - hostname: $TUNNEL_HOSTNAME
-    service: http://localhost:4000
+    service: http://localhost:3002
   - service: http_status:404
 EOF
 echo "✓ Config written to ~/.cloudflared/config.yml"
