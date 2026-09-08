@@ -205,6 +205,12 @@ export interface AdminDishRotateResult {
   rotated: number;
 }
 
+export interface AdminDishResetResult {
+  deleted: number;
+  imported: number;
+  plan: DishPlan;
+}
+
 export interface AdminDishRatingEntry {
   stableUid: string;
   username: string;

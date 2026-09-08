@@ -2,6 +2,8 @@ import { Router, Request, Response } from 'express';
 import { prisma } from '../db';
 import { readLimiter } from '../middleware/rateLimiter';
 import { dishesCache, currentSeason, dishesCacheKey } from '../utils/cache';
+import { rotatePastWeeks } from '../utils/mensaRotate';
+import { logger } from '../utils/logger';
 
 const router = Router();
 
@@ -50,7 +52,9 @@ function dishToJson(d: {
 
 // GET /dishes — mensa.json-compatible response (cached in-memory, TTL via env).
 // Automatically serves the season-appropriate plan: April–October = summer,
-// otherwise winter. Frontend needs no season logic.
+// otherwise winter. On cache miss we also opportunistically rotate any past
+// weeks to the end of the plan so the menu is always "rolling" without any
+// admin action. The rotate is idempotent and no-op when nothing has expired.
 router.get('/', readLimiter, async (_req: Request, res: Response): Promise<void> => {
   const season = currentSeason();
   const cacheKey = dishesCacheKey(season);
@@ -58,6 +62,15 @@ router.get('/', readLimiter, async (_req: Request, res: Response): Promise<void>
   if (cached !== undefined) {
     res.json(cached);
     return;
+  }
+
+  try {
+    await rotatePastWeeks(season);
+  } catch (err) {
+    // Rotation failure must not block serving the (possibly stale) menu.
+    logger.warn('opportunistic rotate failed', {
+      season, error: err instanceof Error ? err.message : String(err),
+    });
   }
 
   const dishes = await prisma.dish.findMany({

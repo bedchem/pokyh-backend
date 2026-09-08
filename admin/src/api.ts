@@ -1,4 +1,4 @@
-import type { AdminStats, AdminClass, AdminSession, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish, AdminDishFull, AdminDishImportResult, AdminDishShiftResult, AdminDishRotateResult, DishPlan, AdminCommentsResponse, FileLogFile, FileLogResponse, FileLogEntry, FrontendActivityLogsResponse, FrontendActivityStats, AllTodosResponse, AllRemindersResponse, SchoolYearsResponse, ArchivedUsersResponse, ArchivedClass, ArchivedTodosResponse, ArchivedRemindersResponse, RolloverResult, RollbackResult } from './types';
+import type { AdminStats, AdminClass, AdminSession, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish, AdminDishFull, AdminDishImportResult, AdminDishShiftResult, AdminDishRotateResult, AdminDishResetResult, DishPlan, AdminCommentsResponse, FileLogFile, FileLogResponse, FileLogEntry, FrontendActivityLogsResponse, FrontendActivityStats, AllTodosResponse, AllRemindersResponse, SchoolYearsResponse, ArchivedUsersResponse, ArchivedClass, ArchivedTodosResponse, ArchivedRemindersResponse, RolloverResult, RollbackResult } from './types';
 
 const TOKEN_KEY = 'pokyh_admin_token';
 
@@ -251,6 +251,9 @@ export const adminApi = {
 
   autoRotateDishes: (plan: DishPlan): Promise<AdminDishRotateResult> =>
     request<AdminDishRotateResult>('POST', '/api/admin/dishes/auto-rotate', { plan }),
+
+  resetDishesFromUrl: (plan: DishPlan, url?: string): Promise<AdminDishResetResult> =>
+    request<AdminDishResetResult>('POST', '/api/admin/dishes/reset', url ? { plan, url } : { plan }),
 
   listSubjectImages: (): Promise<import('./types').AdminSubjectImage[]> =>
     request<import('./types').AdminSubjectImage[]>('GET', '/api/admin/subject-images'),

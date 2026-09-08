@@ -2,13 +2,24 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import {
   UtensilsCrossed, Plus, Pencil, Trash2, Download, X, ChevronDown, ChevronUp, Leaf, Sprout, Star,
-  GripVertical, CalendarPlus, Sun, Snowflake,
+  GripVertical, CalendarPlus, Sun, Snowflake, RotateCcw,
 } from 'lucide-react';
 import { adminApi } from '../api';
 import type { AdminDishFull, AdminDish, AdminDishRatingEntry, DishPlan } from '../types';
 import { useToast } from '../components/Toast';
 
 // ─── helpers ────────────────────────────────────────────────────────────────
+
+// Format a Date as YYYY-MM-DD in LOCAL time (not UTC). Using toISOString here
+// silently rolls the date back a day in +HH timezones (e.g. CET), which shifts
+// week keys and corrupts drag-reorder. Every date arithmetic below must go
+// through this helper.
+function toLocalIso(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
 
 function formatDate(iso: string) {
   const d = new Date(iso + 'T00:00:00');
@@ -20,7 +31,7 @@ function weekKey(iso: string) {
   const day = d.getDay() || 7;
   const mon = new Date(d);
   mon.setDate(d.getDate() - day + 1);
-  return mon.toISOString().split('T')[0];
+  return toLocalIso(mon);
 }
 
 function getDayOfWeek(iso: string): number {
@@ -32,13 +43,20 @@ function getDayOfWeek(iso: string): number {
 function dateForWeekAndDow(monIso: string, dow: number): string {
   const mon = new Date(monIso + 'T00:00:00');
   mon.setDate(mon.getDate() + dow - 1);
-  return mon.toISOString().split('T')[0];
+  return toLocalIso(mon);
 }
 
 function nextWeekKey(after: string): string {
   const d = new Date(after + 'T00:00:00');
   d.setDate(d.getDate() + 7);
-  return d.toISOString().split('T')[0];
+  return toLocalIso(d);
+}
+
+function currentMondayIso(): string {
+  const today = new Date();
+  const dow = today.getDay() || 7;
+  const mon = new Date(today.getFullYear(), today.getMonth(), today.getDate() - dow + 1);
+  return toLocalIso(mon);
 }
 
 function formatWeekRange(monIso: string): string {
@@ -916,7 +934,9 @@ export function DishesPage() {
   const [search, setSearch] = useState('');
   const [editDish, setEditDish] = useState<AdminDishFull | null | 'new'>(null);
   const [showImport, setShowImport] = useState(false);
-  const [collapsedWeeks, setCollapsedWeeks] = useState<Set<string>>(new Set());
+  // We store which weeks the user has *expanded*; everything else is collapsed.
+  // That way newly loaded weeks come in collapsed by default without extra work.
+  const [expandedWeeks, setExpandedWeeks] = useState<Set<string>>(new Set());
   const [pendingCascade, setPendingCascade] = useState<{ fromWeek: string; offsetDays: number } | null>(null);
 
   // drag state
@@ -931,6 +951,14 @@ export function DishesPage() {
 
   // pre-fill date when opening "new dish" from a week's + button
   const [newDishInitialDate, setNewDishInitialDate] = useState<string | undefined>();
+
+  // Inline week-date editor: which week is being edited + the pending value.
+  const [editingWeekKey, setEditingWeekKey] = useState<string | null>(null);
+  const [editingWeekDraft, setEditingWeekDraft] = useState<string>('');
+
+  // Reset-from-JSON confirmation state.
+  const [confirmingReset, setConfirmingReset] = useState(false);
+  const [resetting, setResetting] = useState(false);
 
   // Track which plans we've already auto-rotated this session so we don't
   // hammer the server every time the user flips tabs.
@@ -977,6 +1005,34 @@ export function DishesPage() {
       if (!cancelled) await loadDishes(activePlan);
     })();
     return () => { cancelled = true; };
+  }, [activePlan, loadDishes, showToast]);
+
+  // Poll auto-rotate every 5 min AND whenever the tab regains focus, so a week
+  // that expires while the admin is left open loops on its own without needing
+  // a manual reload. Silent when there's nothing to rotate; reloads dishes if
+  // rows were actually moved.
+  useEffect(() => {
+    let cancelled = false;
+
+    async function poll() {
+      try {
+        const res = await adminApi.autoRotateDishes(activePlan);
+        if (!cancelled && res.rotated > 0) {
+          showToast(`${res.rotated} Gerichte automatisch weitergerollt`, 'success');
+          await loadDishes(activePlan);
+        }
+      } catch { /* non-fatal */ }
+    }
+
+    const intervalId = window.setInterval(poll, 5 * 60 * 1000);
+    const onVisible = () => { if (document.visibilityState === 'visible') poll(); };
+    document.addEventListener('visibilitychange', onVisible);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   }, [activePlan, loadDishes, showToast]);
 
   // ── drag handlers ──────────────────────────────────────────────────────────
@@ -1080,11 +1136,7 @@ export function DishesPage() {
     if (allKeys.length > 0) {
       newKey = nextWeekKey(allKeys[allKeys.length - 1]);
     } else {
-      const today = new Date();
-      const day = today.getDay() || 7;
-      const mon = new Date(today);
-      mon.setDate(today.getDate() - day + 1);
-      newKey = mon.toISOString().split('T')[0];
+      newKey = currentMondayIso();
     }
 
     setEmptyWeeks((prev) => {
@@ -1094,6 +1146,83 @@ export function DishesPage() {
       next.set(activePlan, s);
       return next;
     });
+  }
+
+  // Move an entire week to a different Monday. Every dish in that week keeps
+  // its weekday. If the target Monday collides with an existing week, we abort
+  // (that would silently merge two weeks into one). After a successful move,
+  // if the shift is non-zero, offer to cascade the same offset to every week
+  // that comes after.
+  async function handleWeekMove(oldWk: string, newMonIso: string) {
+    if (oldWk === newMonIso) {
+      setEditingWeekKey(null);
+      return;
+    }
+
+    // Check collision: the target monday must not already host another week.
+    const existingKeys = new Set<string>();
+    for (const d of dishes) existingKeys.add(weekKey(d.date));
+    for (const k of planEmptyWeeks) existingKeys.add(k);
+    existingKeys.delete(oldWk);
+    if (existingKeys.has(newMonIso)) {
+      showToast('Diese Kalenderwoche ist bereits belegt', 'error');
+      return;
+    }
+
+    const weekDishes = dishes.filter((d) => weekKey(d.date) === oldWk);
+    const dishUpdates = weekDishes.map((d) => ({
+      dish: d,
+      newDate: dateForWeekAndDow(newMonIso, getDayOfWeek(d.date)),
+    }));
+
+    // Optimistic UI first.
+    if (dishUpdates.length > 0) {
+      const map = new Map(dishUpdates.map((u) => [u.dish.id, u.newDate]));
+      setDishes((prev) => prev.map((d) => {
+        const nd = map.get(d.id);
+        return nd ? { ...d, date: nd } : d;
+      }));
+    }
+    if (planEmptyWeeks.has(oldWk)) {
+      setEmptyWeeks((prev) => {
+        const next = new Map(prev);
+        const s = new Set(next.get(activePlan) ?? []);
+        s.delete(oldWk);
+        s.add(newMonIso);
+        next.set(activePlan, s);
+        return next;
+      });
+    }
+    // Keep the moved week expanded if it was expanded.
+    setExpandedWeeks((prev) => {
+      if (!prev.has(oldWk)) return prev;
+      const next = new Set(prev);
+      next.delete(oldWk);
+      next.add(newMonIso);
+      return next;
+    });
+
+    setEditingWeekKey(null);
+
+    try {
+      if (dishUpdates.length > 0) {
+        await Promise.all(
+          dishUpdates.map(({ dish, newDate }) =>
+            adminApi.updateDish(dish.id, buildDishPayload(dish, newDate))
+          )
+        );
+      }
+      showToast('Woche verschoben', 'success');
+
+      // Offer cascade: shift every following week by the same delta.
+      const offset = diffDays(oldWk, newMonIso);
+      if (offset !== 0) {
+        setPendingCascade({ fromWeek: nextWeekKey(oldWk), offsetDays: offset });
+      }
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Fehler beim Verschieben', 'error');
+      loadDishes(activePlan);
+    }
   }
 
   function removeEmptyWeek(wk: string) {
@@ -1119,6 +1248,32 @@ export function DishesPage() {
 
   function handleDeleted(id: string) {
     setDishes((prev) => prev.filter((d) => d.id !== id));
+  }
+
+  async function handleReset() {
+    setResetting(true);
+    try {
+      const res = await adminApi.resetDishesFromUrl(activePlan);
+      showToast(
+        `Reset (${activePlan === 'summer' ? 'Sommer' : 'Winter'}): ${res.deleted} gelöscht, ${res.imported} neu importiert`,
+        'success'
+      );
+      // Wipe local edit state that no longer makes sense after reset.
+      setEmptyWeeks((prev) => {
+        const next = new Map(prev);
+        next.set(activePlan, new Set());
+        return next;
+      });
+      setExpandedWeeks(new Set());
+      setEditingWeekKey(null);
+      rotatedPlans.current.delete(activePlan); // re-rotate on next mount
+      await loadDishes(activePlan);
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Reset fehlgeschlagen', 'error');
+    } finally {
+      setResetting(false);
+      setConfirmingReset(false);
+    }
   }
 
   async function confirmCascade() {
@@ -1161,11 +1316,19 @@ export function DishesPage() {
   const sortedWeeks = [...weeksMap.entries()].sort(([a], [b]) => a.localeCompare(b));
 
   function toggleWeek(k: string) {
-    setCollapsedWeeks((prev) => {
+    setExpandedWeeks((prev) => {
       const next = new Set(prev);
       next.has(k) ? next.delete(k) : next.add(k);
       return next;
     });
+  }
+
+  function expandAll() {
+    setExpandedWeeks(new Set(sortedWeeks.map(([wk]) => wk)));
+  }
+
+  function collapseAll() {
+    setExpandedWeeks(new Set());
   }
 
   const editRatingData = editDish && editDish !== 'new'
@@ -1197,6 +1360,50 @@ export function DishesPage() {
             onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.05)'; }}>
             <Download size={15} />
             Importieren
+          </button>
+          {confirmingReset ? (
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={handleReset}
+                disabled={resetting}
+                className="flex items-center gap-2 px-4 py-2 rounded-[12px] text-sm font-semibold transition-all"
+                style={{ background: 'rgba(255,69,58,0.18)', color: '#ff453a', border: '1px solid rgba(255,69,58,0.4)' }}
+              >
+                <RotateCcw size={15} />
+                {resetting ? 'Reset...' : `Sicher? ${activePlan === 'summer' ? 'Sommer' : 'Winter'} überschreiben`}
+              </button>
+              <button
+                onClick={() => setConfirmingReset(false)}
+                disabled={resetting}
+                className="px-3 py-2 rounded-[12px] text-sm transition-colors"
+                style={{ background: 'rgba(255,255,255,0.05)', color: 'rgba(235,235,245,0.6)' }}
+              >
+                Nein
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={() => setConfirmingReset(true)}
+              className="flex items-center gap-2 px-4 py-2 rounded-[12px] text-sm font-medium transition-all"
+              style={{ background: 'rgba(255,159,10,0.1)', color: '#ff9f0a', border: '1px solid rgba(255,159,10,0.25)' }}
+              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,159,10,0.18)'; }}
+              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,159,10,0.1)'; }}
+              title="Diesen Plan auf den Stand der JSON zurücksetzen"
+            >
+              <RotateCcw size={15} />
+              Reset auf JSON
+            </button>
+          )}
+          <button
+            onClick={expandedWeeks.size === 0 ? expandAll : collapseAll}
+            className="flex items-center gap-2 px-4 py-2 rounded-[12px] text-sm font-medium transition-all"
+            style={{ background: 'rgba(255,255,255,0.05)', color: 'rgba(235,235,245,0.6)', border: '1px solid rgba(255,255,255,0.08)' }}
+            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.09)'; }}
+            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.05)'; }}
+            title={expandedWeeks.size === 0 ? 'Alle ausklappen' : 'Alle einklappen'}
+          >
+            {expandedWeeks.size === 0 ? <ChevronDown size={15} /> : <ChevronUp size={15} />}
+            {expandedWeeks.size === 0 ? 'Ausklappen' : 'Einklappen'}
           </button>
           <button
             onClick={addNewWeek}
@@ -1319,7 +1526,7 @@ export function DishesPage() {
           />
 
           {sortedWeeks.map(([wk, wDishes], wi) => {
-            const collapsed    = collapsedWeeks.has(wk);
+            const collapsed    = !expandedWeeks.has(wk);
             const isDragTarget = dragOverWeekKey === wk;
             const isDraggingSelf = draggingWeekKey === wk;
 
@@ -1393,15 +1600,83 @@ export function DishesPage() {
                       <GripVertical size={15} />
                     </div>
 
-                    {/* Clickable label → collapse */}
-                    <button
-                      className="flex-1 text-left min-w-0"
-                      onClick={() => toggleWeek(wk)}
-                    >
-                      <span className="text-xs font-bold uppercase tracking-widest" style={{ color: '#0a84ff' }}>
-                        Woche {wi + 1}&nbsp;&middot;&nbsp;{formatWeekRange(wk)}&nbsp;&middot;&nbsp;{wDishes.length} {wDishes.length === 1 ? 'Gericht' : 'Gerichte'}
-                      </span>
-                    </button>
+                    {/* Clickable label → collapse; or inline editor when editing */}
+                    {editingWeekKey === wk ? (
+                      <div className="flex-1 flex items-center gap-1.5 min-w-0 flex-wrap">
+                        <input
+                          type="date"
+                          className="px-2 py-1 rounded-[8px] text-xs outline-none"
+                          style={{
+                            background: 'rgba(255,255,255,0.06)',
+                            border: '1px solid rgba(10,132,255,0.4)',
+                            color: 'rgba(235,235,245,0.9)',
+                          }}
+                          value={editingWeekDraft}
+                          onChange={(e) => setEditingWeekDraft(e.target.value)}
+                          autoFocus
+                        />
+                        <button
+                          onClick={() => setEditingWeekDraft(currentMondayIso())}
+                          className="px-2 py-1 rounded-[8px] text-[11px] font-semibold transition-colors"
+                          style={{ background: 'rgba(48,209,88,0.15)', color: '#30d158', border: '1px solid rgba(48,209,88,0.3)' }}
+                        >
+                          Diese Woche
+                        </button>
+                        <button
+                          onClick={() => setEditingWeekDraft(nextWeekKey(currentMondayIso()))}
+                          className="px-2 py-1 rounded-[8px] text-[11px] font-semibold transition-colors"
+                          style={{ background: 'rgba(10,132,255,0.15)', color: '#0a84ff', border: '1px solid rgba(10,132,255,0.3)' }}
+                        >
+                          Nächste Woche
+                        </button>
+                        <button
+                          onClick={() => {
+                            const draft = editingWeekDraft;
+                            if (!/^\d{4}-\d{2}-\d{2}$/.test(draft)) {
+                              showToast('Ungültiges Datum', 'error');
+                              return;
+                            }
+                            // Snap to Monday of the chosen date.
+                            const mon = weekKey(draft);
+                            handleWeekMove(wk, mon);
+                          }}
+                          className="px-2.5 py-1 rounded-[8px] text-[11px] font-semibold transition-colors"
+                          style={{ background: 'linear-gradient(135deg,#0a84ff,#0a84ff)', color: '#fff' }}
+                        >
+                          Speichern
+                        </button>
+                        <button
+                          onClick={() => setEditingWeekKey(null)}
+                          className="px-2 py-1 rounded-[8px] text-[11px] transition-colors"
+                          style={{ background: 'rgba(255,255,255,0.05)', color: 'rgba(235,235,245,0.6)' }}
+                        >
+                          Abbrechen
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        className="flex-1 text-left min-w-0"
+                        onClick={() => toggleWeek(wk)}
+                      >
+                        <span className="text-xs font-bold uppercase tracking-widest" style={{ color: '#0a84ff' }}>
+                          Woche {wi + 1}&nbsp;&middot;&nbsp;{formatWeekRange(wk)}&nbsp;&middot;&nbsp;{wDishes.length} {wDishes.length === 1 ? 'Gericht' : 'Gerichte'}
+                        </span>
+                      </button>
+                    )}
+
+                    {/* Edit week date */}
+                    {editingWeekKey !== wk && (
+                      <button
+                        onClick={() => { setEditingWeekKey(wk); setEditingWeekDraft(wk); }}
+                        className="flex-shrink-0 p-1.5 rounded-[8px] transition-colors"
+                        style={{ color: 'rgba(235,235,245,0.3)' }}
+                        title="Wochendatum ändern"
+                        onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#0a84ff'; }}
+                        onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'rgba(235,235,245,0.3)'; }}
+                      >
+                        <Pencil size={13} />
+                      </button>
+                    )}
 
                     {/* Add dish to this week */}
                     <button

@@ -16,6 +16,7 @@ import { generateClassCode, generateClassId } from '../utils/uid';
 import { revokeUserTokens } from '../utils/revokedTokens';
 import { logger } from '../utils/logger';
 import { invalidateDishesCache } from '../utils/cache';
+import { rotatePastWeeks } from '../utils/mensaRotate';
 
 function safeParseTags(raw: string): string[] {
   try { return JSON.parse(raw) as string[]; } catch { return []; }
@@ -1214,6 +1215,90 @@ router.post('/dishes/import-url', requireAdmin, async (req: Request, res: Respon
   res.json({ imported, updated, total: imported + updated, plan });
 });
 
+// ─── POST /api/admin/dishes/reset ────────────────────────────────────────────
+// Wipes every dish for the given plan and re-imports fresh from the source URL.
+// Handy when local edits have drifted too far from the canonical mensa.json.
+
+router.post('/dishes/reset', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const plan = parsePlan(req.body?.plan);
+  const url = String(req.body?.url ?? config.mensaImportUrl);
+
+  let raw: string;
+  try {
+    raw = await fetchUrl(url);
+  } catch {
+    res.status(502).json({ error: 'Failed to fetch external URL' });
+    return;
+  }
+
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw); } catch {
+    res.status(502).json({ error: 'Invalid JSON from external URL' });
+    return;
+  }
+
+  type RawDish = Record<string, unknown>;
+  const menu = (parsed as Record<string, unknown>)['menu'] as Record<string, unknown> | undefined;
+  const list = (menu?.['dishes'] ?? []) as RawDish[];
+  if (!Array.isArray(list) || list.length === 0) {
+    res.status(422).json({ error: 'No dishes found in response' });
+    return;
+  }
+
+  function parseName(v: unknown): { de: string; it: string; en: string } {
+    if (typeof v === 'string') return { de: v, it: v, en: v };
+    if (v && typeof v === 'object') {
+      const m = v as Record<string, string>;
+      const de = m['de'] ?? m['it'] ?? m['en'] ?? Object.values(m)[0] ?? '';
+      return { de, it: m['it'] ?? de, en: m['en'] ?? de };
+    }
+    return { de: '', it: '', en: '' };
+  }
+
+  const result = await prisma.$transaction(async (tx) => {
+    const deleted = await tx.dish.deleteMany({ where: { plan } });
+    let imported = 0;
+    for (const d of list) {
+      const rawId = d['id'];
+      const id = rawId ? String(rawId) : uuidv4();
+      const name = parseName(d['name']);
+      const desc = parseName(d['description'] ?? '');
+      const dateRaw = d['date'] ? String(d['date']) : null;
+      if (!name.de.trim() || !dateRaw) continue;
+
+      await tx.dish.create({
+        data: {
+          id,
+          nameDe: name.de.trim(),
+          nameIt: name.it.trim(),
+          nameEn: name.en.trim(),
+          descDe: desc.de,
+          descIt: desc.it,
+          descEn: desc.en,
+          imageUrl: d['imageUrl'] ? String(d['imageUrl']) : '',
+          category: d['category'] ? String(d['category']) : '',
+          tags: JSON.stringify(Array.isArray(d['tags']) ? d['tags'] : []),
+          prepTime: typeof d['prepTime'] === 'number' ? d['prepTime'] : 0,
+          calories: typeof d['calories'] === 'number' ? d['calories'] : 0,
+          price: typeof d['price'] === 'number' ? d['price'] : 0,
+          protein: typeof d['protein'] === 'number' ? d['protein'] : 0,
+          fat: typeof d['fat'] === 'number' ? d['fat'] : 0,
+          allergens: JSON.stringify(Array.isArray(d['allergens']) ? d['allergens'] : []),
+          isVegetarian: d['isVegetarian'] === true,
+          isVegan: d['isVegan'] === true,
+          date: new Date(dateRaw),
+          plan,
+        },
+      });
+      imported++;
+    }
+    return { deleted: deleted.count, imported };
+  });
+
+  invalidateDishesCache();
+  res.json({ ...result, plan });
+});
+
 // ─── POST /api/admin/dishes/cascade-shift ────────────────────────────────────
 // Shifts date of every dish in `plan` with date >= fromWeek by offsetDays.
 // Used to cascade a manual week-date change to all following weeks.
@@ -1247,53 +1332,12 @@ router.post('/dishes/cascade-shift', requireAdmin, async (req: Request, res: Res
 });
 
 // ─── POST /api/admin/dishes/auto-rotate ──────────────────────────────────────
-// Moves every past week (Monday < current Monday) to the end of the plan,
-// preserving relative order. Cheap to call repeatedly (no-op when nothing to
-// rotate). Runs in one transaction.
+// Delegates to the shared rotate helper. Cheap to call repeatedly.
 
 router.post('/dishes/auto-rotate', requireAdmin, async (req: Request, res: Response): Promise<void> => {
   const plan = parsePlan(req.body?.plan);
-
-  // Current Monday (local time, midnight).
-  const today = new Date();
-  const dow = today.getDay() || 7;
-  const currentMonday = new Date(today.getFullYear(), today.getMonth(), today.getDate() - dow + 1);
-
-  const dishes = await prisma.dish.findMany({
-    where: { plan },
-    select: { date: true },
-  });
-
-  if (dishes.length === 0) { res.json({ rotated: 0 }); return; }
-
-  const mondaySet = new Set<string>();
-  for (const d of dishes) {
-    const t = new Date(d.date);
-    const wd = t.getDay() || 7;
-    const mon = new Date(t.getFullYear(), t.getMonth(), t.getDate() - wd + 1);
-    mondaySet.add(mon.toISOString().split('T')[0]!);
-  }
-  const mondays = [...mondaySet].sort();
-  const totalWeeks = mondays.length;
-  const pastMondays = mondays.filter((m) => new Date(m + 'T00:00:00') < currentMonday);
-  if (pastMondays.length === 0) { res.json({ rotated: 0 }); return; }
-
-  // Push each past week to the end. Because we shift by (totalWeeks * 7) days
-  // and iterate the past weeks in ascending order, they land back-to-back after
-  // the current last week, preserving their relative order.
-  let rotated = 0;
-  await prisma.$transaction(async (tx) => {
-    for (const monIso of pastMondays) {
-      const monStart = new Date(monIso + 'T00:00:00Z');
-      const monEnd = new Date(monIso + 'T00:00:00Z');
-      monEnd.setUTCDate(monEnd.getUTCDate() + 7);
-      const shiftDays = totalWeeks * 7;
-      const n = await tx.$executeRaw`UPDATE dishes SET date = DATE_ADD(date, INTERVAL ${shiftDays} DAY) WHERE plan = ${plan} AND date >= ${monStart} AND date < ${monEnd}`;
-      rotated += Number(n) || 0;
-    }
-  });
-
-  invalidateDishesCache();
+  const rotated = await rotatePastWeeks(plan);
+  if (rotated > 0) invalidateDishesCache();
   res.json({ rotated });
 });
 
