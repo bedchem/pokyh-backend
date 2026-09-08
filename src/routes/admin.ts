@@ -16,7 +16,11 @@ import { generateClassCode, generateClassId } from '../utils/uid';
 import { revokeUserTokens } from '../utils/revokedTokens';
 import { logger } from '../utils/logger';
 import { invalidateDishesCache } from '../utils/cache';
-import { rotatePastWeeks } from '../utils/mensaRotate';
+import {
+  rotatePastWeeks, normalizePlanAroundAnchor,
+  lastFutureMondayIso, firstMondayIso, otherPlan, snapForwardToSeason, isoAddDays,
+} from '../utils/mensaRotate';
+import { slugifyDishName } from '../utils/dishKey';
 
 function safeParseTags(raw: string): string[] {
   try { return JSON.parse(raw) as string[]; } catch { return []; }
@@ -29,7 +33,7 @@ function dishRow(d: {
   prepTime: number; calories: number; price: number;
   protein: number; fat: number; allergens: string;
   isVegetarian: boolean; isVegan: boolean; date: Date; sortOrder: number;
-  plan: string;
+  plan: string; stableKey: string;
   createdAt: Date; updatedAt: Date;
 }) {
   return {
@@ -50,6 +54,7 @@ function dishRow(d: {
     date: d.date.toISOString().split('T')[0],
     sortOrder: d.sortOrder,
     plan: d.plan === 'winter' ? 'winter' : 'summer',
+    stableKey: d.stableKey || slugifyDishName(d.nameDe),
     createdAt: d.createdAt.toISOString(),
     updatedAt: d.updatedAt.toISOString(),
   };
@@ -1077,6 +1082,7 @@ router.post('/dishes', requireAdmin, async (req: Request, res: Response): Promis
       date: new Date(String(b['date'])),
       sortOrder: typeof b['sortOrder'] === 'number' ? b['sortOrder'] : 0,
       plan: parsePlan(b['plan']),
+      stableKey: slugifyDishName(String(b['nameDe']).trim()),
     },
   });
 
@@ -1091,7 +1097,13 @@ router.patch('/dishes/:id', requireAdmin, async (req: Request, res: Response): P
   const b = req.body as Record<string, unknown>;
 
   const data: Record<string, unknown> = {};
-  if (b['nameDe'] !== undefined) data['nameDe'] = String(b['nameDe']).trim();
+  if (b['nameDe'] !== undefined) {
+    const trimmed = String(b['nameDe']).trim();
+    data['nameDe'] = trimmed;
+    // Keep stableKey aligned with nameDe so renaming a dish re-groups its
+    // ratings/comments together with any other dish now sharing the same slug.
+    data['stableKey'] = slugifyDishName(trimmed);
+  }
   if (b['nameIt'] !== undefined) data['nameIt'] = String(b['nameIt']).trim();
   if (b['nameEn'] !== undefined) data['nameEn'] = String(b['nameEn']).trim();
   if (b['descDe'] !== undefined) data['descDe'] = String(b['descDe']);
@@ -1200,6 +1212,7 @@ router.post('/dishes/import-url', requireAdmin, async (req: Request, res: Respon
       date: new Date(dateRaw),
       plan,
       sourceId,
+      stableKey: slugifyDishName(name.de.trim()),
     };
 
     // Match by (plan, sourceId) so the same source JSON can populate BOTH
@@ -1301,6 +1314,7 @@ router.post('/dishes/reset', requireAdmin, async (req: Request, res: Response): 
           date: new Date(dateRaw),
           plan,
           sourceId,
+          stableKey: slugifyDishName(name.de.trim()),
         },
       });
       imported++;
@@ -1345,38 +1359,53 @@ router.post('/dishes/cascade-shift', requireAdmin, async (req: Request, res: Res
 });
 
 // ─── POST /api/admin/dishes/anchor-week ──────────────────────────────────────
-// "Make week X land on this Monday". Shifts the ENTIRE plan by
-// (targetMonday - chosenWeek) days so the sequence stays consecutive, then
-// rotates any weeks that fell into the past back to the end. All in one
-// transaction so the client never sees a torn state.
+// "Make week X land on this Monday AND make the whole plan a clean, consecutive
+// weekly sequence".
+//
+// Semantic:
+//   1. NORMALIZE the chosen plan so every week i is at target + (i - anchorIdx) * 7,
+//      preserving each dish's weekday. Also fixes irregular gaps in one call.
+//   2. ROTATE past weeks to end (season-aware — they snap into their own season
+//      so summer weeks never land in Nov–Mar and vice versa).
+//   3. HANDOFF (default on): align the OTHER plan's first week to right after
+//      this plan's last future week, snapped into the other plan's season. So
+//      the two plans together form a seamless rolling schedule.
+//
+// All in one transaction so the client never sees a torn state.
 
 router.post('/dishes/anchor-week', requireAdmin, async (req: Request, res: Response): Promise<void> => {
   const plan = parsePlan(req.body?.plan);
   const chosenRaw = req.body?.chosenWeek ? String(req.body.chosenWeek) : '';
   const targetRaw = req.body?.targetMonday ? String(req.body.targetMonday) : '';
+  const alignOther = req.body?.alignOtherPlan !== false; // default true
 
   if (!/^\d{4}-\d{2}-\d{2}$/.test(chosenRaw) || !/^\d{4}-\d{2}-\d{2}$/.test(targetRaw)) {
     res.status(400).json({ error: 'chosenWeek and targetMonday must be YYYY-MM-DD' });
     return;
   }
 
-  const chosen = new Date(chosenRaw + 'T00:00:00Z');
-  const target = new Date(targetRaw + 'T00:00:00Z');
-  const offsetDays = Math.round((target.getTime() - chosen.getTime()) / 86400000);
-
-  if (Math.abs(offsetDays) > 365 * 5) {
-    res.status(400).json({ error: 'offset out of range' });
-    return;
-  }
-
   const result = await prisma.$transaction(async (tx) => {
-    let shifted = 0;
-    if (offsetDays !== 0) {
-      const r = await tx.$executeRaw`UPDATE dishes SET date = DATE_ADD(date, INTERVAL ${offsetDays} DAY) WHERE plan = ${plan}`;
-      shifted = Number(r) || 0;
-    }
+    const normalized = await normalizePlanAroundAnchor(tx, plan, chosenRaw, targetRaw);
     const rotated = await rotatePastWeeks(plan, tx);
-    return { shifted, rotated, offsetDays };
+
+    let otherAligned = 0;
+    let otherAnchorDate: string | null = null;
+    let otherRotated = 0;
+    if (alignOther) {
+      const lastMon = await lastFutureMondayIso(tx, plan);
+      const otherFirst = await firstMondayIso(tx, otherPlan(plan));
+      if (lastMon && otherFirst) {
+        // First Monday after this plan's end, then snap into the other plan's
+        // season (in case this plan ends deep inside its own season).
+        const rawStart = isoAddDays(lastMon, 7);
+        const snapped = snapForwardToSeason(new Date(rawStart + 'T00:00:00Z'), otherPlan(plan));
+        otherAnchorDate = snapped.toISOString().split('T')[0]!;
+        otherAligned = await normalizePlanAroundAnchor(tx, otherPlan(plan), otherFirst, otherAnchorDate);
+        otherRotated = await rotatePastWeeks(otherPlan(plan), tx);
+      }
+    }
+
+    return { normalized, rotated, otherAligned, otherAnchorDate, otherRotated };
   });
 
   invalidateDishesCache();
@@ -1407,27 +1436,47 @@ router.get('/dish-ratings', requireAdmin, async (_req: Request, res: Response): 
     : [];
   const uidToUsername: Record<string, string> = Object.fromEntries(users.map((u) => [u.stableUid, u.username]));
 
-  const ratingsByDish = new Map<string, typeof rows>();
+  // Ratings are keyed by stableKey. A single stableKey can be shared by a
+  // Sommer- AND a Winterplan dish → aggregate them as one entry so the admin
+  // sees the combined bewertungen.
+  const ratingsByKey = new Map<string, typeof rows>();
   for (const row of rows) {
-    const list = ratingsByDish.get(row.dishId) ?? [];
+    const list = ratingsByKey.get(row.dishId) ?? [];
     list.push(row);
-    ratingsByDish.set(row.dishId, list);
+    ratingsByKey.set(row.dishId, list);
   }
 
-  const dishMap = new Map(allDishes.map((d) => [d.id, d]));
-  const allDishIds = new Set([...allDishes.map((d) => d.id), ...ratingsByDish.keys()]);
+  // Group dishes by their stableKey; pick a canonical display dish (prefer
+  // one with an image, then the earliest date).
+  const dishesByKey = new Map<string, typeof allDishes>();
+  for (const d of allDishes) {
+    const k = d.stableKey || slugifyDishName(d.nameDe);
+    const list = dishesByKey.get(k) ?? [];
+    list.push(d);
+    dishesByKey.set(k, list);
+  }
 
-  const result = [...allDishIds]
-    .map((dishId) => {
-      const dish = dishMap.get(dishId);
-      const entries = ratingsByDish.get(dishId) ?? [];
+  const allKeys = new Set<string>([...dishesByKey.keys(), ...ratingsByKey.keys()]);
+
+  const result = [...allKeys]
+    .map((key) => {
+      const dishes = dishesByKey.get(key) ?? [];
+      const canonical = dishes.slice().sort((a, b) => {
+        const ai = a.imageUrl ? 0 : 1;
+        const bi = b.imageUrl ? 0 : 1;
+        if (ai !== bi) return ai - bi;
+        return a.date.getTime() - b.date.getTime();
+      })[0];
+      const entries = ratingsByKey.get(key) ?? [];
       const avg = entries.length > 0 ? entries.reduce((s, e) => s + e.stars, 0) / entries.length : 0;
+      const plans = [...new Set(dishes.map((d) => d.plan))].sort();
       return {
-        dishId,
-        name: dish?.nameDe ?? dishId,
-        imageUrl: dish?.imageUrl ?? '',
+        dishId: key,
+        name: canonical?.nameDe ?? key,
+        imageUrl: canonical?.imageUrl ?? '',
         avgStars: Math.round(avg * 10) / 10,
         count: entries.length,
+        plans, // e.g. ["summer"], ["winter"], or ["summer","winter"] when shared
         ratings: entries.map((e) => ({
           stableUid: e.stableUid,
           username: uidToUsername[e.stableUid] ?? e.stableUid,

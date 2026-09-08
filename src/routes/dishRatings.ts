@@ -4,11 +4,16 @@ import { prisma } from '../db';
 import { requireAuth } from '../middleware/auth';
 import { readLimiter, writeLimiter } from '../middleware/rateLimiter';
 import { sseManager } from '../services/sse';
+import { resolveDishKey, slugifyDishName } from '../utils/dishKey';
 
 const router = Router();
 
-async function getDishRatingsData(dishId: string, myStableUid: string) {
-  const rows = await prisma.dishRating.findMany({ where: { dishId } });
+// Ratings are keyed by dish stableKey (a slug of nameDe), not by the internal
+// UUID. That way a reset — which regenerates dish rows — never orphans a
+// rating, and same-name dishes in Sommer/Winter share the same rating.
+
+async function getDishRatingsData(dishKey: string, myStableUid: string) {
+  const rows = await prisma.dishRating.findMany({ where: { dishId: dishKey } });
   const ratings: Record<string, number> = {};
   let myRating: number | null = null;
 
@@ -24,10 +29,11 @@ async function getDishRatingsData(dishId: string, myStableUid: string) {
 
 // GET /dish-ratings/:dishId
 router.get('/:dishId', readLimiter, requireAuth, async (req: Request, res: Response) => {
-  const dishId = req.params['dishId'] as string;
+  const raw = req.params['dishId'] as string;
   const { stableUid } = req.user!;
 
-  const data = await getDishRatingsData(dishId, stableUid);
+  const dishKey = await resolveDishKey(raw);
+  const data = await getDishRatingsData(dishKey, stableUid);
   res.json(data);
 });
 
@@ -40,24 +46,29 @@ router.post('/batch', readLimiter, requireAuth, async (req: Request, res: Respon
   const { stableUid } = req.user!;
   const { dishIds } = batchSchema.parse(req.body);
 
+  // Resolve each incoming id → stableKey; keep a reverse map so we can echo the
+  // original id back to the client (backwards compatible with older frontends).
+  const keyByInput = new Map<string, string>();
+  for (const id of dishIds) keyByInput.set(id, await resolveDishKey(id));
+  const uniqueKeys = [...new Set(keyByInput.values())];
+
   const rows = await prisma.dishRating.findMany({
-    where: { dishId: { in: dishIds } },
+    where: { dishId: { in: uniqueKeys } },
   });
 
-  const result: Record<string, { ratings: Record<string, number>; myRating: number | null }> = {};
-
-  for (const dishId of dishIds) {
-    result[dishId] = { ratings: {}, myRating: null };
+  const byKey = new Map<string, { ratings: Record<string, number>; myRating: number | null }>();
+  for (const k of uniqueKeys) byKey.set(k, { ratings: {}, myRating: null });
+  for (const row of rows) {
+    const entry = byKey.get(row.dishId);
+    if (!entry) continue;
+    entry.ratings[row.stableUid] = row.stars;
+    if (row.stableUid === stableUid) entry.myRating = row.stars;
   }
 
-  for (const row of rows) {
-    if (!result[row.dishId]) {
-      result[row.dishId] = { ratings: {}, myRating: null };
-    }
-    result[row.dishId].ratings[row.stableUid] = row.stars;
-    if (row.stableUid === stableUid) {
-      result[row.dishId].myRating = row.stars;
-    }
+  const result: Record<string, { ratings: Record<string, number>; myRating: number | null }> = {};
+  for (const [inputId, key] of keyByInput) {
+    const entry = byKey.get(key) ?? { ratings: {}, myRating: null };
+    result[inputId] = entry;
   }
 
   res.json(result);
@@ -71,27 +82,28 @@ const rateSchema = z.object({
 });
 
 router.post('/:dishId', writeLimiter, requireAuth, async (req: Request, res: Response) => {
-  const dishId = req.params['dishId'] as string;
+  const raw = req.params['dishId'] as string;
   const { stableUid } = req.user!;
-  const { stars, name, imageUrl } = rateSchema.parse(req.body);
+  const { stars, name } = rateSchema.parse(req.body);
 
-  // Register dish in catalog only if it doesn't exist yet (never overwrite admin data)
-  if (name) {
-    await prisma.dish.upsert({
-      where: { id: dishId },
-      create: { id: dishId, nameDe: name, imageUrl: imageUrl ?? '', date: new Date() },
-      update: {},
-    });
-  }
+  // Prefer resolving via existing dish → its slug. If nothing matches and a
+  // name is provided, fall back to slugifying the name so users can still rate
+  // dishes that haven't been registered yet.
+  let dishKey = await resolveDishKey(raw);
+  if (!dishKey && name) dishKey = slugifyDishName(name);
+  if (!dishKey) dishKey = raw; // last resort — echo back
 
   await prisma.dishRating.upsert({
-    where: { dishId_stableUid: { dishId, stableUid } },
-    create: { dishId, stableUid, stars },
+    where: { dishId_stableUid: { dishId: dishKey, stableUid } },
+    create: { dishId: dishKey, stableUid, stars },
     update: { stars },
   });
 
-  const data = await getDishRatingsData(dishId, stableUid);
-  sseManager.broadcast(`dishRatings:${dishId}`, 'dishRatings', data);
+  const data = await getDishRatingsData(dishKey, stableUid);
+  // Broadcast on BOTH channels so old frontends (subscribing by the raw id
+  // they last saw) still get updates alongside new frontends (using the key).
+  sseManager.broadcast(`dishRatings:${dishKey}`, 'dishRatings', data);
+  if (raw !== dishKey) sseManager.broadcast(`dishRatings:${raw}`, 'dishRatings', data);
 
   res.json(data);
 });

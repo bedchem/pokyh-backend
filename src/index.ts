@@ -20,6 +20,7 @@ import { startPushPoller } from './services/pushPoller';
 import { startArchiver } from './services/archiver';
 import { startSchoolYearArchiver } from './services/schoolYearArchiver';
 import { applyAdditiveSchema } from './services/schemaSync';
+import { migrateStableKeys } from './utils/dishKey';
 import { logger } from './utils/logger';
 
 const app = express();
@@ -272,6 +273,12 @@ async function connectDatabaseWithRetry() {
       }
       await prisma.$connect();
       logger.info('Database ready (schema applied, connected)');
+      // Idempotent — safe to run every boot. Populates dish.stableKey and
+      // rewrites rating/comment dishId references so bewertungen survive
+      // resets and shared-name Sommer/Winter dishes share ratings.
+      try { await migrateStableKeys(); } catch (err) {
+        logger.warn(`stableKey migration failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+      }
       startBackgroundJobs();
       return;
     } catch (err) {

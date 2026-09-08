@@ -186,6 +186,7 @@ export interface AdminDishFull {
   date: string;
   sortOrder: number;
   plan: DishPlan;
+  stableKey?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -212,9 +213,11 @@ export interface AdminDishResetResult {
 }
 
 export interface AdminDishAnchorResult {
-  shifted: number;
+  normalized: number;
   rotated: number;
-  offsetDays: number;
+  otherAligned: number;
+  otherAnchorDate: string | null;
+  otherRotated: number;
 }
 
 export interface AdminDishRatingEntry {
@@ -226,11 +229,12 @@ export interface AdminDishRatingEntry {
 }
 
 export interface AdminDish {
-  dishId: string;
+  dishId: string; // stableKey
   name: string;
   imageUrl: string;
   avgStars: number;
   count: number;
+  plans: DishPlan[];
   ratings: AdminDishRatingEntry[];
 }
 

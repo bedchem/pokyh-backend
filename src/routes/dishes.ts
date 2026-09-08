@@ -3,6 +3,7 @@ import { prisma } from '../db';
 import { readLimiter } from '../middleware/rateLimiter';
 import { dishesCache, currentSeason, dishesCacheKey } from '../utils/cache';
 import { rotatePastWeeks } from '../utils/mensaRotate';
+import { slugifyDishName } from '../utils/dishKey';
 import { logger } from '../utils/logger';
 
 const router = Router();
@@ -15,6 +16,7 @@ function dishToJson(d: {
   prepTime: number; calories: number; price: number;
   protein: number; fat: number; allergens: string;
   isVegetarian: boolean; isVegan: boolean; date: Date;
+  stableKey: string;
 }) {
   let tags: string[] = [];
   let allergens: string[] = [];
@@ -31,8 +33,14 @@ function dishToJson(d: {
   if (d.isVegetarian) normalizedTags.set('vegetarisch', 'Vegetarisch');
   if (d.isVegan) normalizedTags.set('vegan', 'Vegan');
 
+  // Expose the stableKey as the public `id` so ratings/comments the frontend
+  // sends land on a key that survives resets and is shared between Sommer and
+  // Winter when the dish name matches. `internalId` remains available for the
+  // image URL, which is looked up by the true PK.
+  const publicId = d.stableKey || slugifyDishName(d.nameDe) || d.id;
   return {
-    id: d.id,
+    id: publicId,
+    internalId: d.id,
     name: { de: d.nameDe, it: d.nameIt || d.nameDe, en: d.nameEn || d.nameDe },
     description: { de: d.descDe, it: d.descIt, en: d.descEn },
     imageUrl: d.imageUrl,

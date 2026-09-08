@@ -1089,22 +1089,31 @@ export function DishesPage() {
     });
   }
 
-  // "Anchor" this week to a chosen Monday. Delegates to the server which shifts
-  // the ENTIRE plan by (target - chosen) days atomically and rotates any weeks
-  // that fall into the past back to the end. So if the user picks "Diese Woche"
-  // on Woche 2, every week in the plan slides by the same offset — Woche 2
-  // lands on the current Monday, Woche 3 on next Monday, and Woche 1 (now
-  // past) auto-rolls to the end. Collisions are impossible because the entire
-  // sequence moves together.
+  // "Anchor" this week to a chosen Monday. The server:
+  //   1. Normalises the plan so every week is exactly 7 days apart from the
+  //      anchor (fixes any irregular gaps).
+  //   2. Rolls past weeks to the end, snapping each into this plan's season.
+  //   3. Aligns the OTHER plan so its first week starts right after this one's
+  //      last week (snapped into the other plan's season). Result: Sommer and
+  //      Winter chain seamlessly in both directions.
+  // No early exit even when oldWk === newMonIso: re-running "Diese Woche" is
+  // how the user asks for a fresh normalize + handoff pass.
   async function handleWeekMove(oldWk: string, newMonIso: string) {
     setEditingWeekKey(null);
-    if (oldWk === newMonIso) return;
 
     try {
       const res = await adminApi.anchorWeek(activePlan, oldWk, newMonIso);
-      let msg = `Plan verschoben (${res.offsetDays > 0 ? '+' : ''}${res.offsetDays} Tage)`;
-      if (res.rotated > 0) msg += ` · ${res.rotated} weitergerollt`;
-      showToast(msg, 'success');
+      const parts: string[] = [];
+      if (res.normalized > 0) parts.push(`${res.normalized} normalisiert`);
+      if (res.rotated > 0) parts.push(`${res.rotated} weitergerollt`);
+      if (res.otherAligned > 0 && res.otherAnchorDate) {
+        const otherName = activePlan === 'summer' ? 'Winter' : 'Sommer';
+        parts.push(`${otherName}plan → ${formatDate(res.otherAnchorDate)}`);
+      }
+      if (parts.length === 0) parts.push('bereits synchron');
+      showToast(`Plan angepasst · ${parts.join(' · ')}`, 'success');
+      // Reload both plans so the badge / other-plan state reflects handoff.
+      rotatedPlans.current.clear();
       await loadDishes(activePlan);
     } catch (err) {
       showToast(err instanceof Error ? err.message : 'Fehler beim Verschieben', 'error');

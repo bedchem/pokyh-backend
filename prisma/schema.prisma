@@ -191,11 +191,16 @@ model Dish {
   sortOrder    Int      @default(0) @map("sort_order")
   plan         String   @default("summer") @db.VarChar(10)
   sourceId     String?  @map("source_id") @db.VarChar(200)
+  // Stable slug derived from nameDe. Ratings and comments reference this key,
+  // so re-imports (which regenerate the internal id) or same-name dishes in
+  // both plans share bewertungen/kommentare automatically.
+  stableKey    String   @default("") @map("stable_key") @db.VarChar(200)
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
   @@index([plan, date])
   @@index([plan, sourceId])
+  @@index([stableKey])
   @@map("dishes")
 }
 
