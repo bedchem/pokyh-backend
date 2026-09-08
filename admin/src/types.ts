@@ -187,6 +187,7 @@ export interface AdminDishFull {
   sortOrder: number;
   plan: DishPlan;
   stableKey?: string;
+  weekOrdinal?: number;
   createdAt: string;
   updatedAt: string;
 }

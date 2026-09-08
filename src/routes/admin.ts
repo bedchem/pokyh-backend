@@ -33,7 +33,7 @@ function dishRow(d: {
   prepTime: number; calories: number; price: number;
   protein: number; fat: number; allergens: string;
   isVegetarian: boolean; isVegan: boolean; date: Date; sortOrder: number;
-  plan: string; stableKey: string;
+  plan: string; stableKey: string; weekOrdinal: number;
   createdAt: Date; updatedAt: Date;
 }) {
   return {
@@ -55,6 +55,7 @@ function dishRow(d: {
     sortOrder: d.sortOrder,
     plan: d.plan === 'winter' ? 'winter' : 'summer',
     stableKey: d.stableKey || slugifyDishName(d.nameDe),
+    weekOrdinal: d.weekOrdinal || 0,
     createdAt: d.createdAt.toISOString(),
     updatedAt: d.updatedAt.toISOString(),
   };
@@ -62,6 +63,17 @@ function dishRow(d: {
 
 function parsePlan(v: unknown, fallback: 'summer' | 'winter' = 'summer'): 'summer' | 'winter' {
   return v === 'winter' ? 'winter' : v === 'summer' ? 'summer' : fallback;
+}
+
+// Try to pull the intrinsic week number out of the source id used by
+// mensa.plattnericus.dev, which formats ids as "w1_mo", "w2_tu", … "w6_su".
+// Falls back to 0 (unknown) when the id doesn't match the pattern.
+function weekOrdinalFromSourceId(sourceId: string | null | undefined): number {
+  if (!sourceId) return 0;
+  const m = /^w(\d+)[_-]/i.exec(sourceId);
+  if (!m) return 0;
+  const n = parseInt(m[1]!, 10);
+  return Number.isFinite(n) && n > 0 && n < 1000 ? n : 0;
 }
 
 function fetchUrl(url: string): Promise<string> {
@@ -1183,6 +1195,25 @@ router.post('/dishes/import-url', requireAdmin, async (req: Request, res: Respon
   let imported = 0;
   let updated = 0;
 
+  // Fallback ordinal source: sort JSON entries by date and number the distinct
+  // Mondays 1..N so dishes whose sourceId doesn't encode a week still get a
+  // stable position.
+  const dateToOrdinalFallback = new Map<string, number>();
+  {
+    const dates = new Set<string>();
+    for (const d of list) if (d['date']) dates.add(String(d['date']));
+    const sortedDates = [...dates].sort();
+    const mondayToOrdinal = new Map<string, number>();
+    for (const iso of sortedDates) {
+      const dt = new Date(iso + 'T00:00:00Z');
+      const wd = dt.getUTCDay() || 7;
+      const mon = new Date(Date.UTC(dt.getUTCFullYear(), dt.getUTCMonth(), dt.getUTCDate() - wd + 1));
+      const monIso = mon.toISOString().split('T')[0]!;
+      if (!mondayToOrdinal.has(monIso)) mondayToOrdinal.set(monIso, mondayToOrdinal.size + 1);
+      dateToOrdinalFallback.set(iso, mondayToOrdinal.get(monIso)!);
+    }
+  }
+
   for (const d of list) {
     const rawId = d['id'];
     const sourceId = rawId ? String(rawId) : null;
@@ -1213,6 +1244,7 @@ router.post('/dishes/import-url', requireAdmin, async (req: Request, res: Respon
       plan,
       sourceId,
       stableKey: slugifyDishName(name.de.trim()),
+      weekOrdinal: weekOrdinalFromSourceId(sourceId) || dateToOrdinalFallback.get(dateRaw) || 0,
     };
 
     // Match by (plan, sourceId) so the same source JSON can populate BOTH
@@ -1279,6 +1311,23 @@ router.post('/dishes/reset', requireAdmin, async (req: Request, res: Response): 
     return { de: '', it: '', en: '' };
   }
 
+  // Fallback ordinal: number distinct Mondays 1..N by date order.
+  const dateToOrdinalFallback = new Map<string, number>();
+  {
+    const dates = new Set<string>();
+    for (const d of list) if (d['date']) dates.add(String(d['date']));
+    const sortedDates = [...dates].sort();
+    const mondayToOrdinal = new Map<string, number>();
+    for (const iso of sortedDates) {
+      const dt = new Date(iso + 'T00:00:00Z');
+      const wd = dt.getUTCDay() || 7;
+      const mon = new Date(Date.UTC(dt.getUTCFullYear(), dt.getUTCMonth(), dt.getUTCDate() - wd + 1));
+      const monIso = mon.toISOString().split('T')[0]!;
+      if (!mondayToOrdinal.has(monIso)) mondayToOrdinal.set(monIso, mondayToOrdinal.size + 1);
+      dateToOrdinalFallback.set(iso, mondayToOrdinal.get(monIso)!);
+    }
+  }
+
   const result = await prisma.$transaction(async (tx) => {
     const deleted = await tx.dish.deleteMany({ where: { plan } });
     let imported = 0;
@@ -1315,6 +1364,7 @@ router.post('/dishes/reset', requireAdmin, async (req: Request, res: Response): 
           plan,
           sourceId,
           stableKey: slugifyDishName(name.de.trim()),
+          weekOrdinal: weekOrdinalFromSourceId(sourceId) || dateToOrdinalFallback.get(dateRaw) || 0,
         },
       });
       imported++;
@@ -1562,6 +1612,14 @@ router.get('/comments', requireAdmin, async (req: Request, res: Response): Promi
     type === 'reminder' ? Promise.resolve(0) : prisma.dishComment.count({ where }),
   ]);
 
+  // Resolve each dishComment's dishId (which is a stableKey after migration) to
+  // a human name for the "contextTitle" column. One query, then Map lookup.
+  const keys = [...new Set(dishComments.map((c) => c.dishId))];
+  const dishesForKeys = keys.length > 0
+    ? await prisma.dish.findMany({ where: { stableKey: { in: keys } }, select: { stableKey: true, nameDe: true } })
+    : [];
+  const keyToName = new Map(dishesForKeys.map((d) => [d.stableKey, d.nameDe]));
+
   const allComments = [
     ...reminderComments.map((c) => ({
       id: c.id,
@@ -1584,7 +1642,7 @@ router.get('/comments', requireAdmin, async (req: Request, res: Response): Promi
       createdAt: c.createdAt.toISOString(),
       updatedAt: c.updatedAt.toISOString(),
       contextId: c.dishId,
-      contextTitle: c.dishId,
+      contextTitle: keyToName.get(c.dishId) ?? c.dishId,
       classId: null,
     })),
   ].sort((a, b) => {

@@ -98,6 +98,27 @@ function currentSeason(now: Date = new Date()): DishPlan {
   return m >= 4 && m <= 10 ? 'summer' : 'winter';
 }
 
+// Mirror of the backend slugifyDishName. Used as a fallback so rating/comment
+// lookups still work for dishes that haven't been re-migrated yet.
+function slugifyDishName(name: string): string {
+  const s = (name ?? '').toString();
+  const stripped = s
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(new RegExp('[̀-ͯ]', 'g'), '')
+    .replace(/ß/g, 'ss')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return stripped.slice(0, 180);
+}
+
+// The stable key ratings/comments are stored under. Prefer the server-supplied
+// stableKey; fall back to a fresh slug so the UI still stitches things together
+// even against slightly older API responses.
+function dishKeyOf(dish: { stableKey?: string; nameDe: string }): string {
+  return dish.stableKey && dish.stableKey.length > 0 ? dish.stableKey : slugifyDishName(dish.nameDe);
+}
+
 // Which season the given ISO date logically belongs to. Used to warn the user
 // when a week of the active plan has drifted into the other season's window —
 // on that Monday the public /dishes endpoint will switch to the other plan.
@@ -1114,7 +1135,7 @@ export function DishesPage() {
       showToast(`Plan angepasst · ${parts.join(' · ')}`, 'success');
       // Reload both plans so the badge / other-plan state reflects handoff.
       rotatedPlans.current.clear();
-      await loadDishes(activePlan);
+      await Promise.all([loadDishes(activePlan), loadRatings()]);
     } catch (err) {
       showToast(err instanceof Error ? err.message : 'Fehler beim Verschieben', 'error');
       loadDishes(activePlan);
@@ -1212,7 +1233,7 @@ export function DishesPage() {
   }
 
   const editRatingData = editDish && editDish !== 'new'
-    ? (ratingsMap.get((editDish as AdminDishFull).id) ?? null)
+    ? (ratingsMap.get(dishKeyOf(editDish as AdminDishFull)) ?? null)
     : null;
 
   const draggingWeekIdx = draggingWeekKey
@@ -1539,7 +1560,7 @@ export function DishesPage() {
                         onClick={() => toggleWeek(wk)}
                       >
                         <span className="text-xs font-bold uppercase tracking-widest" style={{ color: '#0a84ff' }}>
-                          Woche {wi + 1}&nbsp;&middot;&nbsp;{formatWeekRange(wk)}&nbsp;&middot;&nbsp;{wDishes.length} {wDishes.length === 1 ? 'Gericht' : 'Gerichte'}
+                          Woche {wDishes[0]?.weekOrdinal || (wi + 1)}&nbsp;&middot;&nbsp;{formatWeekRange(wk)}&nbsp;&middot;&nbsp;{wDishes.length} {wDishes.length === 1 ? 'Gericht' : 'Gerichte'}
                         </span>
                       </button>
                     )}
@@ -1640,7 +1661,7 @@ export function DishesPage() {
                             </div>
                             <DishCard
                               dish={dish}
-                              ratingData={ratingsMap.get(dish.id)}
+                              ratingData={ratingsMap.get(dishKeyOf(dish))}
                               onEdit={setEditDish}
                               onDelete={handleDeleted}
                               onDragStart={() => setDraggingDishId(dish.id)}

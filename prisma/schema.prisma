@@ -195,6 +195,11 @@ model Dish {
   // so re-imports (which regenerate the internal id) or same-name dishes in
   // both plans share bewertungen/kommentare automatically.
   stableKey    String   @default("") @map("stable_key") @db.VarChar(200)
+  // Cycle-position of the dish's week (1..N). Set at import (parsed from
+  // sourceId like "w6_mo" or inferred from date order) and NEVER changed by
+  // anchor/rotate. The UI labels weeks by this ordinal, so Woche 1's content
+  // keeps being Woche 1 even after rotation puts it later in the calendar.
+  weekOrdinal  Int      @default(0) @map("week_ordinal")
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
