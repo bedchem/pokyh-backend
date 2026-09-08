@@ -1173,7 +1173,7 @@ router.post('/dishes/import-url', requireAdmin, async (req: Request, res: Respon
 
   for (const d of list) {
     const rawId = d['id'];
-    const id = rawId ? String(rawId) : uuidv4();
+    const sourceId = rawId ? String(rawId) : null;
     const name = parseName(d['name']);
     const desc = parseName(d['description'] ?? '');
     const dateRaw = d['date'] ? String(d['date']) : null;
@@ -1199,14 +1199,25 @@ router.post('/dishes/import-url', requireAdmin, async (req: Request, res: Respon
       isVegan: d['isVegan'] === true,
       date: new Date(dateRaw),
       plan,
+      sourceId,
     };
 
-    const existing = await prisma.dish.findUnique({ where: { id } });
+    // Match by (plan, sourceId) so the same source JSON can populate BOTH
+    // plans independently. Fall back to plain id for legacy rows that were
+    // imported before sourceId existed and don't yet have it.
+    let existing = sourceId
+      ? await prisma.dish.findFirst({ where: { plan, sourceId } })
+      : null;
+    if (!existing && sourceId) {
+      const legacy = await prisma.dish.findUnique({ where: { id: sourceId } });
+      if (legacy && legacy.plan === plan) existing = legacy;
+    }
+
     if (existing) {
-      await prisma.dish.update({ where: { id }, data });
+      await prisma.dish.update({ where: { id: existing.id }, data });
       updated++;
     } else {
-      await prisma.dish.create({ data: { id, ...data } });
+      await prisma.dish.create({ data: { id: uuidv4(), ...data } });
       imported++;
     }
   }
@@ -1260,7 +1271,7 @@ router.post('/dishes/reset', requireAdmin, async (req: Request, res: Response): 
     let imported = 0;
     for (const d of list) {
       const rawId = d['id'];
-      const id = rawId ? String(rawId) : uuidv4();
+      const sourceId = rawId ? String(rawId) : null;
       const name = parseName(d['name']);
       const desc = parseName(d['description'] ?? '');
       const dateRaw = d['date'] ? String(d['date']) : null;
@@ -1268,7 +1279,8 @@ router.post('/dishes/reset', requireAdmin, async (req: Request, res: Response): 
 
       await tx.dish.create({
         data: {
-          id,
+          // Fresh UUIDs so a source id can live in BOTH plans simultaneously.
+          id: uuidv4(),
           nameDe: name.de.trim(),
           nameIt: name.it.trim(),
           nameEn: name.en.trim(),
@@ -1288,6 +1300,7 @@ router.post('/dishes/reset', requireAdmin, async (req: Request, res: Response): 
           isVegan: d['isVegan'] === true,
           date: new Date(dateRaw),
           plan,
+          sourceId,
         },
       });
       imported++;
@@ -1329,6 +1342,45 @@ router.post('/dishes/cascade-shift', requireAdmin, async (req: Request, res: Res
 
   invalidateDishesCache();
   res.json({ shifted: Number(shifted) || 0 });
+});
+
+// ─── POST /api/admin/dishes/anchor-week ──────────────────────────────────────
+// "Make week X land on this Monday". Shifts the ENTIRE plan by
+// (targetMonday - chosenWeek) days so the sequence stays consecutive, then
+// rotates any weeks that fell into the past back to the end. All in one
+// transaction so the client never sees a torn state.
+
+router.post('/dishes/anchor-week', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const plan = parsePlan(req.body?.plan);
+  const chosenRaw = req.body?.chosenWeek ? String(req.body.chosenWeek) : '';
+  const targetRaw = req.body?.targetMonday ? String(req.body.targetMonday) : '';
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(chosenRaw) || !/^\d{4}-\d{2}-\d{2}$/.test(targetRaw)) {
+    res.status(400).json({ error: 'chosenWeek and targetMonday must be YYYY-MM-DD' });
+    return;
+  }
+
+  const chosen = new Date(chosenRaw + 'T00:00:00Z');
+  const target = new Date(targetRaw + 'T00:00:00Z');
+  const offsetDays = Math.round((target.getTime() - chosen.getTime()) / 86400000);
+
+  if (Math.abs(offsetDays) > 365 * 5) {
+    res.status(400).json({ error: 'offset out of range' });
+    return;
+  }
+
+  const result = await prisma.$transaction(async (tx) => {
+    let shifted = 0;
+    if (offsetDays !== 0) {
+      const r = await tx.$executeRaw`UPDATE dishes SET date = DATE_ADD(date, INTERVAL ${offsetDays} DAY) WHERE plan = ${plan}`;
+      shifted = Number(r) || 0;
+    }
+    const rotated = await rotatePastWeeks(plan, tx);
+    return { shifted, rotated, offsetDays };
+  });
+
+  invalidateDishesCache();
+  res.json(result);
 });
 
 // ─── POST /api/admin/dishes/auto-rotate ──────────────────────────────────────

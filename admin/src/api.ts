@@ -1,4 +1,4 @@
-import type { AdminStats, AdminClass, AdminSession, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish, AdminDishFull, AdminDishImportResult, AdminDishShiftResult, AdminDishRotateResult, AdminDishResetResult, DishPlan, AdminCommentsResponse, FileLogFile, FileLogResponse, FileLogEntry, FrontendActivityLogsResponse, FrontendActivityStats, AllTodosResponse, AllRemindersResponse, SchoolYearsResponse, ArchivedUsersResponse, ArchivedClass, ArchivedTodosResponse, ArchivedRemindersResponse, RolloverResult, RollbackResult } from './types';
+import type { AdminStats, AdminClass, AdminSession, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish, AdminDishFull, AdminDishImportResult, AdminDishShiftResult, AdminDishRotateResult, AdminDishResetResult, AdminDishAnchorResult, DishPlan, AdminCommentsResponse, FileLogFile, FileLogResponse, FileLogEntry, FrontendActivityLogsResponse, FrontendActivityStats, AllTodosResponse, AllRemindersResponse, SchoolYearsResponse, ArchivedUsersResponse, ArchivedClass, ArchivedTodosResponse, ArchivedRemindersResponse, RolloverResult, RollbackResult } from './types';
 
 const TOKEN_KEY = 'pokyh_admin_token';
 
@@ -254,6 +254,9 @@ export const adminApi = {
 
   resetDishesFromUrl: (plan: DishPlan, url?: string): Promise<AdminDishResetResult> =>
     request<AdminDishResetResult>('POST', '/api/admin/dishes/reset', url ? { plan, url } : { plan }),
+
+  anchorWeek: (plan: DishPlan, chosenWeek: string, targetMonday: string): Promise<AdminDishAnchorResult> =>
+    request<AdminDishAnchorResult>('POST', '/api/admin/dishes/anchor-week', { plan, chosenWeek, targetMonday }),
 
   listSubjectImages: (): Promise<import('./types').AdminSubjectImage[]> =>
     request<import('./types').AdminSubjectImage[]>('GET', '/api/admin/subject-images'),

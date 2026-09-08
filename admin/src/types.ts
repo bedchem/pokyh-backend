@@ -211,6 +211,12 @@ export interface AdminDishResetResult {
   plan: DishPlan;
 }
 
+export interface AdminDishAnchorResult {
+  shifted: number;
+  rotated: number;
+  offsetDays: number;
+}
+
 export interface AdminDishRatingEntry {
   stableUid: string;
   username: string;

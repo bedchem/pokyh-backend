@@ -190,10 +190,12 @@ model Dish {
   date         DateTime @db.Date
   sortOrder    Int      @default(0) @map("sort_order")
   plan         String   @default("summer") @db.VarChar(10)
+  sourceId     String?  @map("source_id") @db.VarChar(200)
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
   @@index([plan, date])
+  @@index([plan, sourceId])
   @@map("dishes")
 }
 

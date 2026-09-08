@@ -98,11 +98,13 @@ function currentSeason(now: Date = new Date()): DishPlan {
   return m >= 4 && m <= 10 ? 'summer' : 'winter';
 }
 
-function diffDays(fromIso: string, toIso: string): number {
-  const from = new Date(fromIso + 'T00:00:00').getTime();
-  const to = new Date(toIso + 'T00:00:00').getTime();
-  return Math.round((to - from) / 86400000);
+// Which season the given ISO date logically belongs to. Used to warn the user
+// when a week of the active plan has drifted into the other season's window —
+// on that Monday the public /dishes endpoint will switch to the other plan.
+function seasonOfIsoDate(iso: string): DishPlan {
+  return currentSeason(new Date(iso + 'T00:00:00'));
 }
+
 
 // ─── StarsDisplay ────────────────────────────────────────────────────────────
 
@@ -260,7 +262,7 @@ interface DishFormProps {
   ratingData: AdminDish | null;
   initialDate?: string;
   activePlan: DishPlan;
-  onSaved: (d: AdminDishFull, meta: { cascadeOffsetDays: number; cascadeFromWeek: string | null }) => void;
+  onSaved: (d: AdminDishFull) => void;
   onClose: () => void;
   onRatingChanged: () => void;
 }
@@ -276,8 +278,6 @@ function DishForm({ dish, ratingData, initialDate, activePlan, onSaved, onClose,
   );
   const [saving, setSaving] = useState(false);
   const [tab, setTab] = useState<'basic' | 'nutrition' | 'ratings'>('basic');
-
-  const originalDate = dish?.date ?? null;
 
   function set<K extends keyof typeof form>(k: K, v: typeof form[K]) {
     setForm((p) => ({ ...p, [k]: v }));
@@ -313,22 +313,7 @@ function DishForm({ dish, ratingData, initialDate, activePlan, onSaved, onClose,
       const saved = isEdit
         ? await adminApi.updateDish(dish!.id, payload)
         : await adminApi.createDish(payload);
-
-      // Cascade: if editing and date moved to a different week, the parent
-      // may want to shift all following weeks by the same offset. We compute
-      // the delta here and pass it up; parent decides whether to prompt.
-      let cascadeOffsetDays = 0;
-      let cascadeFromWeek: string | null = null;
-      if (isEdit && originalDate && originalDate !== form.date) {
-        const oldMon = weekKey(originalDate);
-        const newMon = weekKey(form.date);
-        if (oldMon !== newMon) {
-          cascadeOffsetDays = diffDays(oldMon, newMon);
-          cascadeFromWeek = nextWeekKey(oldMon);
-        }
-      }
-
-      onSaved(saved, { cascadeOffsetDays, cascadeFromWeek });
+      onSaved(saved);
       showToast(isEdit ? 'Gericht gespeichert' : 'Gericht erstellt', 'success');
     } catch (err) {
       showToast(err instanceof Error ? err.message : 'Fehler beim Speichern', 'error');
@@ -840,48 +825,6 @@ function ImportDialog({ defaultPlan, onDone, onClose }: { defaultPlan: DishPlan;
   );
 }
 
-// ─── CascadePrompt ──────────────────────────────────────────────────────────
-// Small confirmation shown after the user manually moves a dish to a different
-// week. Lets them shift every following week by the same offset in one click.
-
-function CascadePrompt({
-  offsetDays, onConfirm, onDismiss,
-}: { offsetDays: number; onConfirm: () => void; onDismiss: () => void }) {
-  const dir = offsetDays > 0 ? 'nach hinten' : 'nach vorne';
-  const days = Math.abs(offsetDays);
-  return createPortal(
-    <div className="fixed z-[9999] bottom-6 left-1/2 -translate-x-1/2 rounded-[14px] px-4 py-3 flex items-center gap-3 animate-fadeInUp"
-      style={{
-        background: '#1c1c1e',
-        border: '1px solid rgba(10,132,255,0.35)',
-        boxShadow: '0 12px 40px rgba(0,0,0,0.5)',
-        maxWidth: 'calc(100vw - 32px)',
-      }}
-    >
-      <span className="text-sm" style={{ color: 'rgba(235,235,245,0.8)' }}>
-        Folgende Wochen um <b>{days} {days === 1 ? 'Tag' : 'Tage'} {dir}</b> verschieben?
-      </span>
-      <div className="flex gap-2">
-        <button
-          onClick={onConfirm}
-          className="px-3 py-1.5 rounded-[10px] text-xs font-semibold transition-colors"
-          style={{ background: 'rgba(10,132,255,0.2)', color: '#0a84ff', border: '1px solid rgba(10,132,255,0.35)' }}
-        >
-          Ja, alle folgenden
-        </button>
-        <button
-          onClick={onDismiss}
-          className="px-3 py-1.5 rounded-[10px] text-xs transition-colors"
-          style={{ background: 'rgba(255,255,255,0.05)', color: 'rgba(235,235,245,0.5)', border: '1px solid rgba(255,255,255,0.08)' }}
-        >
-          Nein
-        </button>
-      </div>
-    </div>,
-    document.body
-  );
-}
-
 // ─── WeekDropzone ──────────────────────────────────────────────────────────
 // Insert-target between weeks. Invisible until a week is being dragged and
 // this dropzone is not directly adjacent to that week. Grows and highlights
@@ -937,8 +880,6 @@ export function DishesPage() {
   // We store which weeks the user has *expanded*; everything else is collapsed.
   // That way newly loaded weeks come in collapsed by default without extra work.
   const [expandedWeeks, setExpandedWeeks] = useState<Set<string>>(new Set());
-  const [pendingCascade, setPendingCascade] = useState<{ fromWeek: string; offsetDays: number } | null>(null);
-
   // drag state
   const [draggingDishId, setDraggingDishId] = useState<string | null>(null);
   const [draggingWeekKey, setDraggingWeekKey] = useState<string | null>(null);
@@ -1148,77 +1089,23 @@ export function DishesPage() {
     });
   }
 
-  // Move an entire week to a different Monday. Every dish in that week keeps
-  // its weekday. If the target Monday collides with an existing week, we abort
-  // (that would silently merge two weeks into one). After a successful move,
-  // if the shift is non-zero, offer to cascade the same offset to every week
-  // that comes after.
+  // "Anchor" this week to a chosen Monday. Delegates to the server which shifts
+  // the ENTIRE plan by (target - chosen) days atomically and rotates any weeks
+  // that fall into the past back to the end. So if the user picks "Diese Woche"
+  // on Woche 2, every week in the plan slides by the same offset — Woche 2
+  // lands on the current Monday, Woche 3 on next Monday, and Woche 1 (now
+  // past) auto-rolls to the end. Collisions are impossible because the entire
+  // sequence moves together.
   async function handleWeekMove(oldWk: string, newMonIso: string) {
-    if (oldWk === newMonIso) {
-      setEditingWeekKey(null);
-      return;
-    }
-
-    // Check collision: the target monday must not already host another week.
-    const existingKeys = new Set<string>();
-    for (const d of dishes) existingKeys.add(weekKey(d.date));
-    for (const k of planEmptyWeeks) existingKeys.add(k);
-    existingKeys.delete(oldWk);
-    if (existingKeys.has(newMonIso)) {
-      showToast('Diese Kalenderwoche ist bereits belegt', 'error');
-      return;
-    }
-
-    const weekDishes = dishes.filter((d) => weekKey(d.date) === oldWk);
-    const dishUpdates = weekDishes.map((d) => ({
-      dish: d,
-      newDate: dateForWeekAndDow(newMonIso, getDayOfWeek(d.date)),
-    }));
-
-    // Optimistic UI first.
-    if (dishUpdates.length > 0) {
-      const map = new Map(dishUpdates.map((u) => [u.dish.id, u.newDate]));
-      setDishes((prev) => prev.map((d) => {
-        const nd = map.get(d.id);
-        return nd ? { ...d, date: nd } : d;
-      }));
-    }
-    if (planEmptyWeeks.has(oldWk)) {
-      setEmptyWeeks((prev) => {
-        const next = new Map(prev);
-        const s = new Set(next.get(activePlan) ?? []);
-        s.delete(oldWk);
-        s.add(newMonIso);
-        next.set(activePlan, s);
-        return next;
-      });
-    }
-    // Keep the moved week expanded if it was expanded.
-    setExpandedWeeks((prev) => {
-      if (!prev.has(oldWk)) return prev;
-      const next = new Set(prev);
-      next.delete(oldWk);
-      next.add(newMonIso);
-      return next;
-    });
-
     setEditingWeekKey(null);
+    if (oldWk === newMonIso) return;
 
     try {
-      if (dishUpdates.length > 0) {
-        await Promise.all(
-          dishUpdates.map(({ dish, newDate }) =>
-            adminApi.updateDish(dish.id, buildDishPayload(dish, newDate))
-          )
-        );
-      }
-      showToast('Woche verschoben', 'success');
-
-      // Offer cascade: shift every following week by the same delta.
-      const offset = diffDays(oldWk, newMonIso);
-      if (offset !== 0) {
-        setPendingCascade({ fromWeek: nextWeekKey(oldWk), offsetDays: offset });
-      }
+      const res = await adminApi.anchorWeek(activePlan, oldWk, newMonIso);
+      let msg = `Plan verschoben (${res.offsetDays > 0 ? '+' : ''}${res.offsetDays} Tage)`;
+      if (res.rotated > 0) msg += ` · ${res.rotated} weitergerollt`;
+      showToast(msg, 'success');
+      await loadDishes(activePlan);
     } catch (err) {
       showToast(err instanceof Error ? err.message : 'Fehler beim Verschieben', 'error');
       loadDishes(activePlan);
@@ -1237,12 +1124,9 @@ export function DishesPage() {
 
   // ── CRUD callbacks ─────────────────────────────────────────────────────────
 
-  function handleSaved(_d: AdminDishFull, meta: { cascadeOffsetDays: number; cascadeFromWeek: string | null }) {
+  function handleSaved(_d: AdminDishFull) {
     setEditDish(null);
     setNewDishInitialDate(undefined);
-    if (meta.cascadeOffsetDays !== 0 && meta.cascadeFromWeek) {
-      setPendingCascade({ fromWeek: meta.cascadeFromWeek, offsetDays: meta.cascadeOffsetDays });
-    }
     loadDishes(activePlan);
   }
 
@@ -1273,19 +1157,6 @@ export function DishesPage() {
     } finally {
       setResetting(false);
       setConfirmingReset(false);
-    }
-  }
-
-  async function confirmCascade() {
-    if (!pendingCascade) return;
-    const c = pendingCascade;
-    setPendingCascade(null);
-    try {
-      const res = await adminApi.cascadeShiftDishes(activePlan, c.fromWeek, c.offsetDays);
-      showToast(`${res.shifted} Gerichte verschoben`, 'success');
-      loadDishes(activePlan);
-    } catch (err) {
-      showToast(err instanceof Error ? err.message : 'Fehler beim Cascade-Shift', 'error');
     }
   }
 
@@ -1664,6 +1535,24 @@ export function DishesPage() {
                       </button>
                     )}
 
+                    {/* Season boundary badge — this week's Monday falls in the
+                        other season, so the public endpoint will serve the other
+                        plan for it. */}
+                    {editingWeekKey !== wk && seasonOfIsoDate(wk) !== activePlan && (
+                      <span
+                        className="flex-shrink-0 flex items-center gap-1 px-2 py-1 rounded-[8px] text-[10px] font-bold uppercase tracking-wider"
+                        style={{
+                          background: seasonOfIsoDate(wk) === 'winter' ? 'rgba(64,156,255,0.18)' : 'rgba(255,159,10,0.18)',
+                          color: seasonOfIsoDate(wk) === 'winter' ? '#409cff' : '#ff9f0a',
+                          border: seasonOfIsoDate(wk) === 'winter' ? '1px solid rgba(64,156,255,0.35)' : '1px solid rgba(255,159,10,0.35)',
+                        }}
+                        title={`Am ${formatWeekRange(wk).split('–')[0].trim()} übernimmt der ${seasonOfIsoDate(wk) === 'winter' ? 'Winter' : 'Sommer'}plan diesen Zeitraum`}
+                      >
+                        {seasonOfIsoDate(wk) === 'winter' ? <Snowflake size={11} /> : <Sun size={11} />}
+                        {seasonOfIsoDate(wk) === 'winter' ? 'Winterplan aktiv' : 'Sommerplan aktiv'}
+                      </span>
+                    )}
+
                     {/* Edit week date */}
                     {editingWeekKey !== wk && (
                       <button
@@ -1795,13 +1684,6 @@ export function DishesPage() {
         />
       )}
 
-      {pendingCascade && (
-        <CascadePrompt
-          offsetDays={pendingCascade.offsetDays}
-          onConfirm={confirmCascade}
-          onDismiss={() => setPendingCascade(null)}
-        />
-      )}
     </div>
   );
 }
