@@ -1,11 +1,11 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import {
   UtensilsCrossed, Plus, Pencil, Trash2, Download, X, ChevronDown, ChevronUp, Leaf, Sprout, Star,
-  GripVertical, CalendarPlus,
+  GripVertical, CalendarPlus, Sun, Snowflake,
 } from 'lucide-react';
 import { adminApi } from '../api';
-import type { AdminDishFull, AdminDish, AdminDishRatingEntry } from '../types';
+import type { AdminDishFull, AdminDish, AdminDishRatingEntry, DishPlan } from '../types';
 import { useToast } from '../components/Toast';
 
 // ─── helpers ────────────────────────────────────────────────────────────────
@@ -57,11 +57,11 @@ function buildDishPayload(dish: AdminDishFull, date: string) {
     prepTime: dish.prepTime, calories: dish.calories, price: dish.price,
     protein: dish.protein, fat: dish.fat,
     isVegetarian: dish.isVegetarian, isVegan: dish.isVegan,
-    sortOrder: dish.sortOrder, date,
+    sortOrder: dish.sortOrder, plan: dish.plan, date,
   };
 }
 
-function emptyDish(defaultDate?: string): Omit<AdminDishFull, 'id' | 'createdAt' | 'updatedAt'> {
+function emptyDish(defaultDate?: string, plan: DishPlan = 'summer'): Omit<AdminDishFull, 'id' | 'createdAt' | 'updatedAt'> {
   const today = defaultDate ?? new Date().toISOString().split('T')[0];
   return {
     nameDe: '', nameIt: '', nameEn: '',
@@ -70,8 +70,20 @@ function emptyDish(defaultDate?: string): Omit<AdminDishFull, 'id' | 'createdAt'
     tags: [], allergens: [],
     prepTime: 0, calories: 0, price: 0, protein: 0, fat: 0,
     isVegetarian: false, isVegan: false,
-    date: today, sortOrder: 0,
+    date: today, sortOrder: 0, plan,
   };
+}
+
+// Summer runs April 1 – October 31; winter is the rest. Mirrors backend logic.
+function currentSeason(now: Date = new Date()): DishPlan {
+  const m = now.getMonth() + 1;
+  return m >= 4 && m <= 10 ? 'summer' : 'winter';
+}
+
+function diffDays(fromIso: string, toIso: string): number {
+  const from = new Date(fromIso + 'T00:00:00').getTime();
+  const to = new Date(toIso + 'T00:00:00').getTime();
+  return Math.round((to - from) / 86400000);
 }
 
 // ─── StarsDisplay ────────────────────────────────────────────────────────────
@@ -229,22 +241,25 @@ interface DishFormProps {
   dish: AdminDishFull | null;
   ratingData: AdminDish | null;
   initialDate?: string;
-  onSaved: (d: AdminDishFull) => void;
+  activePlan: DishPlan;
+  onSaved: (d: AdminDishFull, meta: { cascadeOffsetDays: number; cascadeFromWeek: string | null }) => void;
   onClose: () => void;
   onRatingChanged: () => void;
 }
 
-function DishForm({ dish, ratingData, initialDate, onSaved, onClose, onRatingChanged }: DishFormProps) {
+function DishForm({ dish, ratingData, initialDate, activePlan, onSaved, onClose, onRatingChanged }: DishFormProps) {
   const { showToast } = useToast();
   const isEdit = dish !== null;
 
   const [form, setForm] = useState(() =>
     dish
       ? { ...dish, tagsText: dish.tags.join('\n'), allergensText: dish.allergens.join('\n') }
-      : { ...emptyDish(initialDate), tagsText: '', allergensText: '' }
+      : { ...emptyDish(initialDate, activePlan), tagsText: '', allergensText: '' }
   );
   const [saving, setSaving] = useState(false);
   const [tab, setTab] = useState<'basic' | 'nutrition' | 'ratings'>('basic');
+
+  const originalDate = dish?.date ?? null;
 
   function set<K extends keyof typeof form>(k: K, v: typeof form[K]) {
     setForm((p) => ({ ...p, [k]: v }));
@@ -275,11 +290,27 @@ function DishForm({ dish, ratingData, initialDate, onSaved, onClose, onRatingCha
         isVegan: Boolean(form.isVegan),
         date: form.date,
         sortOrder: Number(form.sortOrder) || 0,
+        plan: form.plan,
       };
       const saved = isEdit
         ? await adminApi.updateDish(dish!.id, payload)
         : await adminApi.createDish(payload);
-      onSaved(saved);
+
+      // Cascade: if editing and date moved to a different week, the parent
+      // may want to shift all following weeks by the same offset. We compute
+      // the delta here and pass it up; parent decides whether to prompt.
+      let cascadeOffsetDays = 0;
+      let cascadeFromWeek: string | null = null;
+      if (isEdit && originalDate && originalDate !== form.date) {
+        const oldMon = weekKey(originalDate);
+        const newMon = weekKey(form.date);
+        if (oldMon !== newMon) {
+          cascadeOffsetDays = diffDays(oldMon, newMon);
+          cascadeFromWeek = nextWeekKey(oldMon);
+        }
+      }
+
+      onSaved(saved, { cascadeOffsetDays, cascadeFromWeek });
       showToast(isEdit ? 'Gericht gespeichert' : 'Gericht erstellt', 'success');
     } catch (err) {
       showToast(err instanceof Error ? err.message : 'Fehler beim Speichern', 'error');
@@ -385,11 +416,42 @@ function DishForm({ dish, ratingData, initialDate, onSaved, onClose, onRatingCha
                 />
               </div>
 
-              <div>
-                <label style={lblStyle} className={lbl}>Datum *</label>
-                <input type="date" className={inp} style={inpStyle} value={form.date}
-                  onChange={(e) => set('date', e.target.value)}
-                  onFocus={focusStyle} onBlur={blurStyle} />
+              <div className="grid grid-cols-[1fr_auto] gap-3">
+                <div>
+                  <label style={lblStyle} className={lbl}>Datum *</label>
+                  <input type="date" className={inp} style={inpStyle} value={form.date}
+                    onChange={(e) => set('date', e.target.value)}
+                    onFocus={focusStyle} onBlur={blurStyle} />
+                </div>
+                <div>
+                  <label style={lblStyle} className={lbl}>Plan</label>
+                  <div className="flex gap-1 h-[38px]">
+                    <button
+                      type="button"
+                      onClick={() => set('plan', 'summer')}
+                      className="flex items-center gap-1.5 px-3 rounded-[8px] text-xs font-semibold transition-all"
+                      style={{
+                        background: form.plan === 'summer' ? 'rgba(255,159,10,0.18)' : 'rgba(255,255,255,0.04)',
+                        border: form.plan === 'summer' ? '1px solid rgba(255,159,10,0.45)' : '1px solid rgba(255,255,255,0.09)',
+                        color: form.plan === 'summer' ? '#ff9f0a' : 'rgba(235,235,245,0.4)',
+                      }}
+                    >
+                      <Sun size={13} /> Sommer
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => set('plan', 'winter')}
+                      className="flex items-center gap-1.5 px-3 rounded-[8px] text-xs font-semibold transition-all"
+                      style={{
+                        background: form.plan === 'winter' ? 'rgba(64,156,255,0.18)' : 'rgba(255,255,255,0.04)',
+                        border: form.plan === 'winter' ? '1px solid rgba(64,156,255,0.45)' : '1px solid rgba(255,255,255,0.09)',
+                        color: form.plan === 'winter' ? '#409cff' : 'rgba(235,235,245,0.4)',
+                      }}
+                    >
+                      <Snowflake size={13} /> Winter
+                    </button>
+                  </div>
+                </div>
               </div>
 
               <div>
@@ -671,16 +733,17 @@ function DishCard({ dish, ratingData, onEdit, onDelete, onDragStart, onDragEnd, 
 
 // ─── ImportDialog ────────────────────────────────────────────────────────────
 
-function ImportDialog({ onDone, onClose }: { onDone: () => void; onClose: () => void }) {
+function ImportDialog({ defaultPlan, onDone, onClose }: { defaultPlan: DishPlan; onDone: () => void; onClose: () => void }) {
   const { showToast } = useToast();
   const [url, setUrl] = useState('https://mensa.plattnericus.dev/mensa.json');
+  const [plan, setPlan] = useState<DishPlan>(defaultPlan);
   const [loading, setLoading] = useState(false);
 
   async function handleImport() {
     setLoading(true);
     try {
-      const result = await adminApi.importDishesFromUrl(url.trim() || undefined);
-      showToast(`Importiert: ${result.imported} neu, ${result.updated} aktualisiert`, 'success');
+      const result = await adminApi.importDishesFromUrl(plan, url.trim() || undefined);
+      showToast(`Importiert (${plan === 'summer' ? 'Sommer' : 'Winter'}): ${result.imported} neu, ${result.updated} aktualisiert`, 'success');
       onDone();
     } catch (err) {
       showToast(err instanceof Error ? err.message : 'Import fehlgeschlagen', 'error');
@@ -699,8 +762,38 @@ function ImportDialog({ onDone, onClose }: { onDone: () => void; onClose: () => 
         style={{ background: '#1c1c1e', border: '1px solid rgba(10,132,255,0.2)' }}>
         <h3 className="font-bold mb-1" style={{ color: 'rgba(235,235,245,0.9)' }}>Gerichte importieren</h3>
         <p className="text-xs mb-4" style={{ color: 'rgba(235,235,245,0.4)' }}>
-          Lädt alle Gerichte von der externen URL und speichert sie lokal. Vorhandene werden aktualisiert.
+          Lädt alle Gerichte von der externen URL und speichert sie im ausgewählten Plan. Vorhandene werden aktualisiert.
         </p>
+
+        <label className="block text-xs font-medium mb-1.5 uppercase tracking-wide" style={{ color: 'rgba(235,235,245,0.4)' }}>Plan</label>
+        <div className="flex gap-2 mb-4">
+          <button
+            type="button"
+            onClick={() => setPlan('summer')}
+            className="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-[10px] text-sm font-semibold transition-all"
+            style={{
+              background: plan === 'summer' ? 'rgba(255,159,10,0.18)' : 'rgba(255,255,255,0.04)',
+              border: plan === 'summer' ? '1px solid rgba(255,159,10,0.5)' : '1px solid rgba(255,255,255,0.09)',
+              color: plan === 'summer' ? '#ff9f0a' : 'rgba(235,235,245,0.5)',
+            }}
+          >
+            <Sun size={15} /> Sommer
+          </button>
+          <button
+            type="button"
+            onClick={() => setPlan('winter')}
+            className="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-[10px] text-sm font-semibold transition-all"
+            style={{
+              background: plan === 'winter' ? 'rgba(64,156,255,0.18)' : 'rgba(255,255,255,0.04)',
+              border: plan === 'winter' ? '1px solid rgba(64,156,255,0.5)' : '1px solid rgba(255,255,255,0.09)',
+              color: plan === 'winter' ? '#409cff' : 'rgba(235,235,245,0.5)',
+            }}
+          >
+            <Snowflake size={15} /> Winter
+          </button>
+        </div>
+
+        <label className="block text-xs font-medium mb-1.5 uppercase tracking-wide" style={{ color: 'rgba(235,235,245,0.4)' }}>Quell-URL</label>
         <input
           className="w-full px-3 py-2 rounded-[8px] text-sm outline-none mb-4 transition-all"
           style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.09)', color: 'rgba(235,235,245,0.8)' }}
@@ -729,10 +822,94 @@ function ImportDialog({ onDone, onClose }: { onDone: () => void; onClose: () => 
   );
 }
 
+// ─── CascadePrompt ──────────────────────────────────────────────────────────
+// Small confirmation shown after the user manually moves a dish to a different
+// week. Lets them shift every following week by the same offset in one click.
+
+function CascadePrompt({
+  offsetDays, onConfirm, onDismiss,
+}: { offsetDays: number; onConfirm: () => void; onDismiss: () => void }) {
+  const dir = offsetDays > 0 ? 'nach hinten' : 'nach vorne';
+  const days = Math.abs(offsetDays);
+  return createPortal(
+    <div className="fixed z-[9999] bottom-6 left-1/2 -translate-x-1/2 rounded-[14px] px-4 py-3 flex items-center gap-3 animate-fadeInUp"
+      style={{
+        background: '#1c1c1e',
+        border: '1px solid rgba(10,132,255,0.35)',
+        boxShadow: '0 12px 40px rgba(0,0,0,0.5)',
+        maxWidth: 'calc(100vw - 32px)',
+      }}
+    >
+      <span className="text-sm" style={{ color: 'rgba(235,235,245,0.8)' }}>
+        Folgende Wochen um <b>{days} {days === 1 ? 'Tag' : 'Tage'} {dir}</b> verschieben?
+      </span>
+      <div className="flex gap-2">
+        <button
+          onClick={onConfirm}
+          className="px-3 py-1.5 rounded-[10px] text-xs font-semibold transition-colors"
+          style={{ background: 'rgba(10,132,255,0.2)', color: '#0a84ff', border: '1px solid rgba(10,132,255,0.35)' }}
+        >
+          Ja, alle folgenden
+        </button>
+        <button
+          onClick={onDismiss}
+          className="px-3 py-1.5 rounded-[10px] text-xs transition-colors"
+          style={{ background: 'rgba(255,255,255,0.05)', color: 'rgba(235,235,245,0.5)', border: '1px solid rgba(255,255,255,0.08)' }}
+        >
+          Nein
+        </button>
+      </div>
+    </div>,
+    document.body
+  );
+}
+
+// ─── WeekDropzone ──────────────────────────────────────────────────────────
+// Insert-target between weeks. Invisible until a week is being dragged and
+// this dropzone is not directly adjacent to that week. Grows and highlights
+// as the pointer enters.
+
+function WeekDropzone({
+  visible, active, onEnter, onLeave, onDrop,
+}: {
+  visible: boolean; active: boolean;
+  onEnter: () => void; onLeave: () => void; onDrop: () => void;
+}) {
+  return (
+    <div
+      onDragOver={(e) => { if (visible) { e.preventDefault(); onEnter(); } }}
+      onDragLeave={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node)) onLeave();
+      }}
+      onDrop={(e) => { if (visible) { e.preventDefault(); onDrop(); } }}
+      style={{
+        height: visible ? (active ? 48 : 32) : 8,
+        marginTop: visible ? 6 : 0,
+        marginBottom: visible ? 6 : 0,
+        borderRadius: 10,
+        border: visible ? `2px dashed ${active ? 'rgba(10,132,255,0.7)' : 'rgba(10,132,255,0.28)'}` : '2px dashed transparent',
+        background: active ? 'rgba(10,132,255,0.12)' : 'transparent',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        transition: 'height 160ms ease, background 160ms ease, border-color 160ms ease, margin 160ms ease',
+        pointerEvents: visible ? 'auto' : 'none',
+      }}
+    >
+      {visible && (
+        <span className="text-xs font-medium select-none" style={{ color: active ? '#0a84ff' : 'rgba(10,132,255,0.55)' }}>
+          Hier ablegen
+        </span>
+      )}
+    </div>
+  );
+}
+
 // ─── DishesPage ───────────────────────────────────────────────────────────────
 
 export function DishesPage() {
   const { showToast } = useToast();
+  const [activePlan, setActivePlan] = useState<DishPlan>(() => currentSeason());
   const [dishes, setDishes] = useState<AdminDishFull[]>([]);
   const [ratingsMap, setRatingsMap] = useState<Map<string, AdminDish>>(new Map());
   const [loading, setLoading] = useState(true);
@@ -740,29 +917,39 @@ export function DishesPage() {
   const [editDish, setEditDish] = useState<AdminDishFull | null | 'new'>(null);
   const [showImport, setShowImport] = useState(false);
   const [collapsedWeeks, setCollapsedWeeks] = useState<Set<string>>(new Set());
+  const [pendingCascade, setPendingCascade] = useState<{ fromWeek: string; offsetDays: number } | null>(null);
 
   // drag state
   const [draggingDishId, setDraggingDishId] = useState<string | null>(null);
   const [draggingWeekKey, setDraggingWeekKey] = useState<string | null>(null);
   const [dragOverWeekKey, setDragOverWeekKey] = useState<string | null>(null);
+  const [dragOverInsertIdx, setDragOverInsertIdx] = useState<number | null>(null);
 
-  // empty weeks (manually added via "Neue Woche" button)
-  const [emptyWeeks, setEmptyWeeks] = useState<Set<string>>(new Set());
+  // empty weeks (manually added via "Neue Woche" button), keyed per plan
+  const [emptyWeeks, setEmptyWeeks] = useState<Map<DishPlan, Set<string>>>(new Map());
+  const planEmptyWeeks = emptyWeeks.get(activePlan) ?? new Set<string>();
 
   // pre-fill date when opening "new dish" from a week's + button
   const [newDishInitialDate, setNewDishInitialDate] = useState<string | undefined>();
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  // Track which plans we've already auto-rotated this session so we don't
+  // hammer the server every time the user flips tabs.
+  const rotatedPlans = useRef<Set<DishPlan>>(new Set());
+
+  const loadRatings = useCallback(async () => {
     try {
-      const [dishData, ratingData] = await Promise.all([
-        adminApi.dishes(),
-        adminApi.dishRatings(),
-      ]);
-      setDishes(dishData);
+      const ratingData = await adminApi.dishRatings();
       const map = new Map<string, AdminDish>();
       ratingData.forEach((r) => map.set(r.dishId, r));
       setRatingsMap(map);
+    } catch { /* non-fatal */ }
+  }, []);
+
+  const loadDishes = useCallback(async (plan: DishPlan) => {
+    setLoading(true);
+    try {
+      const data = await adminApi.dishes(plan);
+      setDishes(data);
     } catch (err) {
       showToast(err instanceof Error ? err.message : 'Fehler beim Laden', 'error');
     } finally {
@@ -770,7 +957,27 @@ export function DishesPage() {
     }
   }, [showToast]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { loadRatings(); }, [loadRatings]);
+
+  // Load dishes for the active plan. First time we visit a plan this session,
+  // also ask the server to rotate any past weeks to the end so the plan stays
+  // "rolling" without manual intervention.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (!rotatedPlans.current.has(activePlan)) {
+        rotatedPlans.current.add(activePlan);
+        try {
+          const res = await adminApi.autoRotateDishes(activePlan);
+          if (res.rotated > 0 && !cancelled) {
+            showToast(`${res.rotated} vergangene Gerichte automatisch verschoben`, 'success');
+          }
+        } catch { /* non-fatal — proceed with load anyway */ }
+      }
+      if (!cancelled) await loadDishes(activePlan);
+    })();
+    return () => { cancelled = true; };
+  }, [activePlan, loadDishes, showToast]);
 
   // ── drag handlers ──────────────────────────────────────────────────────────
 
@@ -785,60 +992,88 @@ export function DishesPage() {
     try {
       const updated = await adminApi.updateDish(dish.id, buildDishPayload(dish, newDate));
       setDishes((prev) => prev.map((d) => (d.id === dish.id ? updated : d)));
-      // if the target was an empty week, it now has a dish — no need to keep it in emptyWeeks
-      setEmptyWeeks((prev) => { const s = new Set(prev); s.delete(targetWk); return s; });
+      setEmptyWeeks((prev) => {
+        const next = new Map(prev);
+        const s = new Set(next.get(activePlan) ?? []);
+        s.delete(targetWk);
+        next.set(activePlan, s);
+        return next;
+      });
       showToast('Gericht verschoben', 'success');
     } catch (err) {
       showToast(err instanceof Error ? err.message : 'Fehler beim Verschieben', 'error');
     }
   }
 
-  async function handleWeekSwap(fromWk: string, toWk: string) {
-    const fromDishes = dishes.filter((d) => weekKey(d.date) === fromWk);
-    const toDishes   = dishes.filter((d) => weekKey(d.date) === toWk);
-    if (fromDishes.length === 0 && toDishes.length === 0) return;
+  // Insert-based week reorder: user drops week `fromWk` at position `insertIdx`
+  // in the current sorted week list. Every week keeps its OWN dishes and their
+  // weekdays — only the Monday date of each week is reassigned so the new order
+  // is chronological. Uses the existing PATCH endpoint in a Promise.all batch.
+  async function handleWeekInsert(fromWk: string, insertIdx: number) {
+    const currentOrder = sortedWeeks.map(([wk]) => wk);
+    const fromIdx = currentOrder.indexOf(fromWk);
+    if (fromIdx === -1) return;
+    // Normalise: dropping right before/after own position is a no-op.
+    const targetIdx = insertIdx > fromIdx ? insertIdx - 1 : insertIdx;
+    if (targetIdx === fromIdx) return;
 
-    // map dish id → new date
-    const updates = new Map<string, string>();
-    for (const d of fromDishes) updates.set(d.id, dateForWeekAndDow(toWk,   getDayOfWeek(d.date)));
-    for (const d of toDishes)   updates.set(d.id, dateForWeekAndDow(fromWk, getDayOfWeek(d.date)));
+    const newOrder = [...currentOrder];
+    newOrder.splice(fromIdx, 1);
+    newOrder.splice(targetIdx, 0, fromWk);
+
+    // Original Mondays in ascending order — we redistribute them to the new
+    // week order so the whole plan stays chronological.
+    const mondays = [...currentOrder].sort();
+    const wkToNewMonday = new Map<string, string>();
+    newOrder.forEach((wk, i) => { wkToNewMonday.set(wk, mondays[i]); });
+
+    // Build per-dish date updates and per-week empty-marker updates.
+    const dishUpdates: Array<{ dish: AdminDishFull; newDate: string }> = [];
+    for (const d of dishes) {
+      const oldWk = weekKey(d.date);
+      const newMon = wkToNewMonday.get(oldWk);
+      if (!newMon || newMon === oldWk) continue;
+      const dow = getDayOfWeek(d.date);
+      const newDate = dateForWeekAndDow(newMon, dow);
+      dishUpdates.push({ dish: d, newDate });
+    }
+
+    // Optimistic update first — makes the drop feel instant.
+    if (dishUpdates.length > 0) {
+      const updateMap = new Map(dishUpdates.map((u) => [u.dish.id, u.newDate]));
+      setDishes((prev) => prev.map((d) => {
+        const nd = updateMap.get(d.id);
+        return nd ? { ...d, date: nd } : d;
+      }));
+    }
+    setEmptyWeeks((prev) => {
+      const next = new Map(prev);
+      const oldSet = next.get(activePlan) ?? new Set<string>();
+      const newSet = new Set<string>();
+      for (const wk of oldSet) {
+        const nm = wkToNewMonday.get(wk);
+        newSet.add(nm ?? wk);
+      }
+      next.set(activePlan, newSet);
+      return next;
+    });
 
     try {
       await Promise.all(
-        [...updates.entries()].map(([id, date]) => {
-          const dish = dishes.find((d) => d.id === id)!;
-          return adminApi.updateDish(id, buildDishPayload(dish, date));
-        })
+        dishUpdates.map(({ dish, newDate }) =>
+          adminApi.updateDish(dish.id, buildDishPayload(dish, newDate))
+        )
       );
-      setDishes((prev) =>
-        prev.map((d) => {
-          const newDate = updates.get(d.id);
-          return newDate ? { ...d, date: newDate } : d;
-        })
-      );
-
-      // swap empty-week markers if applicable
-      const fromEmpty = fromDishes.length === 0 && emptyWeeks.has(fromWk);
-      const toEmpty   = toDishes.length === 0   && emptyWeeks.has(toWk);
-      if (fromEmpty || toEmpty) {
-        setEmptyWeeks((prev) => {
-          const s = new Set(prev);
-          if (fromEmpty) { s.delete(fromWk); s.add(toWk); }
-          if (toEmpty)   { s.delete(toWk);   s.add(fromWk); }
-          return s;
-        });
-      }
-
-      showToast('Wochen getauscht', 'success');
+      showToast('Woche verschoben', 'success');
     } catch (err) {
       showToast(err instanceof Error ? err.message : 'Fehler beim Verschieben', 'error');
-      load();
+      loadDishes(activePlan);
     }
   }
 
   function addNewWeek() {
     const allKeys = [
-      ...new Set([...dishes.map((d) => weekKey(d.date)), ...emptyWeeks]),
+      ...new Set([...dishes.map((d) => weekKey(d.date)), ...planEmptyWeeks]),
     ].sort();
 
     let newKey: string;
@@ -852,19 +1087,51 @@ export function DishesPage() {
       newKey = mon.toISOString().split('T')[0];
     }
 
-    setEmptyWeeks((prev) => new Set([...prev, newKey]));
+    setEmptyWeeks((prev) => {
+      const next = new Map(prev);
+      const s = new Set(next.get(activePlan) ?? []);
+      s.add(newKey);
+      next.set(activePlan, s);
+      return next;
+    });
+  }
+
+  function removeEmptyWeek(wk: string) {
+    setEmptyWeeks((prev) => {
+      const next = new Map(prev);
+      const s = new Set(next.get(activePlan) ?? []);
+      s.delete(wk);
+      next.set(activePlan, s);
+      return next;
+    });
   }
 
   // ── CRUD callbacks ─────────────────────────────────────────────────────────
 
-  function handleSaved(_d: AdminDishFull) {
+  function handleSaved(_d: AdminDishFull, meta: { cascadeOffsetDays: number; cascadeFromWeek: string | null }) {
     setEditDish(null);
     setNewDishInitialDate(undefined);
-    load();
+    if (meta.cascadeOffsetDays !== 0 && meta.cascadeFromWeek) {
+      setPendingCascade({ fromWeek: meta.cascadeFromWeek, offsetDays: meta.cascadeOffsetDays });
+    }
+    loadDishes(activePlan);
   }
 
   function handleDeleted(id: string) {
     setDishes((prev) => prev.filter((d) => d.id !== id));
+  }
+
+  async function confirmCascade() {
+    if (!pendingCascade) return;
+    const c = pendingCascade;
+    setPendingCascade(null);
+    try {
+      const res = await adminApi.cascadeShiftDishes(activePlan, c.fromWeek, c.offsetDays);
+      showToast(`${res.shifted} Gerichte verschoben`, 'success');
+      loadDishes(activePlan);
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Fehler beim Cascade-Shift', 'error');
+    }
   }
 
   // ── derived data ───────────────────────────────────────────────────────────
@@ -886,9 +1153,8 @@ export function DishesPage() {
     arr.push(d);
     weeksMap.set(k, arr);
   }
-  // include manually added empty weeks (only when not searching)
   if (!search.trim()) {
-    for (const k of emptyWeeks) {
+    for (const k of planEmptyWeeks) {
       if (!weeksMap.has(k)) weeksMap.set(k, []);
     }
   }
@@ -906,16 +1172,20 @@ export function DishesPage() {
     ? (ratingsMap.get((editDish as AdminDishFull).id) ?? null)
     : null;
 
+  const draggingWeekIdx = draggingWeekKey
+    ? sortedWeeks.findIndex(([wk]) => wk === draggingWeekKey)
+    : -1;
+
   // ── render ─────────────────────────────────────────────────────────────────
 
   return (
     <div className="animate-page">
       {/* Header */}
-      <div className="flex items-center justify-between mb-5 flex-wrap gap-3">
+      <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold" style={{ color: '#ffffff' }}>Speiseplan</h1>
           <p className="text-sm mt-0.5" style={{ color: 'rgba(235,235,245,0.4)' }}>
-            {dishes.length} {dishes.length === 1 ? 'Gericht' : 'Gerichte'} &middot; zentral gespeichert
+            {dishes.length} {dishes.length === 1 ? 'Gericht' : 'Gerichte'} im {activePlan === 'summer' ? 'Sommer' : 'Winter'}plan
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
@@ -951,6 +1221,54 @@ export function DishesPage() {
         </div>
       </div>
 
+      {/* Season tabs */}
+      <div
+        className="inline-flex items-center gap-1 mb-4 p-1 rounded-[14px]"
+        style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.07)' }}
+      >
+        {(['summer', 'winter'] as const).map((p) => {
+          const isActive = p === activePlan;
+          const isCurrent = p === currentSeason();
+          const icon = p === 'summer' ? <Sun size={14} /> : <Snowflake size={14} />;
+          const bg = isActive
+            ? p === 'summer'
+              ? 'linear-gradient(135deg, rgba(255,159,10,0.22), rgba(255,159,10,0.14))'
+              : 'linear-gradient(135deg, rgba(64,156,255,0.22), rgba(64,156,255,0.14))'
+            : 'transparent';
+          const fg = isActive
+            ? p === 'summer' ? '#ff9f0a' : '#409cff'
+            : 'rgba(235,235,245,0.55)';
+          const border = isActive
+            ? p === 'summer' ? '1px solid rgba(255,159,10,0.4)' : '1px solid rgba(64,156,255,0.4)'
+            : '1px solid transparent';
+          return (
+            <button
+              key={p}
+              onClick={() => setActivePlan(p)}
+              className="flex items-center gap-2 px-4 py-2 rounded-[10px] text-sm font-semibold transition-all"
+              style={{ background: bg, color: fg, border }}
+            >
+              {icon}
+              {p === 'summer' ? 'Sommer' : 'Winter'}
+              <span className="text-[10px] font-medium opacity-70">
+                {p === 'summer' ? 'Apr–Okt' : 'Nov–Mär'}
+              </span>
+              {isCurrent && (
+                <span
+                  className="text-[9px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded-full"
+                  style={{
+                    background: isActive ? 'rgba(255,255,255,0.15)' : 'rgba(48,209,88,0.18)',
+                    color: isActive ? fg : '#30d158',
+                  }}
+                >
+                  aktiv
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+
       {/* Search */}
       <input
         type="text"
@@ -972,7 +1290,9 @@ export function DishesPage() {
         <div className="rounded-[16px] p-12 text-center" style={{ background: '#1c1c1e', border: '1px solid rgba(255,255,255,0.06)' }}>
           <UtensilsCrossed size={32} className="mx-auto mb-3" style={{ color: 'rgba(235,235,245,0.12)' }} />
           <p className="text-sm mb-3" style={{ color: 'rgba(235,235,245,0.3)' }}>
-            {search ? 'Keine Gerichte gefunden' : 'Noch keine Gerichte gespeichert'}
+            {search
+              ? 'Keine Gerichte gefunden'
+              : `Noch keine Gerichte im ${activePlan === 'summer' ? 'Sommer' : 'Winter'}plan`}
           </p>
           {!search && (
             <button onClick={() => setShowImport(true)}
@@ -984,159 +1304,195 @@ export function DishesPage() {
           )}
         </div>
       ) : (
-        <div className="flex flex-col gap-4">
+        <div className="flex flex-col">
+          {/* Top dropzone (insert before first week) */}
+          <WeekDropzone
+            visible={draggingWeekKey !== null && draggingWeekIdx !== 0 && draggingWeekIdx !== -1}
+            active={dragOverInsertIdx === 0}
+            onEnter={() => setDragOverInsertIdx(0)}
+            onLeave={() => setDragOverInsertIdx((v) => v === 0 ? null : v)}
+            onDrop={() => {
+              if (draggingWeekKey) handleWeekInsert(draggingWeekKey, 0);
+              setDragOverInsertIdx(null);
+              setDraggingWeekKey(null);
+            }}
+          />
+
           {sortedWeeks.map(([wk, wDishes], wi) => {
             const collapsed    = collapsedWeeks.has(wk);
             const isDragTarget = dragOverWeekKey === wk;
             const isDraggingSelf = draggingWeekKey === wk;
 
+            // Dropzone AFTER this week — hide if it's directly adjacent to the
+            // dragged week (dropping right where it already is is a no-op).
+            const dropAfterIdx = wi + 1;
+            const showDropAfter =
+              draggingWeekKey !== null &&
+              !isDraggingSelf &&
+              dropAfterIdx !== draggingWeekIdx &&
+              dropAfterIdx !== draggingWeekIdx + 1;
+
             return (
-              <div
-                key={wk}
-                className="animate-fadeInUp"
-                style={{
-                  animationDelay: `${wi * 40}ms`,
-                  opacity: isDraggingSelf ? 0.45 : 1,
-                  borderRadius: '1rem',
-                  outline: isDragTarget ? '2px solid rgba(10,132,255,0.5)' : '2px solid transparent',
-                  outlineOffset: '3px',
-                  transition: 'opacity 0.15s, outline 0.15s',
-                }}
-                onDragOver={(e) => {
-                  if (draggingDishId || (draggingWeekKey && draggingWeekKey !== wk)) {
-                    e.preventDefault();
-                    setDragOverWeekKey(wk);
-                  }
-                }}
-                onDragLeave={(e) => {
-                  if (!e.currentTarget.contains(e.relatedTarget as Node)) {
-                    setDragOverWeekKey(null);
-                  }
-                }}
-                onDrop={async (e) => {
-                  e.preventDefault();
-                  setDragOverWeekKey(null);
-                  const dishId  = e.dataTransfer.getData('text/dish-id');
-                  const dragWk  = e.dataTransfer.getData('text/week-key');
-                  if (dishId) {
-                    await handleDishDropOnWeek(dishId, wk);
-                  } else if (dragWk && dragWk !== wk) {
-                    await handleWeekSwap(dragWk, wk);
-                  }
-                }}
-              >
-                {/* Week header */}
+              <div key={wk} className="contents">
                 <div
-                  className="flex items-center gap-2 px-4 py-2.5 rounded-[12px] mb-2 transition-colors"
+                  className="animate-fadeInUp"
                   style={{
-                    background: isDragTarget ? 'rgba(10,132,255,0.15)' : 'rgba(10,132,255,0.07)',
-                    border: isDragTarget ? '1px solid rgba(10,132,255,0.4)' : '1px solid rgba(10,132,255,0.1)',
+                    animationDelay: `${wi * 40}ms`,
+                    opacity: isDraggingSelf ? 0.45 : 1,
+                    borderRadius: '1rem',
+                    outline: isDraggingSelf
+                      ? '2px solid rgba(10,132,255,0.6)'
+                      : isDragTarget ? '2px solid rgba(10,132,255,0.5)' : '2px solid transparent',
+                    outlineOffset: '3px',
+                    transition: 'opacity 0.15s, outline 0.15s',
+                  }}
+                  onDragOver={(e) => {
+                    // Only dish→week drops accept here; week→week goes via dropzones.
+                    if (draggingDishId) {
+                      e.preventDefault();
+                      setDragOverWeekKey(wk);
+                    }
+                  }}
+                  onDragLeave={(e) => {
+                    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+                      setDragOverWeekKey(null);
+                    }
+                  }}
+                  onDrop={async (e) => {
+                    setDragOverWeekKey(null);
+                    const dishId = e.dataTransfer.getData('text/dish-id');
+                    if (dishId) {
+                      e.preventDefault();
+                      await handleDishDropOnWeek(dishId, wk);
+                    }
                   }}
                 >
-                  {/* Week drag grip */}
+                  {/* Week header */}
                   <div
-                    draggable
-                    onDragStart={(e) => {
-                      e.dataTransfer.setData('text/week-key', wk);
-                      e.dataTransfer.effectAllowed = 'move';
-                      setDraggingWeekKey(wk);
+                    className="flex items-center gap-2 px-4 py-2.5 rounded-[12px] mb-2 transition-colors"
+                    style={{
+                      background: isDragTarget ? 'rgba(10,132,255,0.15)' : 'rgba(10,132,255,0.07)',
+                      border: isDragTarget ? '1px solid rgba(10,132,255,0.4)' : '1px solid rgba(10,132,255,0.1)',
                     }}
-                    onDragEnd={() => setDraggingWeekKey(null)}
-                    className="flex-shrink-0 p-0.5 rounded transition-colors"
-                    style={{ color: 'rgba(235,235,245,0.2)', cursor: 'grab' }}
-                    title="Ganze Woche verschieben"
-                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#0a84ff'; }}
-                    onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'rgba(235,235,245,0.2)'; }}
                   >
-                    <GripVertical size={15} />
-                  </div>
+                    {/* Week drag grip */}
+                    <div
+                      draggable
+                      onDragStart={(e) => {
+                        e.dataTransfer.setData('text/week-key', wk);
+                        e.dataTransfer.effectAllowed = 'move';
+                        setDraggingWeekKey(wk);
+                      }}
+                      onDragEnd={() => { setDraggingWeekKey(null); setDragOverInsertIdx(null); }}
+                      className="flex-shrink-0 p-0.5 rounded transition-colors"
+                      style={{ color: 'rgba(235,235,245,0.2)', cursor: 'grab' }}
+                      title="Ganze Woche verschieben"
+                      onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#0a84ff'; }}
+                      onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'rgba(235,235,245,0.2)'; }}
+                    >
+                      <GripVertical size={15} />
+                    </div>
 
-                  {/* Clickable label → collapse */}
-                  <button
-                    className="flex-1 text-left min-w-0"
-                    onClick={() => toggleWeek(wk)}
-                  >
-                    <span className="text-xs font-bold uppercase tracking-widest" style={{ color: '#0a84ff' }}>
-                      Woche {wi + 1}&nbsp;&middot;&nbsp;{formatWeekRange(wk)}&nbsp;&middot;&nbsp;{wDishes.length} {wDishes.length === 1 ? 'Gericht' : 'Gerichte'}
-                    </span>
-                  </button>
-
-                  {/* Add dish to this week */}
-                  <button
-                    onClick={() => { setNewDishInitialDate(wk); setEditDish('new'); }}
-                    className="flex-shrink-0 p-1.5 rounded-[8px] transition-colors"
-                    style={{ color: 'rgba(235,235,245,0.3)' }}
-                    title="Gericht zu dieser Woche hinzufügen"
-                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#0a84ff'; }}
-                    onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'rgba(235,235,245,0.3)'; }}
-                  >
-                    <Plus size={14} />
-                  </button>
-
-                  {/* Collapse toggle */}
-                  <button
-                    onClick={() => toggleWeek(wk)}
-                    className="flex-shrink-0"
-                    style={{ color: '#0a84ff' }}
-                  >
-                    {collapsed ? <ChevronDown size={15} /> : <ChevronUp size={15} />}
-                  </button>
-
-                  {/* Remove empty week */}
-                  {wDishes.length === 0 && emptyWeeks.has(wk) && (
+                    {/* Clickable label → collapse */}
                     <button
-                      onClick={() => setEmptyWeeks((prev) => { const s = new Set(prev); s.delete(wk); return s; })}
+                      className="flex-1 text-left min-w-0"
+                      onClick={() => toggleWeek(wk)}
+                    >
+                      <span className="text-xs font-bold uppercase tracking-widest" style={{ color: '#0a84ff' }}>
+                        Woche {wi + 1}&nbsp;&middot;&nbsp;{formatWeekRange(wk)}&nbsp;&middot;&nbsp;{wDishes.length} {wDishes.length === 1 ? 'Gericht' : 'Gerichte'}
+                      </span>
+                    </button>
+
+                    {/* Add dish to this week */}
+                    <button
+                      onClick={() => { setNewDishInitialDate(wk); setEditDish('new'); }}
                       className="flex-shrink-0 p-1.5 rounded-[8px] transition-colors"
                       style={{ color: 'rgba(235,235,245,0.3)' }}
-                      title="Leere Woche entfernen"
-                      onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#ff453a'; }}
+                      title="Gericht zu dieser Woche hinzufügen"
+                      onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#0a84ff'; }}
                       onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'rgba(235,235,245,0.3)'; }}
                     >
-                      <X size={14} />
+                      <Plus size={14} />
                     </button>
+
+                    {/* Collapse toggle */}
+                    <button
+                      onClick={() => toggleWeek(wk)}
+                      className="flex-shrink-0"
+                      style={{ color: '#0a84ff' }}
+                    >
+                      {collapsed ? <ChevronDown size={15} /> : <ChevronUp size={15} />}
+                    </button>
+
+                    {/* Remove empty week */}
+                    {wDishes.length === 0 && planEmptyWeeks.has(wk) && (
+                      <button
+                        onClick={() => removeEmptyWeek(wk)}
+                        className="flex-shrink-0 p-1.5 rounded-[8px] transition-colors"
+                        style={{ color: 'rgba(235,235,245,0.3)' }}
+                        title="Leere Woche entfernen"
+                        onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#ff453a'; }}
+                        onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'rgba(235,235,245,0.3)'; }}
+                      >
+                        <X size={14} />
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Week body */}
+                  {!collapsed && (
+                    <div className="flex flex-col gap-2">
+                      {wDishes.length === 0 ? (
+                        <div
+                          className="py-10 rounded-[12px] flex flex-col items-center gap-2"
+                          style={{
+                            border: `2px dashed ${isDragTarget ? 'rgba(10,132,255,0.55)' : 'rgba(10,132,255,0.15)'}`,
+                            background: isDragTarget ? 'rgba(10,132,255,0.06)' : 'transparent',
+                            transition: 'all 0.15s',
+                          }}
+                        >
+                          <UtensilsCrossed size={22} style={{ color: isDragTarget ? '#0a84ff' : 'rgba(235,235,245,0.12)' }} />
+                          <p className="text-sm select-none" style={{ color: isDragTarget ? '#0a84ff' : 'rgba(235,235,245,0.12)' }}>
+                            {isDragTarget ? 'Hier loslassen' : 'Gerichte hier reinziehen'}
+                          </p>
+                        </div>
+                      ) : (
+                        wDishes.map((dish) => (
+                          <div key={dish.id}>
+                            <div className="flex items-center gap-2 mb-1 mt-2 first:mt-0">
+                              <span className="text-xs font-medium" style={{ color: 'rgba(235,235,245,0.3)' }}>
+                                {formatDate(dish.date)}
+                              </span>
+                              <div style={{ flex: 1, height: '1px', background: 'rgba(255,255,255,0.04)' }} />
+                            </div>
+                            <DishCard
+                              dish={dish}
+                              ratingData={ratingsMap.get(dish.id)}
+                              onEdit={setEditDish}
+                              onDelete={handleDeleted}
+                              onDragStart={() => setDraggingDishId(dish.id)}
+                              onDragEnd={() => setDraggingDishId(null)}
+                              isDragging={draggingDishId === dish.id}
+                            />
+                          </div>
+                        ))
+                      )}
+                    </div>
                   )}
                 </div>
 
-                {/* Week body */}
-                {!collapsed && (
-                  <div className="flex flex-col gap-2">
-                    {wDishes.length === 0 ? (
-                      <div
-                        className="py-10 rounded-[12px] flex flex-col items-center gap-2"
-                        style={{
-                          border: `2px dashed ${isDragTarget ? 'rgba(10,132,255,0.55)' : 'rgba(10,132,255,0.15)'}`,
-                          background: isDragTarget ? 'rgba(10,132,255,0.06)' : 'transparent',
-                          transition: 'all 0.15s',
-                        }}
-                      >
-                        <UtensilsCrossed size={22} style={{ color: isDragTarget ? '#0a84ff' : 'rgba(235,235,245,0.12)' }} />
-                        <p className="text-sm select-none" style={{ color: isDragTarget ? '#0a84ff' : 'rgba(235,235,245,0.12)' }}>
-                          {isDragTarget ? 'Hier loslassen' : 'Gerichte hier reinziehen'}
-                        </p>
-                      </div>
-                    ) : (
-                      wDishes.map((dish) => (
-                        <div key={dish.id}>
-                          <div className="flex items-center gap-2 mb-1 mt-2 first:mt-0">
-                            <span className="text-xs font-medium" style={{ color: 'rgba(235,235,245,0.3)' }}>
-                              {formatDate(dish.date)}
-                            </span>
-                            <div style={{ flex: 1, height: '1px', background: 'rgba(255,255,255,0.04)' }} />
-                          </div>
-                          <DishCard
-                            dish={dish}
-                            ratingData={ratingsMap.get(dish.id)}
-                            onEdit={setEditDish}
-                            onDelete={handleDeleted}
-                            onDragStart={() => setDraggingDishId(dish.id)}
-                            onDragEnd={() => setDraggingDishId(null)}
-                            isDragging={draggingDishId === dish.id}
-                          />
-                        </div>
-                      ))
-                    )}
-                  </div>
-                )}
+                {/* Dropzone AFTER this week */}
+                <WeekDropzone
+                  visible={showDropAfter}
+                  active={dragOverInsertIdx === dropAfterIdx}
+                  onEnter={() => setDragOverInsertIdx(dropAfterIdx)}
+                  onLeave={() => setDragOverInsertIdx((v) => v === dropAfterIdx ? null : v)}
+                  onDrop={() => {
+                    if (draggingWeekKey) handleWeekInsert(draggingWeekKey, dropAfterIdx);
+                    setDragOverInsertIdx(null);
+                    setDraggingWeekKey(null);
+                  }}
+                />
               </div>
             );
           })}
@@ -1149,16 +1505,26 @@ export function DishesPage() {
           dish={editDish === 'new' ? null : editDish as AdminDishFull}
           ratingData={editRatingData}
           initialDate={editDish === 'new' ? newDishInitialDate : undefined}
+          activePlan={activePlan}
           onSaved={handleSaved}
           onClose={() => { setEditDish(null); setNewDishInitialDate(undefined); }}
-          onRatingChanged={load}
+          onRatingChanged={loadRatings}
         />
       )}
 
       {showImport && (
         <ImportDialog
-          onDone={() => { setShowImport(false); load(); }}
+          defaultPlan={activePlan}
+          onDone={() => { setShowImport(false); loadDishes(activePlan); }}
           onClose={() => setShowImport(false)}
+        />
+      )}
+
+      {pendingCascade && (
+        <CascadePrompt
+          offsetDays={pendingCascade.offsetDays}
+          onConfirm={confirmCascade}
+          onDismiss={() => setPendingCascade(null)}
         />
       )}
     </div>

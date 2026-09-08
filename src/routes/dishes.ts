@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { prisma } from '../db';
 import { readLimiter } from '../middleware/rateLimiter';
-import { dishesCache, DISHES_CACHE_KEY } from '../utils/cache';
+import { dishesCache, currentSeason, dishesCacheKey } from '../utils/cache';
 
 const router = Router();
 
@@ -48,20 +48,25 @@ function dishToJson(d: {
   };
 }
 
-// GET /dishes — mensa.json-compatible response (cached in-memory, TTL via env)
+// GET /dishes — mensa.json-compatible response (cached in-memory, TTL via env).
+// Automatically serves the season-appropriate plan: April–October = summer,
+// otherwise winter. Frontend needs no season logic.
 router.get('/', readLimiter, async (_req: Request, res: Response): Promise<void> => {
-  const cached = dishesCache.get(DISHES_CACHE_KEY);
+  const season = currentSeason();
+  const cacheKey = dishesCacheKey(season);
+  const cached = dishesCache.get(cacheKey);
   if (cached !== undefined) {
     res.json(cached);
     return;
   }
 
   const dishes = await prisma.dish.findMany({
+    where: { plan: season },
     orderBy: [{ date: 'asc' }, { sortOrder: 'asc' }, { nameDe: 'asc' }],
   });
 
   const payload = { menu: { dishes: dishes.map(dishToJson) } };
-  dishesCache.set(DISHES_CACHE_KEY, payload);
+  dishesCache.set(cacheKey, payload);
   res.json(payload);
 });
 

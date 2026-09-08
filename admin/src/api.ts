@@ -1,4 +1,4 @@
-import type { AdminStats, AdminClass, AdminSession, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish, AdminDishFull, AdminDishImportResult, AdminCommentsResponse, FileLogFile, FileLogResponse, FileLogEntry, FrontendActivityLogsResponse, FrontendActivityStats, AllTodosResponse, AllRemindersResponse, SchoolYearsResponse, ArchivedUsersResponse, ArchivedClass, ArchivedTodosResponse, ArchivedRemindersResponse, RolloverResult, RollbackResult } from './types';
+import type { AdminStats, AdminClass, AdminSession, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish, AdminDishFull, AdminDishImportResult, AdminDishShiftResult, AdminDishRotateResult, DishPlan, AdminCommentsResponse, FileLogFile, FileLogResponse, FileLogEntry, FrontendActivityLogsResponse, FrontendActivityStats, AllTodosResponse, AllRemindersResponse, SchoolYearsResponse, ArchivedUsersResponse, ArchivedClass, ArchivedTodosResponse, ArchivedRemindersResponse, RolloverResult, RollbackResult } from './types';
 
 const TOKEN_KEY = 'pokyh_admin_token';
 
@@ -229,8 +229,10 @@ export const adminApi = {
   deleteDishRating: (dishId: string, stableUid: string): Promise<void> =>
     request<void>('DELETE', `/api/admin/dish-ratings/${encodeURIComponent(dishId)}/${stableUid}`),
 
-  dishes: (): Promise<AdminDishFull[]> =>
-    request<AdminDishFull[]>('GET', '/api/admin/dishes'),
+  dishes: (plan?: DishPlan): Promise<AdminDishFull[]> => {
+    const q = plan ? `?plan=${plan}` : '';
+    return request<AdminDishFull[]>('GET', `/api/admin/dishes${q}`);
+  },
 
   createDish: (data: Omit<AdminDishFull, 'id' | 'createdAt' | 'updatedAt'>): Promise<AdminDishFull> =>
     request<AdminDishFull>('POST', '/api/admin/dishes', data),
@@ -241,8 +243,14 @@ export const adminApi = {
   deleteDish: (id: string): Promise<void> =>
     request<void>('DELETE', `/api/admin/dishes/${id}`),
 
-  importDishesFromUrl: (url?: string): Promise<AdminDishImportResult> =>
-    request<AdminDishImportResult>('POST', '/api/admin/dishes/import-url', url ? { url } : {}),
+  importDishesFromUrl: (plan: DishPlan, url?: string): Promise<AdminDishImportResult> =>
+    request<AdminDishImportResult>('POST', '/api/admin/dishes/import-url', url ? { url, plan } : { plan }),
+
+  cascadeShiftDishes: (plan: DishPlan, fromWeek: string, offsetDays: number): Promise<AdminDishShiftResult> =>
+    request<AdminDishShiftResult>('POST', '/api/admin/dishes/cascade-shift', { plan, fromWeek, offsetDays }),
+
+  autoRotateDishes: (plan: DishPlan): Promise<AdminDishRotateResult> =>
+    request<AdminDishRotateResult>('POST', '/api/admin/dishes/auto-rotate', { plan }),
 
   listSubjectImages: (): Promise<import('./types').AdminSubjectImage[]> =>
     request<import('./types').AdminSubjectImage[]>('GET', '/api/admin/subject-images'),

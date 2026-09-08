@@ -162,6 +162,8 @@ export interface TopEndpoint {
   avgMs: number;
 }
 
+export type DishPlan = 'summer' | 'winter';
+
 export interface AdminDishFull {
   id: string;
   nameDe: string;
@@ -183,6 +185,7 @@ export interface AdminDishFull {
   isVegan: boolean;
   date: string;
   sortOrder: number;
+  plan: DishPlan;
   createdAt: string;
   updatedAt: string;
 }
@@ -191,6 +194,15 @@ export interface AdminDishImportResult {
   imported: number;
   updated: number;
   total: number;
+  plan: DishPlan;
+}
+
+export interface AdminDishShiftResult {
+  shifted: number;
+}
+
+export interface AdminDishRotateResult {
+  rotated: number;
 }
 
 export interface AdminDishRatingEntry {

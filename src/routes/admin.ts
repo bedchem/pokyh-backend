@@ -15,7 +15,7 @@ import { requireAdmin } from '../middleware/requireAdmin';
 import { generateClassCode, generateClassId } from '../utils/uid';
 import { revokeUserTokens } from '../utils/revokedTokens';
 import { logger } from '../utils/logger';
-import { dishesCache, DISHES_CACHE_KEY } from '../utils/cache';
+import { invalidateDishesCache } from '../utils/cache';
 
 function safeParseTags(raw: string): string[] {
   try { return JSON.parse(raw) as string[]; } catch { return []; }
@@ -28,6 +28,7 @@ function dishRow(d: {
   prepTime: number; calories: number; price: number;
   protein: number; fat: number; allergens: string;
   isVegetarian: boolean; isVegan: boolean; date: Date; sortOrder: number;
+  plan: string;
   createdAt: Date; updatedAt: Date;
 }) {
   return {
@@ -47,9 +48,14 @@ function dishRow(d: {
     isVegan: d.isVegan,
     date: d.date.toISOString().split('T')[0],
     sortOrder: d.sortOrder,
+    plan: d.plan === 'winter' ? 'winter' : 'summer',
     createdAt: d.createdAt.toISOString(),
     updatedAt: d.updatedAt.toISOString(),
   };
+}
+
+function parsePlan(v: unknown, fallback: 'summer' | 'winter' = 'summer'): 'summer' | 'winter' {
+  return v === 'winter' ? 'winter' : v === 'summer' ? 'summer' : fallback;
 }
 
 function fetchUrl(url: string): Promise<string> {
@@ -1023,9 +1029,13 @@ router.get('/classes/:id/todos', requireAdmin, async (req: Request, res: Respons
 });
 
 // ─── GET /api/admin/dishes ───────────────────────────────────────────────────
+// Optional ?plan=summer|winter filter. Omit to return both plans.
 
-router.get('/dishes', requireAdmin, async (_req: Request, res: Response): Promise<void> => {
+router.get('/dishes', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const planParam = req.query['plan'];
+  const where = planParam === 'summer' || planParam === 'winter' ? { plan: planParam } : undefined;
   const dishes = await prisma.dish.findMany({
+    where,
     orderBy: [{ date: 'asc' }, { sortOrder: 'asc' }, { nameDe: 'asc' }],
   });
   res.json(dishes.map(dishRow));
@@ -1065,10 +1075,11 @@ router.post('/dishes', requireAdmin, async (req: Request, res: Response): Promis
       isVegan: b['isVegan'] === true,
       date: new Date(String(b['date'])),
       sortOrder: typeof b['sortOrder'] === 'number' ? b['sortOrder'] : 0,
+      plan: parsePlan(b['plan']),
     },
   });
 
-  dishesCache.delete(DISHES_CACHE_KEY);
+  invalidateDishesCache();
   res.status(201).json(dishRow(dish));
 });
 
@@ -1098,11 +1109,12 @@ router.patch('/dishes/:id', requireAdmin, async (req: Request, res: Response): P
   if (b['isVegan'] !== undefined) data['isVegan'] = b['isVegan'] === true;
   if (b['date'] !== undefined) data['date'] = new Date(String(b['date']));
   if (b['sortOrder'] !== undefined) data['sortOrder'] = Number(b['sortOrder']);
+  if (b['plan'] !== undefined) data['plan'] = parsePlan(b['plan']);
 
   const dish = await prisma.dish.update({ where: { id }, data }).catch(() => null);
   if (!dish) { res.status(404).json({ error: 'Dish not found' }); return; }
 
-  dishesCache.delete(DISHES_CACHE_KEY);
+  invalidateDishesCache();
   res.json(dishRow(dish));
 });
 
@@ -1111,7 +1123,7 @@ router.patch('/dishes/:id', requireAdmin, async (req: Request, res: Response): P
 router.delete('/dishes/:id', requireAdmin, async (req: Request, res: Response): Promise<void> => {
   const id = String(req.params['id']);
   await prisma.dish.delete({ where: { id } }).catch(() => null);
-  dishesCache.delete(DISHES_CACHE_KEY);
+  invalidateDishesCache();
   res.status(204).send();
 });
 
@@ -1120,6 +1132,7 @@ router.delete('/dishes/:id', requireAdmin, async (req: Request, res: Response): 
 
 router.post('/dishes/import-url', requireAdmin, async (req: Request, res: Response): Promise<void> => {
   const url = String(req.body?.url ?? config.mensaImportUrl);
+  const plan = parsePlan(req.body?.plan);
 
   let raw: string;
   try {
@@ -1184,6 +1197,7 @@ router.post('/dishes/import-url', requireAdmin, async (req: Request, res: Respon
       isVegetarian: d['isVegetarian'] === true,
       isVegan: d['isVegan'] === true,
       date: new Date(dateRaw),
+      plan,
     };
 
     const existing = await prisma.dish.findUnique({ where: { id } });
@@ -1196,8 +1210,91 @@ router.post('/dishes/import-url', requireAdmin, async (req: Request, res: Respon
     }
   }
 
-  dishesCache.delete(DISHES_CACHE_KEY);
-  res.json({ imported, updated, total: imported + updated });
+  invalidateDishesCache();
+  res.json({ imported, updated, total: imported + updated, plan });
+});
+
+// ─── POST /api/admin/dishes/cascade-shift ────────────────────────────────────
+// Shifts date of every dish in `plan` with date >= fromWeek by offsetDays.
+// Used to cascade a manual week-date change to all following weeks.
+
+router.post('/dishes/cascade-shift', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const plan = parsePlan(req.body?.plan);
+  const fromWeekRaw = req.body?.fromWeek ? String(req.body.fromWeek) : '';
+  const offsetDays = Number(req.body?.offsetDays);
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(fromWeekRaw)) {
+    res.status(400).json({ error: 'fromWeek must be YYYY-MM-DD' });
+    return;
+  }
+  if (!Number.isInteger(offsetDays) || offsetDays === 0) {
+    res.status(400).json({ error: 'offsetDays must be a non-zero integer' });
+    return;
+  }
+  if (Math.abs(offsetDays) > 365 * 5) {
+    res.status(400).json({ error: 'offsetDays out of range' });
+    return;
+  }
+
+  const fromDate = new Date(fromWeekRaw + 'T00:00:00Z');
+
+  // Prisma updateMany can't express DATE_ADD, so we shift with one raw UPDATE
+  // for atomicity and constant round-trips regardless of row count.
+  const shifted = await prisma.$executeRaw`UPDATE dishes SET date = DATE_ADD(date, INTERVAL ${offsetDays} DAY) WHERE plan = ${plan} AND date >= ${fromDate}`;
+
+  invalidateDishesCache();
+  res.json({ shifted: Number(shifted) || 0 });
+});
+
+// ─── POST /api/admin/dishes/auto-rotate ──────────────────────────────────────
+// Moves every past week (Monday < current Monday) to the end of the plan,
+// preserving relative order. Cheap to call repeatedly (no-op when nothing to
+// rotate). Runs in one transaction.
+
+router.post('/dishes/auto-rotate', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const plan = parsePlan(req.body?.plan);
+
+  // Current Monday (local time, midnight).
+  const today = new Date();
+  const dow = today.getDay() || 7;
+  const currentMonday = new Date(today.getFullYear(), today.getMonth(), today.getDate() - dow + 1);
+
+  const dishes = await prisma.dish.findMany({
+    where: { plan },
+    select: { date: true },
+  });
+
+  if (dishes.length === 0) { res.json({ rotated: 0 }); return; }
+
+  const mondaySet = new Set<string>();
+  for (const d of dishes) {
+    const t = new Date(d.date);
+    const wd = t.getDay() || 7;
+    const mon = new Date(t.getFullYear(), t.getMonth(), t.getDate() - wd + 1);
+    mondaySet.add(mon.toISOString().split('T')[0]!);
+  }
+  const mondays = [...mondaySet].sort();
+  const totalWeeks = mondays.length;
+  const pastMondays = mondays.filter((m) => new Date(m + 'T00:00:00') < currentMonday);
+  if (pastMondays.length === 0) { res.json({ rotated: 0 }); return; }
+
+  // Push each past week to the end. Because we shift by (totalWeeks * 7) days
+  // and iterate the past weeks in ascending order, they land back-to-back after
+  // the current last week, preserving their relative order.
+  let rotated = 0;
+  await prisma.$transaction(async (tx) => {
+    for (const monIso of pastMondays) {
+      const monStart = new Date(monIso + 'T00:00:00Z');
+      const monEnd = new Date(monIso + 'T00:00:00Z');
+      monEnd.setUTCDate(monEnd.getUTCDate() + 7);
+      const shiftDays = totalWeeks * 7;
+      const n = await tx.$executeRaw`UPDATE dishes SET date = DATE_ADD(date, INTERVAL ${shiftDays} DAY) WHERE plan = ${plan} AND date >= ${monStart} AND date < ${monEnd}`;
+      rotated += Number(n) || 0;
+    }
+  });
+
+  invalidateDishesCache();
+  res.json({ rotated });
 });
 
 // ─── GET /api/admin/dish-ratings ─────────────────────────────────────────────
@@ -1566,7 +1663,7 @@ router.put('/dishes/:id/image', requireAdmin, async (req: Request, res: Response
   });
   const imageUrl = dishImageUrl(id);
   await prisma.dish.update({ where: { id }, data: { imageUrl } });
-  dishesCache.delete(DISHES_CACHE_KEY);
+  invalidateDishesCache();
 
   res.json({ ok: true, imageUrl });
 });
@@ -1576,7 +1673,7 @@ router.delete('/dishes/:id/image', requireAdmin, async (req: Request, res: Respo
   const id = String(req.params['id']);
   await prisma.dishImage.delete({ where: { dishId: id } }).catch(() => null);
   await prisma.dish.update({ where: { id }, data: { imageUrl: '' } }).catch(() => null);
-  dishesCache.delete(DISHES_CACHE_KEY);
+  invalidateDishesCache();
   res.status(204).send();
 });
 
@@ -1988,7 +2085,7 @@ router.post('/import', requireAdmin, async (req2: Request, res: Response): Promi
   }
 
   // The dish catalog cache may now be stale.
-  dishesCache.delete(DISHES_CACHE_KEY);
+  invalidateDishesCache();
 
   const adminUsername = adminUsernameFromReq(req2.headers['authorization']);
   logger.info('Admin action: import database', { action: 'import_db', adminUsername });

@@ -189,9 +189,11 @@ model Dish {
   isVegan      Boolean  @default(false) @map("is_vegan")
   date         DateTime @db.Date
   sortOrder    Int      @default(0) @map("sort_order")
+  plan         String   @default("summer") @db.VarChar(10)
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
+  @@index([plan, date])
   @@map("dishes")
 }
 

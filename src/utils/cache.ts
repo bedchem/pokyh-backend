@@ -45,4 +45,20 @@ export class TtlCache<V> {
 // Shared cache for the public dish catalog (GET /dishes). Invalidated by admin
 // dish writes so the menu is always fresh after an edit/import.
 export const dishesCache = new TtlCache<unknown>();
-export const DISHES_CACHE_KEY = 'dishes:all';
+export const DISHES_CACHE_KEY_SUMMER = 'dishes:summer';
+export const DISHES_CACHE_KEY_WINTER = 'dishes:winter';
+export const DISHES_CACHE_KEYS = [DISHES_CACHE_KEY_SUMMER, DISHES_CACHE_KEY_WINTER] as const;
+
+export function invalidateDishesCache(): void {
+  for (const k of DISHES_CACHE_KEYS) dishesCache.delete(k);
+}
+
+// Summer runs April 1 – October 31; winter is the rest.
+export function currentSeason(now: Date = new Date()): 'summer' | 'winter' {
+  const m = now.getMonth() + 1;
+  return m >= 4 && m <= 10 ? 'summer' : 'winter';
+}
+
+export function dishesCacheKey(season: 'summer' | 'winter'): string {
+  return season === 'summer' ? DISHES_CACHE_KEY_SUMMER : DISHES_CACHE_KEY_WINTER;
+}
