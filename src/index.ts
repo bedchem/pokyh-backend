@@ -70,6 +70,7 @@ function parentDomainOrigin(hostname: string): string | null {
 
 const allowedOrigins = new Set([
   ...config.corsOrigin.split(',').map((o) => o.trim()).filter(Boolean),
+  ...config.learnAllowedOrigins,
   ...(effectiveTunnelHostname ? [`https://${effectiveTunnelHostname}`] : []),
   // Also allow the parent domain of the tunnel (e.g. pokyh.com when tunnel is api.pokyh.com)
   ...(effectiveTunnelHostname ? [parentDomainOrigin(effectiveTunnelHostname)].filter(Boolean) as string[] : []),
@@ -93,7 +94,7 @@ app.use(
     },
     credentials: true,
     methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key', 'X-Server-Key'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key', 'X-Server-Key', 'Idempotency-Key'],
   })
 );
 

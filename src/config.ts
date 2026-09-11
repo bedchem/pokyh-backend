@@ -86,6 +86,11 @@ export const config = {
   apiKey: requireEnv('API_KEY'),
   serverKey: requireEnv('SERVER_KEY'),
   corsOrigin: process.env.CORS_ORIGIN ?? 'http://localhost:3000',
+  // Browser-origin access to the Learn route is deliberately narrower than
+  // the general API CORS policy. Server-to-server BFF calls carry no Origin
+  // header and remain authenticated by the API key plus user bearer token.
+  learnAllowedOrigins: (process.env.LEARN_ALLOWED_ORIGINS ?? '')
+    .split(',').map((origin) => origin.trim()).filter(Boolean),
   webuntisSchool: process.env.WEBUNTIS_SCHOOL ?? '',
   isDev: (process.env.NODE_ENV ?? 'development') === 'development',
   isProd: process.env.NODE_ENV === 'production',

@@ -1,0 +1,46 @@
+name: Backend verification
+
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Validate schema and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # Schema validation/generation only parses this URL; CI never connects
+      # to a database.
+      DATABASE_URL: mysql://ci:ci@localhost:3306/pokyh_ci
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.x"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Validate Prisma schema
+        run: npx prisma validate
+
+      - name: Build TypeScript
+        run: npm run build
+
+      - name: Audit production dependencies
+        run: npm audit --omit=dev

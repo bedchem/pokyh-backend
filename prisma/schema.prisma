@@ -12,38 +12,50 @@ datasource db {
 }
 
 model User {
-  id                  String    @id @default(uuid())
-  stableUid           String    @unique @map("stable_uid")
-  username            String    @unique
-  webuntisKlasseId    Int       @default(0) @map("webuntis_klasse_id")
-  webuntisKlasseName  String    @default("") @map("webuntis_klasse_name")
-  passwordHash        String?   @map("password_hash") @db.VarChar(100)
-  isUntisUser         Boolean   @default(true) @map("is_untis_user")
+  id                 String   @id @default(uuid())
+  stableUid          String   @unique @map("stable_uid")
+  username           String   @unique
+  webuntisKlasseId   Int      @default(0) @map("webuntis_klasse_id")
+  webuntisKlasseName String   @default("") @map("webuntis_klasse_name")
+  passwordHash       String?  @map("password_hash") @db.VarChar(100)
+  isUntisUser        Boolean  @default(true) @map("is_untis_user")
   // Account role: "student" (default) or "parent". Parents have their own todos,
   // see only the class name (never appear in member lists) and have no reminders.
-  role                String    @default("student") @db.VarChar(20)
-  createdAt           DateTime  @default(now()) @map("created_at")
-  updatedAt           DateTime  @updatedAt @map("updated_at")
+  role               String   @default("student") @db.VarChar(20)
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
 
-  todos              Todo[]
-  classMembers       ClassMember[]
-  refreshTokens      RefreshToken[]
-  pushSubscriptions  PushSubscription[]
+  todos                  Todo[]
+  classMembers           ClassMember[]
+  refreshTokens          RefreshToken[]
+  pushSubscriptions      PushSubscription[]
+  // Pokyh Learn is deliberately attached to the existing POKYH identity.  A
+  // profile is created lazily on first Learn use, which also marks this account
+  // as persistent across the school-year cleanup.
+  learnProfile           LearnProfile?
+  learnCoursesCreated    LearnCourse[]           @relation("LearnCourseCreator")
+  learnCourseAccesses    LearnCourseAccess[]
+  learnEnrollments       LearnEnrollment[]
+  learnVocabularyEntries LearnVocabularyEntry[]  @relation("LearnVocabularyCreator")
+  learnVocabularyReviews LearnVocabularyReview[]
+  learnQuizAttempts      LearnQuizAttempt[]
+  learnTeamsCreated      LearnTeam[]             @relation("LearnTeamCreator")
+  learnTeamMemberships   LearnTeamMember[]
 
   @@map("users")
 }
 
 model PushSubscription {
-  id           String   @id @default(uuid())
-  stableUid    String   @map("stable_uid")
-  endpoint     String   @unique @db.VarChar(500)
-  p256dh       String   @db.VarChar(255)
-  auth         String   @db.VarChar(255)
-  jsessionid   String   @db.VarChar(100)
-  bearerToken  String   @map("bearer_token") @db.VarChar(1000)
-  knownUnread  Int      @default(-1) @map("known_unread")
-  createdAt    DateTime @default(now()) @map("created_at")
-  updatedAt    DateTime @updatedAt @map("updated_at")
+  id          String   @id @default(uuid())
+  stableUid   String   @map("stable_uid")
+  endpoint    String   @unique @db.VarChar(500)
+  p256dh      String   @db.VarChar(255)
+  auth        String   @db.VarChar(255)
+  jsessionid  String   @db.VarChar(100)
+  bearerToken String   @map("bearer_token") @db.VarChar(1000)
+  knownUnread Int      @default(-1) @map("known_unread")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
 
   user User @relation(fields: [stableUid], references: [stableUid], onDelete: Cascade)
 
@@ -51,10 +63,10 @@ model PushSubscription {
 }
 
 model Admin {
-  stableUid       String   @id @map("stable_uid")
-  canCreateClass  Boolean  @default(true) @map("can_create_class")
-  passwordHash    String?  @map("password_hash") @db.VarChar(100)
-  createdAt       DateTime @default(now()) @map("created_at")
+  stableUid      String   @id @map("stable_uid")
+  canCreateClass Boolean  @default(true) @map("can_create_class")
+  passwordHash   String?  @map("password_hash") @db.VarChar(100)
+  createdAt      DateTime @default(now()) @map("created_at")
 
   @@map("admins")
 }
@@ -92,18 +104,18 @@ model ClassMember {
 }
 
 model Todo {
-  id          String    @id @default(uuid())
-  stableUid   String    @map("stable_uid")
-  title       String    @db.VarChar(500)
-  details     String    @default("") @db.VarChar(5000)
-  dueAt       DateTime? @map("due_at")
-  done        Boolean   @default(false)
-  doneAt      DateTime? @map("done_at")
-  notifiedAt  DateTime? @map("notified_at")
+  id         String    @id @default(uuid())
+  stableUid  String    @map("stable_uid")
+  title      String    @db.VarChar(500)
+  details    String    @default("") @db.VarChar(5000)
+  dueAt      DateTime? @map("due_at")
+  done       Boolean   @default(false)
+  doneAt     DateTime? @map("done_at")
+  notifiedAt DateTime? @map("notified_at")
   // Set once a todo has been expired (overdue) for >24h. Archived todos are
   // hidden from users and live on the server only — viewable by admins.
-  archivedAt  DateTime? @map("archived_at")
-  createdAt   DateTime  @default(now()) @map("created_at")
+  archivedAt DateTime? @map("archived_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
 
   user User @relation(fields: [stableUid], references: [stableUid], onDelete: Cascade)
 
@@ -292,17 +304,17 @@ model RequestLog {
 }
 
 // ─── School year archive ──────────────────────────────────────────────────────
-// On August 1st each year the live non-admin users, classes, todos and reminders
-// are snapshotted here and then removed from the live tables so the new school
-// year starts fresh. Admins (Admin table) keep their User records untouched.
+// On August 1st each year school-only users, classes, todos and reminders are
+// snapshotted here and then removed from the live tables so the new school year
+// starts fresh. Admins and users with a LearnProfile keep their User records.
 
 model SchoolYear {
   id        String   @id @default(uuid())
-  label     String   @unique           // "2025/2026"
-  startYear Int      @unique           @map("start_year")  // 2025
+  label     String   @unique // "2025/2026"
+  startYear Int      @unique @map("start_year") // 2025
   rolledAt  DateTime @map("rolled_at") // when rollover was performed
   note      String   @default("") @db.VarChar(500)
-  createdAt DateTime @default(now())   @map("created_at")
+  createdAt DateTime @default(now()) @map("created_at")
 
   archivedUsers     ArchivedUser[]
   archivedClasses   ArchivedClass[]
@@ -319,7 +331,7 @@ model ArchivedUser {
   username           String
   role               String   @default("student") @db.VarChar(20)
   webuntisKlasseId   Int      @default(0) @map("webuntis_klasse_id")
-  webuntisKlasseName String   @default("") @db.VarChar(255) @map("webuntis_klasse_name")
+  webuntisKlasseName String   @default("") @map("webuntis_klasse_name") @db.VarChar(255)
   classId            String?  @map("class_id")
   classCode          String?  @map("class_code")
   className          String?  @map("class_name")
@@ -342,7 +354,7 @@ model ArchivedClass {
   createdBy        String   @map("created_by")
   createdByName    String   @default("") @map("created_by_name")
   memberCount      Int      @default(0) @map("member_count")
-  membersJson      String   @default("[]") @db.Text @map("members_json")
+  membersJson      String   @default("[]") @map("members_json") @db.Text
   createdAt        DateTime @map("created_at")
 
   schoolYear SchoolYear @relation(fields: [schoolYearId], references: [id], onDelete: Cascade)
@@ -385,7 +397,7 @@ model ArchivedReminder {
   createdByName     String    @default("") @map("created_by_name")
   createdByUsername String    @default("") @map("created_by_username")
   archivedAt        DateTime? @map("archived_at")
-  commentsJson      String    @default("[]") @db.Text @map("comments_json")
+  commentsJson      String    @default("[]") @map("comments_json") @db.Text
   createdAt         DateTime  @map("created_at")
 
   schoolYear SchoolYear @relation(fields: [schoolYearId], references: [id], onDelete: Cascade)
@@ -410,4 +422,228 @@ model FrontendActivityLog {
   @@index([createdAt])
   @@index([event])
   @@map("frontend_activity_logs")
+}
+
+// ─── Pokyh Learn ─────────────────────────────────────────────────────────────
+// Learn content lives alongside the existing POKYH account rather than creating
+// a second identity or token system.  Fields ending in `Json` intentionally use
+// text so import/export payloads remain portable and the public API can validate
+// their shape before persisting them.
+
+model LearnProfile {
+  stableUid        String    @id @map("stable_uid")
+  dailyGoalMinutes Int       @default(15) @map("daily_goal_minutes")
+  timezone         String    @default("") @db.VarChar(80)
+  dailyStreak      Int       @default(0) @map("daily_streak")
+  lastActiveAt     DateTime? @map("last_active_at")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  user User @relation(fields: [stableUid], references: [stableUid], onDelete: Cascade)
+
+  @@index([lastActiveAt])
+  @@map("learn_profiles")
+}
+
+model LearnCourse {
+  id            String   @id @default(uuid())
+  slug          String   @unique @db.VarChar(191)
+  title         String   @db.VarChar(160)
+  summary       String   @default("") @db.VarChar(2000)
+  subject       String   @default("") @db.VarChar(120)
+  language      String   @default("") @db.VarChar(80)
+  level         String   @default("") @db.VarChar(50)
+  // PRIVATE, TEAM, or PUBLIC.  PUBLIC courses are only shown in the catalog
+  // once their status is PUBLISHED.
+  visibility    String   @default("PRIVATE") @db.VarChar(20)
+  // DRAFT, PUBLISHED, or ARCHIVED.
+  status        String   @default("DRAFT") @db.VarChar(20)
+  coverImageUrl String   @default("") @map("cover_image_url") @db.VarChar(1000)
+  createdBy     String   @map("created_by")
+  teamId        String?  @map("team_id")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  creator      User                   @relation("LearnCourseCreator", fields: [createdBy], references: [stableUid], onDelete: Cascade)
+  team         LearnTeam?             @relation(fields: [teamId], references: [id], onDelete: SetNull)
+  sections     LearnCourseSection[]
+  accessGrants LearnCourseAccess[]
+  enrollments  LearnEnrollment[]
+  vocabulary   LearnVocabularyEntry[]
+  quizAttempts LearnQuizAttempt[]
+
+  @@index([createdBy])
+  @@index([teamId])
+  @@index([visibility, status, updatedAt])
+  @@map("learn_courses")
+}
+
+model LearnCourseSection {
+  id          String   @id @default(uuid())
+  courseId    String   @map("course_id")
+  title       String   @db.VarChar(200)
+  summary     String   @default("") @db.VarChar(2000)
+  // LESSON, VOCABULARY, GRAMMAR, QUIZ, or a future server-defined type.
+  type        String   @default("LESSON") @db.VarChar(40)
+  sortOrder   Int      @default(0) @map("sort_order")
+  contentJson String   @default("{}") @map("content_json") @db.LongText
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  course     LearnCourse            @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  vocabulary LearnVocabularyEntry[]
+
+  @@unique([courseId, sortOrder])
+  @@index([courseId])
+  @@map("learn_course_sections")
+}
+
+// Explicit per-course grants make it possible for a POKYH administrator to
+// allow trusted learners to contribute content without making them global admins.
+model LearnCourseAccess {
+  courseId   String   @map("course_id")
+  stableUid  String   @map("stable_uid")
+  // VIEW, EDIT, or MANAGE.
+  permission String   @default("VIEW") @db.VarChar(20)
+  grantedBy  String?  @map("granted_by")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  course LearnCourse @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  user   User        @relation(fields: [stableUid], references: [stableUid], onDelete: Cascade)
+
+  @@id([courseId, stableUid])
+  @@index([stableUid])
+  @@map("learn_course_access")
+}
+
+model LearnEnrollment {
+  courseId          String    @map("course_id")
+  stableUid         String    @map("stable_uid")
+  // ACTIVE, PAUSED, or COMPLETED.
+  status            String    @default("ACTIVE") @db.VarChar(20)
+  progressPercent   Float     @default(0) @map("progress_percent")
+  completedSections Int       @default(0) @map("completed_sections")
+  lastOpenedAt      DateTime? @map("last_opened_at")
+  completedAt       DateTime? @map("completed_at")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
+
+  course LearnCourse @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  user   User        @relation(fields: [stableUid], references: [stableUid], onDelete: Cascade)
+
+  @@id([courseId, stableUid])
+  @@index([stableUid, lastOpenedAt])
+  @@map("learn_enrollments")
+}
+
+model LearnVocabularyEntry {
+  id                 String   @id @default(uuid())
+  courseId           String   @map("course_id")
+  sectionId          String?  @map("section_id")
+  sourceLanguage     String   @map("source_language") @db.VarChar(20)
+  targetLanguage     String   @map("target_language") @db.VarChar(20)
+  sourceText         String   @map("source_text") @db.VarChar(500)
+  targetText         String   @map("target_text") @db.VarChar(500)
+  normalizedSource   String   @map("normalized_source") @db.VarChar(500)
+  normalizedTarget   String   @map("normalized_target") @db.VarChar(500)
+  article            String   @default("") @db.VarChar(40)
+  partOfSpeech       String   @default("") @map("part_of_speech") @db.VarChar(80)
+  notes              String   @default("") @db.VarChar(2000)
+  tagsJson           String   @default("[]") @map("tags_json") @db.Text
+  // UNVERIFIED, VERIFIED, or FLAGGED.  A future dictionary integration can
+  // populate verificationSource without changing the entry contract.
+  verificationStatus String   @default("UNVERIFIED") @map("verification_status") @db.VarChar(20)
+  verificationSource String   @default("") @map("verification_source") @db.VarChar(120)
+  createdBy          String   @map("created_by")
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
+
+  course       LearnCourse             @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  section      LearnCourseSection?     @relation(fields: [sectionId], references: [id], onDelete: SetNull)
+  creator      User                    @relation("LearnVocabularyCreator", fields: [createdBy], references: [stableUid], onDelete: Cascade)
+  reviewStates LearnVocabularyReview[]
+
+  @@index([courseId, sectionId])
+  @@index([createdBy])
+  @@map("learn_vocabulary_entries")
+}
+
+// Per-user spaced-review state.  It is updated atomically with a quiz attempt,
+// so a wrong answer remains recoverable for a dedicated review quiz.
+model LearnVocabularyReview {
+  id             String    @id @default(uuid())
+  stableUid      String    @map("stable_uid")
+  entryId        String    @map("entry_id")
+  intervalDays   Int       @default(0) @map("interval_days")
+  easeFactor     Float     @default(2.5) @map("ease_factor")
+  dueAt          DateTime  @default(now()) @map("due_at")
+  lastReviewedAt DateTime? @map("last_reviewed_at")
+  correctCount   Int       @default(0) @map("correct_count")
+  incorrectCount Int       @default(0) @map("incorrect_count")
+  lastWasCorrect Boolean   @default(false) @map("last_was_correct")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  user  User                 @relation(fields: [stableUid], references: [stableUid], onDelete: Cascade)
+  entry LearnVocabularyEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
+
+  @@unique([stableUid, entryId])
+  @@index([stableUid, dueAt])
+  @@map("learn_vocabulary_reviews")
+}
+
+// A durable, idempotent record of server-graded answers.  `answersJson` stores
+// the submitted answer and the server result; expected answers never come from
+// the client and are not exposed by the review queue endpoint.
+model LearnQuizAttempt {
+  id             String   @id @default(uuid())
+  stableUid      String   @map("stable_uid")
+  courseId       String   @map("course_id")
+  mode           String   @default("PRACTICE") @db.VarChar(40)
+  idempotencyKey String   @map("idempotency_key") @db.VarChar(191)
+  answersJson    String   @map("answers_json") @db.LongText
+  totalQuestions Int      @map("total_questions")
+  correctAnswers Int      @map("correct_answers")
+  score          Float    @default(0)
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  user   User        @relation(fields: [stableUid], references: [stableUid], onDelete: Cascade)
+  course LearnCourse @relation(fields: [courseId], references: [id], onDelete: Cascade)
+
+  @@unique([stableUid, idempotencyKey])
+  @@index([stableUid, createdAt])
+  @@index([courseId, createdAt])
+  @@map("learn_quiz_attempts")
+}
+
+model LearnTeam {
+  id          String   @id @default(uuid())
+  name        String   @db.VarChar(120)
+  description String   @default("") @db.VarChar(1000)
+  createdBy   String   @map("created_by")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  creator User              @relation("LearnTeamCreator", fields: [createdBy], references: [stableUid], onDelete: Cascade)
+  members LearnTeamMember[]
+  courses LearnCourse[]
+
+  @@index([createdBy])
+  @@map("learn_teams")
+}
+
+model LearnTeamMember {
+  teamId    String   @map("team_id")
+  stableUid String   @map("stable_uid")
+  // OWNER, MANAGER, or MEMBER.
+  role      String   @default("MEMBER") @db.VarChar(20)
+  joinedAt  DateTime @default(now()) @map("joined_at")
+
+  team LearnTeam @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  user User      @relation(fields: [stableUid], references: [stableUid], onDelete: Cascade)
+
+  @@id([teamId, stableUid])
+  @@index([stableUid])
+  @@map("learn_team_members")
 }
