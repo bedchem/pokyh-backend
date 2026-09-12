@@ -128,6 +128,8 @@ export interface RequestLog {
   username: string | null;
   userAgent: string | null;
   error: string | null;
+  requestId: string | null;
+  scope: string | null;
   createdAt: string;
 }
 
@@ -447,4 +449,39 @@ export interface RollbackResult {
   todosRestored: number;
   remindersRestored: number;
   commentsRestored: number;
+}
+
+export interface AdminApiKey {
+  id: string;
+  name: string;
+  purpose: string;
+  platform: string;
+  createdBy: string | null;
+  createdAt: string;
+  expiresAt: string | null;
+  revokedAt: string | null;
+  lastUsedAt: string | null;
+}
+
+export interface CreatedApiKey extends AdminApiKey {
+  key: string;
+}
+
+export interface LearnConfigValues {
+  legalGateEnabled: boolean;
+  legalGateReady: boolean;
+  hasWebUntisAuthorizationReference: boolean;
+  privacyNoticeUrl: string;
+  privacyNoticeVersion: string;
+  dictionaryEnabled: boolean;
+  dictionaryProvider: string;
+  dictionaryBaseUrl: string;
+  dictionaryContactEmail: string;
+  dictionaryAllowedPairs: string;
+  dictionaryTimeoutMs: number;
+  dictionaryCacheTtlMs: number;
+  dictionaryMaxCacheEntries: number;
+  importMaxCourses: number;
+  importMaxSectionsPerCourse: number;
+  importMaxVocabularyPerCourse: number;
 }

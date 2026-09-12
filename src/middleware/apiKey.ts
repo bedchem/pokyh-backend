@@ -8,6 +8,31 @@ function hashKey(key: string): string {
   return createHash('sha256').update(key).digest('hex');
 }
 
+// Constant-time string compare that also tolerates a length mismatch (unlike
+// crypto.timingSafeEqual, which throws for unequal-length buffers).
+function safeEquals(a: string, b: string): boolean {
+  const bufA = Buffer.from(a, 'utf8');
+  const bufB = Buffer.from(b, 'utf8');
+  if (bufA.length !== bufB.length) return false;
+  try {
+    return timingSafeEqual(bufA, bufB);
+  } catch {
+    return false;
+  }
+}
+
+// Admin-issued keys are additive: they are only consulted when the request
+// does not present the static master key, and they never replace it. This
+// keeps every existing integration working unchanged.
+async function isValidIssuedKey(provided: string): Promise<boolean> {
+  const keyHash = hashKey(provided);
+  const record = await prisma.apiKey.findUnique({ where: { keyHash } });
+  if (!record) return false;
+  if (record.revokedAt) return false;
+  if (record.expiresAt && record.expiresAt.getTime() <= Date.now()) return false;
+  return true;
+}
+
 export function apiKeyMiddleware(
   req: Request,
   res: Response,
@@ -24,34 +49,32 @@ export function apiKeyMiddleware(
     return;
   }
 
-  // Timing-safe comparison against the configured API key
-  const expected = Buffer.from(config.apiKey, 'utf8');
-  const actual = Buffer.from(provided, 'utf8');
+  const keyHash = hashKey(provided);
 
-  let valid = false;
-  if (actual.length === expected.length) {
-    try {
-      valid = timingSafeEqual(expected, actual);
-    } catch {
-      valid = false;
-    }
-  }
-
-  if (!valid) {
-    res.status(403).json({ error: 'Invalid API key' });
+  // Fast path: the static master key, unchanged from before. Checked first so
+  // its behavior can never regress regardless of the DB-key path below.
+  if (safeEquals(provided, config.apiKey)) {
+    prisma.apiKey
+      .updateMany({ where: { keyHash }, data: { lastUsedAt: new Date() } })
+      .catch(() => { /* non-blocking, ignore errors */ });
+    next();
     return;
   }
 
-  // Update lastUsedAt async, non-blocking — based on hash
-  const keyHash = hashKey(provided);
-  prisma.apiKey
-    .updateMany({
-      where: { keyHash },
-      data: { lastUsedAt: new Date() },
+  // Fallback: an admin-issued key (expiry/revocation aware). Only reached on
+  // static-key mismatch, so this is purely additive.
+  isValidIssuedKey(provided)
+    .then((valid) => {
+      if (!valid) {
+        res.status(403).json({ error: 'Invalid API key' });
+        return;
+      }
+      prisma.apiKey
+        .update({ where: { keyHash }, data: { lastUsedAt: new Date() } })
+        .catch(() => { /* non-blocking, ignore errors */ });
+      next();
     })
     .catch(() => {
-      /* non-blocking, ignore errors */
+      res.status(403).json({ error: 'Invalid API key' });
     });
-
-  next();
 }

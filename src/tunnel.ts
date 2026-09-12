@@ -5,6 +5,7 @@ import path from 'path';
 import https from 'https';
 import { pipeline } from 'stream/promises';
 import { createWriteStream } from 'fs';
+import { logger } from './utils/logger';
 
 let tunnelProcess: ChildProcess | null = null;
 let restartTimer: NodeJS.Timeout | null = null;
@@ -65,27 +66,27 @@ export function startTunnel(name?: string): void {
   if (tunnelProcess && !tunnelProcess.killed) return;
   if (restartTimer) { clearTimeout(restartTimer); restartTimer = null; }
 
-  console.log(`[tunnel] Starting cloudflared tunnel '${currentTunnelName}'...`);
+  logger.info(`[tunnel] Starting cloudflared tunnel '${currentTunnelName}'...`);
 
   tunnelProcess = spawn('cloudflared', ['tunnel', 'run', currentTunnelName], {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
   tunnelProcess.stdout?.on('data', (d: Buffer) => {
-    d.toString().split('\n').filter(Boolean).forEach(l => console.log(`[tunnel] ${l}`));
+    d.toString().split('\n').filter(Boolean).forEach(l => logger.debug(`[tunnel] ${l}`));
   });
   tunnelProcess.stderr?.on('data', (d: Buffer) => {
-    d.toString().split('\n').filter(Boolean).forEach(l => console.log(`[tunnel] ${l}`));
+    d.toString().split('\n').filter(Boolean).forEach(l => logger.debug(`[tunnel] ${l}`));
   });
 
   tunnelProcess.on('close', (code) => {
-    console.log(`[tunnel] Exited (code ${code}). Restarting in 5s...`);
+    logger.info(`[tunnel] Exited (code ${code}). Restarting in 5s...`);
     tunnelProcess = null;
     restartTimer = setTimeout(() => startTunnel(), 5000);
   });
 
   tunnelProcess.on('error', (err) => {
-    console.error('[tunnel] Failed to start:', err.message);
+    logger.error('[tunnel] Failed to start', { message: err.message });
     tunnelProcess = null;
     restartTimer = setTimeout(() => startTunnel(), 10000);
   });

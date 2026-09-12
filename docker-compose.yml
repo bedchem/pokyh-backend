@@ -17,18 +17,31 @@ services:
   app:
     build: .
     restart: unless-stopped
+    init: true
     ports:
       # Host:container port both driven by PORT in .env (defaults to 4000)
       - "${PORT:-4000}:${PORT:-4000}"
     depends_on:
       mysql:
         condition: service_healthy
-    env_file: .env
+    # Defaults to the production .env without baking it into the image. The
+    # indirection also permits a safe example-file Compose validation in CI.
+    env_file: ${BACKEND_ENV_FILE:-.env}
     environment:
       - NODE_ENV=${NODE_ENV:-production}
       - PORT=${PORT:-4000}
     volumes:
       - cloudflared_data:/root/.cloudflared
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch(`http://127.0.0.1:$${process.env.PORT}/readyz`).then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 90s
 
 volumes:
   mysql_data:

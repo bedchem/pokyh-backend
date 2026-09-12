@@ -28,7 +28,10 @@ export const globalLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many requests, please try again later.' },
-  skip: (req) => req.method === 'OPTIONS' || hasValidServerKey(req),
+  // Learn's BFF multiplexes many authenticated people through one server IP.
+  // Its own route-level limiters use the verified stable UID after auth, so do
+  // not make all learners compete for the application's IP-wide global bucket.
+  skip: (req) => req.method === 'OPTIONS' || hasValidServerKey(req) || req.path.startsWith('/learn'),
 });
 
 export const authLimiter = rateLimit({
@@ -39,6 +42,24 @@ export const authLimiter = rateLimit({
   message: { error: 'Too many authentication attempts, please try again later.' },
   // Trusted server-to-server logins bypass the per-IP brute-force limiter.
   skip: (req) => hasValidServerKey(req),
+});
+
+// The Learn login BFF is already API-key protected but all authenticating users
+// arrive from the same host. Key this sensitive operation by the normalized
+// submitted username rather than the BFF IP, so one failed account cannot deny
+// service to the whole school. WebUntis remains the actual credential check.
+export const learnLoginLimiter = rateLimit({
+  windowMs: config.rateLimit.authWindowMs,
+  max: config.rateLimit.authMax,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many authentication attempts, please try again later.' },
+  keyGenerator: (req) => {
+    const candidate = req.body && typeof req.body === 'object' && typeof req.body.username === 'string'
+      ? req.body.username.trim().toLocaleLowerCase('en-US').slice(0, 100)
+      : 'invalid-request';
+    return `learn-login:${candidate}`;
+  },
 });
 
 // Token refresh limiter — generous because refresh is gated by an unguessable
@@ -66,6 +87,27 @@ export const readLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many read requests, please slow down.' },
+});
+
+// These limiters must be mounted only after requireAuth. The BFF turns all
+// browser traffic into one backend source IP, so a stable user ID is the only
+// fair and reliable key for protected Learn reads/writes.
+export const learnReadLimiter = rateLimit({
+  windowMs: config.rateLimit.readWindowMs,
+  max: config.rateLimit.readMax,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many learning reads, please slow down.' },
+  keyGenerator: (req) => `learn-read:${req.user?.stableUid ?? 'unauthenticated'}`,
+});
+
+export const learnWriteLimiter = rateLimit({
+  windowMs: config.rateLimit.writeWindowMs,
+  max: config.rateLimit.writeMax,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many learning changes, please slow down.' },
+  keyGenerator: (req) => `learn-write:${req.user?.stableUid ?? 'unauthenticated'}`,
 });
 
 export const sseLimiter = rateLimit({

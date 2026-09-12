@@ -14,6 +14,7 @@ import { AppError } from './utils/errors';
 import { appRouter } from './routes/index';
 import { setupRouter } from './routes/setup';
 import { requestLogger } from './middleware/requestLogger';
+import { requestId } from './middleware/requestId';
 import { prisma } from './db';
 import { startTunnel, stopTunnel, isTunnelConfigured, getHostnameFromCloudflaredConfig } from './tunnel';
 import { startPushPoller } from './services/pushPoller';
@@ -37,7 +38,7 @@ app.set('trust proxy', config.trustProxy);
 if (config.debug) {
   app.use(morgan('dev'));
   app.use((req, _res, next) => {
-    console.log(`[req] ${req.method} ${req.url} body=${JSON.stringify(req.body)}`);
+    logger.debug(`[req] ${req.method} ${req.url} body=${JSON.stringify(req.body)}`);
     next();
   });
 }
@@ -68,13 +69,22 @@ function parentDomainOrigin(hostname: string): string | null {
   return parts.length > 2 ? `https://${parts.slice(1).join('.')}` : null;
 }
 
+const parsedCorsOrigins = config.corsOrigin.split(',').map((o) => o.trim()).filter(Boolean);
+// A malformed CORS_ORIGIN (e.g. only commas/whitespace) silently degrades to
+// zero origins from this source. That alone won't break CORS entirely — the
+// other sources below still apply — but a real misconfigured production
+// origin would then be rejected with nothing in the logs to explain why.
+if (parsedCorsOrigins.length === 0 && config.corsOrigin.trim() !== '') {
+  logger.warn(`CORS_ORIGIN is set but contains no usable origin after parsing: "${config.corsOrigin}"`);
+}
+
 const allowedOrigins = new Set([
-  ...config.corsOrigin.split(',').map((o) => o.trim()).filter(Boolean),
+  ...parsedCorsOrigins,
   ...config.learnAllowedOrigins,
   ...(effectiveTunnelHostname ? [`https://${effectiveTunnelHostname}`] : []),
   // Also allow the parent domain of the tunnel (e.g. pokyh.com when tunnel is api.pokyh.com)
   ...(effectiveTunnelHostname ? [parentDomainOrigin(effectiveTunnelHostname)].filter(Boolean) as string[] : []),
-  ...(config.isDev ? ['http://localhost:3000', 'http://localhost:3001', 'http://localhost:5173'] : []),
+  ...(config.isDev ? ['http://localhost:3000', 'http://localhost:3001', 'http://localhost:3005', 'http://localhost:5173'] : []),
   `http://localhost:${config.port}`,
   `https://localhost:${config.port}`,
 ]);
@@ -84,12 +94,6 @@ app.use(
     origin: (origin, callback) => {
       if (!origin) return callback(null, true);
       if (allowedOrigins.has(origin)) return callback(null, true);
-      // Allow any origin on our own port — covers LAN IPs, hostnames, etc.
-      // The admin panel JS is served by us, so same-host:port requests are always ours.
-      try {
-        const u = new URL(origin);
-        if (u.port === String(config.port)) return callback(null, true);
-      } catch {}
       callback(new Error(`CORS: origin ${origin} not allowed`));
     },
     credentials: true,
@@ -102,6 +106,9 @@ app.use(
 
 // Larger body limit for image upload routes; biggest for full-DB JSON import
 app.use('/api/admin/import', express.json({ limit: config.bodyLimitImport }));
+// Learn personal imports are separately scoped and never share the legacy
+// database-import route, but they need the same configured size budget.
+app.use('/learn/library/import', express.json({ limit: config.bodyLimitImport }));
 app.use('/subject-images', express.json({ limit: config.bodyLimitUpload }));
 app.use('/api/admin', express.json({ limit: config.bodyLimitUpload }));
 app.use(express.json({ limit: config.bodyLimit }));
@@ -114,12 +121,38 @@ app.use(globalLimiter);
 
 // ─── Request logger (after body parse, before routes) ────────────────────────
 
+app.use(requestId);
 app.use(requestLogger);
 
-// ─── Health check ────────────────────────────────────────────────────────────
+// ─── Health checks ───────────────────────────────────────────────────────────
+
+// /health deliberately stays a process liveness check for existing callers.
+// Compose and load balancers should use /readyz, which additionally proves the
+// database connection is ready to serve durable Pokyh/Learn state.
+let databaseReady = false;
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+app.get('/readyz', async (_req, res) => {
+  if (!databaseReady) {
+    res.setHeader('Cache-Control', 'no-store');
+    res.status(503).json({ status: 'starting' });
+    return;
+  }
+  try {
+    // Reviewed: static literal, no request-derived input — not an injection
+    // surface. $queryRawUnsafe is only used here as a lightweight connectivity
+    // probe.
+    await prisma.$queryRawUnsafe('SELECT 1');
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ status: 'ready' });
+  } catch {
+    databaseReady = false;
+    res.setHeader('Cache-Control', 'no-store');
+    res.status(503).json({ status: 'unavailable' });
+  }
 });
 
 // ─── Setup API (no API key required, locked by logic inside) ──────────────────
@@ -138,9 +171,9 @@ app.use((_req: Request, res: Response) => {
 
 // ─── Global error handler ────────────────────────────────────────────────────
 
-app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
   if (config.debug && err instanceof Error) {
-    console.error('[error]', err.stack);
+    logger.debug('[error]', { stack: err.stack, requestId: req.id });
   }
 
   // Operational errors (our AppError subclasses)
@@ -166,7 +199,7 @@ app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
       res.status(404).json({ error: 'Record not found' });
       return;
     }
-    console.error('[prisma] known error:', err.code, err.message);
+    logger.error('[prisma] known error', { code: err.code, message: err.message, requestId: req.id });
     res.status(400).json({ error: 'Database error' });
     return;
   }
@@ -178,7 +211,7 @@ app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
   }
 
   // Unknown errors
-  console.error('[server] unhandled error:', err);
+  logger.error('[server] unhandled error', { message: err instanceof Error ? err.message : String(err), requestId: req.id });
   res.status(500).json({ error: 'Internal server error' });
 });
 
@@ -273,6 +306,7 @@ async function connectDatabaseWithRetry() {
         }
       }
       await prisma.$connect();
+      databaseReady = true;
       logger.info('Database ready (schema applied, connected)');
       // Idempotent — safe to run every boot. Populates dish.stableKey and
       // rewrites rating/comment dishId references so bewertungen survive
@@ -283,6 +317,7 @@ async function connectDatabaseWithRetry() {
       startBackgroundJobs();
       return;
     } catch (err) {
+      databaseReady = false;
       attempt++;
       const delay = Math.min(
         config.dbConnectBaseDelayMs * 2 ** Math.min(attempt, 5),
@@ -324,6 +359,7 @@ start();
 
 process.on('SIGTERM', async () => {
   logger.info('SIGTERM received, shutting down...');
+  databaseReady = false;
   stopTunnel();
   await prisma.$disconnect();
   process.exit(0);
@@ -331,6 +367,7 @@ process.on('SIGTERM', async () => {
 
 process.on('SIGINT', async () => {
   logger.info('SIGINT received, shutting down...');
+  databaseReady = false;
   stopTunnel();
   await prisma.$disconnect();
   process.exit(0);

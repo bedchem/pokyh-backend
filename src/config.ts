@@ -22,6 +22,21 @@ function strEnv(key: string, fallback: string): string {
   return raw === undefined || raw.trim() === '' ? fallback : raw.trim();
 }
 
+function boolEnv(key: string, fallback: boolean): boolean {
+  const raw = process.env[key];
+  if (raw === undefined || raw.trim() === '') return fallback;
+  return raw.trim().toLocaleLowerCase('en-US') === 'true';
+}
+
+export function isSecurePublicUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' && Boolean(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
 // Resolve the express `trust proxy` value from TRUST_PROXY. Accepts a boolean
 // ('true'/'false'), a numeric hop count, or a named value ('loopback', etc.).
 // Defaults to 'loopback' which trusts only the in-container cloudflared proxy.
@@ -64,8 +79,20 @@ if (jwtSecret.length < 32) {
   throw new Error('JWT_SECRET must be at least 32 characters long');
 }
 
+const nodeEnv = process.env.NODE_ENV ?? 'development';
+const isProd = nodeEnv === 'production';
+const learnLegalGateEnabled = boolEnv('LEARN_LEGAL_GATE_ENABLED', isProd);
+const learnWebUntisAuthorizationReference = strEnv('LEARN_WEBUNTIS_AUTHORIZATION_REFERENCE', '');
+const learnPrivacyNoticeUrl = strEnv('LEARN_PRIVACY_NOTICE_URL', '');
+const learnPrivacyNoticeVersion = strEnv('LEARN_PRIVACY_NOTICE_VERSION', '');
+const learnLegalGateReady = !learnLegalGateEnabled || Boolean(
+  learnWebUntisAuthorizationReference
+  && learnPrivacyNoticeVersion
+  && (isProd ? isSecurePublicUrl(learnPrivacyNoticeUrl) : Boolean(learnPrivacyNoticeUrl)),
+);
+
 export const config = {
-  nodeEnv: process.env.NODE_ENV ?? 'development',
+  nodeEnv,
   port: intEnv('PORT', 4000),
   // Express `trust proxy` setting. Behind the Cloudflare tunnel (cloudflared
   // runs in-container and proxies to localhost) the client IP arrives via the
@@ -91,9 +118,41 @@ export const config = {
   // header and remain authenticated by the API key plus user bearer token.
   learnAllowedOrigins: (process.env.LEARN_ALLOWED_ORIGINS ?? '')
     .split(',').map((origin) => origin.trim()).filter(Boolean),
+  // Optional editorial lookup only. The provider never grades a quiz or writes
+  // an answer by itself; it offers a server-side suggestion for an editor to
+  // review. Keeping it disabled by default prevents unannounced content export.
+  learnDictionary: {
+    enabled: (process.env['LEARN_DICTIONARY_ENABLED'] ?? 'false') === 'true',
+    provider: strEnv('LEARN_DICTIONARY_PROVIDER', 'mymemory').toLocaleLowerCase('en-US'),
+    baseUrl: strEnv('LEARN_DICTIONARY_BASE_URL', 'https://api.mymemory.translated.net').replace(/\/$/, ''),
+    contactEmail: strEnv('LEARN_DICTIONARY_CONTACT_EMAIL', ''),
+    allowedPairs: (process.env['LEARN_DICTIONARY_ALLOWED_PAIRS'] ?? 'it:de,en:de,de:it,de:en')
+      .split(',')
+      .map((pair) => pair.trim().toLocaleLowerCase('en-US'))
+      .filter((pair) => /^[a-z]{2,3}:[a-z]{2,3}$/.test(pair)),
+    timeoutMs: intEnv('LEARN_DICTIONARY_TIMEOUT_MS', 4_000),
+    cacheTtlMs: intEnv('LEARN_DICTIONARY_CACHE_TTL_MS', 60 * 60 * 1000),
+    maxCacheEntries: intEnv('LEARN_DICTIONARY_MAX_CACHE_ENTRIES', 500),
+  },
+  learnImport: {
+    maxCourses: intEnv('LEARN_IMPORT_MAX_COURSES', 20),
+    maxSectionsPerCourse: intEnv('LEARN_IMPORT_MAX_SECTIONS_PER_COURSE', 100),
+    maxVocabularyPerCourse: intEnv('LEARN_IMPORT_MAX_VOCABULARY_PER_COURSE', 1_000),
+  },
+  // A school/controller must authorise this independent integration before a
+  // production Learn login can process WebUntis credentials. This check does
+  // not claim to create a legal basis; it prevents accidental activation when
+  // the operator has not configured the documented approval and notice.
+  learnLegal: {
+    gateEnabled: learnLegalGateEnabled,
+    ready: learnLegalGateReady,
+    webUntisAuthorizationReference: learnWebUntisAuthorizationReference,
+    privacyNoticeUrl: learnPrivacyNoticeUrl,
+    privacyNoticeVersion: learnPrivacyNoticeVersion,
+  },
   webuntisSchool: process.env.WEBUNTIS_SCHOOL ?? '',
-  isDev: (process.env.NODE_ENV ?? 'development') === 'development',
-  isProd: process.env.NODE_ENV === 'production',
+  isDev: nodeEnv === 'development',
+  isProd,
 
   // ── Auth / tokens (all env-overridable) ────────────────────────────────────
   jwtExpiresIn: strEnv('JWT_EXPIRES_IN', '1h'),

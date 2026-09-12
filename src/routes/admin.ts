@@ -9,6 +9,7 @@ import http from 'http';
 import fs from 'fs/promises';
 import path from 'path';
 import sharp from 'sharp';
+import { createHash, randomBytes } from 'crypto';
 import { config } from '../config';
 import { prisma } from '../db';
 import { requireAdmin } from '../middleware/requireAdmin';
@@ -16,6 +17,7 @@ import { generateClassCode, generateClassId } from '../utils/uid';
 import { revokeUserTokens } from '../utils/revokedTokens';
 import { logger } from '../utils/logger';
 import { invalidateDishesCache } from '../utils/cache';
+import { getLearnConfig, updateLearnConfig } from '../services/learnConfig';
 import {
   rotatePastWeeks, normalizePlanAroundAnchor,
   lastFutureMondayIso, firstMondayIso, otherPlan, snapForwardToSeason, isoAddDays,
@@ -726,6 +728,7 @@ router.get('/logs', requireAdmin, async (req: Request, res: Response): Promise<v
   const status = req.query['status'] ? parseInt(String(req.query['status']), 10) : undefined;
   const pathFilter = req.query['path'] ? String(req.query['path']) : undefined;
   const username = req.query['username'] ? String(req.query['username']) : undefined;
+  const scope = req.query['scope'] === 'learn' || req.query['scope'] === 'core' ? String(req.query['scope']) : undefined;
   const from = req.query['from'] ? new Date(String(req.query['from'])) : undefined;
   const to = req.query['to'] ? new Date(String(req.query['to']) + 'T23:59:59.999Z') : undefined;
 
@@ -734,6 +737,7 @@ router.get('/logs', requireAdmin, async (req: Request, res: Response): Promise<v
   if (status) where['status'] = { gte: status, lt: status + 100 };
   if (pathFilter) where['path'] = { contains: pathFilter };
   if (username) where['username'] = { contains: username };
+  if (scope) where['scope'] = scope;
   if (from || to) {
     where['createdAt'] = {
       ...(from && !isNaN(from.getTime()) ? { gte: from } : {}),
@@ -2211,6 +2215,25 @@ router.post('/import', requireAdmin, async (req2: Request, res: Response): Promi
   }
   const d = parsed.data.data as Record<string, Record<string, unknown>[]>;
 
+  // The legacy admin backup predates Pokyh Learn and therefore does not carry
+  // its related tables. Deleting users during a legacy restore would cascade
+  // and silently erase Learn courses/progress, so refuse the unsafe operation
+  // until a complete Learn-aware system backup format is introduced.
+  const learnRecords = await Promise.all([
+    prisma.learnProfile.count(),
+    prisma.learnCourse.count(),
+    prisma.learnEnrollment.count(),
+    prisma.learnVocabularyEntry.count(),
+    prisma.learnQuizAttempt.count(),
+    prisma.learnTeam.count(),
+  ]);
+  if (learnRecords.some((count) => count > 0)) {
+    res.status(409).json({
+      error: 'Legacy database import is blocked while Pokyh Learn data exists. Use the Learn personal export/import flow or a Learn-aware backup before restoring.',
+    });
+    return;
+  }
+
   // Revive types JSON can't carry: ISO date strings → Date, base64 → Buffer.
   const reviveDates = (rows: Record<string, unknown>[]): Record<string, unknown>[] =>
     rows.map((row) => {
@@ -2443,6 +2466,150 @@ router.post('/school-years/:id/rollback', requireAdmin, async (req: Request, res
   } catch (err) {
     res.status(409).json({ error: err instanceof Error ? err.message : 'Rollback fehlgeschlagen' });
   }
+});
+
+// ─── GET /api/admin/api-keys ──────────────────────────────────────────────────
+// Lists admin-issued API keys (metadata only — the plaintext key is never
+// stored or returned again after creation). This is separate from, and
+// additive to, the static master API_KEY env var, which is not listed here.
+
+router.get('/api-keys', requireAdmin, async (_req: Request, res: Response): Promise<void> => {
+  const keys = await prisma.apiKey.findMany({ orderBy: { createdAt: 'desc' } });
+  res.json({
+    apiKeys: keys.map((k) => ({
+      id: k.id,
+      name: k.name,
+      purpose: k.purpose,
+      platform: k.platform,
+      createdBy: k.createdBy,
+      createdAt: k.createdAt.toISOString(),
+      expiresAt: k.expiresAt ? k.expiresAt.toISOString() : null,
+      revokedAt: k.revokedAt ? k.revokedAt.toISOString() : null,
+      lastUsedAt: k.lastUsedAt ? k.lastUsedAt.toISOString() : null,
+    })),
+  });
+});
+
+// ─── POST /api/admin/api-keys ─────────────────────────────────────────────────
+// Generates a new API key. The plaintext value is returned exactly once in
+// this response and is never stored or retrievable again — only its SHA-256
+// hash is kept, matching how the static master key is compared.
+
+const createApiKeySchema = z.object({
+  name: z.string().trim().min(1).max(191),
+  purpose: z.string().trim().max(255).optional(),
+  platform: z.string().trim().max(80).optional(),
+  expiresAt: z.string().datetime().optional(),
+});
+
+router.post('/api-keys', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const parsed = createApiKeySchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(422).json({ error: parsed.error.errors.map((e) => e.message).join('; ') });
+    return;
+  }
+  const { name, purpose, platform, expiresAt } = parsed.data;
+  const plaintext = `pk_${randomBytes(32).toString('hex')}`;
+  const keyHash = createHash('sha256').update(plaintext).digest('hex');
+  const adminUsername = adminUsernameFromReq(req.headers['authorization']);
+
+  const record = await prisma.apiKey.create({
+    data: {
+      keyHash,
+      name,
+      purpose: purpose ?? '',
+      platform: platform ?? '',
+      expiresAt: expiresAt ? new Date(expiresAt) : null,
+      createdBy: adminUsername,
+    },
+  });
+
+  logger.info('Admin action: API key created', { action: 'api_key_created', adminUsername, apiKeyId: record.id, name });
+
+  res.status(201).json({
+    id: record.id,
+    name: record.name,
+    purpose: record.purpose,
+    platform: record.platform,
+    expiresAt: record.expiresAt ? record.expiresAt.toISOString() : null,
+    createdAt: record.createdAt.toISOString(),
+    key: plaintext,
+  });
+});
+
+// ─── PATCH /api/admin/api-keys/:id/revoke ─────────────────────────────────────
+
+router.patch('/api-keys/:id/revoke', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const id = String(req.params['id']);
+  const adminUsername = adminUsernameFromReq(req.headers['authorization']);
+  try {
+    const record = await prisma.apiKey.update({ where: { id }, data: { revokedAt: new Date() } });
+    logger.info('Admin action: API key revoked', { action: 'api_key_revoked', adminUsername, apiKeyId: record.id, name: record.name });
+    res.json({ ok: true });
+  } catch {
+    res.status(404).json({ error: 'API key not found' });
+  }
+});
+
+// ─── GET /api/admin/learn-config ──────────────────────────────────────────────
+// Live Learn configuration (DB-backed, falls back to LEARN_* env defaults —
+// see src/services/learnConfig.ts). LEARN_ALLOWED_ORIGINS is a security-
+// boundary value and is intentionally never exposed or editable here. The
+// WebUntis authorization reference is write-only: only whether one is set is
+// reported, never the value itself.
+
+router.get('/learn-config', requireAdmin, async (_req: Request, res: Response): Promise<void> => {
+  const cfg = await getLearnConfig();
+  res.json({
+    legalGateEnabled: cfg.legalGateEnabled,
+    legalGateReady: cfg.legalGateReady,
+    hasWebUntisAuthorizationReference: Boolean(cfg.webUntisAuthorizationReference),
+    privacyNoticeUrl: cfg.privacyNoticeUrl,
+    privacyNoticeVersion: cfg.privacyNoticeVersion,
+    dictionaryEnabled: cfg.dictionaryEnabled,
+    dictionaryProvider: cfg.dictionaryProvider,
+    dictionaryBaseUrl: cfg.dictionaryBaseUrl,
+    dictionaryContactEmail: cfg.dictionaryContactEmail,
+    dictionaryAllowedPairs: cfg.dictionaryAllowedPairs.join(','),
+    dictionaryTimeoutMs: cfg.dictionaryTimeoutMs,
+    dictionaryCacheTtlMs: cfg.dictionaryCacheTtlMs,
+    dictionaryMaxCacheEntries: cfg.dictionaryMaxCacheEntries,
+    importMaxCourses: cfg.importMaxCourses,
+    importMaxSectionsPerCourse: cfg.importMaxSectionsPerCourse,
+    importMaxVocabularyPerCourse: cfg.importMaxVocabularyPerCourse,
+  });
+});
+
+// ─── PATCH /api/admin/learn-config ────────────────────────────────────────────
+
+const learnConfigSchema = z.object({
+  legalGateEnabled: z.boolean().optional(),
+  webUntisAuthorizationReference: z.string().trim().max(255).optional(),
+  privacyNoticeUrl: z.string().trim().max(500).optional(),
+  privacyNoticeVersion: z.string().trim().max(80).optional(),
+  dictionaryEnabled: z.boolean().optional(),
+  dictionaryProvider: z.string().trim().max(40).optional(),
+  dictionaryBaseUrl: z.string().trim().max(500).optional(),
+  dictionaryContactEmail: z.string().trim().max(255).optional(),
+  dictionaryAllowedPairs: z.string().trim().max(500).optional(),
+  dictionaryTimeoutMs: z.number().int().positive().optional(),
+  dictionaryCacheTtlMs: z.number().int().positive().optional(),
+  dictionaryMaxCacheEntries: z.number().int().positive().optional(),
+  importMaxCourses: z.number().int().positive().optional(),
+  importMaxSectionsPerCourse: z.number().int().positive().optional(),
+  importMaxVocabularyPerCourse: z.number().int().positive().optional(),
+});
+
+router.patch('/learn-config', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const parsed = learnConfigSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(422).json({ error: parsed.error.errors.map((e) => e.message).join('; ') });
+    return;
+  }
+  const adminUsername = adminUsernameFromReq(req.headers['authorization']);
+  await updateLearnConfig(parsed.data, adminUsername);
+  logger.info('Admin action: Learn config updated', { action: 'learn_config_updated', adminUsername, fields: Object.keys(parsed.data) });
+  res.json({ ok: true });
 });
 
 export { router as adminRouter };

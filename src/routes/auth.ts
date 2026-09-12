@@ -6,14 +6,33 @@ import { z } from 'zod';
 import { prisma } from '../db';
 import { config } from '../config';
 import { requireAuth } from '../middleware/auth';
-import { authLimiter, refreshLimiter } from '../middleware/rateLimiter';
+import { authLimiter, learnLoginLimiter, refreshLimiter } from '../middleware/rateLimiter';
 import { generateStableUid, generateClassCode, generateClassId } from '../utils/uid';
+import { validateWebUntis } from '../services/webuntis';
+import { getLearnConfig } from '../services/learnConfig';
 import {
+  AppError,
   UnauthorizedError,
   ForbiddenError,
+  ValidationError,
 } from '../utils/errors';
 
 const router = Router();
+
+type AuthenticatedUserResponse = {
+  token: string;
+  refreshToken: string;
+  user: {
+    stableUid: string;
+    username: string;
+    webuntisKlasseId: number;
+    webuntisKlasseName: string;
+    classId: string | null;
+    isAdmin: boolean;
+    isUntisUser: boolean;
+    role: string;
+  };
+};
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -169,6 +188,76 @@ async function syncUserClass(
   }
 }
 
+/**
+ * Creates the normal POKYH session only after a trusted WebUntis validation.
+ * Both the established server-to-server login and the Learn-only BFF route use
+ * this one path, which prevents their user/profile semantics from diverging.
+ */
+async function completeWebUntisLogin({
+  username,
+  klasseId,
+  klasseName,
+  role,
+}: {
+  username: string;
+  klasseId: number;
+  klasseName: string;
+  role: 'student' | 'parent';
+}): Promise<AuthenticatedUserResponse> {
+  let user = await prisma.user.findUnique({ where: { username } });
+
+  if (!user) {
+    const stableUid = generateStableUid();
+    user = await prisma.user.create({
+      data: {
+        stableUid,
+        username,
+        webuntisKlasseId: klasseId,
+        webuntisKlasseName: klasseName,
+        isUntisUser: true,
+        role,
+      },
+    });
+  } else {
+    user = await prisma.user.update({
+      where: { username },
+      data: {
+        webuntisKlasseId: klasseId,
+        webuntisKlasseName: klasseName,
+        isUntisUser: true,
+        role,
+      },
+    });
+  }
+
+  const classId = await syncUserClass(user.stableUid, username, klasseId, klasseName, role);
+  const isAdmin = await prisma.admin.findUnique({ where: { stableUid: user.stableUid } }) !== null;
+  const token = signJwt({
+    stableUid: user.stableUid,
+    username: user.username,
+    klasseId: user.webuntisKlasseId,
+    klasseName: user.webuntisKlasseName,
+    role: user.role,
+    isUntisUser: true,
+  });
+  const refreshToken = await generateRefreshToken(user.stableUid);
+
+  return {
+    token,
+    refreshToken,
+    user: {
+      stableUid: user.stableUid,
+      username: user.username,
+      webuntisKlasseId: user.webuntisKlasseId,
+      webuntisKlasseName: user.webuntisKlasseName,
+      classId,
+      isAdmin,
+      isUntisUser: true,
+      role: user.role,
+    },
+  };
+}
+
 // ─── POST /auth/login ────────────────────────────────────────────────────────
 
 const loginSchema = z.object({
@@ -185,6 +274,54 @@ const loginSchema = z.object({
 const localLoginSchema = z.object({
   username: z.string().min(1).max(100).trim().toLowerCase(),
   password: z.string().min(1).max(200),
+});
+
+const learnLoginSchema = z.object({
+  username: z.string().min(1).max(100).trim().toLowerCase(),
+  password: z.string().min(1).max(200),
+  privacyNoticeVersion: z.string().trim().max(80).optional(),
+});
+
+// The Learn BFF has the ordinary API key but deliberately never receives the
+// backend's server key. It validates WebUntis credentials here, then receives
+// the same signed Pokyh session as the established Pokyh WebUntis login flow.
+// No password is stored or logged by this route.
+router.post('/learn-login', learnLoginLimiter, async (req: Request, res: Response) => {
+  const { username, password, privacyNoticeVersion } = learnLoginSchema.parse(req.body);
+  const learnCfg = await getLearnConfig();
+  if (!learnCfg.legalGateReady) {
+    throw new AppError('Pokyh Learn is not available until its operator completes the required privacy configuration', 503);
+  }
+  if (learnCfg.legalGateEnabled && privacyNoticeVersion !== learnCfg.privacyNoticeVersion) {
+    throw new ValidationError('Please acknowledge the current Pokyh Learn privacy notice before signing in');
+  }
+  let result: AuthenticatedUserResponse;
+  try {
+    const untis = await validateWebUntis(username, password);
+    result = await completeWebUntisLogin({
+      username,
+      klasseId: untis.klasseId,
+      klasseName: untis.klasseName,
+      role: 'student',
+    });
+  } catch {
+    throw new UnauthorizedError('WebUntis-Anmeldung fehlgeschlagen');
+  }
+  if (learnCfg.legalGateEnabled) {
+    await prisma.learnProfile.upsert({
+      where: { stableUid: result.user.stableUid },
+      create: {
+        stableUid: result.user.stableUid,
+        privacyNoticeVersion: learnCfg.privacyNoticeVersion,
+        privacyNoticeAcknowledgedAt: new Date(),
+      },
+      update: {
+        privacyNoticeVersion: learnCfg.privacyNoticeVersion,
+        privacyNoticeAcknowledgedAt: new Date(),
+      },
+    });
+  }
+  res.json(result);
 });
 
 router.post('/login', authLimiter, async (req: Request, res: Response) => {
@@ -255,68 +392,7 @@ router.post('/login', authLimiter, async (req: Request, res: Response) => {
   const body = loginSchema.parse(req.body);
   const { username, klasseId, klasseName, role } = body;
 
-  // Upsert user — create with new stableUid, update keeps existing stableUid
-  let user = await prisma.user.findUnique({ where: { username } });
-
-  if (!user) {
-    const stableUid = generateStableUid();
-    user = await prisma.user.create({
-      data: {
-        stableUid,
-        username,
-        webuntisKlasseId: klasseId,
-        webuntisKlasseName: klasseName,
-        isUntisUser: true,
-        role,
-      },
-    });
-  } else {
-    user = await prisma.user.update({
-      where: { username },
-      data: {
-        webuntisKlasseId: klasseId,
-        webuntisKlasseName: klasseName,
-        isUntisUser: true,
-        role,
-      },
-    });
-  }
-
-  // Sync class membership (parents join as hidden "parent" members of the
-  // child's class — resolved klasseId is supplied by the caller).
-  const classId = await syncUserClass(user.stableUid, username, klasseId, klasseName, role);
-
-  // Check admin status
-  const admin = await prisma.admin.findUnique({
-    where: { stableUid: user.stableUid },
-  });
-  const isAdmin = admin !== null;
-
-  // Generate tokens
-  const token = signJwt({
-    stableUid: user.stableUid,
-    username: user.username,
-    klasseId: user.webuntisKlasseId,
-    klasseName: user.webuntisKlasseName,
-    role: user.role,
-    isUntisUser: true,
-  });
-  const refreshToken = await generateRefreshToken(user.stableUid);
-
-  res.json({
-    token,
-    refreshToken,
-    user: {
-      stableUid: user.stableUid,
-      username: user.username,
-      webuntisKlasseId: user.webuntisKlasseId,
-      webuntisKlasseName: user.webuntisKlasseName,
-      classId,
-      isAdmin,
-      isUntisUser: true,
-      role: user.role,
-    },
-  });
+  res.json(await completeWebUntisLogin({ username, klasseId, klasseName, role }));
 });
 
 // ─── POST /auth/register ─────────────────────────────────────────────────────

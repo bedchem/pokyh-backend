@@ -4,7 +4,7 @@ import { config } from '../config';
 import { logger } from '../utils/logger';
 
 // Paths to skip logging (health checks, static assets, admin panel HTML)
-const SKIP_PATHS = new Set(['/health', '/favicon.ico']);
+const SKIP_PATHS = new Set(['/health', '/readyz', '/favicon.ico']);
 const SKIP_PREFIXES = ['/admin/', '/admin'];
 
 export function requestLogger(req: Request, res: Response, next: NextFunction): void {
@@ -19,6 +19,10 @@ export function requestLogger(req: Request, res: Response, next: NextFunction): 
 
   const start = Date.now();
 
+  // Feature segmentation: lets the admin Logs page filter by area without a
+  // second logging pipeline (see GET /api/admin/logs's `scope` query param).
+  const scope: 'learn' | 'core' = req.path.startsWith('/learn') ? 'learn' : 'core';
+
   res.on('finish', () => {
     const duration = Date.now() - start;
     const ip =
@@ -27,11 +31,11 @@ export function requestLogger(req: Request, res: Response, next: NextFunction): 
       'unknown';
 
     const username = req.user?.username ?? req.adminUser?.role ?? null;
-    const logMeta = { method: req.method, path: req.path, status: res.statusCode, duration, ip, username };
+    const logMeta = { method: req.method, path: req.path, status: res.statusCode, duration, ip, username, requestId: req.id, scope };
 
     if (config.debug) {
       const statusColor = res.statusCode >= 500 ? '\x1b[31m' : res.statusCode >= 400 ? '\x1b[33m' : res.statusCode >= 200 ? '\x1b[32m' : '\x1b[0m';
-      console.log(`[log] ${statusColor}${res.statusCode}\x1b[0m ${req.method} ${req.path} ${duration}ms user=${username ?? '-'} ip=${ip}`);
+      logger.debug(`[log] ${statusColor}${res.statusCode}\x1b[0m ${req.method} ${req.path} ${duration}ms user=${username ?? '-'} ip=${ip} reqId=${req.id}`);
     }
 
     // Log 4xx/5xx to file logger for persistent tracking
@@ -52,13 +56,15 @@ export function requestLogger(req: Request, res: Response, next: NextFunction): 
         stableUid: req.user?.stableUid ?? null,
         username,
         userAgent: (req.headers['user-agent'] ?? '').slice(0, 500) || null,
+        requestId: req.id,
+        scope,
         error:
           res.statusCode >= 400
             ? ((res as unknown as { locals: Record<string, string> }).locals?.errorMessage ?? null)
             : null,
       },
     }).catch((e) => {
-      if (config.debug) console.error('[requestLogger] DB write failed:', e.message);
+      if (config.debug) logger.warn('[requestLogger] DB write failed', { message: e.message, requestId: req.id });
     });
   });
 

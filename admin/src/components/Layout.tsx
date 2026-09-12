@@ -17,6 +17,8 @@ import {
   CheckSquare,
   Settings,
   Archive,
+  KeyRound,
+  GraduationCap,
 } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
 
@@ -114,6 +116,8 @@ function SidebarContent({ adminUser, onLogout, onNavClick }: SidebarContentProps
         <NavItem to="/school-years"   icon={<Archive size={16} />}          label="Schuljahre"   onClick={onNavClick} />
         <NavItem to="/logs"           icon={<ScrollText size={16} />}        label="Logs"         onClick={onNavClick} />
         <NavItem to="/log-files"      icon={<FileText size={16} />}          label="Logdateien"   onClick={onNavClick} />
+        <NavItem to="/api-keys"       icon={<KeyRound size={16} />}          label="API-Keys"     onClick={onNavClick} />
+        <NavItem to="/learn"          icon={<GraduationCap size={16} />}     label="Learn"        onClick={onNavClick} />
         <NavItem to="/tunnel"         icon={<Globe size={16} />}             label="Tunnel"       onClick={onNavClick} />
         <NavItem to="/settings"       icon={<Settings size={16} />}          label="Einstellungen" onClick={onNavClick} />
       </nav>

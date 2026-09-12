@@ -10,8 +10,14 @@ const transport = new (winston.transports as any).DailyRotateFile({
   zippedArchive: false,
 });
 
+// DEBUG=true raises the level so logger.debug(...) calls (verbose per-request
+// tracing) actually emit; otherwise they're silently dropped by Winston's
+// level filter, same as before this was gated purely by config.debug checks
+// around console.log calls.
+const level = process.env.DEBUG === 'true' ? 'debug' : 'info';
+
 export const logger = winston.createLogger({
-  level: 'info',
+  level,
   format: winston.format.combine(
     winston.format.timestamp(),
     winston.format.json()

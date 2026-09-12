@@ -75,6 +75,30 @@ internet through an in-container **Cloudflare Tunnel** — no open ports require
 - **Config-driven, zero hardcoded hosts** — CORS origins, the public hostname and every limit are
   derived from environment variables.
 
+### Pokyh Learn extension
+
+The additive `/learn` router serves the separate `learn.pokyh.com` product. It
+does not change the existing Pokyh routes, data or built-in `/admin/` panel.
+The Learn web app has its own management surface at `learn.pokyh.com/admin`,
+backed by `/learn/admin/*` and the existing server-side Pokyh `Admin` record.
+
+- Learn accepts only accounts whose login has been confirmed against WebUntis;
+  a local Pokyh fallback account cannot open Learn data or receive a Learn grant.
+- In production, the Learn WebUntis sign-in is fail-closed until the operator
+  configures a non-secret authorisation reference and a versioned HTTPS privacy
+  notice. The acknowledgement records transparency, not a legal basis; the
+  controller/school must complete its own approval and privacy review before
+  activation.
+- Course content, access grants, team membership, quiz grading, review state,
+  progress and imports are all MySQL-backed server decisions. A learner marks a
+  real section complete; the server derives the enrollment percentage.
+- Personal JSON export/import is scoped to the caller's own authored courses,
+  vocabulary and review state. Imports create new private drafts and cannot
+  carry roles, grants, teams, credentials or other people's content.
+- An optional dictionary suggestion adapter is configured only with
+  `LEARN_DICTIONARY_*`. It is called explicitly by an authorized editor and
+  never becomes the quiz-answer authority.
+
 ---
 
 ## Tech stack
@@ -158,6 +182,10 @@ npx web-push generate-vapid-keys
 | `API_KEY`                | Public-ish key every client must send as `X-API-Key`. Must match the frontend/iOS key.  |
 | `SERVER_KEY`             | **Secret.** Trusted server-to-server login key (`X-Server-Key`). Only the web/iOS servers hold it. |
 | `CORS_ORIGIN`            | Comma-separated allowed origins (e.g. `https://pokyh.com,https://api.pokyh.com`).        |
+| `LEARN_ALLOWED_ORIGINS`  | Exact browser-origin allow-list for the additive `/learn` router.                        |
+| `LEARN_LEGAL_*`          | Production WebUntis activation gate: non-secret approval reference, HTTPS notice URL and notice version. |
+| `LEARN_DICTIONARY_*`     | Optional, server-only vocabulary suggestion policy, HTTPS endpoint, pairs, timeout and bounded cache. |
+| `LEARN_IMPORT_*`         | Maximum personal Learn courses, sections and vocabulary entries accepted in one import.  |
 | `TRUST_PROXY`            | `loopback` behind the in-container tunnel — required so per-IP rate limits see the real client IP. |
 | `TUNNEL_NAME` / `TUNNEL_HOSTNAME` | Cloudflare Tunnel identity & public hostname (auto-derives the parent domain for CORS). |
 | `VAPID_*`                | Web Push key pair + contact e-mail.                                                      |
@@ -231,9 +259,12 @@ so additive schema changes are applied on every deploy.
 | Subject images     | `/subject-images`                                 | Icon catalog (GET public, write = admin)|
 | Push               | `/push`                                           | Web Push subscription registration      |
 | Activity log       | `/activity-log`                                   | Frontend telemetry                      |
+| Learn              | `/learn/*`                                        | Additive learning API; API key, then per-resource bearer authorization |
+| Learn sign-in      | `/auth/learn-login`                               | API-key-gated WebUntis verification for the Learn BFF only; production legal gate must be ready before verification |
 | Admin              | `/api/admin/*`                                    | JWT + admin only (no API key)           |
 | Setup              | `/api/setup`                                      | First-run wizard                        |
 | Health             | `/health`                                         | Liveness probe                          |
+| Readiness          | `/readyz`                                         | DB-aware readiness probe for Compose/load balancers |
 
 ---
 
@@ -262,8 +293,15 @@ Started once the DB is reachable (`src/index.ts` → `startBackgroundJobs`):
 ## Admin panel
 
 A React + Vite SPA is built into the image and served at **`/admin/`** (same-origin, JWT-protected).
-It covers users, classes, sessions, dishes & images, comments, to-dos/reminders across all classes,
-logs, the Cloudflare tunnel, **full DB export/import**, and **school-year archives**.
+It covers the existing Pokyh users, classes, sessions, dishes & images, comments, to-dos/reminders,
+logs, the Cloudflare tunnel and school-year archives. Pokyh Learn administration is intentionally
+separate at `learn.pokyh.com/admin` and uses `/learn/admin/*` rather than mixing Learn data into
+this UI.
+
+The legacy `/api/admin/import` cannot run while Learn records exist, preventing a legacy restore
+from cascading into Learn data. Use the scoped Learn personal export/import routes for learner
+portability, and plan a dedicated, reviewed platform backup/migration before treating either
+surface as a full Learn backup.
 
 ```bash
 npm run admin:dev      # run the admin panel in dev (Vite)
@@ -285,8 +323,10 @@ Production runs as a Docker image (multi-stage `Dockerfile`) that:
 docker compose up --build -d
 ```
 
-On the bundled compose stack the app waits for the MySQL healthcheck, then comes up on `PORT`.
-The tunnel exposes it publicly at `TUNNEL_HOSTNAME`.
+On the bundled compose stack the app waits for the MySQL healthcheck, then the
+container healthcheck calls `/readyz` (which verifies database reachability)
+before it is considered ready. The existing `/health` remains a lightweight
+liveness endpoint. The tunnel exposes the app publicly at `TUNNEL_HOSTNAME`.
 
 ---
 

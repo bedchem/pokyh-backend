@@ -1,4 +1,4 @@
-import type { AdminStats, AdminClass, AdminSession, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish, AdminDishFull, AdminDishImportResult, AdminDishShiftResult, AdminDishRotateResult, AdminDishResetResult, AdminDishAnchorResult, DishPlan, AdminCommentsResponse, FileLogFile, FileLogResponse, FileLogEntry, FrontendActivityLogsResponse, FrontendActivityStats, AllTodosResponse, AllRemindersResponse, SchoolYearsResponse, ArchivedUsersResponse, ArchivedClass, ArchivedTodosResponse, ArchivedRemindersResponse, RolloverResult, RollbackResult } from './types';
+import type { AdminStats, AdminClass, AdminSession, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish, AdminDishFull, AdminDishImportResult, AdminDishShiftResult, AdminDishRotateResult, AdminDishResetResult, AdminDishAnchorResult, DishPlan, AdminCommentsResponse, FileLogFile, FileLogResponse, FileLogEntry, FrontendActivityLogsResponse, FrontendActivityStats, AllTodosResponse, AllRemindersResponse, SchoolYearsResponse, ArchivedUsersResponse, ArchivedClass, ArchivedTodosResponse, ArchivedRemindersResponse, RolloverResult, RollbackResult, AdminApiKey, CreatedApiKey, LearnConfigValues } from './types';
 
 const TOKEN_KEY = 'pokyh_admin_token';
 
@@ -174,6 +174,7 @@ export const adminApi = {
     username?: string;
     from?: string;
     to?: string;
+    scope?: 'learn' | 'core';
   }): Promise<LogsResponse> => {
     const p = new URLSearchParams();
     if (params?.page) p.set('page', String(params.page));
@@ -184,6 +185,7 @@ export const adminApi = {
     if (params?.username) p.set('username', params.username);
     if (params?.from) p.set('from', params.from);
     if (params?.to) p.set('to', params.to);
+    if (params?.scope) p.set('scope', params.scope);
     return request<LogsResponse>('GET', `/api/admin/logs?${p.toString()}`);
   },
 
@@ -372,6 +374,23 @@ export const adminApi = {
 
   rollbackSchoolYear: (yearId: string): Promise<RollbackResult> =>
     request<RollbackResult>('POST', `/api/admin/school-years/${yearId}/rollback`),
+
+  // ── API keys ──────────────────────────────────────────────────────────────
+  listApiKeys: (): Promise<{ apiKeys: AdminApiKey[] }> =>
+    request<{ apiKeys: AdminApiKey[] }>('GET', '/api/admin/api-keys'),
+
+  createApiKey: (data: { name: string; purpose?: string; platform?: string; expiresAt?: string }): Promise<CreatedApiKey> =>
+    request<CreatedApiKey>('POST', '/api/admin/api-keys', data),
+
+  revokeApiKey: (id: string): Promise<{ ok: boolean }> =>
+    request<{ ok: boolean }>('PATCH', `/api/admin/api-keys/${id}/revoke`),
+
+  // ── Learn configuration ───────────────────────────────────────────────────
+  getLearnConfig: (): Promise<LearnConfigValues> =>
+    request<LearnConfigValues>('GET', '/api/admin/learn-config'),
+
+  updateLearnConfig: (data: Partial<LearnConfigValues> & { webUntisAuthorizationReference?: string }): Promise<{ ok: boolean }> =>
+    request<{ ok: boolean }>('PATCH', '/api/admin/learn-config', data),
 
   getToken,
 };

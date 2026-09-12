@@ -103,6 +103,9 @@ export async function applyAdditiveSchema(): Promise<number> {
   let applied = 0;
   for (const stmt of additive) {
     try {
+      // Reviewed: `stmt` originates only from `prisma migrate diff --script`
+      // output (schema DDL), never from a request — this path runs at
+      // startup only and never handles user/request-derived input.
       await prisma.$executeRawUnsafe(fixTextDefaults(stmt));
       applied++;
     } catch (err) {

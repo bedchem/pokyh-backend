@@ -41,6 +41,7 @@ model User {
   learnQuizAttempts      LearnQuizAttempt[]
   learnTeamsCreated      LearnTeam[]             @relation("LearnTeamCreator")
   learnTeamMemberships   LearnTeamMember[]
+  learnSectionCompletions LearnSectionCompletion[]
 
   @@map("users")
 }
@@ -278,6 +279,15 @@ model ApiKey {
   id         String    @id @default(uuid())
   keyHash    String    @unique @map("key_hash")
   name       String
+  // Free-text purpose/description set by the issuing admin (e.g. "mobile CI",
+  // "partner integration"). Informational only, never parsed or enforced.
+  purpose    String    @default("") @db.VarChar(255)
+  // Free-text platform/OS hint supplied at creation (e.g. "iOS", "n8n").
+  // Informational only.
+  platform   String    @default("") @db.VarChar(80)
+  expiresAt  DateTime? @map("expires_at")
+  revokedAt  DateTime? @map("revoked_at")
+  createdBy  String?   @map("created_by")
   createdAt  DateTime  @default(now()) @map("created_at")
   lastUsedAt DateTime? @map("last_used_at")
 
@@ -295,11 +305,19 @@ model RequestLog {
   username  String?  @db.VarChar(100)
   userAgent String?  @map("user_agent") @db.VarChar(500)
   error     String?  @db.VarChar(1000)
+  // Correlates this row with the same request's Winston log lines and its
+  // X-Request-Id response header (see src/middleware/requestId.ts).
+  requestId String?  @map("request_id") @db.VarChar(64)
+  // 'learn' | 'core' — which feature area this request belongs to, derived
+  // from the path prefix in requestLogger.ts. Lets the admin Logs page filter
+  // by feature without a second logging system.
+  scope     String?  @db.VarChar(20)
   createdAt DateTime @default(now()) @map("created_at")
 
   @@index([stableUid])
   @@index([username])
   @@index([createdAt])
+  @@index([requestId])
   @@map("request_logs")
 }
 
@@ -434,6 +452,10 @@ model LearnProfile {
   stableUid        String    @id @map("stable_uid")
   dailyGoalMinutes Int       @default(15) @map("daily_goal_minutes")
   timezone         String    @default("") @db.VarChar(80)
+  locale           String    @default("de") @db.VarChar(5)
+  theme            String    @default("system") @db.VarChar(10)
+  privacyNoticeVersion String @default("") @map("privacy_notice_version") @db.VarChar(80)
+  privacyNoticeAcknowledgedAt DateTime? @map("privacy_notice_acknowledged_at")
   dailyStreak      Int       @default(0) @map("daily_streak")
   lastActiveAt     DateTime? @map("last_active_at")
   createdAt        DateTime  @default(now()) @map("created_at")
@@ -471,6 +493,7 @@ model LearnCourse {
   enrollments  LearnEnrollment[]
   vocabulary   LearnVocabularyEntry[]
   quizAttempts LearnQuizAttempt[]
+  sectionCompletions LearnSectionCompletion[]
 
   @@index([createdBy])
   @@index([teamId])
@@ -492,6 +515,7 @@ model LearnCourseSection {
 
   course     LearnCourse            @relation(fields: [courseId], references: [id], onDelete: Cascade)
   vocabulary LearnVocabularyEntry[]
+  completions LearnSectionCompletion[]
 
   @@unique([courseId, sortOrder])
   @@index([courseId])
@@ -535,6 +559,24 @@ model LearnEnrollment {
   @@id([courseId, stableUid])
   @@index([stableUid, lastOpenedAt])
   @@map("learn_enrollments")
+}
+
+// A completion is an explicit learner action on one real server-side section.
+// Aggregate enrollment progress is derived from these records instead of
+// accepting an arbitrary percentage from the browser.
+model LearnSectionCompletion {
+  stableUid   String   @map("stable_uid")
+  courseId    String   @map("course_id")
+  sectionId   String   @map("section_id")
+  completedAt DateTime @default(now()) @map("completed_at")
+
+  user    User               @relation(fields: [stableUid], references: [stableUid], onDelete: Cascade)
+  course  LearnCourse        @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  section LearnCourseSection @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+
+  @@id([stableUid, sectionId])
+  @@index([courseId, stableUid])
+  @@map("learn_section_completions")
 }
 
 model LearnVocabularyEntry {
@@ -646,4 +688,36 @@ model LearnTeamMember {
   @@id([teamId, stableUid])
   @@index([stableUid])
   @@map("learn_team_members")
+}
+
+// Admin-editable Learn configuration — a singleton row (id is always 1). Read
+// live via src/services/learnConfig.ts with a short in-memory cache; a missing
+// row, or a null field on it, falls back to the LEARN_* environment defaults
+// in src/config.ts, so the app works correctly before any admin ever saves
+// this. LEARN_ALLOWED_ORIGINS is deliberately NOT included: it is a security-
+// boundary value and stays environment-only, never admin-editable at runtime.
+model LearnConfig {
+  id                           Int      @id @default(1)
+  legalGateEnabled             Boolean? @map("legal_gate_enabled")
+  // Set via the admin UI but never read back in plaintext by the API —
+  // matches docs/legal-readiness.md's requirement to report the legal gate
+  // as ready without exposing the approval reference itself.
+  webUntisAuthorizationReference String? @map("webuntis_authorization_reference") @db.VarChar(255)
+  privacyNoticeUrl             String?  @map("privacy_notice_url") @db.VarChar(500)
+  privacyNoticeVersion         String?  @map("privacy_notice_version") @db.VarChar(80)
+  dictionaryEnabled            Boolean? @map("dictionary_enabled")
+  dictionaryProvider           String?  @map("dictionary_provider") @db.VarChar(40)
+  dictionaryBaseUrl            String?  @map("dictionary_base_url") @db.VarChar(500)
+  dictionaryContactEmail       String?  @map("dictionary_contact_email") @db.VarChar(255)
+  dictionaryAllowedPairs       String?  @map("dictionary_allowed_pairs") @db.VarChar(500)
+  dictionaryTimeoutMs          Int?     @map("dictionary_timeout_ms")
+  dictionaryCacheTtlMs         Int?     @map("dictionary_cache_ttl_ms")
+  dictionaryMaxCacheEntries    Int?     @map("dictionary_max_cache_entries")
+  importMaxCourses             Int?     @map("import_max_courses")
+  importMaxSectionsPerCourse   Int?     @map("import_max_sections_per_course")
+  importMaxVocabularyPerCourse Int?     @map("import_max_vocabulary_per_course")
+  updatedAt                    DateTime @updatedAt @map("updated_at")
+  updatedBy                    String?  @map("updated_by")
+
+  @@map("learn_config")
 }

@@ -124,13 +124,14 @@ interface AllRequestsTabProps {
   statusFilter: string;
   pathFilter: string;
   usernameFilter: string;
+  scopeFilter: string;
   fromDate: string;
   toDate: string;
   onNavigateToUser: (username: string) => void;
   autoRefresh: boolean;
 }
 
-function AllRequestsTab({ methodFilter, statusFilter, pathFilter, usernameFilter, fromDate, toDate, onNavigateToUser, autoRefresh }: AllRequestsTabProps) {
+function AllRequestsTab({ methodFilter, statusFilter, pathFilter, usernameFilter, scopeFilter, fromDate, toDate, onNavigateToUser, autoRefresh }: AllRequestsTabProps) {
   const { showToast } = useToast();
   const [data, setData] = useState<LogsResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -142,16 +143,16 @@ function AllRequestsTab({ methodFilter, statusFilter, pathFilter, usernameFilter
     if (!silent) setLoading(true);
     try {
       const statusNum = statusFilter === '2xx' ? 200 : statusFilter === '4xx' ? 400 : statusFilter === '5xx' ? 500 : undefined;
-      const res = await adminApi.logs({ page, limit, method: methodFilter || undefined, status: statusNum, path: pathFilter || undefined, username: usernameFilter || undefined, from: fromDate || undefined, to: toDate || undefined });
+      const res = await adminApi.logs({ page, limit, method: methodFilter || undefined, status: statusNum, path: pathFilter || undefined, username: usernameFilter || undefined, scope: scopeFilter === 'learn' || scopeFilter === 'core' ? scopeFilter : undefined, from: fromDate || undefined, to: toDate || undefined });
       setData(res);
     } catch (err) {
       showToast(err instanceof Error ? err.message : 'Laden fehlgeschlagen', 'error');
     } finally {
       setLoading(false);
     }
-  }, [page, methodFilter, statusFilter, pathFilter, usernameFilter, fromDate, toDate, showToast]);
+  }, [page, methodFilter, statusFilter, pathFilter, usernameFilter, scopeFilter, fromDate, toDate, showToast]);
 
-  useEffect(() => { setPage(1); }, [methodFilter, statusFilter, pathFilter, usernameFilter, fromDate, toDate]);
+  useEffect(() => { setPage(1); }, [methodFilter, statusFilter, pathFilter, usernameFilter, scopeFilter, fromDate, toDate]);
   useEffect(() => { void fetchLogs(); }, [fetchLogs]);
   useEffect(() => {
     if (!autoRefresh) return;
@@ -272,6 +273,18 @@ function AllRequestsTab({ methodFilter, statusFilter, pathFilter, usernameFilter
                                 <span style={{ color: 'rgba(235,235,245,0.35)' }}>Dauer</span>
                                 <div className="text-white mt-0.5">{log.duration}ms</div>
                               </div>
+                              {log.requestId && (
+                                <div>
+                                  <span style={{ color: 'rgba(235,235,245,0.35)' }}>Request-ID</span>
+                                  <div className="text-white mt-0.5 font-mono text-[11px]">{log.requestId}</div>
+                                </div>
+                              )}
+                              {log.scope && (
+                                <div>
+                                  <span style={{ color: 'rgba(235,235,245,0.35)' }}>Bereich</span>
+                                  <div className="text-white mt-0.5">{log.scope === 'learn' ? 'Learn' : 'Core'}</div>
+                                </div>
+                              )}
                               {log.userAgent && (
                                 <div className="col-span-2 sm:col-span-3">
                                   <span style={{ color: 'rgba(235,235,245,0.35)' }}>User-Agent</span>
@@ -866,6 +879,7 @@ export function LogsPage() {
   const [pathFilter, setPathFilter] = useState('');
   const [usernameInput, setUsernameInput] = useState('');
   const [usernameFilter, setUsernameFilter] = useState('');
+  const [scopeFilter, setScopeFilter] = useState('');
   const [fromDate, setFromDate] = useState('');
   const [toDate, setToDate] = useState('');
   const pathTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -896,9 +910,9 @@ export function LogsPage() {
     if (type === '5xx')    { setStatusFilter('5xx'); setMethodFilter(''); setFromDate(''); setToDate(''); }
   }
 
-  function clearFilters() { setMethodFilter(''); setStatusFilter(''); setPathInput(''); setPathFilter(''); setUsernameInput(''); setUsernameFilter(''); setFromDate(''); setToDate(''); }
+  function clearFilters() { setMethodFilter(''); setStatusFilter(''); setPathInput(''); setPathFilter(''); setUsernameInput(''); setUsernameFilter(''); setScopeFilter(''); setFromDate(''); setToDate(''); }
 
-  const hasFilters = methodFilter || statusFilter || pathInput || usernameInput || fromDate || toDate;
+  const hasFilters = methodFilter || statusFilter || pathInput || usernameInput || scopeFilter || fromDate || toDate;
   const [byUserInitial, setByUserInitial] = useState(stateUsername);
 
   function navigateToUser(username: string) { setByUserInitial(username); setActiveTab('byUser'); }
@@ -963,6 +977,9 @@ export function LogsPage() {
           <SelectField value={statusFilter} onChange={setStatusFilter} options={[
             { value: '', label: 'Alle Status' }, { value: '2xx', label: '2xx' }, { value: '4xx', label: '4xx' }, { value: '5xx', label: '5xx' },
           ]} />
+          <SelectField value={scopeFilter} onChange={setScopeFilter} options={[
+            { value: '', label: 'Alle Bereiche' }, { value: 'learn', label: 'Learn' }, { value: 'core', label: 'Core' },
+          ]} />
           <div className="flex-1 min-w-[130px]">
             <InputField value={pathInput} onChange={setPathInput} placeholder="Pfad filtern…" />
           </div>
@@ -1005,6 +1022,7 @@ export function LogsPage() {
           statusFilter={statusFilter}
           pathFilter={pathFilter}
           usernameFilter={usernameFilter}
+          scopeFilter={scopeFilter}
           fromDate={fromDate}
           toDate={toDate}
           onNavigateToUser={(username) => navigateToUser(username)}
