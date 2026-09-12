@@ -2,7 +2,7 @@
 # change production code without review. The checksums are the upstream release
 # assets for this pinned version (amd64 and arm64 respectively).
 ARG CLOUDFLARED_VERSION=2026.9.1
-ARG CLOUDFLARED_AMD64_SHA256=03f1f25d1cc93b1ad6c60569d44060bc4f17ed97075760ed8cfca4b12dcd68cc
+ARG CLOUDFLARED_AMD64_SHA256=03f1f25d1cc93b9ad6c60569d44060bc4f17ed97075760ed8cfca4b12dcd68cc
 ARG CLOUDFLARED_ARM64_SHA256=3d97437c71848bd8df68041e12436b484a661d95073ea1937f01a845ce88faa3
 
 # ── Stage 1: Build ────────────────────────────────────────────────────────────
