@@ -5,6 +5,7 @@ import { requireAuth } from '../middleware/auth';
 import { readLimiter, writeLimiter } from '../middleware/rateLimiter';
 import { ForbiddenError, NotFoundError, ConflictError } from '../utils/errors';
 import { generateClassCode, generateClassId } from '../utils/uid';
+import { config } from '../config';
 
 const router = Router();
 
@@ -79,7 +80,10 @@ router.post('/', writeLimiter, requireAuth, async (req: Request, res: Response) 
   const { stableUid, username } = req.user!;
 
   const admin = await prisma.admin.findUnique({ where: { stableUid } });
-  if (!admin) {
+  // Match the canonical admin sources used by api.pokyh.com/admin and Learn.
+  // An operator configured through ADMIN_USERNAMES must not lose class access,
+  // while every non-admin token remains unable to create a class.
+  if (!admin && !config.adminUsernames.includes(username)) {
     throw new ForbiddenError('Admin access required');
   }
 

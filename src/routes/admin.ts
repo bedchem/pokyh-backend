@@ -18,11 +18,14 @@ import { revokeUserTokens } from '../utils/revokedTokens';
 import { logger } from '../utils/logger';
 import { invalidateDishesCache } from '../utils/cache';
 import { getLearnConfig, updateLearnConfig } from '../services/learnConfig';
+import { writeLimiter } from '../middleware/rateLimiter';
+import { issuedApiKeyScopes, parseApiKeyScopes, serializeApiKeyScopes } from '../security/apiKeyPolicy';
 import {
   rotatePastWeeks, normalizePlanAroundAnchor,
   lastFutureMondayIso, firstMondayIso, otherPlan, snapForwardToSeason, isoAddDays,
 } from '../utils/mensaRotate';
 import { slugifyDishName } from '../utils/dishKey';
+import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from '../utils/errors';
 
 function safeParseTags(raw: string): string[] {
   try { return JSON.parse(raw) as string[]; } catch { return []; }
@@ -345,6 +348,14 @@ router.patch('/users/:stableUid/password', requireAdmin, async (req: Request, re
     where: { stableUid },
     data: { passwordHash, isUntisUser: false },
   });
+
+  // A password reset is an incident-response action — it must actually cut
+  // off a session an attacker already holds, not just block future logins.
+  await prisma.refreshToken.updateMany({
+    where: { stableUid, revokedAt: null },
+    data: { revokedAt: new Date() },
+  });
+  revokeUserTokens(stableUid);
 
   res.status(204).end();
 });
@@ -2481,6 +2492,7 @@ router.get('/api-keys', requireAdmin, async (_req: Request, res: Response): Prom
       name: k.name,
       purpose: k.purpose,
       platform: k.platform,
+      scopes: parseApiKeyScopes(k.scopes),
       createdBy: k.createdBy,
       createdAt: k.createdAt.toISOString(),
       expiresAt: k.expiresAt ? k.expiresAt.toISOString() : null,
@@ -2499,16 +2511,23 @@ const createApiKeySchema = z.object({
   name: z.string().trim().min(1).max(191),
   purpose: z.string().trim().max(255).optional(),
   platform: z.string().trim().max(80).optional(),
-  expiresAt: z.string().datetime().optional(),
+  scopes: z.array(z.enum(['core:read', 'core:write', 'auth:session', 'learn:catalog', 'learn:read', 'learn:write']))
+    .min(1)
+    .max(issuedApiKeyScopes.length)
+    .default(['core:read']),
+  expiresAt: z.string().datetime({ offset: true }).optional().refine(
+    (value) => !value || new Date(value).getTime() > Date.now(),
+    { message: 'expiresAt must be in the future' },
+  ),
 });
 
-router.post('/api-keys', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.post('/api-keys', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
   const parsed = createApiKeySchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(422).json({ error: parsed.error.errors.map((e) => e.message).join('; ') });
     return;
   }
-  const { name, purpose, platform, expiresAt } = parsed.data;
+  const { name, purpose, platform, scopes, expiresAt } = parsed.data;
   const plaintext = `pk_${randomBytes(32).toString('hex')}`;
   const keyHash = createHash('sha256').update(plaintext).digest('hex');
   const adminUsername = adminUsernameFromReq(req.headers['authorization']);
@@ -2519,18 +2538,22 @@ router.post('/api-keys', requireAdmin, async (req: Request, res: Response): Prom
       name,
       purpose: purpose ?? '',
       platform: platform ?? '',
+      scopes: serializeApiKeyScopes(scopes),
       expiresAt: expiresAt ? new Date(expiresAt) : null,
       createdBy: adminUsername,
     },
   });
 
-  logger.info('Admin action: API key created', { action: 'api_key_created', adminUsername, apiKeyId: record.id, name });
+  logger.info('Admin action: API key created', {
+    action: 'api_key_created', adminUsername, apiKeyId: record.id, name, scopes,
+  });
 
   res.status(201).json({
     id: record.id,
     name: record.name,
     purpose: record.purpose,
     platform: record.platform,
+    scopes: parseApiKeyScopes(record.scopes),
     expiresAt: record.expiresAt ? record.expiresAt.toISOString() : null,
     createdAt: record.createdAt.toISOString(),
     key: plaintext,
@@ -2539,7 +2562,7 @@ router.post('/api-keys', requireAdmin, async (req: Request, res: Response): Prom
 
 // ─── PATCH /api/admin/api-keys/:id/revoke ─────────────────────────────────────
 
-router.patch('/api-keys/:id/revoke', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.patch('/api-keys/:id/revoke', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
   const id = String(req.params['id']);
   const adminUsername = adminUsernameFromReq(req.headers['authorization']);
   try {
@@ -2574,6 +2597,20 @@ router.get('/learn-config', requireAdmin, async (_req: Request, res: Response): 
     dictionaryTimeoutMs: cfg.dictionaryTimeoutMs,
     dictionaryCacheTtlMs: cfg.dictionaryCacheTtlMs,
     dictionaryMaxCacheEntries: cfg.dictionaryMaxCacheEntries,
+    dictionaryValidationEnabled: cfg.dictionaryValidationEnabled,
+    dictionaryValidationProvider: cfg.dictionaryValidationProvider,
+    dictionaryValidationBaseUrl: cfg.dictionaryValidationBaseUrl,
+    dictionaryValidationTimeoutMs: cfg.dictionaryValidationTimeoutMs,
+    dictionaryValidationCacheTtlMs: cfg.dictionaryValidationCacheTtlMs,
+    dictionaryValidationMaxCacheEntries: cfg.dictionaryValidationMaxCacheEntries,
+    reviewInitialIntervalDays: cfg.reviewInitialIntervalDays,
+    reviewMaxIntervalDays: cfg.reviewMaxIntervalDays,
+    reviewMinimumEase: cfg.reviewMinimumEase,
+    reviewMaximumEase: cfg.reviewMaximumEase,
+    reviewCorrectEaseStep: cfg.reviewCorrectEaseStep,
+    reviewIncorrectEasePenalty: cfg.reviewIncorrectEasePenalty,
+    reviewWrongDelayMinutes: cfg.reviewWrongDelayMinutes,
+    analyticsRetentionDays: cfg.analyticsRetentionDays,
     importMaxCourses: cfg.importMaxCourses,
     importMaxSectionsPerCourse: cfg.importMaxSectionsPerCourse,
     importMaxVocabularyPerCourse: cfg.importMaxVocabularyPerCourse,
@@ -2595,21 +2632,507 @@ const learnConfigSchema = z.object({
   dictionaryTimeoutMs: z.number().int().positive().optional(),
   dictionaryCacheTtlMs: z.number().int().positive().optional(),
   dictionaryMaxCacheEntries: z.number().int().positive().optional(),
+  dictionaryValidationEnabled: z.boolean().optional(),
+  dictionaryValidationProvider: z.literal('dictionaryapi').optional(),
+  dictionaryValidationBaseUrl: z.string().trim().url().max(500).optional(),
+  dictionaryValidationTimeoutMs: z.number().int().positive().optional(),
+  dictionaryValidationCacheTtlMs: z.number().int().positive().optional(),
+  dictionaryValidationMaxCacheEntries: z.number().int().positive().optional(),
+  reviewInitialIntervalDays: z.number().int().min(1).max(30).optional(),
+  reviewMaxIntervalDays: z.number().int().min(1).max(3650).optional(),
+  reviewMinimumEase: z.number().min(1).max(5).optional(),
+  reviewMaximumEase: z.number().min(1).max(5).optional(),
+  reviewCorrectEaseStep: z.number().min(0).max(1).optional(),
+  reviewIncorrectEasePenalty: z.number().min(0).max(1).optional(),
+  reviewWrongDelayMinutes: z.number().int().min(0).max(1440).optional(),
+  analyticsRetentionDays: z.number().int().min(30).max(3650).optional(),
   importMaxCourses: z.number().int().positive().optional(),
   importMaxSectionsPerCourse: z.number().int().positive().optional(),
   importMaxVocabularyPerCourse: z.number().int().positive().optional(),
 });
 
-router.patch('/learn-config', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.patch('/learn-config', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
   const parsed = learnConfigSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(422).json({ error: parsed.error.errors.map((e) => e.message).join('; ') });
+    return;
+  }
+  const current = await getLearnConfig();
+  const effectiveMinimumEase = parsed.data.reviewMinimumEase ?? current.reviewMinimumEase;
+  const effectiveMaximumEase = parsed.data.reviewMaximumEase ?? current.reviewMaximumEase;
+  const effectiveInitialInterval = parsed.data.reviewInitialIntervalDays ?? current.reviewInitialIntervalDays;
+  const effectiveMaxInterval = parsed.data.reviewMaxIntervalDays ?? current.reviewMaxIntervalDays;
+  if (effectiveMinimumEase > effectiveMaximumEase) {
+    res.status(422).json({ error: 'Minimum review ease cannot exceed maximum review ease' });
+    return;
+  }
+  if (effectiveInitialInterval > effectiveMaxInterval) {
+    res.status(422).json({ error: 'Initial review interval cannot exceed maximum review interval' });
     return;
   }
   const adminUsername = adminUsernameFromReq(req.headers['authorization']);
   await updateLearnConfig(parsed.data, adminUsername);
   logger.info('Admin action: Learn config updated', { action: 'learn_config_updated', adminUsername, fields: Object.keys(parsed.data) });
   res.json({ ok: true });
+});
+
+// ─── Learn group administration ────────────────────────────────────────────
+// This lives in the existing api.pokyh.com/admin authority rather than in a
+// learner-owned route. Members can use an assigned group for course access,
+// but only a canonical Pokyh administrator can create groups, change members,
+// attach team courses or remove groups.
+
+async function learnAdminActor(req: Request): Promise<{ stableUid: string; username: string }> {
+  const username = adminUsernameFromReq(req.headers['authorization']);
+  const user = await prisma.user.findUnique({
+    where: { username },
+    select: { stableUid: true, username: true },
+  });
+  if (!user) throw new ForbiddenError('The signed-in administrator is not a canonical POKYH user');
+  return user;
+}
+
+// ─── Learn course and direct-access administration ─────────────────────────
+// These routes intentionally live under /api/admin/learn rather than reusing
+// the learner JWT router. The existing admin token is the only browser
+// credential accepted here, and every mutation is re-authorised server-side.
+// Metadata and direct grants are enough to operate the service; authored
+// lesson/vocabulary content and learner answers are never returned.
+
+const adminLearnCourseStatusSchema = z.enum(['DRAFT', 'PUBLISHED', 'ARCHIVED']);
+const adminLearnCourseVisibilitySchema = z.enum(['PRIVATE', 'TEAM', 'PUBLIC']);
+const adminLearnCoursePermissionSchema = z.enum(['VIEW', 'EDIT', 'MANAGE']);
+
+const adminLearnCourseListQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).max(100_000).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+  q: z.string().trim().min(1).max(120).optional(),
+  status: adminLearnCourseStatusSchema.optional(),
+  visibility: adminLearnCourseVisibilitySchema.optional(),
+});
+
+const adminLearnCourseAccessQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).max(100_000).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+});
+
+const adminLearnCourseLifecycleSchema = z.object({
+  status: adminLearnCourseStatusSchema,
+});
+
+const adminLearnCourseAccessSchema = z.object({
+  // Administrators can use an existing POKYH username or canonical stable UID;
+  // the server resolves it before any durable record is written.
+  userId: z.string().trim().min(1).max(100),
+  permission: adminLearnCoursePermissionSchema,
+});
+
+const adminLearnCourseDeleteSchema = z.object({
+  confirmation: z.string().trim().min(1).max(191),
+});
+
+const adminLearnCourseMetadataSelect = {
+  id: true,
+  slug: true,
+  title: true,
+  summary: true,
+  subject: true,
+  language: true,
+  level: true,
+  visibility: true,
+  status: true,
+  coverImageUrl: true,
+  createdBy: true,
+  ownerLocked: true,
+  createdAt: true,
+  updatedAt: true,
+  creator: { select: { username: true } },
+  team: { select: { id: true, name: true } },
+  _count: { select: { sections: true, vocabulary: true, enrollments: true, accessGrants: true } },
+};
+
+function learnCourseAdminRow(course: {
+  id: string;
+  slug: string;
+  title: string;
+  summary: string;
+  subject: string;
+  language: string;
+  level: string;
+  visibility: string;
+  status: string;
+  coverImageUrl: string;
+  ownerLocked: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+  creator: { username: string };
+  team: { id: string; name: string } | null;
+  _count: { sections: number; vocabulary: number; enrollments: number; accessGrants: number };
+}) {
+  return {
+    id: course.id,
+    slug: course.slug,
+    title: course.title,
+    summary: course.summary,
+    subject: course.subject,
+    language: course.language,
+    level: course.level,
+    visibility: course.visibility,
+    status: course.status,
+    coverImageUrl: course.coverImageUrl,
+    ownerLocked: course.ownerLocked,
+    createdAt: course.createdAt.toISOString(),
+    updatedAt: course.updatedAt.toISOString(),
+    creator: { username: course.creator.username },
+    team: course.team,
+    counts: {
+      sections: course._count.sections,
+      vocabulary: course._count.vocabulary,
+      enrollments: course._count.enrollments,
+      directAccess: course._count.accessGrants,
+    },
+  };
+}
+
+router.get('/learn/courses', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const query = adminLearnCourseListQuerySchema.parse(req.query);
+  const where = {
+    ...(query.status ? { status: query.status } : {}),
+    ...(query.visibility ? { visibility: query.visibility } : {}),
+    ...(query.q ? {
+      OR: [
+        { title: { contains: query.q } },
+        { slug: { contains: query.q } },
+        { subject: { contains: query.q } },
+        { language: { contains: query.q } },
+      ],
+    } : {}),
+  };
+  const [total, courses] = await Promise.all([
+    prisma.learnCourse.count({ where }),
+    prisma.learnCourse.findMany({
+      where,
+      orderBy: { updatedAt: 'desc' },
+      skip: (query.page - 1) * query.limit,
+      take: query.limit,
+      select: adminLearnCourseMetadataSelect,
+    }),
+  ]);
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.json({
+    courses: courses.map(learnCourseAdminRow),
+    total,
+    page: query.page,
+    limit: query.limit,
+  });
+});
+
+router.get('/learn/courses/:courseId/access', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const courseId = z.string().uuid().parse(req.params['courseId']);
+  const query = adminLearnCourseAccessQuerySchema.parse(req.query);
+  const course = await prisma.learnCourse.findUnique({
+    where: { id: courseId },
+    select: adminLearnCourseMetadataSelect,
+  });
+  if (!course) throw new NotFoundError('Learn course not found');
+
+  const [total, access] = await Promise.all([
+    prisma.learnCourseAccess.count({ where: { courseId } }),
+    prisma.learnCourseAccess.findMany({
+      where: { courseId },
+      orderBy: { updatedAt: 'desc' },
+      skip: (query.page - 1) * query.limit,
+      take: query.limit,
+      select: {
+        stableUid: true,
+        permission: true,
+        createdAt: true,
+        updatedAt: true,
+        user: { select: { username: true, isUntisUser: true } },
+      },
+    }),
+  ]);
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.json({
+    course: learnCourseAdminRow(course),
+    access: {
+      items: access.map((grant) => ({
+        stableUid: grant.stableUid,
+        permission: grant.permission,
+        createdAt: grant.createdAt.toISOString(),
+        updatedAt: grant.updatedAt.toISOString(),
+        user: grant.user,
+      })),
+      total,
+      page: query.page,
+      limit: query.limit,
+    },
+  });
+});
+
+router.patch('/learn/courses/:courseId/lifecycle', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const courseId = z.string().uuid().parse(req.params['courseId']);
+  const body = adminLearnCourseLifecycleSchema.parse(req.body);
+  const actor = await learnAdminActor(req);
+  try {
+    const course = await prisma.learnCourse.update({
+      where: { id: courseId },
+      data: { status: body.status },
+      select: adminLearnCourseMetadataSelect,
+    });
+    logger.info('Admin action: Learn course lifecycle updated', {
+      action: 'learn_course_lifecycle_updated', adminUsername: actor.username, courseId, status: body.status,
+    });
+    res.json({ course: learnCourseAdminRow(course) });
+  } catch (error) {
+    if (error instanceof Error && 'code' in error && (error as { code?: string }).code === 'P2025') {
+      throw new NotFoundError('Learn course not found');
+    }
+    throw error;
+  }
+});
+
+router.post('/learn/courses/:courseId/access', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const courseId = z.string().uuid().parse(req.params['courseId']);
+  const body = adminLearnCourseAccessSchema.parse(req.body);
+  const actor = await learnAdminActor(req);
+  const [course, user] = await Promise.all([
+    prisma.learnCourse.findUnique({ where: { id: courseId }, select: { id: true, createdBy: true } }),
+    prisma.user.findFirst({
+      where: { OR: [{ stableUid: body.userId }, { username: body.userId }] },
+      select: { stableUid: true, username: true, isUntisUser: true },
+    }),
+  ]);
+  if (!course) throw new NotFoundError('Learn course not found');
+  if (!user) throw new NotFoundError('POKYH user not found');
+  if (!user.isUntisUser) throw new ValidationError('Only verified WebUntis users can receive Learn access');
+  if (user.stableUid === course.createdBy) throw new ValidationError('The course owner already has management access');
+
+  const [, grant] = await prisma.$transaction([
+    prisma.learnProfile.upsert({
+      where: { stableUid: user.stableUid },
+      create: { stableUid: user.stableUid },
+      update: {},
+    }),
+    prisma.learnCourseAccess.upsert({
+      where: { courseId_stableUid: { courseId, stableUid: user.stableUid } },
+      create: { courseId, stableUid: user.stableUid, permission: body.permission, grantedBy: actor.stableUid },
+      update: { permission: body.permission, grantedBy: actor.stableUid },
+    }),
+  ]);
+  logger.info('Admin action: Learn course access saved', {
+    action: 'learn_course_access_saved', adminUsername: actor.username, courseId, targetStableUid: user.stableUid, permission: body.permission,
+  });
+  res.status(201).json({
+    access: {
+      stableUid: grant.stableUid,
+      permission: grant.permission,
+      createdAt: grant.createdAt.toISOString(),
+      updatedAt: grant.updatedAt.toISOString(),
+      user: { username: user.username, isUntisUser: user.isUntisUser },
+    },
+  });
+});
+
+router.delete('/learn/courses/:courseId/access/:stableUid', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const courseId = z.string().uuid().parse(req.params['courseId']);
+  const stableUid = z.string().trim().min(1).max(100).parse(req.params['stableUid']);
+  const actor = await learnAdminActor(req);
+  const deleted = await prisma.learnCourseAccess.deleteMany({ where: { courseId, stableUid } });
+  if (deleted.count === 0) throw new NotFoundError('Learn course access grant not found');
+  logger.info('Admin action: Learn course access revoked', {
+    action: 'learn_course_access_revoked', adminUsername: actor.username, courseId, targetStableUid: stableUid,
+  });
+  res.status(204).send();
+});
+
+router.delete('/learn/courses/:courseId', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const courseId = z.string().uuid().parse(req.params['courseId']);
+  const body = adminLearnCourseDeleteSchema.parse(req.body);
+  const actor = await learnAdminActor(req);
+  const course = await prisma.learnCourse.findUnique({
+    where: { id: courseId },
+    select: { id: true, slug: true },
+  });
+  if (!course) throw new NotFoundError('Learn course not found');
+  if (body.confirmation !== course.slug) {
+    throw new ValidationError('Type the exact course slug to confirm permanent deletion');
+  }
+  await prisma.learnCourse.delete({ where: { id: courseId } });
+  logger.info('Admin action: Learn course deleted', {
+    action: 'learn_course_deleted', adminUsername: actor.username, courseId,
+  });
+  res.status(204).send();
+});
+
+const adminLearnTeamCreateSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  description: z.string().trim().max(1000).optional().default(''),
+});
+
+const adminLearnTeamUpdateSchema = z.object({
+  name: z.string().trim().min(1).max(120).optional(),
+  description: z.string().trim().max(1000).optional(),
+}).refine((body) => Object.keys(body).length > 0, { message: 'At least one team field is required' });
+
+const adminLearnTeamMemberSchema = z.object({
+  userId: z.string().trim().min(1).max(100),
+  role: z.enum(['MANAGER', 'MEMBER']).default('MEMBER'),
+});
+
+const adminLearnTeamDeleteSchema = z.object({
+  confirmName: z.string().trim().min(1).max(120),
+});
+
+function learnTeamAdminRow(team: {
+  id: string;
+  name: string;
+  description: string;
+  createdAt: Date;
+  updatedAt: Date;
+  creator: { username: string } | null;
+  members: Array<{ stableUid: string; role: string; joinedAt: Date; user: { username: string; isUntisUser: boolean } | null }>;
+  _count: { members: number; courses: number };
+}) {
+  return {
+    id: team.id,
+    name: team.name,
+    description: team.description,
+    createdAt: team.createdAt.toISOString(),
+    updatedAt: team.updatedAt.toISOString(),
+    creator: team.creator,
+    memberCount: team._count.members,
+    courseCount: team._count.courses,
+    members: team.members.map((member) => ({
+      stableUid: member.stableUid,
+      role: member.role,
+      joinedAt: member.joinedAt.toISOString(),
+      user: member.user,
+    })),
+  };
+}
+
+const learnTeamAdminInclude = {
+  creator: { select: { username: true } },
+  members: {
+    orderBy: { joinedAt: 'asc' as const },
+    select: {
+      stableUid: true,
+      role: true,
+      joinedAt: true,
+      user: { select: { username: true, isUntisUser: true } },
+    },
+  },
+  _count: { select: { members: true, courses: true } },
+};
+
+router.get('/learn/teams', requireAdmin, async (_req: Request, res: Response): Promise<void> => {
+  const teams = await prisma.learnTeam.findMany({
+    orderBy: { updatedAt: 'desc' },
+    include: learnTeamAdminInclude,
+  });
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.json({ teams: teams.map(learnTeamAdminRow) });
+});
+
+router.post('/learn/teams', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const body = adminLearnTeamCreateSchema.parse(req.body);
+  const actor = await learnAdminActor(req);
+  const team = await prisma.learnTeam.create({
+    data: {
+      name: body.name,
+      description: body.description,
+      createdBy: actor.stableUid,
+      members: { create: { stableUid: actor.stableUid, role: 'OWNER' } },
+    },
+    include: learnTeamAdminInclude,
+  });
+  logger.info('Admin action: Learn team created', { action: 'learn_team_created', adminUsername: actor.username, teamId: team.id });
+  res.status(201).json({ team: learnTeamAdminRow(team) });
+});
+
+router.patch('/learn/teams/:teamId', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const teamId = z.string().uuid().parse(req.params['teamId']);
+  const body = adminLearnTeamUpdateSchema.parse(req.body);
+  const actor = await learnAdminActor(req);
+  try {
+    const team = await prisma.learnTeam.update({
+      where: { id: teamId },
+      data: body,
+      include: learnTeamAdminInclude,
+    });
+    logger.info('Admin action: Learn team updated', { action: 'learn_team_updated', adminUsername: actor.username, teamId });
+    res.json({ team: learnTeamAdminRow(team) });
+  } catch (error) {
+    if (error instanceof Error && 'code' in error && (error as { code?: string }).code === 'P2025') throw new NotFoundError('Learn team not found');
+    throw error;
+  }
+});
+
+router.post('/learn/teams/:teamId/members', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const teamId = z.string().uuid().parse(req.params['teamId']);
+  const body = adminLearnTeamMemberSchema.parse(req.body);
+  const actor = await learnAdminActor(req);
+  const [team, user] = await Promise.all([
+    prisma.learnTeam.findUnique({ where: { id: teamId }, select: { id: true } }),
+    prisma.user.findFirst({
+      where: { OR: [{ stableUid: body.userId }, { username: body.userId }] },
+      select: { stableUid: true, username: true, isUntisUser: true },
+    }),
+  ]);
+  if (!team) throw new NotFoundError('Learn team not found');
+  if (!user) throw new NotFoundError('POKYH user not found');
+  if (!user.isUntisUser) throw new ValidationError('Only verified WebUntis users can join a Learn team');
+  const member = await prisma.learnTeamMember.upsert({
+    where: { teamId_stableUid: { teamId, stableUid: user.stableUid } },
+    create: { teamId, stableUid: user.stableUid, role: body.role },
+    update: { role: body.role },
+  });
+  await prisma.learnProfile.upsert({
+    where: { stableUid: user.stableUid },
+    create: { stableUid: user.stableUid },
+    update: {},
+  });
+  logger.info('Admin action: Learn team member saved', {
+    action: 'learn_team_member_saved', adminUsername: actor.username, teamId, targetStableUid: user.stableUid, role: body.role,
+  });
+  res.json({ member: { ...member, username: user.username } });
+});
+
+router.delete('/learn/teams/:teamId/members/:stableUid', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const teamId = z.string().uuid().parse(req.params['teamId']);
+  const stableUid = z.string().trim().min(1).max(100).parse(req.params['stableUid']);
+  const actor = await learnAdminActor(req);
+  const member = await prisma.learnTeamMember.findUnique({
+    where: { teamId_stableUid: { teamId, stableUid } },
+    select: { role: true },
+  });
+  if (!member) throw new NotFoundError('Learn team member not found');
+  if (member.role === 'OWNER') {
+    const ownerCount = await prisma.learnTeamMember.count({ where: { teamId, role: 'OWNER' } });
+    if (ownerCount <= 1) throw new ConflictError('Assign another team owner before removing the last owner');
+  }
+  await prisma.learnTeamMember.delete({ where: { teamId_stableUid: { teamId, stableUid } } });
+  logger.info('Admin action: Learn team member removed', {
+    action: 'learn_team_member_removed', adminUsername: actor.username, teamId, targetStableUid: stableUid,
+  });
+  res.status(204).send();
+});
+
+router.delete('/learn/teams/:teamId', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const teamId = z.string().uuid().parse(req.params['teamId']);
+  const body = adminLearnTeamDeleteSchema.parse(req.body);
+  const actor = await learnAdminActor(req);
+  const team = await prisma.learnTeam.findUnique({
+    where: { id: teamId },
+    select: { id: true, name: true, _count: { select: { courses: true } } },
+  });
+  if (!team) throw new NotFoundError('Learn team not found');
+  if (body.confirmName !== team.name) throw new ValidationError('Confirmation must exactly match the team name');
+  if (team._count.courses > 0) throw new ConflictError('Detach or archive every team course before deleting this group');
+  await prisma.learnTeam.delete({ where: { id: teamId } });
+  logger.info('Admin action: Learn team deleted', { action: 'learn_team_deleted', adminUsername: actor.username, teamId });
+  res.status(204).send();
 });
 
 export { router as adminRouter };

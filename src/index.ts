@@ -23,6 +23,9 @@ import { startSchoolYearArchiver } from './services/schoolYearArchiver';
 import { applyAdditiveSchema } from './services/schemaSync';
 import { migrateStableKeys } from './utils/dishKey';
 import { logger } from './utils/logger';
+import { getLearnConfig } from './services/learnConfig';
+import { learningDayKey } from './services/learnAnalytics';
+import { closeLearnCache } from './services/learnCache';
 
 const app = express();
 
@@ -38,7 +41,9 @@ app.set('trust proxy', config.trustProxy);
 if (config.debug) {
   app.use(morgan('dev'));
   app.use((req, _res, next) => {
-    logger.debug(`[req] ${req.method} ${req.url} body=${JSON.stringify(req.body)}`);
+    // Credentials, API keys, user-created content, and imports can all be
+    // carried in request bodies. Keep debug tracing structural only.
+    logger.debug('[request received]', { method: req.method, path: req.path });
     next();
   });
 }
@@ -115,14 +120,14 @@ app.use(express.json({ limit: config.bodyLimit }));
 app.use(express.urlencoded({ extended: false }));
 app.use(cookieParser());
 
-// ─── Rate limiting ───────────────────────────────────────────────────────────
-
-app.use(globalLimiter);
-
-// ─── Request logger (after body parse, before routes) ────────────────────────
-
+// ─── Request identification, logging and rate limiting ───────────────────────
+//
+// Install correlation and finish-event logging before the limiter so 429s are
+// traceable too. The logger only inspects request metadata at finish time; it
+// never records bodies or credentials.
 app.use(requestId);
 app.use(requestLogger);
+app.use(globalLimiter);
 
 // ─── Health checks ───────────────────────────────────────────────────────────
 
@@ -130,22 +135,25 @@ app.use(requestLogger);
 // Compose and load balancers should use /readyz, which additionally proves the
 // database connection is ready to serve durable Pokyh/Learn state.
 let databaseReady = false;
+let databaseStartupComplete = false;
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
 app.get('/readyz', async (_req, res) => {
-  if (!databaseReady) {
+  if (!databaseStartupComplete) {
     res.setHeader('Cache-Control', 'no-store');
     res.status(503).json({ status: 'starting' });
     return;
   }
   try {
-    // Reviewed: static literal, no request-derived input — not an injection
-    // surface. $queryRawUnsafe is only used here as a lightweight connectivity
-    // probe.
-    await prisma.$queryRawUnsafe('SELECT 1');
+    // Static Prisma SQL with no interpolation. This endpoint never accepts
+    // request-derived SQL, and it actively retries after a transient MySQL
+    // outage instead of leaving the container permanently unhealthy.
+    if (!databaseReady) await prisma.$connect();
+    await prisma.$queryRaw(Prisma.sql`SELECT 1`);
+    databaseReady = true;
     res.setHeader('Cache-Control', 'no-store');
     res.json({ status: 'ready' });
   } catch {
@@ -232,6 +240,32 @@ async function cleanupExpiredSessions() {
   if (count > 0) logger.info(`Session cleanup: ${count} expired tokens deleted`);
 }
 
+async function cleanupExpiredRequestLogs() {
+  const cutoff = new Date(Date.now() - config.requestLogRetentionDays * 24 * 60 * 60 * 1000);
+  const { count } = await prisma.requestLog.deleteMany({ where: { createdAt: { lt: cutoff } } });
+  if (count > 0) logger.info('Request log retention cleanup', {
+    action: 'request_log_retention_cleanup',
+    deletedCount: count,
+    retentionDays: config.requestLogRetentionDays,
+  });
+}
+
+async function cleanupExpiredLearnAnalytics() {
+  const learnCfg = await getLearnConfig();
+  const cutoff = new Date(Date.now() - learnCfg.analyticsRetentionDays * 24 * 60 * 60 * 1000);
+  // Activity rows contain a user-local calendar key. UTC gives a stable,
+  // conservative cleanup boundary and cannot delete a newer local day.
+  const cutoffDayKey = learningDayKey(cutoff, 'UTC');
+  const { count } = await prisma.learnActivityDaily.deleteMany({
+    where: { dayKey: { lt: cutoffDayKey } },
+  });
+  if (count > 0) logger.info('Learn analytics retention cleanup', {
+    action: 'learn_analytics_retention_cleanup',
+    deletedCount: count,
+    retentionDays: learnCfg.analyticsRetentionDays,
+  });
+}
+
 let backgroundJobsStarted = false;
 
 // Starts the periodic background jobs exactly once, after the DB is reachable.
@@ -242,6 +276,18 @@ function startBackgroundJobs() {
   // Session cleanup: deferred first run + interval.
   setTimeout(() => void cleanupExpiredSessions().catch(() => {}), 5000);
   setInterval(() => void cleanupExpiredSessions().catch(() => {}), SESSION_CLEANUP_INTERVAL);
+
+  // Request/audit correlation is valuable for support and security, but these
+  // records contain technical personal data. Remove expired rows on a bounded,
+  // documented schedule rather than retaining them indefinitely.
+  setTimeout(() => void cleanupExpiredRequestLogs().catch(() => {}), 10_000);
+  setInterval(() => void cleanupExpiredRequestLogs().catch(() => {}), config.requestLogCleanupIntervalMs);
+
+  // Daily aggregates deliberately have a bounded, administrator-configurable
+  // retention policy. This job handles the privacy lifecycle independently of
+  // the normal request-log cleanup cadence.
+  setTimeout(() => void cleanupExpiredLearnAnalytics().catch(() => {}), 15_000);
+  setInterval(() => void cleanupExpiredLearnAnalytics().catch(() => {}), 24 * 60 * 60 * 1000);
 
   // Archive expired todos/reminders (>24h) — server-only, admin-viewable.
   startArchiver();
@@ -307,6 +353,7 @@ async function connectDatabaseWithRetry() {
       }
       await prisma.$connect();
       databaseReady = true;
+      databaseStartupComplete = true;
       logger.info('Database ready (schema applied, connected)');
       // Idempotent — safe to run every boot. Populates dish.stableKey and
       // rewrites rating/comment dishId references so bewertungen survive
@@ -361,6 +408,7 @@ process.on('SIGTERM', async () => {
   logger.info('SIGTERM received, shutting down...');
   databaseReady = false;
   stopTunnel();
+  await closeLearnCache();
   await prisma.$disconnect();
   process.exit(0);
 });

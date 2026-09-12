@@ -2,6 +2,16 @@ import { Request, Response, NextFunction } from 'express';
 import { timingSafeEqual, createHash } from 'crypto';
 import { config } from '../config';
 import { prisma } from '../db';
+import { hasApiKeyScope, requiredApiKeyScope } from '../security/apiKeyPolicy';
+import { apiKeyLookupLimiter } from './rateLimiter';
+
+declare global {
+  namespace Express {
+    interface Request {
+      issuedApiKey?: { id: string; name: string };
+    }
+  }
+}
 
 // Pre-hash the configured API key for storage comparison
 function hashKey(key: string): string {
@@ -24,13 +34,14 @@ function safeEquals(a: string, b: string): boolean {
 // Admin-issued keys are additive: they are only consulted when the request
 // does not present the static master key, and they never replace it. This
 // keeps every existing integration working unchanged.
-async function isValidIssuedKey(provided: string): Promise<boolean> {
+async function findValidIssuedKey(provided: string): Promise<{ id: string; name: string; scopes: string; keyHash: string } | null> {
   const keyHash = hashKey(provided);
-  const record = await prisma.apiKey.findUnique({ where: { keyHash } });
-  if (!record) return false;
-  if (record.revokedAt) return false;
-  if (record.expiresAt && record.expiresAt.getTime() <= Date.now()) return false;
-  return true;
+  const record = await prisma.apiKey.findUnique({
+    where: { keyHash },
+    select: { id: true, name: true, scopes: true, keyHash: true, revokedAt: true, expiresAt: true },
+  });
+  if (!record || record.revokedAt || (record.expiresAt && record.expiresAt.getTime() <= Date.now())) return null;
+  return record;
 }
 
 export function apiKeyMiddleware(
@@ -38,13 +49,19 @@ export function apiKeyMiddleware(
   res: Response,
   next: NextFunction
 ): void {
-  // Accept from header OR query param (for SSE/EventSource which can't set headers)
+  // Only the legacy SSE endpoint may carry a key in a query parameter because
+  // EventSource cannot attach headers. All other routes reject it so secrets
+  // never land in browser history, referrers, or copied URLs.
   const headerKey = req.headers['x-api-key'];
   const queryKey = req.query['apiKey'];
+  if (!headerKey && typeof queryKey === 'string' && !req.path.startsWith('/sse')) {
+    res.status(400).json({ error: 'Use X-API-Key header for this route' });
+    return;
+  }
   const provided = (typeof headerKey === 'string' ? headerKey : null) ??
                    (typeof queryKey === 'string' ? queryKey : null);
 
-  if (!provided) {
+  if (!provided || provided.length > 512) {
     res.status(401).json({ error: 'Missing X-API-Key header' });
     return;
   }
@@ -62,19 +79,32 @@ export function apiKeyMiddleware(
   }
 
   // Fallback: an admin-issued key (expiry/revocation aware). Only reached on
-  // static-key mismatch, so this is purely additive.
-  isValidIssuedKey(provided)
-    .then((valid) => {
-      if (!valid) {
+  // static-key mismatch, so this is purely additive. Rate-limited first —
+  // every request here (valid issued key or garbage) costs a DB round-trip,
+  // and /learn/* traffic skips the global limiter entirely (see rateLimiter.ts).
+  apiKeyLookupLimiter(req, res, (limiterErr?: unknown) => {
+    if (limiterErr) { next(limiterErr); return; }
+    if (res.headersSent) return; // limiter already responded 429
+
+    findValidIssuedKey(provided)
+      .then((record) => {
+        if (!record) {
+          res.status(403).json({ error: 'Invalid API key' });
+          return;
+        }
+        const requiredScope = requiredApiKeyScope(req.method, req.path);
+        if (!hasApiKeyScope(record.scopes, requiredScope)) {
+          res.status(403).json({ error: 'API key is not permitted for this route' });
+          return;
+        }
+        req.issuedApiKey = { id: record.id, name: record.name };
+        prisma.apiKey
+          .update({ where: { keyHash: record.keyHash }, data: { lastUsedAt: new Date() } })
+          .catch(() => { /* non-blocking, ignore errors */ });
+        next();
+      })
+      .catch(() => {
         res.status(403).json({ error: 'Invalid API key' });
-        return;
-      }
-      prisma.apiKey
-        .update({ where: { keyHash }, data: { lastUsedAt: new Date() } })
-        .catch(() => { /* non-blocking, ignore errors */ });
-      next();
-    })
-    .catch(() => {
-      res.status(403).json({ error: 'Invalid API key' });
-    });
+      });
+  });
 }

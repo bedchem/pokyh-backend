@@ -21,6 +21,20 @@ export interface LearnConfigValues {
   dictionaryTimeoutMs: number;
   dictionaryCacheTtlMs: number;
   dictionaryMaxCacheEntries: number;
+  dictionaryValidationEnabled: boolean;
+  dictionaryValidationProvider: string;
+  dictionaryValidationBaseUrl: string;
+  dictionaryValidationTimeoutMs: number;
+  dictionaryValidationCacheTtlMs: number;
+  dictionaryValidationMaxCacheEntries: number;
+  reviewInitialIntervalDays: number;
+  reviewMaxIntervalDays: number;
+  reviewMinimumEase: number;
+  reviewMaximumEase: number;
+  reviewCorrectEaseStep: number;
+  reviewIncorrectEasePenalty: number;
+  reviewWrongDelayMinutes: number;
+  analyticsRetentionDays: number;
   importMaxCourses: number;
   importMaxSectionsPerCourse: number;
   importMaxVocabularyPerCourse: number;
@@ -61,6 +75,20 @@ function resolve(row: LearnConfigRow): LearnConfigValues {
     dictionaryTimeoutMs: row?.dictionaryTimeoutMs ?? config.learnDictionary.timeoutMs,
     dictionaryCacheTtlMs: row?.dictionaryCacheTtlMs ?? config.learnDictionary.cacheTtlMs,
     dictionaryMaxCacheEntries: row?.dictionaryMaxCacheEntries ?? config.learnDictionary.maxCacheEntries,
+    dictionaryValidationEnabled: row?.dictionaryValidationEnabled ?? config.learnDictionaryValidation.enabled,
+    dictionaryValidationProvider: row?.dictionaryValidationProvider ?? config.learnDictionaryValidation.provider,
+    dictionaryValidationBaseUrl: row?.dictionaryValidationBaseUrl ?? config.learnDictionaryValidation.baseUrl,
+    dictionaryValidationTimeoutMs: row?.dictionaryValidationTimeoutMs ?? config.learnDictionaryValidation.timeoutMs,
+    dictionaryValidationCacheTtlMs: row?.dictionaryValidationCacheTtlMs ?? config.learnDictionaryValidation.cacheTtlMs,
+    dictionaryValidationMaxCacheEntries: row?.dictionaryValidationMaxCacheEntries ?? config.learnDictionaryValidation.maxCacheEntries,
+    reviewInitialIntervalDays: row?.reviewInitialIntervalDays ?? config.learnReview.initialIntervalDays,
+    reviewMaxIntervalDays: row?.reviewMaxIntervalDays ?? config.learnReview.maxIntervalDays,
+    reviewMinimumEase: row?.reviewMinimumEase ?? config.learnReview.minimumEase,
+    reviewMaximumEase: row?.reviewMaximumEase ?? config.learnReview.maximumEase,
+    reviewCorrectEaseStep: row?.reviewCorrectEaseStep ?? config.learnReview.correctEaseStep,
+    reviewIncorrectEasePenalty: row?.reviewIncorrectEasePenalty ?? config.learnReview.incorrectEasePenalty,
+    reviewWrongDelayMinutes: row?.reviewWrongDelayMinutes ?? config.learnReview.wrongDelayMinutes,
+    analyticsRetentionDays: row?.analyticsRetentionDays ?? config.learnReview.analyticsRetentionDays,
     importMaxCourses: row?.importMaxCourses ?? config.learnImport.maxCourses,
     importMaxSectionsPerCourse: row?.importMaxSectionsPerCourse ?? config.learnImport.maxSectionsPerCourse,
     importMaxVocabularyPerCourse: row?.importMaxVocabularyPerCourse ?? config.learnImport.maxVocabularyPerCourse,
@@ -94,6 +122,20 @@ export type LearnConfigInput = Partial<{
   dictionaryTimeoutMs: number;
   dictionaryCacheTtlMs: number;
   dictionaryMaxCacheEntries: number;
+  dictionaryValidationEnabled: boolean;
+  dictionaryValidationProvider: string;
+  dictionaryValidationBaseUrl: string;
+  dictionaryValidationTimeoutMs: number;
+  dictionaryValidationCacheTtlMs: number;
+  dictionaryValidationMaxCacheEntries: number;
+  reviewInitialIntervalDays: number;
+  reviewMaxIntervalDays: number;
+  reviewMinimumEase: number;
+  reviewMaximumEase: number;
+  reviewCorrectEaseStep: number;
+  reviewIncorrectEasePenalty: number;
+  reviewWrongDelayMinutes: number;
+  analyticsRetentionDays: number;
   importMaxCourses: number;
   importMaxSectionsPerCourse: number;
   importMaxVocabularyPerCourse: number;

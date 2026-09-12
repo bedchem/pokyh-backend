@@ -17,6 +17,21 @@ function intEnv(key: string, fallback: number): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function boundedIntEnv(key: string, fallback: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, intEnv(key, fallback)));
+}
+
+function floatEnv(key: string, fallback: number): number {
+  const raw = process.env[key];
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const n = Number.parseFloat(raw);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function boundedFloatEnv(key: string, fallback: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, floatEnv(key, fallback)));
+}
+
 function strEnv(key: string, fallback: string): string {
   const raw = process.env[key];
   return raw === undefined || raw.trim() === '' ? fallback : raw.trim();
@@ -91,6 +106,15 @@ const learnLegalGateReady = !learnLegalGateEnabled || Boolean(
   && (isProd ? isSecurePublicUrl(learnPrivacyNoticeUrl) : Boolean(learnPrivacyNoticeUrl)),
 );
 
+// Review scheduling is a product policy rather than a browser implementation.
+// Defaults are intentionally conservative and all values can be set from the
+// deployment configuration (or narrowed in the Learn admin configuration).
+const learnReviewMinimumEase = boundedFloatEnv('LEARN_REVIEW_MINIMUM_EASE', 1.3, 1, 5);
+const learnReviewMaximumEase = Math.max(
+  learnReviewMinimumEase,
+  boundedFloatEnv('LEARN_REVIEW_MAXIMUM_EASE', 3, 1, 5),
+);
+
 export const config = {
   nodeEnv,
   port: intEnv('PORT', 4000),
@@ -134,10 +158,52 @@ export const config = {
     cacheTtlMs: intEnv('LEARN_DICTIONARY_CACHE_TTL_MS', 60 * 60 * 1000),
     maxCacheEntries: intEnv('LEARN_DICTIONARY_MAX_CACHE_ENTRIES', 500),
   },
+  // Free Dictionary is a separate lexical-validation capability. Its public
+  // documentation exposes English headwords, so it is never presented as a
+  // German or Italian dictionary. A local/manual outcome keeps authoring
+  // available when it is disabled or unavailable.
+  learnDictionaryValidation: {
+    enabled: (process.env['LEARN_DICTIONARY_VALIDATION_ENABLED'] ?? 'false') === 'true',
+    provider: strEnv('LEARN_DICTIONARY_VALIDATION_PROVIDER', 'dictionaryapi').toLocaleLowerCase('en-US'),
+    baseUrl: strEnv('LEARN_DICTIONARY_VALIDATION_BASE_URL', 'https://api.dictionaryapi.dev/api/v2').replace(/\/$/, ''),
+    timeoutMs: intEnv('LEARN_DICTIONARY_VALIDATION_TIMEOUT_MS', 4_000),
+    cacheTtlMs: intEnv('LEARN_DICTIONARY_VALIDATION_CACHE_TTL_MS', 24 * 60 * 60 * 1000),
+    maxCacheEntries: intEnv('LEARN_DICTIONARY_VALIDATION_MAX_CACHE_ENTRIES', 1_000),
+  },
+  // This is an egress policy, not editor content. It remains environment-only
+  // so an admin setting cannot turn a dictionary lookup into an arbitrary
+  // internal-network request.
+  learnDictionaryAllowedHosts: (process.env['LEARN_DICTIONARY_ALLOWED_HOSTS'] ?? 'api.dictionaryapi.dev,api.mymemory.translated.net')
+    .split(',')
+    .map((host) => host.trim().toLocaleLowerCase('en-US'))
+    .filter((host) => /^[a-z0-9.-]+$/.test(host)),
   learnImport: {
     maxCourses: intEnv('LEARN_IMPORT_MAX_COURSES', 20),
     maxSectionsPerCourse: intEnv('LEARN_IMPORT_MAX_SECTIONS_PER_COURSE', 100),
     maxVocabularyPerCourse: intEnv('LEARN_IMPORT_MAX_VOCABULARY_PER_COURSE', 1_000),
+  },
+  // The backend, not a device, derives every next review. A wrong answer can
+  // be returned immediately (or after an operator-selected recovery delay),
+  // while repeated success increases the interval within safe bounds.
+  learnReview: {
+    initialIntervalDays: boundedIntEnv('LEARN_REVIEW_INITIAL_INTERVAL_DAYS', 1, 1, 30),
+    maxIntervalDays: boundedIntEnv('LEARN_REVIEW_MAX_INTERVAL_DAYS', 120, 1, 3_650),
+    minimumEase: learnReviewMinimumEase,
+    maximumEase: learnReviewMaximumEase,
+    correctEaseStep: boundedFloatEnv('LEARN_REVIEW_CORRECT_EASE_STEP', 0.05, 0, 1),
+    incorrectEasePenalty: boundedFloatEnv('LEARN_REVIEW_INCORRECT_EASE_PENALTY', 0.2, 0, 1),
+    wrongDelayMinutes: boundedIntEnv('LEARN_REVIEW_WRONG_DELAY_MINUTES', 0, 0, 24 * 60),
+    // Daily aggregates are pseudonymous learning analytics. Retention is
+    // deliberately bounded and configurable instead of being indefinite.
+    analyticsRetentionDays: boundedIntEnv('LEARN_ANALYTICS_RETENTION_DAYS', 365, 30, 3_650),
+  },
+  // Redis is an optional performance layer. MySQL remains authoritative for
+  // identity, permissions, progress, answers and scheduling; a cache outage
+  // must only cause a refetch, never a lost learning action.
+  learnCache: {
+    redisUrl: strEnv('LEARN_REDIS_URL', ''),
+    keyPrefix: strEnv('LEARN_REDIS_KEY_PREFIX', 'pokyh:learn'),
+    analyticsTtlSeconds: boundedIntEnv('LEARN_ANALYTICS_CACHE_TTL_SECONDS', 60, 1, 900),
   },
   // A school/controller must authorise this independent integration before a
   // production Learn login can process WebUntis credentials. This check does
@@ -211,6 +277,10 @@ export const config = {
   pushPollIntervalMs: intEnv('PUSH_POLL_INTERVAL_MS', 5 * 60 * 1000),
   pushDueCheckIntervalMs: intEnv('PUSH_DUE_CHECK_INTERVAL_MS', 60 * 1000),
   sessionCleanupIntervalMs: intEnv('SESSION_CLEANUP_INTERVAL_MS', 60 * 60 * 1000),
+  // Request logs contain technical personal data (for example IP address and
+  // user agent), so retention is deliberately finite and operator-configured.
+  requestLogRetentionDays: boundedIntEnv('REQUEST_LOG_RETENTION_DAYS', 30, 1, 365),
+  requestLogCleanupIntervalMs: boundedIntEnv('REQUEST_LOG_CLEANUP_INTERVAL_MS', 24 * 60 * 60 * 1000, 60 * 60 * 1000, 7 * 24 * 60 * 60 * 1000),
 
   // ── Archiving of expired todos/reminders ───────────────────────────────────
   archiveAfterHours: intEnv('ARCHIVE_AFTER_HOURS', 24),

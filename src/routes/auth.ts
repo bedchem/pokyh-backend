@@ -484,8 +484,13 @@ router.post('/refresh', refreshLimiter, async (req: Request, res: Response) => {
     klasseName: user.webuntisKlasseName,
     role: user.role,
   });
+  // Rotate on every use: a refresh token that leaks once and gets replayed
+  // would otherwise stay valid for its entire lifetime with no signal.
+  // generateRefreshToken() deletes this (and any other) existing token for
+  // the user before issuing the new one.
+  const refreshToken = await generateRefreshToken(user.stableUid);
 
-  res.json({ token });
+  res.json({ token, refreshToken });
 });
 
 // ─── POST /auth/logout ───────────────────────────────────────────────────────

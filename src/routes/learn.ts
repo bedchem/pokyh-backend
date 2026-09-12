@@ -5,8 +5,11 @@ import { z } from 'zod';
 import { prisma } from '../db';
 import { optionalAuth, requireAuth } from '../middleware/auth';
 import { learnReadLimiter, learnWriteLimiter, readLimiter } from '../middleware/rateLimiter';
-import { getDictionarySuggestion } from '../services/learnDictionary';
+import { getDictionarySuggestion, validateVocabularyWord } from '../services/learnDictionary';
 import { getLearnConfig } from '../services/learnConfig';
+import { config } from '../config';
+import { asPercent, learningDayKey, learningDayKeys, nextAdaptiveReview } from '../services/learnAnalytics';
+import { analyticsCacheKey, getCachedJson, invalidateAnalyticsCache, setCachedJson } from '../services/learnCache';
 import { ForbiddenError, NotFoundError, ValidationError } from '../utils/errors';
 import { logger } from '../utils/logger';
 
@@ -41,6 +44,7 @@ const teamRoleSchema = z.enum(['MANAGER', 'MEMBER']);
 const sectionTypeSchema = z.enum(['LESSON', 'VOCABULARY', 'GRAMMAR', 'QUIZ']);
 const quizModeSchema = z.enum(['PRACTICE', 'REVIEW', 'WRONG_ANSWERS']);
 const quizDirectionSchema = z.enum(['SOURCE_TO_TARGET', 'TARGET_TO_SOURCE']);
+const analyticsRangeSchema = z.enum(['7d', '28d', '90d']).default('28d');
 
 const uuidSchema = z.string().uuid();
 const trimmedText = (max: number) => z.string().trim().min(1).max(max);
@@ -180,6 +184,17 @@ const vocabularyLookupSchema = z.object({
   sourceLanguage: trimmedText(20),
   targetLanguage: trimmedText(20),
   sourceText: trimmedText(500),
+});
+
+const vocabularyValidationSchema = z.object({
+  courseId: uuidSchema,
+  sourceLanguage: trimmedText(20),
+  sourceText: trimmedText(500),
+});
+
+const analyticsQuerySchema = z.object({
+  range: analyticsRangeSchema,
+  courseId: uuidSchema.optional(),
 });
 
 const adminCourseDeleteSchema = z.object({
@@ -349,7 +364,14 @@ function createSlug(title: string): string {
 }
 
 async function isLearnAdmin(stableUid: string): Promise<boolean> {
-  return (await prisma.admin.findUnique({ where: { stableUid }, select: { stableUid: true } })) !== null;
+  // The same canonical administrator sources that protect api.pokyh.com/admin
+  // also protect Learn. This avoids a confusing split where an env-configured
+  // Pokyh administrator could open the admin panel but not manage Learn.
+  const [admin, user] = await Promise.all([
+    prisma.admin.findUnique({ where: { stableUid }, select: { stableUid: true } }),
+    prisma.user.findUnique({ where: { stableUid }, select: { username: true } }),
+  ]);
+  return admin !== null || Boolean(user && config.adminUsernames.includes(user.username));
 }
 
 async function requireLearnAdmin(stableUid: string): Promise<void> {
@@ -390,6 +412,8 @@ interface ResolvedCourseAccess {
   };
   permission: CoursePermission;
   isAdmin: boolean;
+  hasEnrollment: boolean;
+  hasExplicitAccess: boolean;
 }
 
 async function resolveCourseAccess(courseId: string, stableUid?: string): Promise<ResolvedCourseAccess> {
@@ -410,11 +434,14 @@ async function resolveCourseAccess(courseId: string, stableUid?: string): Promis
   if (!stableUid) {
     // Avoid leaking the existence of a private/team course to anonymous callers.
     if (!isCatalogCourse(course)) throw new NotFoundError('Course not found');
-    return { course, permission: 'VIEW', isAdmin: false };
+    return { course, permission: 'VIEW', isAdmin: false, hasEnrollment: false, hasExplicitAccess: false };
   }
 
-  const [admin, grant, enrollment, teamMembership] = await Promise.all([
-    prisma.admin.findUnique({ where: { stableUid }, select: { stableUid: true } }),
+  const [isAdmin, grant, enrollment, teamMembership] = await Promise.all([
+    // Keep course access aligned with the canonical administrator definition.
+    // Checking only the Admin table here would let an ADMIN_USERNAMES operator
+    // enter /api/admin while incorrectly losing Learn management access.
+    isLearnAdmin(stableUid),
     prisma.learnCourseAccess.findUnique({
       where: { courseId_stableUid: { courseId, stableUid } },
       select: { permission: true },
@@ -431,7 +458,6 @@ async function resolveCourseAccess(courseId: string, stableUid?: string): Promis
       : Promise.resolve(null),
   ]);
 
-  const isAdmin = admin !== null;
   let permission: CoursePermission = 'NONE';
   if (isAdmin || course.createdBy === stableUid) permission = 'MANAGE';
   permission = strongestPermission(permission, permissionFromGrant(grant?.permission));
@@ -439,7 +465,13 @@ async function resolveCourseAccess(courseId: string, stableUid?: string): Promis
   if (isCatalogCourse(course)) permission = strongestPermission(permission, 'VIEW');
   if (enrollment) permission = strongestPermission(permission, 'VIEW');
 
-  return { course, permission, isAdmin };
+  return {
+    course,
+    permission,
+    isAdmin,
+    hasEnrollment: enrollment !== null,
+    hasExplicitAccess: isAdmin || course.createdBy === stableUid || grant !== null || teamMembership !== null,
+  };
 }
 
 async function requireCoursePermission(courseId: string, stableUid: string, permission: CoursePermission) {
@@ -451,19 +483,14 @@ async function requireCoursePermission(courseId: string, stableUid: string, perm
   return access;
 }
 
-async function requireTeamManager(teamId: string, stableUid: string): Promise<void> {
-  const [team, member, isAdmin] = await Promise.all([
-    prisma.learnTeam.findUnique({ where: { id: teamId }, select: { id: true } }),
-    prisma.learnTeamMember.findUnique({
-      where: { teamId_stableUid: { teamId, stableUid } },
-      select: { role: true },
-    }),
-    isLearnAdmin(stableUid),
-  ]);
+// Groups (Learn teams) are school/platform administration data. A normal
+// learner may receive team-based course visibility but cannot create, alter or
+// administer groups through Learn. This mirrors existing class administration
+// in api.pokyh.com and keeps membership changes under one admin authority.
+async function requireTeamAdministration(teamId: string, stableUid: string): Promise<void> {
+  await requireLearnAdmin(stableUid);
+  const team = await prisma.learnTeam.findUnique({ where: { id: teamId }, select: { id: true } });
   if (!team) throw new NotFoundError('Team not found');
-  if (!isAdmin && (!member || (member.role !== 'OWNER' && member.role !== 'MANAGER'))) {
-    throw new ForbiddenError('Only a team owner or manager can perform this action');
-  }
 }
 
 async function accessibleCourseIds(stableUid: string): Promise<string[]> {
@@ -549,6 +576,189 @@ function asReviewQuestion(entry: {
       incorrectCount: review.incorrectCount,
       lastWasCorrect: review.lastWasCorrect,
     } : null,
+  };
+}
+
+const analyticsRangeDays: Record<'7d' | '28d' | '90d', number> = {
+  '7d': 7,
+  '28d': 28,
+  '90d': 90,
+};
+
+function sumOrZero(value: number | null | undefined): number {
+  return value ?? 0;
+}
+
+function analyticsStreak(dayKeys: string[], activityByDay: Map<string, number>): number {
+  let streak = 0;
+  for (const dayKey of [...dayKeys].reverse()) {
+    if ((activityByDay.get(dayKey) ?? 0) <= 0) break;
+    streak += 1;
+  }
+  return streak;
+}
+
+type LearningAnalytics = {
+  range: '7d' | '28d' | '90d';
+  timezone: string;
+  dataAvailableSince: string | null;
+  totals: {
+    attempts: number;
+    answers: number;
+    correctAnswers: number;
+    accuracyPercent: number | null;
+    activeDays: number;
+    streakDays: number;
+  };
+  days: Array<{ dayKey: string; attempts: number; answers: number; correctAnswers: number }>;
+  queues: { due: number; wrong: number; fresh: number; nextDueAt: string | null };
+  recommendation: { kind: 'due' | 'wrong' | 'new' | 'continue' | 'none'; count: number; href: string };
+  courses: Array<{
+    courseId: string;
+    slug: string;
+    title: string;
+    attempts: number;
+    answers: number;
+    correctAnswers: number;
+    accuracyPercent: number | null;
+  }>;
+};
+
+async function buildLearningAnalytics({
+  stableUid,
+  timezone,
+  range,
+  courseId,
+}: {
+  stableUid: string;
+  timezone: string;
+  range: '7d' | '28d' | '90d';
+  courseId?: string;
+}): Promise<LearningAnalytics> {
+  const days = learningDayKeys(analyticsRangeDays[range], timezone);
+  const firstDayKey = days[0]!;
+  const accessibleIds = courseId ? [courseId] : await accessibleCourseIds(stableUid);
+  if (accessibleIds.length === 0) {
+    return {
+      range,
+      timezone: timezone || 'UTC',
+      dataAvailableSince: null,
+      totals: { attempts: 0, answers: 0, correctAnswers: 0, accuracyPercent: null, activeDays: 0, streakDays: 0 },
+      days: days.map((dayKey) => ({ dayKey, attempts: 0, answers: 0, correctAnswers: 0 })),
+      queues: { due: 0, wrong: 0, fresh: 0, nextDueAt: null },
+      recommendation: { kind: 'continue', count: 0, href: '/catalog' },
+      courses: [],
+    };
+  }
+
+  const activityWhere: Prisma.LearnActivityDailyWhereInput = {
+    stableUid,
+    courseId: { in: accessibleIds },
+    dayKey: { gte: firstDayKey },
+  };
+  const reviewWhere: Prisma.LearnVocabularyReviewWhereInput = {
+    stableUid,
+    entry: { courseId: { in: accessibleIds }, normalizedTarget: { not: '' } },
+  };
+  const now = new Date();
+  const [dailyRows, courseRows, earliest, due, wrong, fresh, nextDue, streakRows] = await Promise.all([
+    prisma.learnActivityDaily.groupBy({
+      by: ['dayKey'],
+      where: activityWhere,
+      _sum: { attemptCount: true, answerCount: true, correctCount: true },
+      orderBy: { dayKey: 'asc' },
+    }),
+    prisma.learnActivityDaily.groupBy({
+      by: ['courseId'],
+      where: activityWhere,
+      _sum: { attemptCount: true, answerCount: true, correctCount: true },
+      orderBy: { _sum: { answerCount: 'desc' } },
+      take: 12,
+    }),
+    prisma.learnActivityDaily.findFirst({
+      where: { stableUid, courseId: { in: accessibleIds } },
+      orderBy: { dayKey: 'asc' },
+      select: { dayKey: true },
+    }),
+    prisma.learnVocabularyReview.count({ where: { ...reviewWhere, dueAt: { lte: now } } }),
+    prisma.learnVocabularyReview.count({ where: { ...reviewWhere, lastWasCorrect: false, incorrectCount: { gt: 0 } } }),
+    prisma.learnVocabularyEntry.count({
+      where: {
+        courseId: { in: accessibleIds },
+        normalizedTarget: { not: '' },
+        reviewStates: { none: { stableUid } },
+      },
+    }),
+    prisma.learnVocabularyReview.findFirst({
+      where: reviewWhere,
+      orderBy: { dueAt: 'asc' },
+      select: { dueAt: true },
+    }),
+    prisma.learnActivityDaily.groupBy({
+      by: ['dayKey'],
+      where: { stableUid, courseId: { in: accessibleIds } },
+      _sum: { answerCount: true },
+      orderBy: { dayKey: 'desc' },
+      take: 366,
+    }),
+  ]);
+
+  const courses = await prisma.learnCourse.findMany({
+    where: { id: { in: courseRows.map((row) => row.courseId) } },
+    select: { id: true, slug: true, title: true },
+  });
+  const coursesById = new Map(courses.map((course) => [course.id, course]));
+  const activityByDay = new Map(dailyRows.map((row) => [row.dayKey, {
+    attempts: sumOrZero(row._sum.attemptCount),
+    answers: sumOrZero(row._sum.answerCount),
+    correctAnswers: sumOrZero(row._sum.correctCount),
+  }]));
+  const allActivityByDay = new Map(streakRows.map((row) => [row.dayKey, sumOrZero(row._sum.answerCount)]));
+  const streakAxis = learningDayKeys(366, timezone);
+  const timeline = days.map((dayKey) => ({ dayKey, ...(activityByDay.get(dayKey) ?? { attempts: 0, answers: 0, correctAnswers: 0 }) }));
+  const totals = timeline.reduce((total, day) => ({
+    attempts: total.attempts + day.attempts,
+    answers: total.answers + day.answers,
+    correctAnswers: total.correctAnswers + day.correctAnswers,
+  }), { attempts: 0, answers: 0, correctAnswers: 0 });
+  const recommendation = due > 0
+    ? { kind: 'due' as const, count: due, href: '/practice?queue=due' }
+    : wrong > 0
+      ? { kind: 'wrong' as const, count: wrong, href: '/practice?queue=mistakes' }
+      : fresh > 0
+        ? { kind: 'new' as const, count: fresh, href: '/practice' }
+        : totals.answers > 0
+          ? { kind: 'continue' as const, count: 0, href: '/courses' }
+          : { kind: 'continue' as const, count: 0, href: '/catalog' };
+
+  return {
+    range,
+    timezone: timezone || 'UTC',
+    dataAvailableSince: earliest?.dayKey ?? null,
+    totals: {
+      ...totals,
+      accuracyPercent: asPercent(totals.correctAnswers, totals.answers),
+      activeDays: timeline.filter((day) => day.answers > 0).length,
+      streakDays: analyticsStreak(streakAxis, allActivityByDay),
+    },
+    days: timeline,
+    queues: { due, wrong, fresh, nextDueAt: nextDue?.dueAt.toISOString() ?? null },
+    recommendation,
+    courses: courseRows.flatMap((row) => {
+      const course = coursesById.get(row.courseId);
+      if (!course) return [];
+      const answers = sumOrZero(row._sum.answerCount);
+      const correctAnswers = sumOrZero(row._sum.correctCount);
+      return [{
+        courseId: course.id,
+        slug: course.slug,
+        title: course.title,
+        attempts: sumOrZero(row._sum.attemptCount),
+        answers,
+        correctAnswers,
+        accuracyPercent: asPercent(correctAnswers, answers),
+      }];
+    }),
   };
 }
 
@@ -682,9 +892,10 @@ router.get('/catalog', readLimiter, async (_req: Request, res: Response) => {
   res.json({ courses });
 });
 
-// GET /learn/catalog/:slug — public detail for a catalogue card. Keep this
-// separate from the ID-based access route so private/team records are never
-// discoverable by slug.
+// GET /learn/catalog/:slug — public topic preview for a catalogue card. Keep
+// this separate from the authenticated ID-based content route so private/team
+// records are never discoverable by slug and unauthenticated visitors never
+// receive authored lesson content.
 router.get('/catalog/:slug', readLimiter, async (req: Request, res: Response) => {
   const slug = z.string().trim().min(1).max(191).parse(req.params['slug']);
   const course = await prisma.learnCourse.findFirst({
@@ -704,14 +915,29 @@ router.get('/catalog/:slug', readLimiter, async (req: Request, res: Response) =>
       updatedAt: true,
       sections: {
         orderBy: { sortOrder: 'asc' },
-        select: { id: true, title: true, summary: true, type: true, sortOrder: true, contentJson: true, updatedAt: true },
+        // Titles and summaries are the catalogue's topic outline. Deliberately
+        // exclude contentJson: sign-in/enrolment is required before authored
+        // lesson material is ever sent to a browser.
+        select: { id: true, title: true, summary: true, type: true, sortOrder: true, updatedAt: true },
       },
       _count: { select: { vocabulary: true, enrollments: true } },
     },
   });
   if (!course) throw new NotFoundError('Course not found');
   const { sections, ...courseFields } = course;
-  res.json({ course: { ...courseFields, sections: sections.map(serializeSection) } });
+  res.json({
+    course: {
+      ...courseFields,
+      sections: sections.map((section) => ({
+        id: section.id,
+        title: section.title,
+        summary: section.summary,
+        type: section.type,
+        sortOrder: section.sortOrder,
+        updatedAt: section.updatedAt,
+      })),
+    },
+  });
 });
 
 // GET /learn/me — creates a durable profile only after a valid POKYH JWT.
@@ -749,9 +975,9 @@ router.patch('/me', requireAuth, learnWriteLimiter, async (req: Request, res: Re
 router.get('/dashboard', requireAuth, learnReadLimiter, async (req: Request, res: Response) => {
   const { stableUid } = req.user!;
   const { profile } = await ensureLearnProfile(stableUid);
-  const [enrollmentCount, dueReviewCount, recentAttempts, enrollments] = await Promise.all([
+  const [analytics, enrollmentCount, recentAttempts, enrollments] = await Promise.all([
+    buildLearningAnalytics({ stableUid, timezone: profile.timezone, range: '7d' }),
     prisma.learnEnrollment.count({ where: { stableUid, status: 'ACTIVE' } }),
-    prisma.learnVocabularyReview.count({ where: { stableUid, dueAt: { lte: new Date() } } }),
     prisma.learnQuizAttempt.findMany({
       where: { stableUid },
       orderBy: { createdAt: 'desc' },
@@ -792,11 +1018,35 @@ router.get('/dashboard', requireAuth, learnReadLimiter, async (req: Request, res
   ]);
 
   res.json({
-    profile,
-    stats: { enrollmentCount, dueReviewCount },
+    profile: { ...profile, dailyStreak: analytics.totals.streakDays },
+    stats: { enrollmentCount, dueReviewCount: analytics.queues.due },
+    analytics,
     recentAttempts: recentAttempts.map(compactAttempt),
     courses: enrollments,
   });
+});
+
+// GET /learn/analytics — first-party, private learning analytics. It is based
+// on compact daily aggregates, never raw submitted answers or other learners'
+// data. A course-specific view can be cached internally only after access has
+// been rechecked; broad views always reflect current course permissions.
+router.get('/analytics', requireAuth, learnReadLimiter, async (req: Request, res: Response) => {
+  const query = analyticsQuerySchema.parse(req.query);
+  const { stableUid } = req.user!;
+  const { profile } = await ensureLearnProfile(stableUid, false);
+  if (query.courseId) await requireCoursePermission(query.courseId, stableUid, 'VIEW');
+
+  const cacheKey = query.courseId ? analyticsCacheKey(stableUid, query.range, query.courseId) : null;
+  const cached = cacheKey ? await getCachedJson<LearningAnalytics>(cacheKey) : null;
+  const analytics = cached ?? await buildLearningAnalytics({
+    stableUid,
+    timezone: profile.timezone,
+    range: query.range,
+    courseId: query.courseId,
+  });
+  if (cacheKey && !cached) void setCachedJson(cacheKey, analytics);
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.json({ analytics });
 });
 
 // GET /learn/courses — the current user's library (not the public catalog).
@@ -867,8 +1117,9 @@ router.get('/courses', requireAuth, learnReadLimiter, async (req: Request, res: 
   });
 });
 
-// POST /learn/courses — users may make a personal course, a public catalog
-// course, or a team course that they manage.  The caller owns the new course.
+// POST /learn/courses — any confirmed learner may create a personal course or
+// catalog draft. Team-targeted content is administration-only because it is a
+// group access decision, not a personal authoring decision.
 router.post('/courses', requireAuth, learnWriteLimiter, async (req: Request, res: Response) => {
   const { stableUid } = req.user!;
   await ensureLearnProfile(stableUid, false);
@@ -878,7 +1129,7 @@ router.post('/courses', requireAuth, learnWriteLimiter, async (req: Request, res
     throw new ForbiddenError('Only a Pokyh administrator can publish a course');
   }
 
-  if (body.teamId) await requireTeamManager(body.teamId, stableUid);
+  if (body.teamId) await requireTeamAdministration(body.teamId, stableUid);
 
   const course = await prisma.learnCourse.create({
     data: {
@@ -925,9 +1176,12 @@ router.patch('/courses/:courseId', requireAuth, learnWriteLimiter, async (req: R
 
   const visibility = body.visibility ?? existing.visibility;
   let teamId = body.teamId !== undefined ? body.teamId : existing.teamId;
+  if ((existing.visibility === 'TEAM' || visibility === 'TEAM' || body.teamId !== undefined) && !access.isAdmin) {
+    throw new ForbiddenError('Only a Pokyh administrator can manage team-based course access');
+  }
   if (visibility === 'TEAM') {
     if (!teamId) throw new ValidationError('A TEAM course requires a teamId');
-    await requireTeamManager(teamId, stableUid);
+    await requireTeamAdministration(teamId, stableUid);
   } else {
     // A non-team course cannot retain a stale team relation.
     teamId = null;
@@ -958,6 +1212,85 @@ router.patch('/courses/:courseId', requireAuth, learnWriteLimiter, async (req: R
   }
   learnAudit(req, 'course_updated', { courseId: course.id, status: course.status, visibility: course.visibility });
   res.json({ ...course, sections: course.sections.map(serializeSection) });
+});
+
+// GET /learn/courses/:courseId/access — the course owner (or anyone else with
+// a MANAGE grant) can see who a private/team course is currently shared with,
+// independent of team membership.
+router.get('/courses/:courseId/access', requireAuth, learnReadLimiter, async (req: Request, res: Response) => {
+  const courseId = uuidSchema.parse(req.params['courseId']);
+  const { stableUid } = req.user!;
+  await requireCoursePermission(courseId, stableUid, 'MANAGE');
+  const grants = await prisma.learnCourseAccess.findMany({
+    where: { courseId },
+    include: { user: { select: { username: true } } },
+    orderBy: { createdAt: 'asc' },
+  });
+  res.json({
+    access: grants.map((g) => ({
+      stableUid: g.stableUid,
+      username: g.user.username,
+      permission: g.permission,
+      grantedBy: g.grantedBy,
+      createdAt: g.createdAt.toISOString(),
+    })),
+  });
+});
+
+// Owner-level sharing deliberately excludes MANAGE: an owner can invite a
+// viewer/editor collaborator, but creating a co-owner stays an explicit
+// platform-admin action via POST /learn/admin/course-access.
+const ownerCourseAccessSchema = z.object({
+  userId: trimmedText(100),
+  permission: z.enum(['VIEW', 'EDIT']),
+});
+
+// POST /learn/courses/:courseId/access — share a private or team course with
+// one specific person by username, independent of team membership. This is
+// the non-admin counterpart to POST /learn/admin/course-access.
+router.post('/courses/:courseId/access', requireAuth, learnWriteLimiter, async (req: Request, res: Response) => {
+  const courseId = uuidSchema.parse(req.params['courseId']);
+  const body = ownerCourseAccessSchema.parse(req.body);
+  const { stableUid } = req.user!;
+  await requireCoursePermission(courseId, stableUid, 'MANAGE');
+
+  const user = await prisma.user.findFirst({
+    where: { OR: [{ stableUid: body.userId }, { username: body.userId }] },
+    select: { stableUid: true, isUntisUser: true, username: true },
+  });
+  if (!user) throw new NotFoundError('POKYH user not found');
+  if (!user.isUntisUser) throw new ValidationError('Only verified WebUntis users can receive Learn access');
+  if (user.stableUid === stableUid) throw new ValidationError('You already have access to your own course');
+
+  const [, grant] = await prisma.$transaction([
+    // A grant is durable Learn data just like an enrollment; provision the
+    // lightweight profile atomically so the annual archiver retains the user.
+    prisma.learnProfile.upsert({
+      where: { stableUid: user.stableUid },
+      create: { stableUid: user.stableUid },
+      update: {},
+    }),
+    prisma.learnCourseAccess.upsert({
+      where: { courseId_stableUid: { courseId, stableUid: user.stableUid } },
+      create: { courseId, stableUid: user.stableUid, permission: body.permission, grantedBy: stableUid },
+      update: { permission: body.permission, grantedBy: stableUid },
+    }),
+  ]);
+  learnAudit(req, 'course_access_granted', { courseId, targetStableUid: user.stableUid, permission: body.permission, grantedByOwner: true });
+  res.status(201).json({ stableUid: user.stableUid, username: user.username, permission: grant.permission });
+});
+
+// DELETE /learn/courses/:courseId/access/:targetStableUid — owner/manager
+// revokes a previously granted individual share.
+router.delete('/courses/:courseId/access/:targetStableUid', requireAuth, learnWriteLimiter, async (req: Request, res: Response) => {
+  const courseId = uuidSchema.parse(req.params['courseId']);
+  const targetStableUid = trimmedText(100).parse(req.params['targetStableUid']);
+  const { stableUid } = req.user!;
+  await requireCoursePermission(courseId, stableUid, 'MANAGE');
+  const deleted = await prisma.learnCourseAccess.deleteMany({ where: { courseId, stableUid: targetStableUid } });
+  if (deleted.count === 0) throw new NotFoundError('Course access grant not found');
+  learnAudit(req, 'course_access_revoked', { courseId, targetStableUid, revokedByOwner: true });
+  res.status(204).send();
 });
 
 // Course editors can create and maintain authored sections. A concise
@@ -1327,14 +1660,19 @@ router.post('/library/import', requireAuth, learnWriteLimiter, async (req: Reque
   res.status(201).json({ imported: result });
 });
 
-// GET /learn/courses/:courseId — public courses remain readable without a JWT;
-// private/team courses require an existing POKYH session and appropriate access.
-router.get('/courses/:courseId', readLimiter, optionalAuth, async (req: Request, res: Response) => {
+// GET /learn/courses/:courseId — authored course material is always
+// authenticated. Guests use /catalog/:slug, which exposes only topic previews.
+// A public-catalog user must enrol before opening material, unless they already
+// have explicit owner/team/direct access.
+router.get('/courses/:courseId', requireAuth, learnReadLimiter, async (req: Request, res: Response) => {
   const courseId = uuidSchema.parse(req.params['courseId']);
-  const stableUid = req.user?.stableUid;
-  if (stableUid) await ensureLearnProfile(stableUid, false);
+  const stableUid = req.user!.stableUid;
+  await ensureLearnProfile(stableUid, false);
   const access = await resolveCourseAccess(courseId, stableUid);
   if (!requiresPermission(access.permission, 'VIEW')) throw new NotFoundError('Course not found');
+  if (isCatalogCourse(access.course) && !access.hasEnrollment && !access.hasExplicitAccess) {
+    throw new ForbiddenError('Add this course before opening its learning material');
+  }
 
   const [course, enrollment, completionCount] = await Promise.all([
     prisma.learnCourse.findUnique({
@@ -1360,21 +1698,17 @@ router.get('/courses/:courseId', readLimiter, optionalAuth, async (req: Request,
         _count: { select: { vocabulary: true, enrollments: true } },
       },
     }),
-    stableUid
-      ? prisma.learnEnrollment.findUnique({
-        where: { courseId_stableUid: { courseId, stableUid } },
-        select: { status: true, progressPercent: true, completedSections: true, lastOpenedAt: true, completedAt: true },
-      })
-      : Promise.resolve(null),
-    stableUid
-      ? prisma.learnSectionCompletion.count({ where: { courseId, stableUid } })
-      : Promise.resolve(0),
+    prisma.learnEnrollment.findUnique({
+      where: { courseId_stableUid: { courseId, stableUid } },
+      select: { status: true, progressPercent: true, completedSections: true, lastOpenedAt: true, completedAt: true },
+    }),
+    prisma.learnSectionCompletion.count({ where: { courseId, stableUid } }),
   ]);
   if (!course) throw new NotFoundError('Course not found');
 
   // Opening an enrolled course is useful progress data, but anonymous catalog
   // reads and non-enrolled previews never mutate learner state.
-  if (stableUid && enrollment) {
+  if (enrollment) {
     await prisma.learnEnrollment.update({
       where: { courseId_stableUid: { courseId, stableUid } },
       data: { lastOpenedAt: new Date() },
@@ -1546,6 +1880,27 @@ router.post('/vocabulary/lookup', requireAuth, learnWriteLimiter, async (req: Re
   res.json({ suggestion });
 });
 
+// A lexical headword check is separate from translation suggestions and quiz
+// verification. This endpoint deliberately never stores or grades a result:
+// authors can retain their word when a free provider is down, and the UI marks
+// unsupported German/Italian input as editorial review instead of guessing.
+router.post('/vocabulary/validate', requireAuth, learnWriteLimiter, async (req: Request, res: Response) => {
+  const body = vocabularyValidationSchema.parse(req.body);
+  const { stableUid } = req.user!;
+  await requireCoursePermission(body.courseId, stableUid, 'EDIT');
+  const validation = await validateVocabularyWord(body);
+  learnAudit(req, 'vocabulary_word_validation_requested', {
+    courseId: body.courseId,
+    language: validation.language,
+    status: validation.status,
+    provider: validation.provider,
+    cached: validation.cached,
+    stale: validation.stale,
+  });
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.json({ validation });
+});
+
 // Verifying compares a saved editorial answer with an optional configured
 // dictionary suggestion. The author answer remains the only grading authority.
 router.post('/vocabulary/:entryId/verify', requireAuth, learnWriteLimiter, async (req: Request, res: Response) => {
@@ -1684,7 +2039,9 @@ router.get('/reviews', requireAuth, learnReadLimiter, async (req: Request, res: 
   };
   const reviews = await prisma.learnVocabularyReview.findMany({
     where: reviewWhere,
-    orderBy: query.scope === 'DUE' ? { dueAt: 'asc' } : { updatedAt: 'desc' },
+    // Missed material is surfaced before equally due successful reviews, then
+    // oldest due material wins. This remains a deterministic server decision.
+    orderBy: query.scope === 'DUE' ? [{ lastWasCorrect: 'asc' }, { dueAt: 'asc' }] : { updatedAt: 'desc' },
     take: query.limit,
     select: {
       dueAt: true,
@@ -1726,7 +2083,10 @@ router.post('/quiz-attempts', requireAuth, learnWriteLimiter, async (req: Reques
   const headerKey = req.get('Idempotency-Key')?.trim();
   const idempotencyKey = z.string().trim().min(8).max(191).parse(headerKey || body.idempotencyKey);
   const { stableUid } = req.user!;
-  await ensureLearnProfile(stableUid, false);
+  const [{ profile }, learnCfg] = await Promise.all([
+    ensureLearnProfile(stableUid, false),
+    getLearnConfig(),
+  ]);
 
   const existing = await prisma.learnQuizAttempt.findUnique({
     where: { stableUid_idempotencyKey: { stableUid, idempotencyKey } },
@@ -1761,6 +2121,7 @@ router.post('/quiz-attempts', requireAuth, learnWriteLimiter, async (req: Reques
   }
   const entriesById = new Map(entries.map((entry) => [entry.id, entry]));
   const now = new Date();
+  const analyticsDay = learningDayKey(now, profile.timezone);
   const gradedAnswers = body.answers.map((answer) => {
     const entry = entriesById.get(answer.entryId)!;
     const expected = answer.direction === 'SOURCE_TO_TARGET'
@@ -1799,35 +2160,33 @@ router.post('/quiz-attempts', requireAuth, learnWriteLimiter, async (req: Reques
           select: { intervalDays: true, easeFactor: true, correctCount: true, incorrectCount: true },
         });
 
-        const previousInterval = current?.intervalDays ?? 0;
-        const previousEase = current?.easeFactor ?? 2.5;
-        const nextInterval = answer.correct
-          ? Math.min(90, Math.max(1, previousInterval === 0 ? 1 : Math.round(previousInterval * previousEase)))
-          : 0;
-        const nextEase = answer.correct
-          ? Math.min(3, previousEase + 0.05)
-          : Math.max(1.3, previousEase - 0.2);
-        const dueAt = answer.correct
-          ? new Date(now.getTime() + nextInterval * 24 * 60 * 60 * 1000)
-          : now;
+        const next = nextAdaptiveReview(current, answer.correct, {
+          initialIntervalDays: learnCfg.reviewInitialIntervalDays,
+          maxIntervalDays: learnCfg.reviewMaxIntervalDays,
+          minimumEase: learnCfg.reviewMinimumEase,
+          maximumEase: learnCfg.reviewMaximumEase,
+          correctEaseStep: learnCfg.reviewCorrectEaseStep,
+          incorrectEasePenalty: learnCfg.reviewIncorrectEasePenalty,
+          wrongDelayMinutes: learnCfg.reviewWrongDelayMinutes,
+        }, now);
 
         await tx.learnVocabularyReview.upsert({
           where: { stableUid_entryId: { stableUid, entryId: answer.entryId } },
           create: {
             stableUid,
             entryId: answer.entryId,
-            intervalDays: nextInterval,
-            easeFactor: nextEase,
-            dueAt,
+            intervalDays: next.intervalDays,
+            easeFactor: next.easeFactor,
+            dueAt: next.dueAt,
             lastReviewedAt: now,
             correctCount: answer.correct ? 1 : 0,
             incorrectCount: answer.correct ? 0 : 1,
             lastWasCorrect: answer.correct,
           },
           update: {
-            intervalDays: nextInterval,
-            easeFactor: nextEase,
-            dueAt,
+            intervalDays: next.intervalDays,
+            easeFactor: next.easeFactor,
+            dueAt: next.dueAt,
             lastReviewedAt: now,
             correctCount: { increment: answer.correct ? 1 : 0 },
             incorrectCount: { increment: answer.correct ? 0 : 1 },
@@ -1836,7 +2195,7 @@ router.post('/quiz-attempts', requireAuth, learnWriteLimiter, async (req: Reques
         });
       }
 
-      return tx.learnQuizAttempt.create({
+      const createdAttempt = await tx.learnQuizAttempt.create({
         data: {
           stableUid,
           courseId: body.courseId,
@@ -1851,6 +2210,35 @@ router.post('/quiz-attempts', requireAuth, learnWriteLimiter, async (req: Reques
           id: true, courseId: true, mode: true, totalQuestions: true, correctAnswers: true, score: true, createdAt: true,
         },
       });
+      // This compact aggregate is intentionally written only after the
+      // idempotent attempt record exists. It stores counts, never the raw
+      // answer payload, and gives analytics a durable source independent of
+      // short-lived cache availability.
+      await tx.learnActivityDaily.upsert({
+        where: {
+          stableUid_courseId_dayKey: {
+            stableUid,
+            courseId: body.courseId,
+            dayKey: analyticsDay,
+          },
+        },
+        create: {
+          stableUid,
+          courseId: body.courseId,
+          dayKey: analyticsDay,
+          attemptCount: 1,
+          answerCount: gradedAnswers.length,
+          correctCount: correctAnswers,
+          lastActivityAt: now,
+        },
+        update: {
+          attemptCount: { increment: 1 },
+          answerCount: { increment: gradedAnswers.length },
+          correctCount: { increment: correctAnswers },
+          lastActivityAt: now,
+        },
+      });
+      return createdAttempt;
     });
   } catch (error) {
     // A concurrent request can both pass the preflight check and then collide on
@@ -1876,6 +2264,7 @@ router.post('/quiz-attempts', requireAuth, learnWriteLimiter, async (req: Reques
     totalQuestions: gradedAnswers.length,
     correctAnswers,
   });
+  void invalidateAnalyticsCache(stableUid, body.courseId);
   res.status(201).json({
     attempt: compactAttempt(attempt),
     idempotent: false,
@@ -1887,8 +2276,12 @@ router.post('/quiz-attempts', requireAuth, learnWriteLimiter, async (req: Reques
 router.get('/teams', requireAuth, learnReadLimiter, async (req: Request, res: Response) => {
   const { stableUid } = req.user!;
   await ensureLearnProfile(stableUid, false);
+  const isAdmin = await isLearnAdmin(stableUid);
   const teams = await prisma.learnTeam.findMany({
-    where: { members: { some: { stableUid } } },
+    // Learners only receive their own assigned groups. A canonical Pokyh
+    // administrator may view every group for the management surfaces, while
+    // mutations remain independently admin-checked below.
+    where: isAdmin ? {} : { members: { some: { stableUid } } },
     orderBy: { updatedAt: 'desc' },
     select: {
       id: true,
@@ -1900,13 +2293,13 @@ router.get('/teams', requireAuth, learnReadLimiter, async (req: Request, res: Re
       _count: { select: { members: true, courses: true } },
     },
   });
-  res.json({ teams });
+  res.json({ teams, isAdmin });
 });
 
 router.post('/teams', requireAuth, learnWriteLimiter, async (req: Request, res: Response) => {
   const body = teamCreateSchema.parse(req.body);
   const { stableUid } = req.user!;
-  await ensureLearnProfile(stableUid, false);
+  await requireLearnAdmin(stableUid);
   const team = await prisma.learnTeam.create({
     data: {
       name: body.name,
@@ -1920,25 +2313,16 @@ router.post('/teams', requireAuth, learnWriteLimiter, async (req: Request, res: 
   res.status(201).json(team);
 });
 
-// Team owners/managers can add an existing POKYH user. There is no anonymous
-// invite token in v1, which avoids creating a second unauthenticated identity.
+// Team membership is controlled only by a canonical Pokyh administrator.
+// There is no anonymous invite token, so every member remains an existing,
+// confirmed WebUntis-backed Pokyh identity.
 router.post('/teams/:teamId/members', requireAuth, learnWriteLimiter, async (req: Request, res: Response) => {
   const teamId = uuidSchema.parse(req.params['teamId']);
   const body = teamMemberSchema.parse(req.body);
   const { stableUid } = req.user!;
-  await ensureLearnProfile(stableUid, false);
-  const [team, actor, isAdmin] = await Promise.all([
-    prisma.learnTeam.findUnique({ where: { id: teamId }, select: { id: true } }),
-    prisma.learnTeamMember.findUnique({
-      where: { teamId_stableUid: { teamId, stableUid } },
-      select: { role: true },
-    }),
-    isLearnAdmin(stableUid),
-  ]);
+  await requireLearnAdmin(stableUid);
+  const team = await prisma.learnTeam.findUnique({ where: { id: teamId }, select: { id: true } });
   if (!team) throw new NotFoundError('Team not found');
-  if (!isAdmin && (!actor || (actor.role !== 'OWNER' && actor.role !== 'MANAGER'))) {
-    throw new ForbiddenError('Only a team owner or manager can add a member');
-  }
 
   const user = await prisma.user.findFirst({
     where: { OR: [{ stableUid: body.userId }, { username: body.userId }] },
@@ -1950,12 +2334,6 @@ router.post('/teams/:teamId/members', requireAuth, learnWriteLimiter, async (req
     where: { teamId_stableUid: { teamId, stableUid: user.stableUid } },
     select: { role: true },
   });
-  // Managers may invite a new ordinary member but cannot change somebody's
-  // role or create another manager. Ownership and role changes stay with an
-  // owner (or a platform administrator), preventing privilege escalation.
-  if (!isAdmin && actor?.role !== 'OWNER' && (existingMember || body.role !== 'MEMBER')) {
-    throw new ForbiddenError('Only a team owner can change member roles');
-  }
   const [member] = await prisma.$transaction([
     prisma.learnTeamMember.upsert({
       where: { teamId_stableUid: { teamId, stableUid: user.stableUid } },
@@ -2002,6 +2380,7 @@ router.get('/admin/overview', requireAuth, learnReadLimiter, async (req: Request
         visibility: true,
         status: true,
         createdBy: true,
+        ownerLocked: true,
         createdAt: true,
         updatedAt: true,
         creator: { select: { username: true } },
@@ -2051,6 +2430,7 @@ router.get('/admin/courses/:courseId/access', requireAuth, learnReadLimiter, asy
       slug: true,
       title: true,
       createdBy: true,
+      ownerLocked: true,
       creator: { select: { username: true } },
       accessGrants: {
         orderBy: { updatedAt: 'desc' },
@@ -2077,6 +2457,67 @@ router.get('/admin/courses/:courseId/access', requireAuth, learnReadLimiter, asy
   if (!course) throw new NotFoundError('Course not found');
   res.setHeader('Cache-Control', 'private, no-store');
   res.json({ course });
+});
+
+// PATCH /learn/admin/courses/:courseId/owner — platform-admin-only. Toggling
+// ownerLocked and reassigning the owner are deliberately separate concerns in
+// one call: a locked course must be explicitly unlocked (ownerLocked: false)
+// before its owner can be reassigned in the SAME request, but never in one
+// step — this is a safety guard against accidental reassignment, not an
+// additional permission barrier for an admin who genuinely intends it.
+const reassignOwnerSchema = z.object({
+  newOwnerUserId: trimmedText(100).optional(),
+  ownerLocked: z.boolean().optional(),
+});
+
+router.patch('/admin/courses/:courseId/owner', requireAuth, learnWriteLimiter, async (req: Request, res: Response) => {
+  const courseId = uuidSchema.parse(req.params['courseId']);
+  const body = reassignOwnerSchema.parse(req.body);
+  const { stableUid } = req.user!;
+  await requireLearnAdmin(stableUid);
+
+  const course = await prisma.learnCourse.findUnique({
+    where: { id: courseId },
+    select: { id: true, createdBy: true, ownerLocked: true },
+  });
+  if (!course) throw new NotFoundError('Course not found');
+
+  const data: { createdBy?: string; ownerLocked?: boolean } = {};
+
+  if (body.newOwnerUserId !== undefined) {
+    const currentlyLocked = body.ownerLocked === false ? false : course.ownerLocked;
+    if (currentlyLocked) {
+      throw new ForbiddenError('Unlock this course before reassigning its owner');
+    }
+    const newOwner = await prisma.user.findFirst({
+      where: { OR: [{ stableUid: body.newOwnerUserId }, { username: body.newOwnerUserId }] },
+      select: { stableUid: true, isUntisUser: true, username: true },
+    });
+    if (!newOwner) throw new NotFoundError('POKYH user not found');
+    if (!newOwner.isUntisUser) throw new ValidationError('Only verified WebUntis users can own a Learn course');
+    data.createdBy = newOwner.stableUid;
+    await prisma.learnProfile.upsert({
+      where: { stableUid: newOwner.stableUid },
+      create: { stableUid: newOwner.stableUid },
+      update: {},
+    });
+  }
+
+  if (body.ownerLocked !== undefined) data.ownerLocked = body.ownerLocked;
+
+  if (Object.keys(data).length === 0) {
+    res.json({ id: course.id, createdBy: course.createdBy, ownerLocked: course.ownerLocked });
+    return;
+  }
+
+  const updated = await prisma.learnCourse.update({ where: { id: courseId }, data });
+  learnAudit(req, 'course_owner_reassigned', {
+    courseId,
+    previousOwner: course.createdBy,
+    newOwner: updated.createdBy,
+    ownerLocked: updated.ownerLocked,
+  });
+  res.json({ id: updated.id, createdBy: updated.createdBy, ownerLocked: updated.ownerLocked });
 });
 
 // Permanent deletion is deliberately narrow: it is platform-admin-only and

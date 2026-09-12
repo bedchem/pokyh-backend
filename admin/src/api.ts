@@ -1,4 +1,4 @@
-import type { AdminStats, AdminClass, AdminSession, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish, AdminDishFull, AdminDishImportResult, AdminDishShiftResult, AdminDishRotateResult, AdminDishResetResult, AdminDishAnchorResult, DishPlan, AdminCommentsResponse, FileLogFile, FileLogResponse, FileLogEntry, FrontendActivityLogsResponse, FrontendActivityStats, AllTodosResponse, AllRemindersResponse, SchoolYearsResponse, ArchivedUsersResponse, ArchivedClass, ArchivedTodosResponse, ArchivedRemindersResponse, RolloverResult, RollbackResult, AdminApiKey, CreatedApiKey, LearnConfigValues } from './types';
+import type { AdminStats, AdminClass, AdminSession, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish, AdminDishFull, AdminDishImportResult, AdminDishShiftResult, AdminDishRotateResult, AdminDishResetResult, AdminDishAnchorResult, DishPlan, AdminCommentsResponse, FileLogFile, FileLogResponse, FileLogEntry, FrontendActivityLogsResponse, FrontendActivityStats, AllTodosResponse, AllRemindersResponse, SchoolYearsResponse, ArchivedUsersResponse, ArchivedClass, ArchivedTodosResponse, ArchivedRemindersResponse, RolloverResult, RollbackResult, AdminApiKey, CreatedApiKey, LearnConfigValues, AdminLearnTeam, LearnTeamAssignableRole, AdminLearnCoursesResponse, AdminLearnCourseAccessResponse, AdminLearnCourse, AdminLearnCourseAccess, LearnCoursePermission, LearnCourseStatus, LearnCourseVisibility } from './types';
 
 const TOKEN_KEY = 'pokyh_admin_token';
 
@@ -379,7 +379,7 @@ export const adminApi = {
   listApiKeys: (): Promise<{ apiKeys: AdminApiKey[] }> =>
     request<{ apiKeys: AdminApiKey[] }>('GET', '/api/admin/api-keys'),
 
-  createApiKey: (data: { name: string; purpose?: string; platform?: string; expiresAt?: string }): Promise<CreatedApiKey> =>
+  createApiKey: (data: { name: string; purpose?: string; platform?: string; scopes: string[]; expiresAt?: string }): Promise<CreatedApiKey> =>
     request<CreatedApiKey>('POST', '/api/admin/api-keys', data),
 
   revokeApiKey: (id: string): Promise<{ ok: boolean }> =>
@@ -391,6 +391,63 @@ export const adminApi = {
 
   updateLearnConfig: (data: Partial<LearnConfigValues> & { webUntisAuthorizationReference?: string }): Promise<{ ok: boolean }> =>
     request<{ ok: boolean }>('PATCH', '/api/admin/learn-config', data),
+
+  // ── Learn groups and access ──────────────────────────────────────────────
+  // Group administration remains in the canonical admin authority. The
+  // response deliberately contains only group metadata, verified member
+  // identity and aggregate course counts — never course contents or secrets.
+  listLearnTeams: (): Promise<{ teams: AdminLearnTeam[] }> =>
+    request<{ teams: AdminLearnTeam[] }>('GET', '/api/admin/learn/teams'),
+
+  createLearnTeam: (data: { name: string; description?: string }): Promise<{ team: AdminLearnTeam }> =>
+    request<{ team: AdminLearnTeam }>('POST', '/api/admin/learn/teams', data),
+
+  updateLearnTeam: (teamId: string, data: { name?: string; description?: string }): Promise<{ team: AdminLearnTeam }> =>
+    request<{ team: AdminLearnTeam }>('PATCH', `/api/admin/learn/teams/${teamId}`, data),
+
+  saveLearnTeamMember: (teamId: string, data: { userId: string; role: LearnTeamAssignableRole }): Promise<{ member: { stableUid: string; username: string; role: LearnTeamAssignableRole; joinedAt: string } }> =>
+    request<{ member: { stableUid: string; username: string; role: LearnTeamAssignableRole; joinedAt: string } }>('POST', `/api/admin/learn/teams/${teamId}/members`, data),
+
+  removeLearnTeamMember: (teamId: string, stableUid: string): Promise<void> =>
+    request<void>('DELETE', `/api/admin/learn/teams/${teamId}/members/${encodeURIComponent(stableUid)}`),
+
+  deleteLearnTeam: (teamId: string, confirmName: string): Promise<void> =>
+    request<void>('DELETE', `/api/admin/learn/teams/${teamId}`, { confirmName }),
+
+  // ── Learn course lifecycle and direct access ─────────────────────────────
+  // Metadata/grant operations are deliberately separate from authored Learn
+  // content. The browser never receives learner answers through this client.
+  listLearnCourses: (params?: {
+    page?: number;
+    limit?: number;
+    q?: string;
+    status?: LearnCourseStatus;
+    visibility?: LearnCourseVisibility;
+  }): Promise<AdminLearnCoursesResponse> => {
+    const query = new URLSearchParams();
+    if (params?.page) query.set('page', String(params.page));
+    if (params?.limit) query.set('limit', String(params.limit));
+    if (params?.q) query.set('q', params.q);
+    if (params?.status) query.set('status', params.status);
+    if (params?.visibility) query.set('visibility', params.visibility);
+    const suffix = query.size > 0 ? `?${query.toString()}` : '';
+    return request<AdminLearnCoursesResponse>('GET', `/api/admin/learn/courses${suffix}`);
+  },
+
+  getLearnCourseAccess: (courseId: string, page = 1, limit = 50): Promise<AdminLearnCourseAccessResponse> =>
+    request<AdminLearnCourseAccessResponse>('GET', `/api/admin/learn/courses/${courseId}/access?page=${page}&limit=${limit}`),
+
+  updateLearnCourseLifecycle: (courseId: string, status: LearnCourseStatus): Promise<{ course: AdminLearnCourse }> =>
+    request<{ course: AdminLearnCourse }>('PATCH', `/api/admin/learn/courses/${courseId}/lifecycle`, { status }),
+
+  saveLearnCourseAccess: (courseId: string, data: { userId: string; permission: LearnCoursePermission }): Promise<{ access: AdminLearnCourseAccess }> =>
+    request<{ access: AdminLearnCourseAccess }>('POST', `/api/admin/learn/courses/${courseId}/access`, data),
+
+  revokeLearnCourseAccess: (courseId: string, stableUid: string): Promise<void> =>
+    request<void>('DELETE', `/api/admin/learn/courses/${courseId}/access/${encodeURIComponent(stableUid)}`),
+
+  deleteLearnCourse: (courseId: string, confirmation: string): Promise<void> =>
+    request<void>('DELETE', `/api/admin/learn/courses/${courseId}`, { confirmation }),
 
   getToken,
 };

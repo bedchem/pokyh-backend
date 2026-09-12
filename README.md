@@ -78,9 +78,13 @@ internet through an in-container **Cloudflare Tunnel** — no open ports require
 ### Pokyh Learn extension
 
 The additive `/learn` router serves the separate `learn.pokyh.com` product. It
-does not change the existing Pokyh routes, data or built-in `/admin/` panel.
-The Learn web app has its own management surface at `learn.pokyh.com/admin`,
-backed by `/learn/admin/*` and the existing server-side Pokyh `Admin` record.
+does not change existing Pokyh routes or data. The built-in backend
+administration at `api.pokyh.com/admin/` contains a separately scoped **Learn**
+area for safe Learn configuration and group management; it uses the existing
+administrator session but does not blend Learn records into unrelated school
+screens. The Learn web app may offer its own Learn-only `/admin` client
+surface, but the backend remains the authority for every configuration,
+membership, and access decision.
 
 - Learn accepts only accounts whose login has been confirmed against WebUntis;
   a local Pokyh fallback account cannot open Learn data or receive a Learn grant.
@@ -92,6 +96,15 @@ backed by `/learn/admin/*` and the existing server-side Pokyh `Admin` record.
 - Course content, access grants, team membership, quiz grading, review state,
   progress and imports are all MySQL-backed server decisions. A learner marks a
   real section complete; the server derives the enrollment percentage.
+- Quiz attempts also create a private per-user/per-course/day count aggregate
+  in the same MySQL transaction. The optional Compose Redis service can cache
+  only an already-authorized course-specific analytics response; it stores no
+  answer text, answer keys, credentials, permissions, or durable learning
+  state and falls back to MySQL if unavailable.
+- Group creation, membership changes, and linking a course to a group are
+  canonical Pokyh administrator operations. Membership labels grant only the
+  team-course access confirmed by the backend; they do not delegate group
+  administration to a learner.
 - Personal JSON export/import is scoped to the caller's own authored courses,
   vocabulary and review state. Imports create new private drafts and cannot
   carry roles, grants, teams, credentials or other people's content.
@@ -149,11 +162,26 @@ On first run, open `/admin/` to complete the setup wizard (admin account + optio
 ### Run everything with Docker (recommended for parity with prod)
 
 ```bash
-cp .env.example .env        # set MYSQL_ROOT_PASSWORD, secrets, etc.
-docker compose up --build
+# Development example only: replace placeholders; never commit the resulting file.
+cp .env.example .env
+docker compose --env-file .env up --build -d
 ```
 
-This starts MySQL (with a healthcheck) and the app, which auto-creates and migrates the database.
+Compose must receive the same selected environment file as the app: MySQL reads
+`MYSQL_ROOT_PASSWORD` during Compose interpolation while the app reads its
+runtime variables through `BACKEND_ENV_FILE`. For a separately managed private
+file, use both selectors so the two services cannot accidentally use different
+database credentials:
+
+```bash
+BACKEND_ENV_FILE=/secure/path/backend.env \
+  docker compose --env-file /secure/path/backend.env up --build -d
+```
+
+This starts MySQL and an internal, non-persistent Redis service behind
+healthchecks, then starts the app. Redis is not published to the host network
+and is only the optional private Learn analytics cache; MySQL remains the
+durable source of truth.
 
 ---
 
@@ -186,6 +214,9 @@ npx web-push generate-vapid-keys
 | `LEARN_LEGAL_*`          | Production WebUntis activation gate: non-secret approval reference, HTTPS notice URL and notice version. |
 | `LEARN_DICTIONARY_*`     | Optional, server-only vocabulary suggestion policy, HTTPS endpoint, pairs, timeout and bounded cache. |
 | `LEARN_IMPORT_*`         | Maximum personal Learn courses, sections and vocabulary entries accepted in one import.  |
+| `LEARN_REVIEW_*` / `LEARN_ANALYTICS_RETENTION_DAYS` | Bounded adaptive-review policy and retention for private daily activity aggregates. |
+| `LEARN_REDIS_URL` / `LEARN_REDIS_KEY_PREFIX` / `LEARN_ANALYTICS_CACHE_TTL_SECONDS` | Optional internal course-specific analytics cache. Do not expose Redis publicly or use it for tokens, answers, permissions, or durable state. |
+| `REQUEST_LOG_RETENTION_DAYS` / `LOG_FILE_RETENTION_DAYS` | Finite retention for database/file request logs containing technical security data. |
 | `TRUST_PROXY`            | `loopback` behind the in-container tunnel — required so per-IP rate limits see the real client IP. |
 | `TUNNEL_NAME` / `TUNNEL_HOSTNAME` | Cloudflare Tunnel identity & public hostname (auto-derives the parent domain for CORS). |
 | `VAPID_*`                | Web Push key pair + contact e-mail.                                                      |
@@ -292,11 +323,19 @@ Started once the DB is reachable (`src/index.ts` → `startBackgroundJobs`):
 
 ## Admin panel
 
-A React + Vite SPA is built into the image and served at **`/admin/`** (same-origin, JWT-protected).
-It covers the existing Pokyh users, classes, sessions, dishes & images, comments, to-dos/reminders,
-logs, the Cloudflare tunnel and school-year archives. Pokyh Learn administration is intentionally
-separate at `learn.pokyh.com/admin` and uses `/learn/admin/*` rather than mixing Learn data into
-this UI.
+A React + Vite SPA is built into the image and served at **`/admin/`**
+(same-origin, JWT-protected). It covers the existing Pokyh users, classes,
+sessions, dishes & images, comments, to-dos/reminders, logs, the Cloudflare
+tunnel, and school-year archives. Its dedicated **Learn** area is visibly
+separate from those records and manages safe Learn policy through
+`/api/admin/learn-config` plus group administration through
+`/api/admin/learn/teams`. It never returns secrets, raw quiz answers, or
+unrelated school data as part of a Learn view.
+
+`learn.pokyh.com/admin` is a separate frontend product surface and may consume
+the scoped `/learn/admin/*` routes. It does not replace the backend admin
+boundary or confer administrator status; every server route repeats the
+canonical Pokyh administrator check.
 
 The legacy `/api/admin/import` cannot run while Learn records exist, preventing a legacy restore
 from cascading into Learn data. Use the scoped Learn personal export/import routes for learner
@@ -320,13 +359,41 @@ Production runs as a Docker image (multi-stage `Dockerfile`) that:
    if configured, starts the Cloudflare Tunnel — so no inbound ports need to be opened.
 
 ```bash
-docker compose up --build -d
+docker compose --env-file .env up --build -d
 ```
 
-On the bundled compose stack the app waits for the MySQL healthcheck, then the
-container healthcheck calls `/readyz` (which verifies database reachability)
-before it is considered ready. The existing `/health` remains a lightweight
-liveness endpoint. The tunnel exposes the app publicly at `TUNNEL_HOSTNAME`.
+On the bundled compose stack the app waits for both MySQL and internal Redis
+healthchecks, then the container healthcheck calls `/readyz` (which verifies
+database reachability) before it is considered ready. Redis availability is not
+the durable readiness authority: its failure must degrade private analytics to
+MySQL rather than lose learning data. The existing `/health` remains a
+lightweight liveness endpoint. The tunnel exposes the app publicly at
+`TUNNEL_HOSTNAME`.
+
+### Production boundaries
+
+This Compose file is a single-host deployment topology, not an off-host backup,
+restore, disaster-recovery, or migration-management system. Its named MySQL
+volume is durable only as far as the Docker host and its storage remain intact.
+No encrypted off-host backup target, restore runbook, scheduled backup job, or
+reviewed production migration workflow is configured by this repository.
+
+`DB_AUTO_PUSH=true` can apply Prisma schema changes at startup; that is a
+deployment convenience, not evidence that a production migration has been
+reviewed, backed up, or rehearsed. Before a production schema change, use a
+reviewed migration plan, take and test an operator-managed backup/restore, and
+verify the target database separately. Do not treat personal Learn JSON export
+or the admin UI as a platform backup.
+
+### Logs
+
+The `app` service emits structured JSON events to stdout/stderr, so inspect a
+running deployment with `docker compose logs -f app`. Docker's local log driver
+keeps this container stream bounded to five 10 MiB files. The existing local
+daily files under `./logs/` remain available outside Docker and are bounded by
+`LOG_FILE_RETENTION_DAYS`. A defense-in-depth redaction formatter masks common
+credential fields and connection-string credentials, but request bodies and
+secrets must still never be passed to logger calls.
 
 ---
 

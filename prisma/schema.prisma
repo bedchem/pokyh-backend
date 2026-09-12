@@ -39,6 +39,9 @@ model User {
   learnVocabularyEntries LearnVocabularyEntry[]  @relation("LearnVocabularyCreator")
   learnVocabularyReviews LearnVocabularyReview[]
   learnQuizAttempts      LearnQuizAttempt[]
+  // Privacy-preserving, per-day learning aggregates. These retain counts and
+  // dates, not answer text, and power the learner's own analytics screen.
+  learnActivityDays      LearnActivityDaily[]
   learnTeamsCreated      LearnTeam[]             @relation("LearnTeamCreator")
   learnTeamMemberships   LearnTeamMember[]
   learnSectionCompletions LearnSectionCompletion[]
@@ -285,6 +288,9 @@ model ApiKey {
   // Free-text platform/OS hint supplied at creation (e.g. "iOS", "n8n").
   // Informational only.
   platform   String    @default("") @db.VarChar(80)
+  // Comma-separated least-privilege capabilities. Existing rows retain full
+  // compatibility through the `*` default; new keys should be scoped.
+  scopes     String    @default("*") @db.VarChar(255)
   expiresAt  DateTime? @map("expires_at")
   revokedAt  DateTime? @map("revoked_at")
   createdBy  String?   @map("created_by")
@@ -312,12 +318,16 @@ model RequestLog {
   // from the path prefix in requestLogger.ts. Lets the admin Logs page filter
   // by feature without a second logging system.
   scope     String?  @db.VarChar(20)
+  // Identifier for an administrator-issued integration key. The plaintext key
+  // and its hash are never written to request logs.
+  apiKeyId  String?  @map("api_key_id") @db.VarChar(64)
   createdAt DateTime @default(now()) @map("created_at")
 
   @@index([stableUid])
   @@index([username])
   @@index([createdAt])
   @@index([requestId])
+  @@index([apiKeyId])
   @@map("request_logs")
 }
 
@@ -483,6 +493,11 @@ model LearnCourse {
   coverImageUrl String   @default("") @map("cover_image_url") @db.VarChar(1000)
   createdBy     String   @map("created_by")
   teamId        String?  @map("team_id")
+  // When true, a platform administrator has deliberately locked this course's
+  // ownership — reassigning createdBy is blocked until an admin unlocks it
+  // first. A safety guard against accidental reassignment, not a permission
+  // change: an admin can always toggle it, just not reassign in the same step.
+  ownerLocked   Boolean  @default(false) @map("owner_locked")
   createdAt     DateTime @default(now()) @map("created_at")
   updatedAt     DateTime @updatedAt @map("updated_at")
 
@@ -494,6 +509,7 @@ model LearnCourse {
   vocabulary   LearnVocabularyEntry[]
   quizAttempts LearnQuizAttempt[]
   sectionCompletions LearnSectionCompletion[]
+  activityDays LearnActivityDaily[]
 
   @@index([createdBy])
   @@index([teamId])
@@ -659,6 +675,29 @@ model LearnQuizAttempt {
   @@map("learn_quiz_attempts")
 }
 
+// One compact activity row per learner, course and local calendar day. It is
+// updated in the same transaction as a server-graded quiz attempt, so the
+// analytics view is durable, idempotent and never needs raw answer text.
+model LearnActivityDaily {
+  stableUid      String   @map("stable_uid")
+  courseId       String   @map("course_id")
+  dayKey         String   @map("day_key") @db.VarChar(10)
+  attemptCount   Int      @default(0) @map("attempt_count")
+  answerCount    Int      @default(0) @map("answer_count")
+  correctCount   Int      @default(0) @map("correct_count")
+  lastActivityAt DateTime @map("last_activity_at")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  user   User        @relation(fields: [stableUid], references: [stableUid], onDelete: Cascade)
+  course LearnCourse @relation(fields: [courseId], references: [id], onDelete: Cascade)
+
+  @@id([stableUid, courseId, dayKey])
+  @@index([stableUid, dayKey])
+  @@index([courseId, dayKey])
+  @@map("learn_activity_daily")
+}
+
 model LearnTeam {
   id          String   @id @default(uuid())
   name        String   @db.VarChar(120)
@@ -713,6 +752,24 @@ model LearnConfig {
   dictionaryTimeoutMs          Int?     @map("dictionary_timeout_ms")
   dictionaryCacheTtlMs         Int?     @map("dictionary_cache_ttl_ms")
   dictionaryMaxCacheEntries    Int?     @map("dictionary_max_cache_entries")
+  // Free Dictionary API is configured separately from optional translation
+  // suggestions. The backend supports its documented English endpoint only.
+  dictionaryValidationEnabled  Boolean? @map("dictionary_validation_enabled")
+  dictionaryValidationProvider String?  @map("dictionary_validation_provider") @db.VarChar(40)
+  dictionaryValidationBaseUrl  String?  @map("dictionary_validation_base_url") @db.VarChar(500)
+  dictionaryValidationTimeoutMs Int?    @map("dictionary_validation_timeout_ms")
+  dictionaryValidationCacheTtlMs Int?   @map("dictionary_validation_cache_ttl_ms")
+  dictionaryValidationMaxCacheEntries Int? @map("dictionary_validation_max_cache_entries")
+  // Adaptive-review policy and pseudonymous analytics retention. The browser
+  // never supplies scheduling decisions; these values are applied server-side.
+  reviewInitialIntervalDays Int?        @map("review_initial_interval_days")
+  reviewMaxIntervalDays     Int?        @map("review_max_interval_days")
+  reviewMinimumEase         Float?      @map("review_minimum_ease")
+  reviewMaximumEase         Float?      @map("review_maximum_ease")
+  reviewCorrectEaseStep     Float?      @map("review_correct_ease_step")
+  reviewIncorrectEasePenalty Float?     @map("review_incorrect_ease_penalty")
+  reviewWrongDelayMinutes   Int?        @map("review_wrong_delay_minutes")
+  analyticsRetentionDays    Int?        @map("analytics_retention_days")
   importMaxCourses             Int?     @map("import_max_courses")
   importMaxSectionsPerCourse   Int?     @map("import_max_sections_per_course")
   importMaxVocabularyPerCourse Int?     @map("import_max_vocabulary_per_course")

@@ -19,6 +19,7 @@ import { SettingsPage } from './pages/SettingsPage';
 import { SchoolYearsPage } from './pages/SchoolYearsPage';
 import { ApiKeysPage } from './pages/ApiKeysPage';
 import { LearnConfigPage } from './pages/LearnConfigPage';
+import { LearnTeamsPage } from './pages/LearnTeamsPage';
 import { ReactNode, Suspense, useState, useEffect } from 'react';
 import { setupApi } from './api';
 import type { SetupStatus } from './types';
@@ -114,6 +115,7 @@ export default function App() {
             <Route path="/school-years"      element={<ProtectedRoute><SchoolYearsPage /></ProtectedRoute>} />
             <Route path="/api-keys"          element={<ProtectedRoute><ApiKeysPage /></ProtectedRoute>} />
             <Route path="/learn"             element={<ProtectedRoute><LearnConfigPage /></ProtectedRoute>} />
+            <Route path="/learn/teams"       element={<ProtectedRoute><LearnTeamsPage /></ProtectedRoute>} />
             <Route path="*"                  element={<Navigate to="/" replace />} />
           </Routes>
         </Suspense>

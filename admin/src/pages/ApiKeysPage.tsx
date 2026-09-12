@@ -4,6 +4,15 @@ import { adminApi } from '../api';
 import { useToast } from '../components/Toast';
 import type { AdminApiKey } from '../types';
 
+const availableScopes = [
+  { value: 'core:read', label: 'POKYH lesen' },
+  { value: 'core:write', label: 'POKYH schreiben' },
+  { value: 'auth:session', label: 'Sitzungen' },
+  { value: 'learn:catalog', label: 'Learn-Katalog' },
+  { value: 'learn:read', label: 'Learn lesen' },
+  { value: 'learn:write', label: 'Learn schreiben' },
+] as const;
+
 function Card({ children, title, icon }: { children: React.ReactNode; title: string; icon: React.ReactNode }) {
   return (
     <div className="rounded-[16px] p-5" style={{ background: '#0d0d0d', border: '1px solid rgba(255,255,255,0.07)' }}>
@@ -29,6 +38,7 @@ export function ApiKeysPage() {
   const [name, setName] = useState('');
   const [purpose, setPurpose] = useState('');
   const [platform, setPlatform] = useState('');
+  const [scopes, setScopes] = useState<string[]>(['core:read']);
   const [expiresAt, setExpiresAt] = useState('');
   const [creating, setCreating] = useState(false);
   const [createdKey, setCreatedKey] = useState<string | null>(null);
@@ -59,12 +69,14 @@ export function ApiKeysPage() {
         name: name.trim(),
         purpose: purpose.trim() || undefined,
         platform: platform.trim() || undefined,
+        scopes,
         expiresAt: expiresAt ? new Date(expiresAt).toISOString() : undefined,
       });
       setCreatedKey(result.key);
       setName('');
       setPurpose('');
       setPlatform('');
+      setScopes(['core:read']);
       setExpiresAt('');
       await load();
     } catch (err) {
@@ -91,6 +103,12 @@ export function ApiKeysPage() {
     await navigator.clipboard.writeText(createdKey);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  }
+
+  function toggleScope(scope: string) {
+    setScopes((current) => current.includes(scope)
+      ? current.filter((value) => value !== scope)
+      : [...current, scope]);
   }
 
   return (
@@ -141,7 +159,17 @@ export function ApiKeysPage() {
               <input type="date" value={expiresAt} onChange={(e) => setExpiresAt(e.target.value)}
                 className="px-3 py-2 rounded-[10px] text-[13px] outline-none" style={{ background: '#1c1c1e', border: '1px solid rgba(255,255,255,0.08)', color: 'rgba(235,235,245,0.7)' }} />
             </div>
-            <button type="submit" disabled={creating || !name.trim()}
+            <fieldset>
+              <legend className="text-[12px] block mb-1" style={dimText}>Berechtigungen</legend>
+              <div className="grid grid-cols-2 gap-2">
+                {availableScopes.map((scope) => <label key={scope.value} className="flex items-center gap-2 px-2.5 py-2 rounded-[10px] cursor-pointer" style={{ background: '#1c1c1e', border: '1px solid rgba(255,255,255,0.08)' }}>
+                  <input type="checkbox" checked={scopes.includes(scope.value)} onChange={() => toggleScope(scope.value)} />
+                  <span className="text-[12px]" style={{ color: 'rgba(235,235,245,0.78)' }}>{scope.label}</span>
+                </label>)}
+              </div>
+              <p className="text-[11px] mt-2" style={dimText}>Wähle nur die Zugriffe, die diese Integration wirklich benötigt. Der statische Master-Key bleibt unverändert.</p>
+            </fieldset>
+            <button type="submit" disabled={creating || !name.trim() || scopes.length === 0}
               className="self-start flex items-center gap-2 px-4 py-2.5 rounded-[10px] text-[13px] font-medium transition-all disabled:opacity-50"
               style={{ background: 'rgba(10,132,255,0.15)', color: '#0a84ff', border: '1px solid rgba(10,132,255,0.25)' }}>
               <Plus size={14} /> {creating ? 'Erstelle…' : 'Schlüssel erstellen'}
@@ -172,6 +200,7 @@ export function ApiKeysPage() {
                       <div className="text-[12px] mt-0.5 flex flex-wrap gap-x-3" style={dimText}>
                         {key.purpose && <span>{key.purpose}</span>}
                         {key.platform && <span>{key.platform}</span>}
+                        <span>{key.scopes.join(', ')}</span>
                         {key.expiresAt && <span>läuft ab {new Date(key.expiresAt).toLocaleDateString('de-DE')}</span>}
                         {key.lastUsedAt && <span>zuletzt genutzt {new Date(key.lastUsedAt).toLocaleDateString('de-DE')}</span>}
                       </div>

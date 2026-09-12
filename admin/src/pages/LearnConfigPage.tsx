@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
+import { Link } from 'react-router-dom';
 import { GraduationCap, Save, ShieldCheck, ShieldAlert, BookOpen, Upload } from 'lucide-react';
 import { adminApi } from '../api';
 import { useToast } from '../components/Toast';
@@ -87,6 +88,20 @@ export function LearnConfigPage() {
         dictionaryTimeoutMs: cfg.dictionaryTimeoutMs,
         dictionaryCacheTtlMs: cfg.dictionaryCacheTtlMs,
         dictionaryMaxCacheEntries: cfg.dictionaryMaxCacheEntries,
+        dictionaryValidationEnabled: cfg.dictionaryValidationEnabled,
+        dictionaryValidationProvider: cfg.dictionaryValidationProvider,
+        dictionaryValidationBaseUrl: cfg.dictionaryValidationBaseUrl,
+        dictionaryValidationTimeoutMs: cfg.dictionaryValidationTimeoutMs,
+        dictionaryValidationCacheTtlMs: cfg.dictionaryValidationCacheTtlMs,
+        dictionaryValidationMaxCacheEntries: cfg.dictionaryValidationMaxCacheEntries,
+        reviewInitialIntervalDays: cfg.reviewInitialIntervalDays,
+        reviewMaxIntervalDays: cfg.reviewMaxIntervalDays,
+        reviewMinimumEase: cfg.reviewMinimumEase,
+        reviewMaximumEase: cfg.reviewMaximumEase,
+        reviewCorrectEaseStep: cfg.reviewCorrectEaseStep,
+        reviewIncorrectEasePenalty: cfg.reviewIncorrectEasePenalty,
+        reviewWrongDelayMinutes: cfg.reviewWrongDelayMinutes,
+        analyticsRetentionDays: cfg.analyticsRetentionDays,
         importMaxCourses: cfg.importMaxCourses,
         importMaxSectionsPerCourse: cfg.importMaxSectionsPerCourse,
         importMaxVocabularyPerCourse: cfg.importMaxVocabularyPerCourse,
@@ -120,14 +135,23 @@ export function LearnConfigPage() {
             Konfiguration für Pokyh Learn — wirkt sofort, kein Neustart nötig.
           </p>
         </div>
-        <button
-          onClick={() => void handleSave()}
-          disabled={saving}
-          className="flex items-center gap-2 px-4 py-2.5 rounded-[10px] text-[13px] font-medium transition-all disabled:opacity-50"
-          style={{ background: 'rgba(10,132,255,0.15)', color: '#0a84ff', border: '1px solid rgba(10,132,255,0.25)' }}
-        >
-          <Save size={14} /> {saving ? 'Speichere…' : 'Speichern'}
-        </button>
+        <div className="flex items-center gap-2 flex-wrap">
+          <Link
+            to="/learn/teams"
+            className="flex items-center gap-2 px-4 py-2.5 rounded-[10px] text-[13px] font-medium transition-all"
+            style={{ background: 'rgba(255,255,255,0.05)', color: 'rgba(235,235,245,0.78)', border: '1px solid rgba(255,255,255,0.1)' }}
+          >
+            <GraduationCap size={14} /> Teams &amp; Zugriffe
+          </Link>
+          <button
+            onClick={() => void handleSave()}
+            disabled={saving}
+            className="flex items-center gap-2 px-4 py-2.5 rounded-[10px] text-[13px] font-medium transition-all disabled:opacity-50"
+            style={{ background: 'rgba(10,132,255,0.15)', color: '#0a84ff', border: '1px solid rgba(10,132,255,0.25)' }}
+          >
+            <Save size={14} /> {saving ? 'Speichere…' : 'Speichern'}
+          </button>
+        </div>
       </div>
 
       <div className="grid gap-4 max-w-[720px]">
@@ -186,6 +210,74 @@ export function LearnConfigPage() {
             </Field>
             <Field label="Max. Cache-Einträge">
               <input type="number" value={cfg.dictionaryMaxCacheEntries} onChange={(e) => set('dictionaryMaxCacheEntries', Number(e.target.value))}
+                className="apple-input px-3 py-2 text-[13px]" style={inputStyle} />
+            </Field>
+          </div>
+        </Card>
+
+        <Card title="Englische Wortprüfung" icon={<ShieldCheck size={17} />}>
+          <Toggle checked={cfg.dictionaryValidationEnabled} onChange={(v) => set('dictionaryValidationEnabled', v)} label="Free Dictionary für englische Wörter aktivieren" />
+          <p className="text-[12px] mt-2 leading-relaxed" style={{ color: 'rgba(235,235,245,0.45)' }}>
+            dictionaryapi.dev prüft dokumentiert englische Stichwörter und kann Definitionen/Beispiele liefern. Deutsch und Italienisch bleiben nutzbar, werden bei fehlender passenden Quelle aber klar als redaktionelle Prüfung behandelt. Bei einem Ausfall bleiben Inhalte speicherbar.
+          </p>
+          <div className="grid grid-cols-2 gap-3 mt-3">
+            <Field label="Anbieter">
+              <input value={cfg.dictionaryValidationProvider} readOnly className="apple-input px-3 py-2 text-[13px] opacity-70" style={inputStyle} />
+            </Field>
+            <Field label="Timeout (ms)">
+              <input type="number" value={cfg.dictionaryValidationTimeoutMs} onChange={(e) => set('dictionaryValidationTimeoutMs', Number(e.target.value))}
+                className="apple-input px-3 py-2 text-[13px]" style={inputStyle} />
+            </Field>
+            <Field label="Basis-URL">
+              <input value={cfg.dictionaryValidationBaseUrl} onChange={(e) => set('dictionaryValidationBaseUrl', e.target.value)}
+                className="apple-input px-3 py-2 text-[13px] col-span-2" style={inputStyle} />
+            </Field>
+            <Field label="Cache-TTL (ms)">
+              <input type="number" value={cfg.dictionaryValidationCacheTtlMs} onChange={(e) => set('dictionaryValidationCacheTtlMs', Number(e.target.value))}
+                className="apple-input px-3 py-2 text-[13px]" style={inputStyle} />
+            </Field>
+            <Field label="Max. Cache-Einträge">
+              <input type="number" value={cfg.dictionaryValidationMaxCacheEntries} onChange={(e) => set('dictionaryValidationMaxCacheEntries', Number(e.target.value))}
+                className="apple-input px-3 py-2 text-[13px]" style={inputStyle} />
+            </Field>
+          </div>
+        </Card>
+
+        <Card title="Adaptives Lernen & Lernanalysen" icon={<GraduationCap size={17} />}>
+          <p className="text-[12px] leading-relaxed" style={{ color: 'rgba(235,235,245,0.45)' }}>
+            Der Server berechnet Wiederholungen pro Lernendem aus den gespeicherten Ergebnissen. Er speichert dafür nur aggregierte Tageszahlen je Kurs, keine Antworttexte in der Analyse. Die Werte gelten sofort für neue Quizversuche.
+          </p>
+          <div className="grid grid-cols-2 gap-3 mt-3">
+            <Field label="Erste Wiederholung (Tage)">
+              <input type="number" min="1" max="30" value={cfg.reviewInitialIntervalDays} onChange={(e) => set('reviewInitialIntervalDays', Number(e.target.value))}
+                className="apple-input px-3 py-2 text-[13px]" style={inputStyle} />
+            </Field>
+            <Field label="Max. Intervall (Tage)">
+              <input type="number" min="1" max="3650" value={cfg.reviewMaxIntervalDays} onChange={(e) => set('reviewMaxIntervalDays', Number(e.target.value))}
+                className="apple-input px-3 py-2 text-[13px]" style={inputStyle} />
+            </Field>
+            <Field label="Min. Leichtigkeitsfaktor">
+              <input type="number" min="1" max="5" step="0.05" value={cfg.reviewMinimumEase} onChange={(e) => set('reviewMinimumEase', Number(e.target.value))}
+                className="apple-input px-3 py-2 text-[13px]" style={inputStyle} />
+            </Field>
+            <Field label="Max. Leichtigkeitsfaktor">
+              <input type="number" min="1" max="5" step="0.05" value={cfg.reviewMaximumEase} onChange={(e) => set('reviewMaximumEase', Number(e.target.value))}
+                className="apple-input px-3 py-2 text-[13px]" style={inputStyle} />
+            </Field>
+            <Field label="Bonus bei richtig">
+              <input type="number" min="0" max="1" step="0.01" value={cfg.reviewCorrectEaseStep} onChange={(e) => set('reviewCorrectEaseStep', Number(e.target.value))}
+                className="apple-input px-3 py-2 text-[13px]" style={inputStyle} />
+            </Field>
+            <Field label="Abzug bei falsch">
+              <input type="number" min="0" max="1" step="0.01" value={cfg.reviewIncorrectEasePenalty} onChange={(e) => set('reviewIncorrectEasePenalty', Number(e.target.value))}
+                className="apple-input px-3 py-2 text-[13px]" style={inputStyle} />
+            </Field>
+            <Field label="Wiederholung nach Fehler (Min.)">
+              <input type="number" min="0" max="1440" value={cfg.reviewWrongDelayMinutes} onChange={(e) => set('reviewWrongDelayMinutes', Number(e.target.value))}
+                className="apple-input px-3 py-2 text-[13px]" style={inputStyle} />
+            </Field>
+            <Field label="Analyse-Aufbewahrung (Tage)">
+              <input type="number" min="30" max="3650" value={cfg.analyticsRetentionDays} onChange={(e) => set('analyticsRetentionDays', Number(e.target.value))}
                 className="apple-input px-3 py-2 text-[13px]" style={inputStyle} />
             </Field>
           </div>

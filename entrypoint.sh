@@ -1,10 +1,15 @@
 #!/bin/sh
-set -e
+set -eu
 
-# The Node app now bootstraps the database itself: on startup it creates the DB
-# if missing, applies the schema (prisma db push) and connects — all with
-# retry/backoff, in the background, so the HTTP server starts immediately and
-# never gets stuck waiting on a slow or not-yet-ready database.
-echo "[startup] DATABASE_URL host: $(echo "$DATABASE_URL" | sed 's|.*@||;s|/.*||')"
-echo "[startup] Starting server (DB is created + migrated automatically)…"
-exec node dist/index.js
+# Docker named volumes can retain root-owned files from a previous image. The
+# only root work is making the two explicit writable runtime directories usable;
+# the HTTP application and cloudflared child then run as the unprivileged user.
+RUNTIME_HOME=/var/lib/pokyh
+CLOUDFLARED_HOME="$RUNTIME_HOME/.cloudflared"
+LOG_DIRECTORY=/app/logs
+
+mkdir -p "$CLOUDFLARED_HOME" "$LOG_DIRECTORY"
+chown -R pokyh:pokyh "$RUNTIME_HOME" "$LOG_DIRECTORY"
+
+echo "[startup] Starting server as unprivileged user; database readiness is checked by the application."
+exec su-exec pokyh node dist/index.js

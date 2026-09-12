@@ -456,6 +456,7 @@ export interface AdminApiKey {
   name: string;
   purpose: string;
   platform: string;
+  scopes: string[];
   createdBy: string | null;
   createdAt: string;
   expiresAt: string | null;
@@ -481,7 +482,112 @@ export interface LearnConfigValues {
   dictionaryTimeoutMs: number;
   dictionaryCacheTtlMs: number;
   dictionaryMaxCacheEntries: number;
+  dictionaryValidationEnabled: boolean;
+  dictionaryValidationProvider: string;
+  dictionaryValidationBaseUrl: string;
+  dictionaryValidationTimeoutMs: number;
+  dictionaryValidationCacheTtlMs: number;
+  dictionaryValidationMaxCacheEntries: number;
+  reviewInitialIntervalDays: number;
+  reviewMaxIntervalDays: number;
+  reviewMinimumEase: number;
+  reviewMaximumEase: number;
+  reviewCorrectEaseStep: number;
+  reviewIncorrectEasePenalty: number;
+  reviewWrongDelayMinutes: number;
+  analyticsRetentionDays: number;
   importMaxCourses: number;
   importMaxSectionsPerCourse: number;
   importMaxVocabularyPerCourse: number;
+}
+
+// ── Learn group administration ──────────────────────────────────────────────
+// These values intentionally reflect the admin-only `/api/admin/learn/teams`
+// response. It exposes membership and aggregate course counts, never course
+// content, answer data, credentials, or API-key material.
+export type LearnTeamRole = 'OWNER' | 'MANAGER' | 'MEMBER';
+export type LearnTeamAssignableRole = Exclude<LearnTeamRole, 'OWNER'>;
+
+export interface AdminLearnTeamMember {
+  stableUid: string;
+  role: LearnTeamRole;
+  joinedAt: string;
+  user: {
+    username: string;
+    isUntisUser: boolean;
+  } | null;
+}
+
+export interface AdminLearnTeam {
+  id: string;
+  name: string;
+  description: string;
+  createdAt: string;
+  updatedAt: string;
+  creator: { username: string } | null;
+  memberCount: number;
+  courseCount: number;
+  members: AdminLearnTeamMember[];
+}
+
+// ── Learn course administration ─────────────────────────────────────────────
+// The admin course surface carries operational metadata and explicit grants
+// only. It intentionally does not expose lesson JSON, vocabulary/answer text,
+// quiz attempts, or learner analytics.
+export type LearnCourseStatus = 'DRAFT' | 'PUBLISHED' | 'ARCHIVED';
+export type LearnCourseVisibility = 'PRIVATE' | 'TEAM' | 'PUBLIC';
+export type LearnCoursePermission = 'VIEW' | 'EDIT' | 'MANAGE';
+
+export interface AdminLearnCourseCounts {
+  sections: number;
+  vocabulary: number;
+  enrollments: number;
+  directAccess: number;
+}
+
+export interface AdminLearnCourse {
+  id: string;
+  slug: string;
+  title: string;
+  summary: string;
+  subject: string;
+  language: string;
+  level: string;
+  visibility: LearnCourseVisibility;
+  status: LearnCourseStatus;
+  coverImageUrl: string;
+  ownerLocked: boolean;
+  createdAt: string;
+  updatedAt: string;
+  creator: { username: string };
+  team: { id: string; name: string } | null;
+  counts: AdminLearnCourseCounts;
+}
+
+export interface AdminLearnCourseAccess {
+  stableUid: string;
+  permission: LearnCoursePermission;
+  createdAt: string;
+  updatedAt: string;
+  user: {
+    username: string;
+    isUntisUser: boolean;
+  };
+}
+
+export interface AdminLearnCoursesResponse {
+  courses: AdminLearnCourse[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
+export interface AdminLearnCourseAccessResponse {
+  course: AdminLearnCourse;
+  access: {
+    items: AdminLearnCourseAccess[];
+    total: number;
+    page: number;
+    limit: number;
+  };
 }

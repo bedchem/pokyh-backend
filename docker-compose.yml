@@ -1,10 +1,13 @@
 services:
   mysql:
-    image: mysql:8.0
+    image: mysql:8.0.40
     restart: unless-stopped
     environment:
-      - MYSQL_ROOT_PASSWORD
-      - MYSQL_DATABASE=${DB_NAME:-pokyh}
+      # Compose itself must receive this value (normally through its selected
+      # --env-file), so MySQL and the backend cannot silently start against
+      # different credentials. Do not put unrelated app secrets in MySQL.
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD through Compose environment}
+      MYSQL_DATABASE: ${DB_NAME:-pokyh}
     volumes:
       - mysql_data:/var/lib/mysql
     healthcheck:
@@ -13,27 +16,81 @@ services:
       timeout: 10s
       retries: 30
       start_period: 30s
+    networks:
+      - database
+
+  redis:
+    # A private, non-persistent optimisation layer only. Durable Learn state
+    # remains in MySQL, so cache loss cannot lose a quiz result or permission.
+    image: redis:7.4.1-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "no", "--save", "", "--protected-mode", "yes"]
+    expose:
+      - "6379"
+    read_only: true
+    tmpfs:
+      - /data
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    networks:
+      - database
 
   app:
     build: .
     restart: unless-stopped
     init: true
+    # Docker's local log driver stores newline-delimited stdout/stderr events
+    # compactly and bounds retained container logs. The API itself emits
+    # redacted JSON through Winston; do not send request bodies or secrets.
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "5"
     ports:
-      # Host:container port both driven by PORT in .env (defaults to 4000)
-      - "${PORT:-4000}:${PORT:-4000}"
+      # Private loopback by default. Terminate public TLS through the approved
+      # reverse proxy/tunnel; change BACKEND_BIND_ADDRESS deliberately only.
+      - "${BACKEND_BIND_ADDRESS:-127.0.0.1}:${PORT:-4000}:${PORT:-4000}"
     depends_on:
       mysql:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     # Defaults to the production .env without baking it into the image. The
     # indirection also permits a safe example-file Compose validation in CI.
-    env_file: ${BACKEND_ENV_FILE:-.env}
+    # `raw` prevents Compose from expanding `$` in bcrypt hashes, JWT material,
+    # and other secret values stored in the selected operator-owned env file.
+    # It is intentionally required: an absent secret file must fail closed.
+    env_file:
+      - path: ${BACKEND_ENV_FILE:-.env}
+        required: true
+        format: raw
     environment:
       - NODE_ENV=${NODE_ENV:-production}
       - PORT=${PORT:-4000}
+      # The same service can run without Redis outside Compose by setting this
+      # explicitly blank; the app degrades safely to MySQL reads.
+      - LEARN_REDIS_URL=${LEARN_REDIS_URL:-redis://redis:6379}
     volumes:
-      - cloudflared_data:/root/.cloudflared
+      # Credentials/configuration needed by cloudflared are isolated from the
+      # immutable image and owned by the unprivileged application account.
+      - cloudflared_data:/var/lib/pokyh/.cloudflared
     cap_drop:
       - ALL
+    # The entrypoint uses only these capabilities to repair ownership of its
+    # known named-volume directories, then su-exec drops to the `pokyh` user.
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
     security_opt:
       - no-new-privileges:true
     healthcheck:
@@ -42,7 +99,17 @@ services:
       timeout: 5s
       retries: 8
       start_period: 90s
+    networks:
+      - edge
+      - database
 
 volumes:
   mysql_data:
   cloudflared_data:
+
+networks:
+  # Allows the app to reach the configured public integrations/tunnel while
+  # keeping MySQL and Redis unavailable from the host and external network.
+  edge:
+  database:
+    internal: true

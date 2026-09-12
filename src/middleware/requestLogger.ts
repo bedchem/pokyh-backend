@@ -31,7 +31,17 @@ export function requestLogger(req: Request, res: Response, next: NextFunction): 
       'unknown';
 
     const username = req.user?.username ?? req.adminUser?.role ?? null;
-    const logMeta = { method: req.method, path: req.path, status: res.statusCode, duration, ip, username, requestId: req.id, scope };
+    const logMeta = {
+      method: req.method,
+      path: req.path,
+      status: res.statusCode,
+      duration,
+      ip,
+      username,
+      requestId: req.id,
+      scope,
+      issuedApiKeyId: req.issuedApiKey?.id,
+    };
 
     if (config.debug) {
       const statusColor = res.statusCode >= 500 ? '\x1b[31m' : res.statusCode >= 400 ? '\x1b[33m' : res.statusCode >= 200 ? '\x1b[32m' : '\x1b[0m';
@@ -58,10 +68,11 @@ export function requestLogger(req: Request, res: Response, next: NextFunction): 
         userAgent: (req.headers['user-agent'] ?? '').slice(0, 500) || null,
         requestId: req.id,
         scope,
-        error:
-          res.statusCode >= 400
-            ? ((res as unknown as { locals: Record<string, string> }).locals?.errorMessage ?? null)
-            : null,
+        apiKeyId: req.issuedApiKey?.id ?? null,
+        // Never copy a route's error text into durable logs: validation errors
+        // can include user-controlled input. Status plus request ID is enough
+        // for support correlation without retaining that input.
+        error: res.statusCode >= 500 ? 'server_error' : res.statusCode >= 400 ? 'client_error' : null,
       },
     }).catch((e) => {
       if (config.debug) logger.warn('[requestLogger] DB write failed', { message: e.message, requestId: req.id });

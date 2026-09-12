@@ -73,6 +73,23 @@ export const refreshLimiter = rateLimit({
   skip: (req) => hasValidServerKey(req),
 });
 
+// Guards the DB-issued-API-key lookup path (src/middleware/apiKey.ts): every
+// request whose key doesn't match the static master key costs one indexed
+// Prisma round-trip, including /learn/* traffic, which globalLimiter above
+// deliberately skips. Without this, an unauthenticated caller could hammer
+// the shared production database with garbage keys at unlimited volume. Keyed
+// by IP (not by the learn-specific stableUid limiters, which are never
+// reached for an invalid key) and sized like readLimiter — generous enough
+// for legitimate issued-key integrations, which always miss the static-key
+// fast path and land here on every call.
+export const apiKeyLookupLimiter = rateLimit({
+  windowMs: config.rateLimit.readWindowMs,
+  max: config.rateLimit.readMax,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests, please try again later.' },
+});
+
 export const writeLimiter = rateLimit({
   windowMs: config.rateLimit.writeWindowMs,
   max: config.rateLimit.writeMax,
