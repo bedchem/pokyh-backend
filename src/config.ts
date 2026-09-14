@@ -1,5 +1,22 @@
 import 'dotenv/config';
 
+// Docker Compose environment files keep wrapping quotes as literal characters.
+// Deployment UIs commonly serialise every value that way, while `.env` parsers
+// remove them. Normalise one matching outer pair once, before any setting is
+// read, so both delivery mechanisms behave identically. It intentionally does
+// not modify unmatched quotes inside a value.
+function unwrapEnvironmentValue(value: string): string {
+  const trimmed = value.trim();
+  const hasMatchingQuotes = trimmed.length >= 2
+    && (trimmed.startsWith('"') || trimmed.startsWith("'"))
+    && trimmed.at(0) === trimmed.at(-1);
+  return hasMatchingQuotes ? trimmed.slice(1, -1).trim() : trimmed;
+}
+
+for (const [key, value] of Object.entries(process.env)) {
+  if (value !== undefined) process.env[key] = unwrapEnvironmentValue(value);
+}
+
 function requireEnv(key: string): string {
   const val = process.env[key];
   if (!val) {
@@ -13,7 +30,7 @@ function requireEnv(key: string): string {
 function intEnv(key: string, fallback: number): number {
   const raw = process.env[key];
   if (raw === undefined || raw.trim() === '') return fallback;
-  const n = parseInt(raw, 10);
+  const n = parseInt(unwrapEnvironmentValue(raw), 10);
   return Number.isFinite(n) ? n : fallback;
 }
 
@@ -24,7 +41,7 @@ function boundedIntEnv(key: string, fallback: number, min: number, max: number):
 function floatEnv(key: string, fallback: number): number {
   const raw = process.env[key];
   if (raw === undefined || raw.trim() === '') return fallback;
-  const n = Number.parseFloat(raw);
+  const n = Number.parseFloat(unwrapEnvironmentValue(raw));
   return Number.isFinite(n) ? n : fallback;
 }
 
@@ -34,13 +51,13 @@ function boundedFloatEnv(key: string, fallback: number, min: number, max: number
 
 function strEnv(key: string, fallback: string): string {
   const raw = process.env[key];
-  return raw === undefined || raw.trim() === '' ? fallback : raw.trim();
+  return raw === undefined || raw.trim() === '' ? fallback : unwrapEnvironmentValue(raw);
 }
 
 function boolEnv(key: string, fallback: boolean): boolean {
   const raw = process.env[key];
   if (raw === undefined || raw.trim() === '') return fallback;
-  return raw.trim().toLocaleLowerCase('en-US') === 'true';
+  return unwrapEnvironmentValue(raw).toLocaleLowerCase('en-US') === 'true';
 }
 
 export function isSecurePublicUrl(value: string): boolean {
@@ -58,11 +75,7 @@ export function isSecurePublicUrl(value: string): boolean {
 // value intended for Express cannot crash the API at startup. Direct
 // deployments must not trust forwarded headers by default.
 export function parseTrustProxy(raw: string | undefined): boolean | number | string {
-  const trimmed = (raw ?? '').trim();
-  const hasMatchingQuotes = trimmed.length >= 2
-    && (trimmed.startsWith('"') || trimmed.startsWith("'"))
-    && trimmed.at(0) === trimmed.at(-1);
-  const val = (hasMatchingQuotes ? trimmed.slice(1, -1) : trimmed).trim();
+  const val = unwrapEnvironmentValue(raw ?? '');
   if (val === '') return false;
   if (val.toLowerCase() === 'true') return true;
   if (val.toLowerCase() === 'false') return false;
