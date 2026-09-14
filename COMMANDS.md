@@ -13,8 +13,7 @@ npm start
 open http://localhost:4000/admin/
 # → A setup wizard appears automatically if no password is configured.
 #   Step 1: Create admin username + password
-#   Step 2: Connect Cloudflare Tunnel (makes the API live at your domain)
-#   Step 3: Done — everything is running
+#   Step 2: Done — configure HTTPS/DNS ingress in your infrastructure
 ```
 
 ## Development
@@ -55,19 +54,6 @@ npm run make-admin <username>
 
 # Revoke admin privileges from a user
 npm run revoke-admin <username>
-```
-
-## Cloudflare Tunnel (api.pokyh.com)
-
-```bash
-# First-time setup (opens browser for Cloudflare login, one time only)
-bash scripts/setup-tunnel.sh
-
-# Start tunnel (makes localhost:4000 available as api.pokyh.com)
-npm run tunnel
-
-# Run tunnel as a system service (auto-start on boot)
-sudo cloudflared service install
 ```
 
 ## MySQL Database

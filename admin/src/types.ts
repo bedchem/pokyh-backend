@@ -146,10 +146,7 @@ export interface UserLogsResponse extends LogsResponse {
 
 export interface SetupStatus {
   needsSetup: boolean;
-  cloudflaredInstalled: boolean;
-  cloudflareAuthed: boolean;
-  tunnelConfigured: boolean;
-  tunnelHostname: string | null;
+  ingressManagedExternally: boolean;
 }
 
 export interface RequestsChartPoint {

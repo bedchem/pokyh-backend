@@ -9,7 +9,6 @@ import { UsersPage } from './pages/UsersPage';
 import { ClassesPage } from './pages/ClassesPage';
 import { SessionsPage } from './pages/SessionsPage';
 import { LogsPage } from './pages/LogsPage';
-import { TunnelPage } from './pages/TunnelPage';
 import { DishesPage } from './pages/DishesPage';
 import { SubjectImagesPage } from './pages/SubjectImagesPage';
 import { CommentsPage } from './pages/CommentsPage';
@@ -81,15 +80,7 @@ export default function App() {
 
   if (setupStatus?.needsSetup) {
     return (
-      <SetupPage
-        onComplete={handleSetupComplete}
-        initialStatus={{
-          cloudflaredInstalled: setupStatus.cloudflaredInstalled,
-          cloudflareAuthed: setupStatus.cloudflareAuthed,
-          tunnelConfigured: setupStatus.tunnelConfigured,
-          tunnelHostname: setupStatus.tunnelHostname,
-        }}
-      />
+      <SetupPage onComplete={handleSetupComplete} />
     );
   }
 
@@ -105,7 +96,6 @@ export default function App() {
             <Route path="/classes"        element={<ProtectedRoute><ClassesPage /></ProtectedRoute>} />
             <Route path="/sessions"       element={<ProtectedRoute><SessionsPage /></ProtectedRoute>} />
             <Route path="/logs"           element={<ProtectedRoute><LogsPage /></ProtectedRoute>} />
-            <Route path="/tunnel"         element={<ProtectedRoute><TunnelPage /></ProtectedRoute>} />
             <Route path="/dishes"         element={<ProtectedRoute><DishesPage /></ProtectedRoute>} />
             <Route path="/subject-images" element={<ProtectedRoute><SubjectImagesPage /></ProtectedRoute>} />
             <Route path="/comments"          element={<ProtectedRoute><CommentsPage /></ProtectedRoute>} />

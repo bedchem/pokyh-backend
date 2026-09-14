@@ -54,10 +54,10 @@ export function isSecurePublicUrl(value: string): boolean {
 
 // Resolve the express `trust proxy` value from TRUST_PROXY. Accepts a boolean
 // ('true'/'false'), a numeric hop count, or a named value ('loopback', etc.).
-// Defaults to 'loopback' which trusts only the in-container cloudflared proxy.
+// Direct deployments must not trust forwarded headers by default.
 function parseTrustProxy(raw: string | undefined): boolean | number | string {
   const val = (raw ?? '').trim();
-  if (val === '') return 'loopback';
+  if (val === '') return false;
   if (val.toLowerCase() === 'true') return true;
   if (val.toLowerCase() === 'false') return false;
   const n = parseInt(val, 10);
@@ -118,12 +118,9 @@ const learnReviewMaximumEase = Math.max(
 export const config = {
   nodeEnv,
   port: intEnv('PORT', 4000),
-  // Express `trust proxy` setting. Behind the Cloudflare tunnel (cloudflared
-  // runs in-container and proxies to localhost) the client IP arrives via the
-  // X-Forwarded-For header — express-rate-limit refuses to run unless we declare
-  // how many proxies to trust. Default 'loopback' trusts only the in-container
-  // proxy (secure: external clients can't spoof XFF). Override with TRUST_PROXY:
-  // 'true'/'false', a hop count ('1'), or any valid express trust-proxy value.
+  // Express `trust proxy` setting. Keep it false for a directly exposed server;
+  // configure a precise trusted proxy setting only when an operator places one
+  // in front of the API. This keeps client-supplied X-Forwarded-For untrusted.
   trustProxy: parseTrustProxy(process.env['TRUST_PROXY']),
   databaseUrl: requireEnv('DATABASE_URL'),
   db: {
@@ -231,8 +228,6 @@ export const config = {
     .split(',').map((u) => u.trim()).filter(Boolean),
   adminPasswordHash: process.env.ADMIN_PASSWORD_HASH ?? '',
   debug: process.env.DEBUG === 'true',
-  tunnelName: process.env.TUNNEL_NAME ?? '',
-  tunnelHostname: process.env.TUNNEL_HOSTNAME ?? '',
   vapidPublicKey: process.env.VAPID_PUBLIC_KEY ?? '',
   vapidPrivateKey: process.env.VAPID_PRIVATE_KEY ?? '',
   vapidEmail: process.env.VAPID_EMAIL ?? 'contact@pokyh.com',

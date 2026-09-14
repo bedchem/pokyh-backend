@@ -471,13 +471,5 @@ export const setupApi = {
     return data.token;
   },
 
-  // Returns an EventSource for streaming cloudflare login output
-  loginStream: (token: string): EventSource =>
-    new EventSource(`/api/setup/cloudflare/login-stream?token=${encodeURIComponent(token)}`),
-
-  // Returns an EventSource for streaming tunnel creation output
-  tunnelStream: (token: string, hostname: string): EventSource =>
-    new EventSource(`/api/setup/cloudflare/tunnel-stream?token=${encodeURIComponent(token)}&hostname=${encodeURIComponent(hostname)}`),
-
   getToken,
 };

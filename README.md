@@ -4,7 +4,7 @@
 
 **The API, realtime layer and admin panel behind POKYH — the school companion app for LBS Brixen.**
 
-Node.js · Express 5 · TypeScript · Prisma · MySQL · Server-Sent Events · Web Push · self-hosted via Docker + Cloudflare Tunnel
+Node.js · Express 5 · TypeScript · Prisma · MySQL · Server-Sent Events · Web Push · self-hosted via Docker
 
 </div>
 
@@ -41,8 +41,8 @@ Users never log in here with a password. They authenticate against WebUntis in t
 login here (guarded by a shared `SERVER_KEY`) to mint a POKYH session. Parents/guardians get a
 hidden "parent" membership in their child's class.
 
-It also serves a built-in **React admin panel** at `/admin/` and can expose itself to the
-internet through an in-container **Cloudflare Tunnel** — no open ports required.
+It also serves a built-in **React admin panel** at `/admin/`. Public DNS, TLS
+termination and ingress are operated outside the application container.
 
 ---
 
@@ -63,9 +63,9 @@ internet through an in-container **Cloudflare Tunnel** — no open ports require
 └───────────────┬───────────────────┬──────────┘
                 │                   │
         ┌───────▼──────┐    ┌───────▼────────┐
-        │  MySQL 8     │    │ Cloudflare      │
-        │  (Prisma)    │    │ Tunnel (egress) │
-        └──────────────┘    └─────────────────┘
+        │  MySQL 8     │
+        │  (Prisma)    │
+        └──────────────┘
 ```
 
 - **Stateless HTTP** — horizontally scalable; JWTs carry identity, refresh tokens live in MySQL.
@@ -128,7 +128,7 @@ membership, and access decision.
 | Images             | `sharp` (dish images, subject icons)                          |
 | Hardening          | `helmet`, `cors`, `express-rate-limit`                        |
 | Logging            | `winston` + daily-rotate files                                |
-| Ingress            | Cloudflare Tunnel (`cloudflared`, in-container)               |
+| Ingress            | External reverse proxy or infrastructure load balancer         |
 
 ---
 
@@ -157,7 +157,7 @@ npm run dev
 ```
 
 The API is now on `http://localhost:4000`, the admin panel on `http://localhost:4000/admin/`.
-On first run, open `/admin/` to complete the setup wizard (admin account + optional tunnel).
+On first run, open `/admin/` to create the administrator account.
 
 ### Run everything with Docker (recommended for parity with prod)
 
@@ -220,8 +220,7 @@ npx web-push generate-vapid-keys
 | `LEARN_REVIEW_*` / `LEARN_ANALYTICS_RETENTION_DAYS` | Bounded adaptive-review policy and retention for private daily activity aggregates. |
 | `LEARN_REDIS_URL` / `LEARN_REDIS_KEY_PREFIX` / `LEARN_ANALYTICS_CACHE_TTL_SECONDS` | Optional internal course-specific analytics cache. Do not expose Redis publicly or use it for tokens, answers, permissions, or durable state. |
 | `REQUEST_LOG_RETENTION_DAYS` / `LOG_FILE_RETENTION_DAYS` | Finite retention for database/file request logs containing technical security data. |
-| `TRUST_PROXY`            | `loopback` behind the in-container tunnel — required so per-IP rate limits see the real client IP. |
-| `TUNNEL_NAME` / `TUNNEL_HOSTNAME` | Cloudflare Tunnel identity & public hostname (auto-derives the parent domain for CORS). |
+| `TRUST_PROXY`            | `false` for direct exposure; set the exact trusted proxy topology only when an operator puts one in front of the API. |
 | `VAPID_*`                | Web Push key pair + contact e-mail.                                                      |
 
 > **Trusted callers bypass the auth/refresh rate limiters.** A request carrying a valid
@@ -265,7 +264,7 @@ so additive schema changes are applied on every deploy.
    User requests then send `Authorization: Bearer <JWT>`.
 
 **Hardening highlights**
-- `helmet` security headers; strict, allow-list **CORS** (auto-includes the tunnel host and its parent domain).
+- `helmet` security headers; strict, allow-list **CORS** configured entirely through `CORS_ORIGIN` and `LEARN_ALLOWED_ORIGINS`.
 - Tiered **rate limiting**: global, auth (strict, per-IP brute-force), refresh (generous — refresh
   is gated by an unguessable token), read, write, SSE and admin-login limiters. Trusted server-key
   callers bypass auth/refresh limits.
@@ -277,7 +276,7 @@ so additive schema changes are applied on every deploy.
 
 ## API overview
 
-> Base URL: your tunnel hostname (e.g. `https://api.pokyh.com`). All times are ISO-8601 UTC.
+> Base URL: the HTTPS API origin operated by your infrastructure (for example `https://api.pokyh.com`). All times are ISO-8601 UTC.
 
 | Group              | Mount                                             | Notes                                  |
 | ------------------ | ------------------------------------------------- | -------------------------------------- |
@@ -328,8 +327,8 @@ Started once the DB is reachable (`src/index.ts` → `startBackgroundJobs`):
 
 A React + Vite SPA is built into the image and served at **`/admin/`**
 (same-origin, JWT-protected). It covers the existing Pokyh users, classes,
-sessions, dishes & images, comments, to-dos/reminders, logs, the Cloudflare
-tunnel, and school-year archives. Its dedicated **Learn** area is visibly
+sessions, dishes & images, comments, to-dos/reminders, logs, and school-year
+archives. Its dedicated **Learn** area is visibly
 separate from those records and manages safe Learn policy through
 `/api/admin/learn-config` plus group administration through
 `/api/admin/learn/teams`. It never returns secrets, raw quiz answers, or
@@ -357,9 +356,8 @@ npm run admin:build    # build it into admin/dist (also done by the Docker build
 Production runs as a Docker image (multi-stage `Dockerfile`) that:
 
 1. Builds the API (`tsc`) **and** the admin panel.
-2. Installs `cloudflared` (arch auto-detected) and `openssl` (Prisma engine on Alpine).
-3. On start (`entrypoint.sh`), launches the server, which **self-bootstraps the database** and,
-   if configured, starts the Cloudflare Tunnel — so no inbound ports need to be opened.
+2. Installs `openssl` (Prisma engine on Alpine) and drops runtime privileges to the application user.
+3. On start (`entrypoint.sh`), launches the server, which **self-bootstraps the database**.
 
 ```bash
 ./scripts/compose-stack.sh up --build -d
@@ -370,8 +368,8 @@ healthchecks, then the container healthcheck calls `/readyz` (which verifies
 database reachability) before it is considered ready. Redis availability is not
 the durable readiness authority: its failure must degrade private analytics to
 MySQL rather than lose learning data. The existing `/health` remains a
-lightweight liveness endpoint. The tunnel exposes the app publicly at
-`TUNNEL_HOSTNAME`.
+lightweight liveness endpoint. Publish the container deliberately through an
+externally operated TLS reverse proxy or load balancer.
 
 ### Production boundaries
 
@@ -409,7 +407,6 @@ npm run make-admin <username>            # grant admin
 npm run revoke-admin <username>          # revoke admin
 npm run set-admin-password               # set/replace the admin password (bcrypt)
 npm run create-user                      # create a local (non-WebUntis) user
-npm run tunnel                           # run the Cloudflare tunnel manually
 ```
 
 Logs are written to rotating files (winston) and stdout; the admin panel exposes a log viewer.
@@ -423,7 +420,6 @@ src/
 ├── index.ts            # app bootstrap, middleware, CORS, boot/retry, background jobs
 ├── config.ts           # all env parsing (fail-fast on required secrets)
 ├── db.ts               # Prisma client singleton
-├── tunnel.ts           # Cloudflare Tunnel lifecycle
 ├── middleware/         # apiKey, auth (JWT), rateLimiter, requireAdmin, requestLogger
 ├── routes/             # auth, users, todos, classes, reminders(+comments),
 │                       # dishes/ratings/comments, subjectImages, sse, admin, setup, push

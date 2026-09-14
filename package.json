@@ -15,8 +15,7 @@
     "set-admin-password": "node scripts/set-admin-password.js",
     "create-user": "node scripts/create-user.js",
     "admin:build": "cd admin && npm install && npm run build",
-    "admin:dev": "cd admin && npm run dev",
-    "tunnel": "cloudflared tunnel run pokyh-api"
+    "admin:dev": "cd admin && npm run dev"
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",

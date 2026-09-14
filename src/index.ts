@@ -16,7 +16,6 @@ import { setupRouter } from './routes/setup';
 import { requestLogger } from './middleware/requestLogger';
 import { requestId } from './middleware/requestId';
 import { prisma } from './db';
-import { startTunnel, stopTunnel, isTunnelConfigured, getHostnameFromCloudflaredConfig } from './tunnel';
 import { startPushPoller } from './services/pushPoller';
 import { startArchiver } from './services/archiver';
 import { startSchoolYearArchiver } from './services/schoolYearArchiver';
@@ -30,10 +29,8 @@ import { closeLearnCache } from './services/learnCache';
 const app = express();
 
 // ─── Proxy trust ─────────────────────────────────────────────────────────────
-// Behind the Cloudflare tunnel the real client IP arrives via X-Forwarded-For.
-// Declaring the trusted proxy lets express-rate-limit identify clients correctly
-// (and stops it from throwing ERR_ERL_UNEXPECTED_X_FORWARDED_FOR). Config-driven
-// via TRUST_PROXY; defaults to 'loopback' for the in-container cloudflared proxy.
+// Trust forwarded client-IP headers only when the operator explicitly configures
+// the known reverse-proxy topology through TRUST_PROXY.
 app.set('trust proxy', config.trustProxy);
 
 // ─── Debug logging ───────────────────────────────────────────────────────────
@@ -61,19 +58,7 @@ app.use('/admin', (_req: Request, res: Response) => {
 
 app.use(helmet({ contentSecurityPolicy: false }));
 
-// CORS origins — fully config-driven, zero hardcoded values
-// Always include the server's own origin (admin panel makes same-origin fetch requests
-// that browsers tag with Origin when custom headers like Authorization are present)
-const effectiveTunnelHostname = config.tunnelHostname || getHostnameFromCloudflaredConfig() || '';
-
-// When the tunnel is on a subdomain (e.g. api.pokyh.com), the frontend typically
-// lives on the parent domain (pokyh.com). Auto-derive it so operators don't have
-// to set CORS_ORIGIN manually in the common API-subdomain + frontend-on-root setup.
-function parentDomainOrigin(hostname: string): string | null {
-  const parts = hostname.split('.');
-  return parts.length > 2 ? `https://${parts.slice(1).join('.')}` : null;
-}
-
+// CORS origins — fully config-driven, zero hardcoded values.
 const parsedCorsOrigins = config.corsOrigin.split(',').map((o) => o.trim()).filter(Boolean);
 // A malformed CORS_ORIGIN (e.g. only commas/whitespace) silently degrades to
 // zero origins from this source. That alone won't break CORS entirely — the
@@ -86,9 +71,6 @@ if (parsedCorsOrigins.length === 0 && config.corsOrigin.trim() !== '') {
 const allowedOrigins = new Set([
   ...parsedCorsOrigins,
   ...config.learnAllowedOrigins,
-  ...(effectiveTunnelHostname ? [`https://${effectiveTunnelHostname}`] : []),
-  // Also allow the parent domain of the tunnel (e.g. pokyh.com when tunnel is api.pokyh.com)
-  ...(effectiveTunnelHostname ? [parentDomainOrigin(effectiveTunnelHostname)].filter(Boolean) as string[] : []),
   ...(config.isDev ? ['http://localhost:3000', 'http://localhost:3001', 'http://localhost:3005', 'http://localhost:5173'] : []),
   `http://localhost:${config.port}`,
   `https://localhost:${config.port}`,
@@ -393,12 +375,6 @@ function start() {
     // Connect to the DB and start background jobs in the background (non-blocking).
     void connectDatabaseWithRetry();
 
-    // Auto-start Cloudflare tunnel if configured
-    if (isTunnelConfigured()) {
-      startTunnel(config.tunnelName);
-    } else {
-      logger.info('Tunnel not configured — open /admin/ to set up Cloudflare tunnel');
-    }
   });
 }
 
@@ -407,7 +383,6 @@ start();
 process.on('SIGTERM', async () => {
   logger.info('SIGTERM received, shutting down...');
   databaseReady = false;
-  stopTunnel();
   await closeLearnCache();
   await prisma.$disconnect();
   process.exit(0);
@@ -416,7 +391,6 @@ process.on('SIGTERM', async () => {
 process.on('SIGINT', async () => {
   logger.info('SIGINT received, shutting down...');
   databaseReady = false;
-  stopTunnel();
   await prisma.$disconnect();
   process.exit(0);
 });
