@@ -15,6 +15,25 @@ import { logger } from '../utils/logger';
 
 const router = Router();
 
+// The Learn BFF reads this before rendering its sign-in form. It deliberately
+// exposes only the public notice URL/version and whether acknowledgement is
+// required; the WebUntis authorization reference and all other operator
+// configuration remain server-only. Keeping the version authoritative here
+// prevents an independently deployed frontend from acknowledging an obsolete
+// notice version and then being rejected during sign-in.
+router.get('/sign-in-config', readLimiter, async (_req: Request, res: Response) => {
+  const learnCfg = await getLearnConfig();
+  const privacyRequired = learnCfg.legalGateEnabled;
+  const privacyConfigured = !privacyRequired || learnCfg.legalGateReady;
+
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.json({
+    privacyRequired,
+    privacyNoticeUrl: privacyConfigured ? learnCfg.privacyNoticeUrl : '',
+    privacyNoticeVersion: privacyConfigured ? learnCfg.privacyNoticeVersion : '',
+  });
+});
+
 // Structured, DB-independent audit trail for sensitive Learn actions. Never
 // pass answer text, vocabulary text, or other learner-authored content here —
 // only IDs, counts, and outcomes (see CLAUDE.md's privacy rules).
