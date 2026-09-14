@@ -52,11 +52,17 @@ export function isSecurePublicUrl(value: string): boolean {
   }
 }
 
-// Resolve the express `trust proxy` value from TRUST_PROXY. Accepts a boolean
-// ('true'/'false'), a numeric hop count, or a named value ('loopback', etc.).
-// Direct deployments must not trust forwarded headers by default.
-function parseTrustProxy(raw: string | undefined): boolean | number | string {
-  const val = (raw ?? '').trim();
+// Resolve the express `trust proxy` value from TRUST_PROXY. Some deployment
+// UIs persist string values with their wrapping quotes (for example,
+// `"loopback"`). Strip one matching wrapping pair before validating so that a
+// value intended for Express cannot crash the API at startup. Direct
+// deployments must not trust forwarded headers by default.
+export function parseTrustProxy(raw: string | undefined): boolean | number | string {
+  const trimmed = (raw ?? '').trim();
+  const hasMatchingQuotes = trimmed.length >= 2
+    && (trimmed.startsWith('"') || trimmed.startsWith("'"))
+    && trimmed.at(0) === trimmed.at(-1);
+  const val = (hasMatchingQuotes ? trimmed.slice(1, -1) : trimmed).trim();
   if (val === '') return false;
   if (val.toLowerCase() === 'true') return true;
   if (val.toLowerCase() === 'false') return false;
