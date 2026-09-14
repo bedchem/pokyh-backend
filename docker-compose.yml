@@ -2,12 +2,31 @@ services:
   mysql:
     image: mysql:8.0.40
     restart: unless-stopped
-    environment:
-      # Compose itself must receive this value (normally through its selected
-      # --env-file), so MySQL and the backend cannot silently start against
-      # different credentials. Do not put unrelated app secrets in MySQL.
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD through Compose environment}
-      MYSQL_DATABASE: ${DB_NAME:-pokyh}
+    # The backend's full env file is mounted as a read-only Compose config and
+    # parsed literally by the entrypoint below. This avoids Docker Compose
+    # interpolating `$` within bcrypt/JWT material before the backend receives
+    # it. The MySQL process is deliberately given only its own two values.
+    configs:
+      - source: backend_env
+        target: /run/configs/pokyh-backend.env
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        config_file=/run/configs/pokyh-backend.env
+        read_value() {
+          awk -v key="$$1" 'index($$0, key "=") == 1 { sub(/^[^=]*=/, ""); print; exit }' "$$config_file"
+        }
+        mysql_root_password="$$(read_value MYSQL_ROOT_PASSWORD)"
+        mysql_database="$$(read_value DB_NAME)"
+        test -n "$$mysql_root_password" || { echo "MYSQL_ROOT_PASSWORD is required" >&2; exit 1; }
+        test -n "$$mysql_database" || { echo "DB_NAME is required" >&2; exit 1; }
+        exec env -i PATH="$$PATH" HOME=/root \
+          MYSQL_ROOT_PASSWORD="$$mysql_root_password" \
+          MYSQL_DATABASE="$$mysql_database" \
+          /usr/local/bin/docker-entrypoint.sh "$$@"
+      - --
+    command: ["mysqld"]
     volumes:
       - mysql_data:/var/lib/mysql
     healthcheck:
@@ -25,6 +44,10 @@ services:
     image: redis:7.4.1-alpine
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "no", "--save", "", "--protected-mode", "yes"]
+    # Running the image entrypoint as its built-in unprivileged account avoids
+    # the root-only ownership repair that conflicts with cap_drop=ALL. Redis
+    # does not need persistent writes: `/data` is a temporary cache filesystem.
+    user: redis
     expose:
       - "6379"
     read_only: true
@@ -74,8 +97,6 @@ services:
         required: true
         format: raw
     environment:
-      - NODE_ENV=${NODE_ENV:-production}
-      - PORT=${PORT:-4000}
       # The same service can run without Redis outside Compose by setting this
       # explicitly blank; the app degrades safely to MySQL reads.
       - LEARN_REDIS_URL=${LEARN_REDIS_URL:-redis://redis:6379}
@@ -106,6 +127,10 @@ services:
 volumes:
   mysql_data:
   cloudflared_data:
+
+configs:
+  backend_env:
+    file: ${BACKEND_ENV_FILE:-.env}
 
 networks:
   # Allows the app to reach the configured public integrations/tunnel while

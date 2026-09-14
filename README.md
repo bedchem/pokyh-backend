@@ -164,18 +164,21 @@ On first run, open `/admin/` to complete the setup wizard (admin account + optio
 ```bash
 # Development example only: replace placeholders; never commit the resulting file.
 cp .env.example .env
-docker compose --env-file .env up --build -d
+./scripts/compose-stack.sh up --build -d
 ```
 
-Compose must receive the same selected environment file as the app: MySQL reads
-`MYSQL_ROOT_PASSWORD` during Compose interpolation while the app reads its
-runtime variables through `BACKEND_ENV_FILE`. For a separately managed private
-file, use both selectors so the two services cannot accidentally use different
-database credentials:
+`scripts/compose-stack.sh` selects one operator-owned environment file for the
+app and the MySQL initialisation config, while disabling Compose's automatic
+project-`.env` parsing. The service-level `env_file` uses Compose's `raw`
+format, so values such as bcrypt hashes are passed literally rather than being
+interpolated by Compose. MySQL receives only its root password and database
+name; the full backend environment is never injected into the MySQL process.
+
+For a separately managed private file, select it once:
 
 ```bash
 BACKEND_ENV_FILE=/secure/path/backend.env \
-  docker compose --env-file /secure/path/backend.env up --build -d
+  ./scripts/compose-stack.sh up --build -d
 ```
 
 This starts MySQL and an internal, non-persistent Redis service behind
@@ -359,7 +362,7 @@ Production runs as a Docker image (multi-stage `Dockerfile`) that:
    if configured, starts the Cloudflare Tunnel — so no inbound ports need to be opened.
 
 ```bash
-docker compose --env-file .env up --build -d
+./scripts/compose-stack.sh up --build -d
 ```
 
 On the bundled compose stack the app waits for both MySQL and internal Redis

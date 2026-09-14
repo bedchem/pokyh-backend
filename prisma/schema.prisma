@@ -382,7 +382,10 @@ model ArchivedClass {
   createdBy        String   @map("created_by")
   createdByName    String   @default("") @map("created_by_name")
   memberCount      Int      @default(0) @map("member_count")
-  membersJson      String   @default("[]") @map("members_json") @db.Text
+  // MySQL does not support a portable literal default for TEXT. Every archive
+  // write supplies an explicit JSON array, so the schema remains compatible
+  // with `prisma db push` and avoids a silent database-specific fallback.
+  membersJson      String   @map("members_json") @db.Text
   createdAt        DateTime @map("created_at")
 
   schoolYear SchoolYear @relation(fields: [schoolYearId], references: [id], onDelete: Cascade)
@@ -425,7 +428,7 @@ model ArchivedReminder {
   createdByName     String    @default("") @map("created_by_name")
   createdByUsername String    @default("") @map("created_by_username")
   archivedAt        DateTime? @map("archived_at")
-  commentsJson      String    @default("[]") @map("comments_json") @db.Text
+  commentsJson      String    @map("comments_json") @db.Text
   createdAt         DateTime  @map("created_at")
 
   schoolYear SchoolYear @relation(fields: [schoolYearId], references: [id], onDelete: Cascade)
@@ -525,7 +528,7 @@ model LearnCourseSection {
   // LESSON, VOCABULARY, GRAMMAR, QUIZ, or a future server-defined type.
   type        String   @default("LESSON") @db.VarChar(40)
   sortOrder   Int      @default(0) @map("sort_order")
-  contentJson String   @default("{}") @map("content_json") @db.LongText
+  contentJson String   @map("content_json") @db.LongText
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 
@@ -608,7 +611,7 @@ model LearnVocabularyEntry {
   article            String   @default("") @db.VarChar(40)
   partOfSpeech       String   @default("") @map("part_of_speech") @db.VarChar(80)
   notes              String   @default("") @db.VarChar(2000)
-  tagsJson           String   @default("[]") @map("tags_json") @db.Text
+  tagsJson           String   @map("tags_json") @db.Text
   // UNVERIFIED, VERIFIED, or FLAGGED.  A future dictionary integration can
   // populate verificationSource without changing the entry contract.
   verificationStatus String   @default("UNVERIFIED") @map("verification_status") @db.VarChar(20)
