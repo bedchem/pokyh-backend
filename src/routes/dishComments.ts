@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { z } from 'zod';
 import { prisma } from '../db';
-import { requireAuth } from '../middleware/auth';
+import { optionalAuth, requireAuth } from '../middleware/auth';
 import { readLimiter, writeLimiter } from '../middleware/rateLimiter';
 import { ForbiddenError, NotFoundError } from '../utils/errors';
 import { sseManager } from '../services/sse';
@@ -25,11 +25,16 @@ function broadcastDishComments(dishKey: string, rawId: string, comments: unknown
 
 const bodySchema = z.object({ body: z.string().min(1).max(2000) });
 
-// GET /dish-comments/:dishId
-router.get('/:dishId', readLimiter, requireAuth, async (req: Request, res: Response) => {
+// GET /dish-comments/:dishId — public read; guests don't receive stableUids
+router.get('/:dishId', readLimiter, optionalAuth, async (req: Request, res: Response) => {
   const raw = req.params['dishId'] as string;
   const key = await resolveDishKey(raw);
-  res.json(await getCommentsForDish(key));
+  const comments = await getCommentsForDish(key);
+  if (req.user) {
+    res.json(comments);
+    return;
+  }
+  res.json(comments.map(({ stableUid: _stableUid, ...rest }) => ({ ...rest, stableUid: '' })));
 });
 
 // POST /dish-comments/:dishId

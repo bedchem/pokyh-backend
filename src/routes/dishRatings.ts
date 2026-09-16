@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { z } from 'zod';
 import { prisma } from '../db';
-import { requireAuth } from '../middleware/auth';
+import { optionalAuth, requireAuth } from '../middleware/auth';
 import { readLimiter, writeLimiter } from '../middleware/rateLimiter';
 import { sseManager } from '../services/sse';
 import { resolveDishKey, slugifyDishName } from '../utils/dishKey';
@@ -27,14 +27,22 @@ async function getDishRatingsData(dishKey: string, myStableUid: string) {
   return { ratings, myRating };
 }
 
-// GET /dish-ratings/:dishId
-router.get('/:dishId', readLimiter, requireAuth, async (req: Request, res: Response) => {
+// Guests may read ratings, but never see who rated: replace stableUids with
+// positional keys so only the average and count can be derived.
+function anonymizeRatings(data: { ratings: Record<string, number>; myRating: number | null }) {
+  const ratings: Record<string, number> = {};
+  Object.values(data.ratings).forEach((stars, i) => { ratings[String(i)] = stars; });
+  return { ratings, myRating: null };
+}
+
+// GET /dish-ratings/:dishId — public read; myRating only with a session
+router.get('/:dishId', readLimiter, optionalAuth, async (req: Request, res: Response) => {
   const raw = req.params['dishId'] as string;
-  const { stableUid } = req.user!;
+  const stableUid = req.user?.stableUid;
 
   const dishKey = await resolveDishKey(raw);
-  const data = await getDishRatingsData(dishKey, stableUid);
-  res.json(data);
+  const data = await getDishRatingsData(dishKey, stableUid ?? '');
+  res.json(stableUid ? data : anonymizeRatings(data));
 });
 
 // POST /dish-ratings/batch — get ratings for multiple dishes
@@ -42,8 +50,8 @@ const batchSchema = z.object({
   dishIds: z.array(z.string()).min(1).max(100),
 });
 
-router.post('/batch', readLimiter, requireAuth, async (req: Request, res: Response) => {
-  const { stableUid } = req.user!;
+router.post('/batch', readLimiter, optionalAuth, async (req: Request, res: Response) => {
+  const stableUid = req.user?.stableUid;
   const { dishIds } = batchSchema.parse(req.body);
 
   // Resolve each incoming id → stableKey; keep a reverse map so we can echo the
@@ -68,7 +76,7 @@ router.post('/batch', readLimiter, requireAuth, async (req: Request, res: Respon
   const result: Record<string, { ratings: Record<string, number>; myRating: number | null }> = {};
   for (const [inputId, key] of keyByInput) {
     const entry = byKey.get(key) ?? { ratings: {}, myRating: null };
-    result[inputId] = entry;
+    result[inputId] = stableUid ? entry : anonymizeRatings(entry);
   }
 
   res.json(result);
