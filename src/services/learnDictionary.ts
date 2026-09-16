@@ -1,5 +1,6 @@
 import { AppError, ValidationError } from '../utils/errors';
 import { config } from '../config';
+import { prisma } from '../db';
 import { getLearnConfig, type LearnConfigValues } from './learnConfig';
 
 export type DictionarySuggestion = {
@@ -15,6 +16,16 @@ type CachedSuggestion = Omit<DictionarySuggestion, 'cached'> & { expiresAt: numb
 
 const cache = new Map<string, CachedSuggestion>();
 
+// reasonCode is machine-readable so the frontend can render it in the
+// viewer's own locale; message is the English fallback/audit-log string.
+// similarWord is only set for reasonCode 'near_duplicate'.
+export type DictionaryValidationReasonCode =
+  | 'no_vowel'
+  | 'triple_repeat'
+  | 'consonant_run'
+  | 'near_duplicate'
+  | 'no_issue_found';
+
 export type DictionaryWordValidation = {
   provider: 'dictionaryapi' | 'local';
   language: string;
@@ -25,6 +36,8 @@ export type DictionaryWordValidation = {
   cached: boolean;
   stale: boolean;
   message: string | null;
+  reasonCode: DictionaryValidationReasonCode | null;
+  similarWord: string | null;
 };
 
 type CachedValidation = Omit<DictionaryWordValidation, 'cached' | 'stale'> & {
@@ -195,33 +208,157 @@ export async function getDictionarySuggestion({
   return { ...suggestion, cached: false };
 }
 
-function manualValidation(language: string, message: string): DictionaryWordValidation {
+// ─── Self-contained local spelling check ────────────────────────────────────
+// Deliberately does not bundle a third-party word list: the well-known npm
+// Hunspell dictionaries for German/Italian ship under GPL, which is not a
+// license this platform's own code can casually absorb without the same
+// license/provenance review this repo's CLAUDE.md already requires before
+// adding any bundled lexical source. This runs entirely on structural,
+// language-agnostic heuristics plus a same-course near-duplicate check
+// against this platform's own already-curated vocabulary — no network call,
+// no bundled dictionary data, so it always works, including for German and
+// Italian (which the external API below never covered at all) and as a
+// fallback when that external API is disabled or unreachable.
+
+const VOWELS_BY_LANGUAGE: Record<string, string> = {
+  de: 'aeiouäöü',
+  it: 'aeiouàèéìòù',
+  en: 'aeiou',
+};
+
+// Longest plausible run of consonants in ordinary vocabulary. German
+// compounds legitimately run long at morpheme boundaries — "Herbstpflicht"
+// alone has a 7-consonant run — so its threshold is deliberately generous;
+// Italian is comparatively vowel-heavy, English sits in between.
+const MAX_CONSONANT_RUN: Record<string, number> = { de: 8, it: 4, en: 5 };
+
+function localNormalize(value: string): string {
+  return value
+    .normalize('NFKD')
+    .replace(/\p{M}/gu, '')
+    .toLocaleLowerCase('en-US')
+    .replace(/[^\p{L}\s'-]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function isPlausibleSpelling(word: string, language: string): { plausible: boolean; reasonCode: DictionaryValidationReasonCode | null; message: string | null } {
+  const letters = word.toLocaleLowerCase('en-US').replace(/[^\p{L}]/gu, '');
+  if (!letters) return { plausible: true, reasonCode: null, message: null };
+
+  const vowels = VOWELS_BY_LANGUAGE[language] ?? VOWELS_BY_LANGUAGE['en']!;
+  if (letters.length >= 3 && ![...letters].some((char) => vowels.includes(char))) {
+    return { plausible: false, reasonCode: 'no_vowel', message: 'No vowel found in this word — check for a typo' };
+  }
+
+  if (/(\p{L})\1\1/u.test(letters)) {
+    return { plausible: false, reasonCode: 'triple_repeat', message: 'A letter repeats three or more times in a row — check for a typo' };
+  }
+
+  const maxRun = MAX_CONSONANT_RUN[language] ?? MAX_CONSONANT_RUN['en']!;
+  let run = 0;
+  for (const char of letters) {
+    if (vowels.includes(char)) {
+      run = 0;
+      continue;
+    }
+    run += 1;
+    if (run > maxRun) {
+      return { plausible: false, reasonCode: 'consonant_run', message: 'An unusually long run of consonants was found — check for a typo' };
+    }
+  }
+
+  return { plausible: true, reasonCode: null, message: null };
+}
+
+function levenshteinDistance(a: string, b: string): number {
+  if (a === b) return 0;
+  if (!a.length) return b.length;
+  if (!b.length) return a.length;
+  let previousRow = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 0; i < a.length; i += 1) {
+    const currentRow = [i + 1];
+    for (let j = 0; j < b.length; j += 1) {
+      const cost = a[i] === b[j] ? 0 : 1;
+      currentRow.push(Math.min(
+        currentRow[j]! + 1,
+        previousRow[j + 1]! + 1,
+        previousRow[j]! + cost,
+      ));
+    }
+    previousRow = currentRow;
+  }
+  return previousRow[b.length]!;
+}
+
+// A near-miss (edit distance 1) against this course's own already-saved
+// vocabulary is a stronger, more relevant typo signal for a curated
+// vocabulary platform than a generic dictionary lookup would be — it only
+// ever compares against this platform's own data, never a third-party word
+// list, and is scoped to one course so it can never leak another team's
+// vocabulary (see resolveCourseAccess's team-scoping in routes/learn.ts).
+async function findNearDuplicate(courseId: string, sourceLanguage: string, normalizedWord: string): Promise<string | null> {
+  if (normalizedWord.length < 3) return null;
+  const existing = await prisma.learnVocabularyEntry.findMany({
+    where: { courseId, sourceLanguage, normalizedSource: { not: '' } },
+    select: { normalizedSource: true },
+    take: 500,
+  });
+  for (const entry of existing) {
+    if (entry.normalizedSource === normalizedWord) continue;
+    if (Math.abs(entry.normalizedSource.length - normalizedWord.length) > 1) continue;
+    if (levenshteinDistance(normalizedWord, entry.normalizedSource) === 1) return entry.normalizedSource;
+  }
+  return null;
+}
+
+async function localSpellingCheck(word: string, language: string, courseId?: string): Promise<DictionaryWordValidation> {
+  const structural = isPlausibleSpelling(word, language);
+  if (!structural.plausible) {
+    return {
+      provider: 'local', language, status: 'not_found',
+      definition: null, example: null, partOfSpeech: null,
+      cached: false, stale: false,
+      message: structural.message, reasonCode: structural.reasonCode, similarWord: null,
+    };
+  }
+  if (courseId) {
+    const similar = await findNearDuplicate(courseId, language, localNormalize(word));
+    if (similar) {
+      return {
+        provider: 'local', language, status: 'not_found',
+        definition: null, example: null, partOfSpeech: null,
+        cached: false, stale: false,
+        message: `This looks similar to the already-saved word "${similar}" in this course — check for a typo`,
+        reasonCode: 'near_duplicate', similarWord: similar,
+      };
+    }
+  }
   return {
-    provider: 'local',
-    language,
-    status: 'manual',
-    definition: null,
-    example: null,
-    partOfSpeech: null,
-    cached: false,
-    stale: false,
-    message,
+    provider: 'local', language, status: 'manual',
+    definition: null, example: null, partOfSpeech: null,
+    cached: false, stale: false,
+    message: 'No obvious spelling issue found by the local check — this is not a full dictionary verification',
+    reasonCode: 'no_issue_found', similarWord: null,
   };
 }
 
 /**
- * Checks an English headword against the documented free Dictionary API. The
- * provider only documents `entries/en/<word>`, so German and Italian entries
- * receive an honest manual-review outcome rather than a guessed validation.
- * A network failure never blocks authoring: it returns an unavailable result
- * and lets the caller retain the word for later editorial review.
+ * Checks an English headword against the documented free Dictionary API when
+ * it's enabled and reachable — the richer, authoritative path. German and
+ * Italian never had any check at all before; both now always go through the
+ * self-contained localSpellingCheck above, and English falls back to it too
+ * whenever the external API is disabled, misconfigured, or unreachable, so
+ * authoring is never left with only a bare "unavailable" response.
  */
 export async function validateVocabularyWord({
   sourceText,
   sourceLanguage,
+  courseId,
 }: {
   sourceText: string;
   sourceLanguage: string;
+  courseId?: string;
 }): Promise<DictionaryWordValidation> {
   const dictCfg = await getLearnConfig();
   const language = normalizedLanguage(sourceLanguage);
@@ -230,29 +367,20 @@ export async function validateVocabularyWord({
     throw new ValidationError('Enter one plain word or phrase before requesting validation');
   }
   if (language !== 'en') {
-    return manualValidation(language, 'This provider documents English headwords only; keep this entry for editorial review');
+    return localSpellingCheck(word, language, courseId);
   }
   if (!dictCfg.dictionaryValidationEnabled) {
-    return {
-      ...manualValidation(language, 'English dictionary validation is currently disabled by the platform'),
-      status: 'unavailable',
-    };
+    return localSpellingCheck(word, language, courseId);
   }
   if (dictCfg.dictionaryValidationProvider.toLocaleLowerCase('en-US') !== 'dictionaryapi') {
-    return {
-      ...manualValidation(language, 'The configured English validation provider is unavailable'),
-      status: 'unavailable',
-    };
+    return localSpellingCheck(word, language, courseId);
   }
 
   let base: URL;
   try {
     base = safeProviderUrl(dictCfg.dictionaryValidationBaseUrl);
   } catch {
-    return {
-      ...manualValidation(language, 'English dictionary validation is not configured safely'),
-      status: 'unavailable',
-    };
+    return localSpellingCheck(word, language, courseId);
   }
   const key = `${base.origin}${base.pathname}:en:${word.toLocaleLowerCase('en-US')}`;
   const cached = validationCacheValue(key);
@@ -276,6 +404,8 @@ export async function validateVocabularyWord({
         cached: false,
         stale: false,
         message: 'No English dictionary entry was found; check spelling or keep it for editorial review',
+        reasonCode: null,
+        similarWord: null,
       };
     }
     if (!response.ok) throw new Error('Dictionary response failed');
@@ -306,6 +436,8 @@ export async function validateVocabularyWord({
       example: example || null,
       partOfSpeech: partOfSpeech || null,
       message: 'Verified against the configured English dictionary',
+      reasonCode: null,
+      similarWord: null,
     };
     storeValidation(key, value, dictCfg);
     return { ...value, cached: false, stale: false };
@@ -313,9 +445,9 @@ export async function validateVocabularyWord({
     // A stale prior success is more helpful than a hard failure, but it is
     // visibly marked stale and never treated as an automated grading result.
     if (cached) return { ...cached.value, stale: true, message: 'Showing the last cached result while the dictionary is unavailable' };
-    return {
-      ...manualValidation(language, 'The dictionary is temporarily unavailable; the word can still be saved for editorial review'),
-      status: 'unavailable',
-    };
+    // The external API is down — fall back to the local, dependency-free
+    // check rather than leaving authoring with only an "unavailable" result.
+    const fallback = await localSpellingCheck(word, language, courseId);
+    return { ...fallback, stale: true, message: `${fallback.message} (the online dictionary was unreachable)` };
   }
 }

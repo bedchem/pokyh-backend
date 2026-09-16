@@ -1931,8 +1931,11 @@ router.post('/vocabulary/lookup', requireAuth, learnWriteLimiter, async (req: Re
 
 // A lexical headword check is separate from translation suggestions and quiz
 // verification. This endpoint deliberately never stores or grades a result:
-// authors can retain their word when a free provider is down, and the UI marks
-// unsupported German/Italian input as editorial review instead of guessing.
+// authors can always retain their word for editorial review regardless of
+// the outcome. English tries the external dictionary first when enabled and
+// reachable; German, Italian, and any English fallback go through the
+// self-contained local heuristic in learnDictionary.ts (structural spelling
+// plausibility plus a same-course near-duplicate check) — never a guess.
 router.post('/vocabulary/validate', requireAuth, learnWriteLimiter, async (req: Request, res: Response) => {
   const body = vocabularyValidationSchema.parse(req.body);
   const { stableUid } = req.user!;
