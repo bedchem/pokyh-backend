@@ -89,6 +89,7 @@ function TeamCard({
   const [showDelete, setShowDelete] = useState(false);
   const [deleteConfirmation, setDeleteConfirmation] = useState('');
   const [deleting, setDeleting] = useState(false);
+  const [seedingVocab, setSeedingVocab] = useState(false);
 
   function cancelEdit() {
     setName(team.name);
@@ -170,6 +171,19 @@ function TeamCard({
       showToast(error instanceof Error ? error.message : 'Eigentümerwechsel fehlgeschlagen', 'error');
     } finally {
       setChangingMemberId(null);
+    }
+  }
+
+  async function handleSeedVocabCourses() {
+    setSeedingVocab(true);
+    try {
+      const result = await adminApi.seedLearnTeamVocabCourses(team.id);
+      await onRefreshed();
+      showToast(result.created > 0 ? `${result.created} Vokabelkurs(e) angelegt` : 'Vokabelkurse sind bereits vorhanden', 'success');
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Vokabelkurse konnten nicht angelegt werden', 'error');
+    } finally {
+      setSeedingVocab(false);
     }
   }
 
@@ -291,16 +305,29 @@ function TeamCard({
             </div>
             <div className="mt-3 flex items-center justify-between gap-3 flex-wrap text-[11px]" style={mutedText}>
               <span>Zuletzt geändert: {formatDate(team.updatedAt)}</span>
-              <button
-                type="button"
-                onClick={() => setExpanded((value) => !value)}
-                aria-expanded={expanded}
-                className="flex items-center gap-1 transition-colors"
-                style={{ color: '#0a84ff' }}
-              >
-                {expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-                Mitglieder &amp; Zugriffe {expanded ? 'ausblenden' : 'anzeigen'}
-              </button>
+              <div className="flex items-center gap-3 flex-wrap">
+                <button
+                  type="button"
+                  onClick={() => void handleSeedVocabCourses()}
+                  disabled={seedingVocab}
+                  className="flex items-center gap-1 transition-colors disabled:opacity-50"
+                  style={{ color: '#0a84ff' }}
+                  title="Italienisch- und Englisch-Vokabelkurs für dieses Team anlegen, falls noch nicht vorhanden"
+                >
+                  {seedingVocab ? <Loader2 size={13} className="animate-spin" /> : <BookOpen size={13} />}
+                  Vokabelkurse anlegen
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setExpanded((value) => !value)}
+                  aria-expanded={expanded}
+                  className="flex items-center gap-1 transition-colors"
+                  style={{ color: '#0a84ff' }}
+                >
+                  {expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                  Mitglieder &amp; Zugriffe {expanded ? 'ausblenden' : 'anzeigen'}
+                </button>
+              </div>
             </div>
           </>
         )}

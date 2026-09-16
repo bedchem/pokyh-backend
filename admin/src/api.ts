@@ -414,6 +414,9 @@ export const adminApi = {
   transferLearnTeamOwnership: (teamId: string, stableUid: string): Promise<{ ok: true }> =>
     request<{ ok: true }>('POST', `/api/admin/learn/teams/${teamId}/owner`, { stableUid }),
 
+  seedLearnTeamVocabCourses: (teamId: string): Promise<{ created: number }> =>
+    request<{ created: number }>('POST', `/api/admin/learn/teams/${teamId}/seed-vocab-courses`),
+
   deleteLearnTeam: (teamId: string, confirmName: string): Promise<void> =>
     request<void>('DELETE', `/api/admin/learn/teams/${teamId}`, { confirmName }),
 
