@@ -398,6 +398,14 @@ async function requireLearnAdmin(stableUid: string): Promise<void> {
   if (!await isLearnAdmin(stableUid)) throw new ForbiddenError('Admin access required');
 }
 
+async function isTeamOwner(stableUid: string, teamId: string): Promise<boolean> {
+  const member = await prisma.learnTeamMember.findUnique({
+    where: { teamId_stableUid: { teamId, stableUid } },
+    select: { role: true },
+  });
+  return member?.role === 'OWNER';
+}
+
 async function ensureLearnProfile(stableUid: string, touch = true) {
   const user = await prisma.user.findUnique({
     where: { stableUid },
@@ -2332,16 +2340,22 @@ router.post('/teams', requireAuth, learnWriteLimiter, async (req: Request, res: 
   res.status(201).json(team);
 });
 
-// Team membership is controlled only by a canonical Pokyh administrator.
-// There is no anonymous invite token, so every member remains an existing,
-// confirmed WebUntis-backed Pokyh identity.
+// Team membership is controlled by a canonical Pokyh administrator, or by
+// the team's own owner adding a MANAGER/MEMBER to their own team (never
+// another team, and never granting OWNER — ownership transfer is a
+// dedicated, admin-only action in the backend admin panel). There is no
+// anonymous invite token, so every member remains an existing, confirmed
+// WebUntis-backed Pokyh identity.
 router.post('/teams/:teamId/members', requireAuth, learnWriteLimiter, async (req: Request, res: Response) => {
   const teamId = uuidSchema.parse(req.params['teamId']);
   const body = teamMemberSchema.parse(req.body);
   const { stableUid } = req.user!;
-  await requireLearnAdmin(stableUid);
+  await ensureLearnProfile(stableUid, false);
   const team = await prisma.learnTeam.findUnique({ where: { id: teamId }, select: { id: true } });
   if (!team) throw new NotFoundError('Team not found');
+  if (!await isLearnAdmin(stableUid) && !await isTeamOwner(stableUid, teamId)) {
+    throw new ForbiddenError('Only this team’s owner or a Pokyh administrator can add members');
+  }
 
   const user = await prisma.user.findFirst({
     where: { OR: [{ stableUid: body.userId }, { username: body.userId }] },
@@ -2369,6 +2383,54 @@ router.post('/teams/:teamId/members', requireAuth, learnWriteLimiter, async (req
   ]);
   learnAudit(req, 'team_member_added', { teamId, targetStableUid: user.stableUid, role: body.role });
   res.json({ member: { ...member, username: user.username } });
+});
+
+// Full roster of one team, for a current member's own team only (or a
+// platform administrator's). Reading who else shares your own team is
+// team-scoped content per this app's authorization model, not a privilege
+// beyond membership.
+router.get('/teams/:teamId/members', requireAuth, learnReadLimiter, async (req: Request, res: Response) => {
+  const teamId = uuidSchema.parse(req.params['teamId']);
+  const { stableUid } = req.user!;
+  await ensureLearnProfile(stableUid, false);
+  const isAdmin = await isLearnAdmin(stableUid);
+  if (!isAdmin && !await prisma.learnTeamMember.findUnique({ where: { teamId_stableUid: { teamId, stableUid } }, select: { stableUid: true } })) {
+    throw new ForbiddenError('You are not a member of this team');
+  }
+  const members = await prisma.learnTeamMember.findMany({
+    where: { teamId },
+    orderBy: { joinedAt: 'asc' },
+    select: { stableUid: true, role: true, joinedAt: true, user: { select: { username: true } } },
+  });
+  res.json({ members: members.map((member) => ({ stableUid: member.stableUid, role: member.role, joinedAt: member.joinedAt, username: member.user?.username ?? null })) });
+});
+
+// A minimal, owner/admin-only search used to populate the "add member"
+// picker on learn.pokyh.com. Returns only username + stableUid for verified
+// WebUntis users not already on this team — never full user records, and
+// never usable by a non-owner, non-admin caller (this is not a general
+// people-search endpoint).
+router.get('/teams/:teamId/candidate-members', requireAuth, learnReadLimiter, async (req: Request, res: Response) => {
+  const teamId = uuidSchema.parse(req.params['teamId']);
+  const query = z.object({ q: z.string().trim().max(100).default('') }).parse(req.query);
+  const { stableUid } = req.user!;
+  await ensureLearnProfile(stableUid, false);
+  if (!await isLearnAdmin(stableUid) && !await isTeamOwner(stableUid, teamId)) {
+    throw new ForbiddenError('Only this team’s owner or a Pokyh administrator can search for members to add');
+  }
+  const existingMembers = await prisma.learnTeamMember.findMany({ where: { teamId }, select: { stableUid: true } });
+  const excluded = existingMembers.map((member) => member.stableUid);
+  const candidates = await prisma.user.findMany({
+    where: {
+      isUntisUser: true,
+      stableUid: { notIn: excluded.length > 0 ? excluded : undefined },
+      ...(query.q ? { username: { contains: query.q } } : {}),
+    },
+    select: { stableUid: true, username: true },
+    orderBy: { username: 'asc' },
+    take: 20,
+  });
+  res.json({ candidates });
 });
 
 // ─── Learn administration ───────────────────────────────────────────────────

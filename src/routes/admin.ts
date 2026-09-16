@@ -2988,6 +2988,10 @@ const adminLearnTeamDeleteSchema = z.object({
   confirmName: z.string().trim().min(1).max(120),
 });
 
+const adminLearnTeamOwnerSchema = z.object({
+  stableUid: z.string().trim().min(1).max(100),
+});
+
 function learnTeamAdminRow(team: {
   id: string;
   name: string;
@@ -3121,6 +3125,43 @@ router.delete('/learn/teams/:teamId/members/:stableUid', requireAdmin, async (re
     action: 'learn_team_member_removed', adminUsername: actor.username, teamId, targetStableUid: stableUid,
   });
   res.status(204).send();
+});
+
+// Makes an existing team member the sole owner, demoting any other current
+// owner(s) to MANAGER in the same transaction. There was previously no way
+// to assign OWNER at all after team creation — the member-role endpoints
+// above deliberately only accept MANAGER/MEMBER, and the admin UI never
+// offered OWNER as a role choice, so this is a dedicated, explicit action
+// rather than folding OWNER into the generic role dropdown (which could
+// otherwise leave a team with an ambiguous multiple-owner state from an
+// offhand role edit).
+router.post('/learn/teams/:teamId/owner', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const teamId = z.string().uuid().parse(req.params['teamId']);
+  const body = adminLearnTeamOwnerSchema.parse(req.body);
+  const actor = await learnAdminActor(req);
+  const target = await prisma.learnTeamMember.findUnique({
+    where: { teamId_stableUid: { teamId, stableUid: body.stableUid } },
+    select: { role: true, user: { select: { username: true } } },
+  });
+  if (!target) throw new NotFoundError('This person must already be a team member before becoming its owner');
+  if (target.role === 'OWNER') {
+    res.json({ ok: true });
+    return;
+  }
+  await prisma.$transaction([
+    prisma.learnTeamMember.updateMany({
+      where: { teamId, role: 'OWNER' },
+      data: { role: 'MANAGER' },
+    }),
+    prisma.learnTeamMember.update({
+      where: { teamId_stableUid: { teamId, stableUid: body.stableUid } },
+      data: { role: 'OWNER' },
+    }),
+  ]);
+  logger.info('Admin action: Learn team ownership transferred', {
+    action: 'learn_team_owner_transferred', adminUsername: actor.username, teamId, targetStableUid: body.stableUid,
+  });
+  res.json({ ok: true });
 });
 
 router.delete('/learn/teams/:teamId', requireAdmin, async (req: Request, res: Response): Promise<void> => {

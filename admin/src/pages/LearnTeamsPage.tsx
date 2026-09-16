@@ -6,6 +6,7 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  Crown,
   Edit3,
   GraduationCap,
   Loader2,
@@ -151,6 +152,22 @@ function TeamCard({
       showToast(`Rolle für ${member.user?.username ?? 'Mitglied'} aktualisiert`, 'success');
     } catch (error) {
       showToast(error instanceof Error ? error.message : 'Rolle konnte nicht aktualisiert werden', 'error');
+    } finally {
+      setChangingMemberId(null);
+    }
+  }
+
+  async function handleMakeOwner(member: AdminLearnTeamMember) {
+    const memberName = member.user?.username ?? member.stableUid;
+    if (!window.confirm(`„${memberName}“ zum Eigentümer von „${team.name}“ machen? Der bisherige Eigentümer wird zum Verwalter herabgestuft.`)) return;
+
+    setChangingMemberId(member.stableUid);
+    try {
+      await adminApi.transferLearnTeamOwnership(team.id, member.stableUid);
+      await onRefreshed();
+      showToast(`${memberName} ist jetzt Eigentümer`, 'success');
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Eigentümerwechsel fehlgeschlagen', 'error');
     } finally {
       setChangingMemberId(null);
     }
@@ -334,6 +351,19 @@ function TeamCard({
                         <option value="MEMBER">Mitglied</option>
                         <option value="MANAGER">Verwalter</option>
                       </select>
+                    )}
+                    {!isOwner && (
+                      <button
+                        type="button"
+                        onClick={() => void handleMakeOwner(member)}
+                        disabled={isBusy}
+                        title="Zum Eigentümer machen"
+                        className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-[8px] text-[12px] font-medium disabled:opacity-50"
+                        style={{ background: 'rgba(191,90,242,0.09)', color: '#bf5af2', border: '1px solid rgba(191,90,242,0.19)' }}
+                      >
+                        {changingMemberId === member.stableUid ? <Loader2 size={12} className="animate-spin" /> : <Crown size={12} />}
+                        Eigentümer
+                      </button>
                     )}
                     <button
                       type="button"
