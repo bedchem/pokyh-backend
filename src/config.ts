@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import path from 'path';
 
 // Docker Compose environment files keep wrapping quotes as literal characters.
 // Deployment UIs commonly serialise every value that way, while `.env` parsers
@@ -302,6 +303,15 @@ export const config = {
 
   // ── In-memory cache TTL (ms) ───────────────────────────────────────────────
   cacheTtlMs: intEnv('CACHE_TTL_MS', 5 * 60 * 1000),
+
+  // ── Scheduled database backups (env defaults — admin-overridable at runtime
+  // via BackupConfig, see src/services/dbBackup.ts) ──────────────────────────
+  backupDir: strEnv('BACKUP_DIR', path.join(process.cwd(), 'backups')),
+  backupEnabled: (process.env['BACKUP_ENABLED'] ?? 'true') !== 'false',
+  // UTC hour (0-23) the daily backup targets.
+  backupScheduleHour: boundedIntEnv('BACKUP_SCHEDULE_HOUR', 3, 0, 23),
+  backupRetentionDays: boundedIntEnv('BACKUP_RETENTION_DAYS', 7, 1, 365),
+  backupCheckIntervalMs: intEnv('BACKUP_CHECK_INTERVAL_MS', 60 * 60 * 1000),
 
   // ── School year rollover ──────────────────────────────────────────────────
   // On Aug 1 the live non-admin users/classes/todos/reminders are archived into

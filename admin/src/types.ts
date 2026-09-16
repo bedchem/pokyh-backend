@@ -588,3 +588,20 @@ export interface AdminLearnCourseAccessResponse {
     limit: number;
   };
 }
+
+export interface BackupFile {
+  filename: string;
+  createdAt: string;
+  sizeBytes: number;
+}
+
+export interface BackupsResponse {
+  config: {
+    enabled: boolean;
+    scheduleHour: number;
+    retentionDays: number;
+    lastRunAt: string | null;
+    lastRunStatus: string | null;
+  };
+  files: BackupFile[];
+}

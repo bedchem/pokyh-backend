@@ -18,6 +18,10 @@ import { revokeUserTokens } from '../utils/revokedTokens';
 import { logger } from '../utils/logger';
 import { invalidateDishesCache } from '../utils/cache';
 import { getLearnConfig, updateLearnConfig } from '../services/learnConfig';
+import {
+  getBackupConfig, updateBackupConfig, listBackups, runBackup, pruneOldBackups,
+  resolveBackupPath, restoreBackup,
+} from '../services/dbBackup';
 import { writeLimiter } from '../middleware/rateLimiter';
 import { issuedApiKeyScopes, parseApiKeyScopes, serializeApiKeyScopes } from '../security/apiKeyPolicy';
 import {
@@ -3133,6 +3137,105 @@ router.delete('/learn/teams/:teamId', requireAdmin, async (req: Request, res: Re
   await prisma.learnTeam.delete({ where: { id: teamId } });
   logger.info('Admin action: Learn team deleted', { action: 'learn_team_deleted', adminUsername: actor.username, teamId });
   res.status(204).send();
+});
+
+// ─── GET /api/admin/backups ────────────────────────────────────────────────────
+// Full-database (mysqldump) scheduled + manual backups. Files live on the
+// `backups` volume, not in the database itself — see src/services/dbBackup.ts.
+
+router.get('/backups', requireAdmin, async (_req: Request, res: Response): Promise<void> => {
+  const [backupConfig, files] = await Promise.all([getBackupConfig(), listBackups()]);
+  res.json({
+    config: {
+      enabled: backupConfig.enabled,
+      scheduleHour: backupConfig.scheduleHour,
+      retentionDays: backupConfig.retentionDays,
+      lastRunAt: backupConfig.lastRunAt ? backupConfig.lastRunAt.toISOString() : null,
+      lastRunStatus: backupConfig.lastRunStatus,
+    },
+    files,
+  });
+});
+
+const backupConfigSchema = z.object({
+  enabled: z.boolean().optional(),
+  scheduleHour: z.number().int().min(0).max(23).optional(),
+  retentionDays: z.number().int().min(1).max(365).optional(),
+});
+
+router.patch('/backups/config', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+  const parsed = backupConfigSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(422).json({ error: parsed.error.errors.map((e) => e.message).join('; ') });
+    return;
+  }
+  const adminUsername = adminUsernameFromReq(req.headers['authorization']);
+  await updateBackupConfig(parsed.data, adminUsername);
+  logger.info('Admin action: backup config updated', { action: 'backup_config_updated', adminUsername, fields: Object.keys(parsed.data) });
+  res.json({ ok: true });
+});
+
+router.post('/backups/run', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+  const adminUsername = adminUsernameFromReq(req.headers['authorization']);
+  try {
+    const result = await runBackup('manual');
+    logger.info('Admin action: manual backup created', { action: 'backup_manual_run', adminUsername, filename: result.filename, sizeBytes: result.sizeBytes });
+    res.status(201).json(result);
+  } catch (err) {
+    res.status(502).json({ error: err instanceof Error ? err.message : 'Backup failed' });
+  }
+});
+
+router.get('/backups/:filename/download', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const filename = String(req.params['filename']);
+  const filePath = resolveBackupPath(filename);
+  if (!filePath) throw new ValidationError('Invalid backup filename');
+  const adminUsername = adminUsernameFromReq(req.headers['authorization']);
+  logger.info('Admin action: backup downloaded', { action: 'backup_downloaded', adminUsername, filename });
+  res.download(filePath, filename, (err) => {
+    if (err && !res.headersSent) res.status(404).json({ error: 'Backup not found' });
+  });
+});
+
+router.delete('/backups/:filename', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+  const filePath = resolveBackupPath(String(req.params['filename']));
+  if (!filePath) throw new ValidationError('Invalid backup filename');
+  const adminUsername = adminUsernameFromReq(req.headers['authorization']);
+  try {
+    await fs.unlink(filePath);
+  } catch {
+    throw new NotFoundError('Backup not found');
+  }
+  logger.info('Admin action: backup deleted', { action: 'backup_deleted', adminUsername, filename: req.params['filename'] });
+  res.status(204).send();
+});
+
+const restoreBackupSchema = z.object({ confirmation: z.string() });
+
+// Restoring overwrites every table in the live database. Requires the exact
+// filename typed back as confirmation, mirroring this file's other
+// irreversible-action pattern (e.g. course/team deletion by exact-name match).
+router.post('/backups/:filename/restore', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+  const filename = String(req.params['filename']);
+  const body = restoreBackupSchema.parse(req.body);
+  if (body.confirmation !== filename) throw new ValidationError('Confirmation must exactly match the backup filename');
+  if (!resolveBackupPath(filename)) throw new ValidationError('Invalid backup filename');
+  const adminUsername = adminUsernameFromReq(req.headers['authorization']);
+  try {
+    await restoreBackup(filename);
+  } catch (err) {
+    res.status(502).json({ error: err instanceof Error ? err.message : 'Restore failed' });
+    return;
+  }
+  logger.info('Admin action: backup restored', { action: 'backup_restored', adminUsername, filename });
+  res.json({ ok: true });
+});
+
+router.post('/backups/prune', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+  const adminUsername = adminUsernameFromReq(req.headers['authorization']);
+  const pruned = await pruneOldBackups();
+  logger.info('Admin action: backup retention pruned manually', { action: 'backup_pruned_manual', adminUsername, pruned });
+  res.json({ pruned });
 });
 
 export { router as adminRouter };

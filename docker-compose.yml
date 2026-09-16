@@ -100,6 +100,12 @@ services:
       # The same service can run without Redis outside Compose by setting this
       # explicitly blank; the app degrades safely to MySQL reads.
       - LEARN_REDIS_URL=${LEARN_REDIS_URL:-redis://redis:6379}
+    # Scheduled/manual mysqldump backups (src/services/dbBackup.ts) persist
+    # here so they survive a redeploy — this volume, not the container
+    # filesystem, is the durable copy. Configure retention/schedule via the
+    # admin Backups page; nothing here is a substitute for an off-host copy.
+    volumes:
+      - backups:/app/backups
     cap_drop:
       - ALL
     # The entrypoint uses only these capabilities to repair ownership of its
@@ -122,6 +128,7 @@ services:
 
 volumes:
   mysql_data:
+  backups:
 
 networks:
   # Allows the app to reach the configured public integrations/tunnel while

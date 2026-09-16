@@ -18,6 +18,8 @@ import {
   Archive,
   KeyRound,
   GraduationCap,
+  BookOpen,
+  DatabaseBackup,
 } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
 
@@ -117,6 +119,8 @@ function SidebarContent({ adminUser, onLogout, onNavClick }: SidebarContentProps
         <NavItem to="/log-files"      icon={<FileText size={16} />}          label="Logdateien"   onClick={onNavClick} />
         <NavItem to="/api-keys"       icon={<KeyRound size={16} />}          label="API-Keys"     onClick={onNavClick} />
         <NavItem to="/learn"          icon={<GraduationCap size={16} />}     label="Learn"        onClick={onNavClick} />
+        <NavItem to="/learn/courses"  icon={<BookOpen size={16} />}          label="Learn-Kurse"  onClick={onNavClick} />
+        <NavItem to="/backups"        icon={<DatabaseBackup size={16} />}    label="Backups"      onClick={onNavClick} />
         <NavItem to="/settings"       icon={<Settings size={16} />}          label="Einstellungen" onClick={onNavClick} />
       </nav>
 

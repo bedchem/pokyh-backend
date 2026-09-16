@@ -23,12 +23,15 @@ FROM node:22-alpine AS runner
 WORKDIR /app
 
 # openssl is required by Prisma's Alpine engine. `su-exec` lets the short
-# bootstrap entrypoint hand the application to a non-root account.
-RUN apk add --no-cache openssl su-exec && \
+# bootstrap entrypoint hand the application to a non-root account. mariadb-
+# client provides `mysqldump`/`mysql` for the scheduled/manual DB backup and
+# restore service (dbBackup.ts) — it talks to the `mysql` Compose service
+# over the network, not a local socket.
+RUN apk add --no-cache openssl su-exec mariadb-client && \
     addgroup -S -g 10001 pokyh; \
     adduser -S -D -H -u 10001 -G pokyh pokyh; \
-    mkdir -p /app/logs; \
-    chown -R pokyh:pokyh /app/logs
+    mkdir -p /app/logs /app/backups; \
+    chown -R pokyh:pokyh /app/logs /app/backups
 
 # Production Node deps (prisma is a dependency, not devDependency)
 COPY --chown=pokyh:pokyh package*.json ./

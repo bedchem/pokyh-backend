@@ -19,6 +19,7 @@ import { prisma } from './db';
 import { startPushPoller } from './services/pushPoller';
 import { startArchiver } from './services/archiver';
 import { startSchoolYearArchiver } from './services/schoolYearArchiver';
+import { startBackupScheduler } from './services/dbBackup';
 import { applyAdditiveSchema } from './services/schemaSync';
 import { migrateStableKeys } from './utils/dishKey';
 import { logger } from './utils/logger';
@@ -279,6 +280,10 @@ function startBackgroundJobs() {
 
   // School year rollover: on August 1st, snapshot non-admin users/classes/todos/reminders
   startSchoolYearArchiver();
+
+  // Scheduled full-database backups (mysqldump, gzip), retained for the
+  // configured number of days and pruned automatically after each run.
+  startBackupScheduler();
 }
 
 // Create the database (if missing) and apply the schema via `prisma db push`.

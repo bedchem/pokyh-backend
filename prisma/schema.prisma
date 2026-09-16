@@ -331,6 +331,27 @@ model RequestLog {
   @@map("request_logs")
 }
 
+// Admin-editable scheduled-backup settings — a singleton row (id is always 1),
+// same pattern as LearnConfig. A missing row, or a null field on it, falls
+// back to the BACKUP_* environment defaults in src/config.ts. Individual
+// backup files themselves are not tracked here — they're listed by scanning
+// config.backupDir directly (see src/services/dbBackup.ts), so this table
+// never needs to be kept in sync with the filesystem.
+model BackupConfig {
+  id            Int       @id @default(1)
+  enabled       Boolean?
+  // UTC hour (0-23) the daily backup targets.
+  scheduleHour  Int?      @map("schedule_hour")
+  retentionDays Int?      @map("retention_days")
+  lastRunAt     DateTime? @map("last_run_at")
+  // 'ok' or 'error' — the outcome of the most recent scheduled or manual run.
+  lastRunStatus String?   @map("last_run_status") @db.VarChar(20)
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+  updatedBy     String?   @map("updated_by")
+
+  @@map("backup_config")
+}
+
 // ─── School year archive ──────────────────────────────────────────────────────
 // On August 1st each year school-only users, classes, todos and reminders are
 // snapshotted here and then removed from the live tables so the new school year

@@ -1,4 +1,4 @@
-import type { AdminStats, AdminClass, AdminSession, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish, AdminDishFull, AdminDishImportResult, AdminDishShiftResult, AdminDishRotateResult, AdminDishResetResult, AdminDishAnchorResult, DishPlan, AdminCommentsResponse, FileLogFile, FileLogResponse, FileLogEntry, FrontendActivityLogsResponse, FrontendActivityStats, AllTodosResponse, AllRemindersResponse, SchoolYearsResponse, ArchivedUsersResponse, ArchivedClass, ArchivedTodosResponse, ArchivedRemindersResponse, RolloverResult, RollbackResult, AdminApiKey, CreatedApiKey, LearnConfigValues, AdminLearnTeam, LearnTeamAssignableRole, AdminLearnCoursesResponse, AdminLearnCourseAccessResponse, AdminLearnCourse, AdminLearnCourseAccess, LearnCoursePermission, LearnCourseStatus, LearnCourseVisibility } from './types';
+import type { AdminStats, AdminClass, AdminSession, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish, AdminDishFull, AdminDishImportResult, AdminDishShiftResult, AdminDishRotateResult, AdminDishResetResult, AdminDishAnchorResult, DishPlan, AdminCommentsResponse, FileLogFile, FileLogResponse, FileLogEntry, FrontendActivityLogsResponse, FrontendActivityStats, AllTodosResponse, AllRemindersResponse, SchoolYearsResponse, ArchivedUsersResponse, ArchivedClass, ArchivedTodosResponse, ArchivedRemindersResponse, RolloverResult, RollbackResult, AdminApiKey, CreatedApiKey, LearnConfigValues, AdminLearnTeam, LearnTeamAssignableRole, AdminLearnCoursesResponse, AdminLearnCourseAccessResponse, AdminLearnCourse, AdminLearnCourseAccess, LearnCoursePermission, LearnCourseStatus, LearnCourseVisibility, BackupsResponse } from './types';
 
 const TOKEN_KEY = 'pokyh_admin_token';
 
@@ -448,6 +448,42 @@ export const adminApi = {
 
   deleteLearnCourse: (courseId: string, confirmation: string): Promise<void> =>
     request<void>('DELETE', `/api/admin/learn/courses/${courseId}`, { confirmation }),
+
+  // ── Database backups ──────────────────────────────────────────────────────
+  getBackups: (): Promise<BackupsResponse> =>
+    request<BackupsResponse>('GET', '/api/admin/backups'),
+
+  updateBackupConfig: (data: Partial<{ enabled: boolean; scheduleHour: number; retentionDays: number }>): Promise<{ ok: boolean }> =>
+    request<{ ok: boolean }>('PATCH', '/api/admin/backups/config', data),
+
+  runBackupNow: (): Promise<{ filename: string; sizeBytes: number }> =>
+    request<{ filename: string; sizeBytes: number }>('POST', '/api/admin/backups/run'),
+
+  deleteBackup: (filename: string): Promise<void> =>
+    request<void>('DELETE', `/api/admin/backups/${encodeURIComponent(filename)}`),
+
+  restoreBackup: (filename: string, confirmation: string): Promise<{ ok: boolean }> =>
+    request<{ ok: boolean }>('POST', `/api/admin/backups/${encodeURIComponent(filename)}/restore`, { confirmation }),
+
+  // A backup download needs the Bearer token, so fetch as a blob and trigger
+  // a client-side save (a plain <a href> can't send the Authorization header)
+  // — same pattern as exportDatabase().
+  downloadBackup: async (filename: string): Promise<void> => {
+    const token = getToken();
+    const res = await fetch(`/api/admin/backups/${encodeURIComponent(filename)}/download`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!res.ok) throw new Error(`Download fehlgeschlagen (HTTP ${res.status})`);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  },
 
   getToken,
 };
