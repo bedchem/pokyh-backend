@@ -688,6 +688,11 @@ model LearnQuizAttempt {
   totalQuestions Int      @map("total_questions")
   correctAnswers Int      @map("correct_answers")
   score          Float    @default(0)
+  // Client-measured wall-clock time actively spent on this attempt (session
+  // start to submit), sanity-capped server-side. Optional and defaults to 0
+  // for older clients — never inferred or estimated, only ever real elapsed
+  // time the client actually observed, so profile/streak minutes stay honest.
+  durationMs     Int      @default(0) @map("duration_ms")
   createdAt      DateTime @default(now()) @map("created_at")
 
   user   User        @relation(fields: [stableUid], references: [stableUid], onDelete: Cascade)
@@ -709,6 +714,7 @@ model LearnActivityDaily {
   attemptCount   Int      @default(0) @map("attempt_count")
   answerCount    Int      @default(0) @map("answer_count")
   correctCount   Int      @default(0) @map("correct_count")
+  durationMs     Int      @default(0) @map("duration_ms")
   lastActivityAt DateTime @map("last_activity_at")
   createdAt      DateTime @default(now()) @map("created_at")
   updatedAt      DateTime @updatedAt @map("updated_at")

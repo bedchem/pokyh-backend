@@ -302,6 +302,10 @@ const quizAttemptSchema = z.object({
   mode: quizModeSchema.default('PRACTICE'),
   idempotencyKey: z.string().trim().min(8).max(191).optional(),
   answers: z.array(quizAnswerSchema).min(1).max(100),
+  // Client-measured elapsed time for this attempt, in milliseconds. Optional
+  // (older clients omit it), sanity-capped at 3h so a paused/backgrounded
+  // tab can never inflate a learner's recorded minutes.
+  durationMs: z.number().int().min(0).max(3 * 60 * 60 * 1000).optional(),
 }).superRefine((body, ctx) => {
   const seen = new Set<string>();
   body.answers.forEach((answer, index) => {
@@ -616,6 +620,10 @@ function sumOrZero(value: number | null | undefined): number {
   return value ?? 0;
 }
 
+function msToMinutes(ms: number): number {
+  return Math.round(ms / 60_000);
+}
+
 function analyticsStreak(dayKeys: string[], activityByDay: Map<string, number>): number {
   let streak = 0;
   for (const dayKey of [...dayKeys].reverse()) {
@@ -636,8 +644,13 @@ type LearningAnalytics = {
     accuracyPercent: number | null;
     activeDays: number;
     streakDays: number;
+    minutesLearned: number;
   };
-  days: Array<{ dayKey: string; attempts: number; answers: number; correctAnswers: number }>;
+  days: Array<{ dayKey: string; attempts: number; answers: number; correctAnswers: number; minutes: number }>;
+  // Always the trailing 366 days regardless of `range` — real client-measured
+  // minutes only (see LearnQuizAttempt.durationMs), never estimated — driving
+  // a GitHub-style contribution heatmap independent of the selected range.
+  yearActivity: Array<{ dayKey: string; answers: number; minutes: number }>;
   queues: { due: number; wrong: number; fresh: number; nextDueAt: string | null };
   recommendation: { kind: 'due' | 'wrong' | 'new' | 'continue' | 'none'; count: number; href: string };
   courses: Array<{
@@ -670,8 +683,9 @@ async function buildLearningAnalytics({
       range,
       timezone: timezone || 'UTC',
       dataAvailableSince: null,
-      totals: { attempts: 0, answers: 0, correctAnswers: 0, accuracyPercent: null, activeDays: 0, streakDays: 0 },
-      days: days.map((dayKey) => ({ dayKey, attempts: 0, answers: 0, correctAnswers: 0 })),
+      totals: { attempts: 0, answers: 0, correctAnswers: 0, accuracyPercent: null, activeDays: 0, streakDays: 0, minutesLearned: 0 },
+      days: days.map((dayKey) => ({ dayKey, attempts: 0, answers: 0, correctAnswers: 0, minutes: 0 })),
+      yearActivity: learningDayKeys(366, timezone).map((dayKey) => ({ dayKey, answers: 0, minutes: 0 })),
       queues: { due: 0, wrong: 0, fresh: 0, nextDueAt: null },
       recommendation: { kind: 'continue', count: 0, href: '/catalog' },
       courses: [],
@@ -692,7 +706,7 @@ async function buildLearningAnalytics({
     prisma.learnActivityDaily.groupBy({
       by: ['dayKey'],
       where: activityWhere,
-      _sum: { attemptCount: true, answerCount: true, correctCount: true },
+      _sum: { attemptCount: true, answerCount: true, correctCount: true, durationMs: true },
       orderBy: { dayKey: 'asc' },
     }),
     prisma.learnActivityDaily.groupBy({
@@ -724,7 +738,7 @@ async function buildLearningAnalytics({
     prisma.learnActivityDaily.groupBy({
       by: ['dayKey'],
       where: { stableUid, courseId: { in: accessibleIds } },
-      _sum: { answerCount: true },
+      _sum: { answerCount: true, durationMs: true },
       orderBy: { dayKey: 'desc' },
       take: 366,
     }),
@@ -739,15 +753,22 @@ async function buildLearningAnalytics({
     attempts: sumOrZero(row._sum.attemptCount),
     answers: sumOrZero(row._sum.answerCount),
     correctAnswers: sumOrZero(row._sum.correctCount),
+    minutes: msToMinutes(sumOrZero(row._sum.durationMs)),
   }]));
   const allActivityByDay = new Map(streakRows.map((row) => [row.dayKey, sumOrZero(row._sum.answerCount)]));
+  const yearActivityByDay = new Map(streakRows.map((row) => [row.dayKey, {
+    answers: sumOrZero(row._sum.answerCount),
+    minutes: msToMinutes(sumOrZero(row._sum.durationMs)),
+  }]));
   const streakAxis = learningDayKeys(366, timezone);
-  const timeline = days.map((dayKey) => ({ dayKey, ...(activityByDay.get(dayKey) ?? { attempts: 0, answers: 0, correctAnswers: 0 }) }));
+  const timeline = days.map((dayKey) => ({ dayKey, ...(activityByDay.get(dayKey) ?? { attempts: 0, answers: 0, correctAnswers: 0, minutes: 0 }) }));
   const totals = timeline.reduce((total, day) => ({
     attempts: total.attempts + day.attempts,
     answers: total.answers + day.answers,
     correctAnswers: total.correctAnswers + day.correctAnswers,
-  }), { attempts: 0, answers: 0, correctAnswers: 0 });
+    minutesLearned: total.minutesLearned + day.minutes,
+  }), { attempts: 0, answers: 0, correctAnswers: 0, minutesLearned: 0 });
+  const yearActivity = streakAxis.map((dayKey) => ({ dayKey, ...(yearActivityByDay.get(dayKey) ?? { answers: 0, minutes: 0 }) }));
   const recommendation = due > 0
     ? { kind: 'due' as const, count: due, href: '/practice?queue=due' }
     : wrong > 0
@@ -769,6 +790,7 @@ async function buildLearningAnalytics({
       streakDays: analyticsStreak(streakAxis, allActivityByDay),
     },
     days: timeline,
+    yearActivity,
     queues: { due, wrong, fresh, nextDueAt: nextDue?.dueAt.toISOString() ?? null },
     recommendation,
     courses: courseRows.flatMap((row) => {
@@ -2222,6 +2244,7 @@ router.post('/quiz-attempts', requireAuth, learnWriteLimiter, async (req: Reques
         });
       }
 
+      const durationMs = body.durationMs ?? 0;
       const createdAttempt = await tx.learnQuizAttempt.create({
         data: {
           stableUid,
@@ -2232,6 +2255,7 @@ router.post('/quiz-attempts', requireAuth, learnWriteLimiter, async (req: Reques
           totalQuestions: gradedAnswers.length,
           correctAnswers,
           score,
+          durationMs,
         },
         select: {
           id: true, courseId: true, mode: true, totalQuestions: true, correctAnswers: true, score: true, createdAt: true,
@@ -2256,12 +2280,14 @@ router.post('/quiz-attempts', requireAuth, learnWriteLimiter, async (req: Reques
           attemptCount: 1,
           answerCount: gradedAnswers.length,
           correctCount: correctAnswers,
+          durationMs,
           lastActivityAt: now,
         },
         update: {
           attemptCount: { increment: 1 },
           answerCount: { increment: gradedAnswers.length },
           correctCount: { increment: correctAnswers },
+          durationMs: { increment: durationMs },
           lastActivityAt: now,
         },
       });
