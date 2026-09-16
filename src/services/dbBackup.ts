@@ -201,6 +201,14 @@ async function runBackupInternal(trigger: 'scheduled' | 'manual'): Promise<{ fil
 
   try {
     await new Promise<void>((resolve, reject) => {
+      // No table list is passed after `conn.database`, so mysqldump dumps
+      // every table in the database — the full data set, not a curated
+      // subset. This deliberately includes ArchivedUser/ArchivedClass/
+      // ArchivedTodo/ArchivedReminder (the school-year rollover archive
+      // tables) and every other table: there is no separate archive
+      // database and nothing here filters tables out. Keep it that way —
+      // a future change that adds a table-name argument would silently
+      // turn this into a partial backup.
       const dump = spawn('mysqldump', [
         '--single-transaction',
         '--routines',
