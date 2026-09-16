@@ -802,3 +802,41 @@ model LearnConfig {
 
   @@map("learn_config")
 }
+
+// ─── Announcement popups ──────────────────────────────────────────────────────
+// Admin-authored popups shown inside the web app and/or the Android app.
+// `content` is the Markdown/HTML source the admin typed; `contentHtml` is the
+// sanitised render delivered to clients (see src/services/popupRender.ts), so
+// clients never parse or trust raw admin input themselves.
+//
+// Scheduling: a popup is live while `enabled` and now ∈ [startsAt, endsAt)
+// (either bound may be null = open). The window is split into `showCount`
+// equal slots and a client shows the popup at most once per slot — e.g.
+// 7 shows over 7 days = at most once a day, and nothing after the window ends
+// regardless of how many slots were missed. "once" is simply showCount = 1.
+// "Seen" state is tracked per device by the clients, keyed by id + revision;
+// bumping `revision` makes every client treat the popup as unseen again.
+model Popup {
+  id          String    @id @default(uuid())
+  title       String    @db.VarChar(200)
+  content     String    @db.MediumText
+  contentHtml String    @map("content_html") @db.MediumText
+  // "all" | "web" | "android"
+  platform    String    @default("all") @db.VarChar(10)
+  // "all" | "users" | "guests" — guests only exist on the website; the
+  // Android app is always signed in and requests the "users" audience.
+  audience    String    @default("all") @db.VarChar(10)
+  // "once" | "recurring"
+  mode        String    @default("once") @db.VarChar(12)
+  showCount   Int       @default(1) @map("show_count")
+  startsAt    DateTime? @map("starts_at")
+  endsAt      DateTime? @map("ends_at")
+  enabled     Boolean   @default(true)
+  revision    Int       @default(1)
+  createdBy   String?   @map("created_by") @db.VarChar(100)
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  @@index([enabled, platform])
+  @@map("popups")
+}

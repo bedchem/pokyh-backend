@@ -21,6 +21,7 @@ import { LearnConfigPage } from './pages/LearnConfigPage';
 import { LearnTeamsPage } from './pages/LearnTeamsPage';
 import { LearnCoursesPage } from './pages/LearnCoursesPage';
 import { BackupsPage } from './pages/BackupsPage';
+import { PopupsPage } from './pages/PopupsPage';
 import { ReactNode, Suspense, useState, useEffect } from 'react';
 import { setupApi } from './api';
 import type { SetupStatus } from './types';
@@ -110,6 +111,7 @@ export default function App() {
             <Route path="/learn/teams"       element={<ProtectedRoute><LearnTeamsPage /></ProtectedRoute>} />
             <Route path="/learn/courses"     element={<ProtectedRoute><LearnCoursesPage /></ProtectedRoute>} />
             <Route path="/backups"           element={<ProtectedRoute><BackupsPage /></ProtectedRoute>} />
+            <Route path="/popups"            element={<ProtectedRoute><PopupsPage /></ProtectedRoute>} />
             <Route path="*"                  element={<Navigate to="/" replace />} />
           </Routes>
         </Suspense>

@@ -15,6 +15,7 @@ import { subjectImagesRouter } from './subjectImages';
 import { activityLogRouter } from './activityLog';
 import { pushRouter } from './push';
 import { learnRouter } from './learn';
+import { popupsAdminRouter, popupsRouter } from './popups';
 import { config } from '../config';
 
 const router = Router();
@@ -36,6 +37,7 @@ function requireLearnBrowserOrigin(req: Request, res: Response, next: NextFuncti
 }
 
 // Admin routes — no API key required (same-origin, JWT-protected)
+router.use('/api/admin/popups', popupsAdminRouter);
 router.use('/api/admin', adminRouter);
 
 // Public dish catalog — no API key required (read-only menu data)
@@ -67,6 +69,8 @@ router.use('/subject-images', subjectImagesRouter);
 router.use('/activity-log', activityLogRouter);
 // Push notification registration
 router.use('/push', pushRouter);
+// Announcement popups (admin-authored, shown in the web and Android apps)
+router.use('/popups', popupsRouter);
 // Pokyh Learn — catalog reads remain JWT-optional inside the router, while the
 // shared API-key middleware above protects every Learn request.
 router.use('/learn', requireLearnBrowserOrigin, learnRouter);

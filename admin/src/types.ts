@@ -605,3 +605,41 @@ export interface BackupsResponse {
   };
   files: BackupFile[];
 }
+
+export type PopupPlatform = 'all' | 'web' | 'android';
+export type PopupAudience = 'all' | 'users' | 'guests';
+export type PopupMode = 'once' | 'recurring';
+export type PopupStatus = 'disabled' | 'scheduled' | 'active' | 'expired';
+
+export interface AdminPopup {
+  id: string;
+  title: string;
+  content: string;
+  contentHtml: string;
+  platform: PopupPlatform;
+  audience: PopupAudience;
+  mode: PopupMode;
+  showCount: number;
+  startsAt: string | null;
+  endsAt: string | null;
+  slotMs: number | null;
+  enabled: boolean;
+  revision: number;
+  status: PopupStatus;
+  createdBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PopupInput {
+  title: string;
+  content: string;
+  platform: PopupPlatform;
+  audience: PopupAudience;
+  mode: PopupMode;
+  showCount: number;
+  startsAt: string | null;
+  endsAt: string | null;
+  enabled: boolean;
+  resetSeen?: boolean;
+}

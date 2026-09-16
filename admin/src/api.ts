@@ -1,4 +1,4 @@
-import type { AdminStats, AdminClass, AdminSession, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish, AdminDishFull, AdminDishImportResult, AdminDishShiftResult, AdminDishRotateResult, AdminDishResetResult, AdminDishAnchorResult, DishPlan, AdminCommentsResponse, FileLogFile, FileLogResponse, FileLogEntry, FrontendActivityLogsResponse, FrontendActivityStats, AllTodosResponse, AllRemindersResponse, SchoolYearsResponse, ArchivedUsersResponse, ArchivedClass, ArchivedTodosResponse, ArchivedRemindersResponse, RolloverResult, RollbackResult, AdminApiKey, CreatedApiKey, LearnConfigValues, AdminLearnTeam, LearnTeamAssignableRole, AdminLearnCoursesResponse, AdminLearnCourseAccessResponse, AdminLearnCourse, AdminLearnCourseAccess, LearnCoursePermission, LearnCourseStatus, LearnCourseVisibility, BackupsResponse } from './types';
+import type { AdminStats, AdminClass, AdminSession, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish, AdminDishFull, AdminDishImportResult, AdminDishShiftResult, AdminDishRotateResult, AdminDishResetResult, AdminDishAnchorResult, DishPlan, AdminCommentsResponse, FileLogFile, FileLogResponse, FileLogEntry, FrontendActivityLogsResponse, FrontendActivityStats, AllTodosResponse, AllRemindersResponse, SchoolYearsResponse, ArchivedUsersResponse, ArchivedClass, ArchivedTodosResponse, ArchivedRemindersResponse, RolloverResult, RollbackResult, AdminApiKey, CreatedApiKey, LearnConfigValues, AdminLearnTeam, LearnTeamAssignableRole, AdminLearnCoursesResponse, AdminLearnCourseAccessResponse, AdminLearnCourse, AdminLearnCourseAccess, LearnCoursePermission, LearnCourseStatus, LearnCourseVisibility, BackupsResponse, AdminPopup, PopupInput } from './types';
 
 const TOKEN_KEY = 'pokyh_admin_token';
 
@@ -484,6 +484,25 @@ export const adminApi = {
     a.remove();
     URL.revokeObjectURL(url);
   },
+
+  // ── Popups ────────────────────────────────────────────────────────────────
+  getPopups: (): Promise<{ popups: AdminPopup[] }> =>
+    request<{ popups: AdminPopup[] }>('GET', '/api/admin/popups'),
+
+  createPopup: (data: PopupInput): Promise<{ popup: AdminPopup }> =>
+    request<{ popup: AdminPopup }>('POST', '/api/admin/popups', data),
+
+  updatePopup: (id: string, data: PopupInput): Promise<{ popup: AdminPopup }> =>
+    request<{ popup: AdminPopup }>('PUT', `/api/admin/popups/${id}`, data),
+
+  setPopupEnabled: (id: string, enabled: boolean): Promise<{ popup: AdminPopup }> =>
+    request<{ popup: AdminPopup }>('PATCH', `/api/admin/popups/${id}/enabled`, { enabled }),
+
+  deletePopup: (id: string): Promise<void> =>
+    request<void>('DELETE', `/api/admin/popups/${id}`),
+
+  renderPopup: (content: string): Promise<{ html: string }> =>
+    request<{ html: string }>('POST', '/api/admin/popups/render', { content }),
 
   getToken,
 };

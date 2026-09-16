@@ -20,6 +20,7 @@ import {
   GraduationCap,
   BookOpen,
   DatabaseBackup,
+  Megaphone,
 } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
 
@@ -108,6 +109,7 @@ function SidebarContent({ adminUser, onLogout, onNavClick }: SidebarContentProps
         <NavItem to="/comments"          icon={<MessageCircle size={16} />}     label="Kommentare"        onClick={onNavClick} />
         <NavItem to="/subject-images"    icon={<Image size={16} />}             label="Fachbilder"        onClick={onNavClick} />
         <NavItem to="/todos-reminders"   icon={<CheckSquare size={16} />}       label="Todos &amp; Erinnerungen" onClick={onNavClick} />
+        <NavItem to="/popups"            icon={<Megaphone size={16} />}         label="Popups"            onClick={onNavClick} />
 
         <div className="px-4 pb-1 pt-3">
           <span className="text-[10px] font-semibold uppercase tracking-[0.06em]" style={{ color: 'rgba(235,235,245,0.25)' }}>
