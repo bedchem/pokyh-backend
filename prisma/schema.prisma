@@ -238,11 +238,16 @@ model DishImage {
 model DishRating {
   dishId    String   @map("dish_id")
   stableUid String   @map("stable_uid")
+  // Account name at rating time. A stableUid changes when the user row is
+  // recreated (school-year rollover, database rebuild); the username lets the
+  // vote be reclaimed so nobody can rate the same dish twice.
+  username  String?  @db.VarChar(100)
   stars     Int
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
   @@id([dishId, stableUid])
+  @@index([username])
   @@map("dish_ratings")
 }
 

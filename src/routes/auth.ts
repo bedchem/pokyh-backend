@@ -10,6 +10,8 @@ import { authLimiter, learnLoginLimiter, refreshLimiter } from '../middleware/ra
 import { generateStableUid, generateClassCode, generateClassId } from '../utils/uid';
 import { validateWebUntis } from '../services/webuntis';
 import { getLearnConfig } from '../services/learnConfig';
+import { reclaimDishRatings } from '../services/dishRatings';
+import { logger } from '../utils/logger';
 import {
   AppError,
   UnauthorizedError,
@@ -217,6 +219,10 @@ async function completeWebUntisLogin({
         isUntisUser: true,
         role,
       },
+    });
+    // A recreated account (rollover, rebuild) gets its earlier dish votes back.
+    reclaimDishRatings(user.stableUid, user.username).catch((err) => {
+      logger.warn('dish rating reclaim failed', { error: err instanceof Error ? err.message : String(err) });
     });
   } else {
     user = await prisma.user.update({

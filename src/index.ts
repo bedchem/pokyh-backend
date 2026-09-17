@@ -22,6 +22,7 @@ import { startSchoolYearArchiver } from './services/schoolYearArchiver';
 import { startBackupScheduler } from './services/dbBackup';
 import { applyAdditiveSchema } from './services/schemaSync';
 import { migrateStableKeys } from './utils/dishKey';
+import { reconcileDishRatings } from './services/dishRatings';
 import { logger } from './utils/logger';
 import { getLearnConfig } from './services/learnConfig';
 import { learningDayKey } from './services/learnAnalytics';
@@ -347,6 +348,11 @@ async function connectDatabaseWithRetry() {
       // resets and shared-name Sommer/Winter dishes share ratings.
       try { await migrateStableKeys(); } catch (err) {
         logger.warn(`stableKey migration failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+      }
+      // Idempotent — merges votes orphaned by recreated accounts back onto the
+      // current account and removes the duplicate votes that allowed.
+      try { await reconcileDishRatings(); } catch (err) {
+        logger.warn(`dish rating reconcile failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
       }
       startBackgroundJobs();
       return;

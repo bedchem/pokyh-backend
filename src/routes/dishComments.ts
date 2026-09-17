@@ -18,7 +18,7 @@ async function getCommentsForDish(dishKey: string) {
   });
 }
 
-function broadcastDishComments(dishKey: string, rawId: string, comments: unknown[]): void {
+export function broadcastDishComments(dishKey: string, rawId: string, comments: unknown[]): void {
   sseManager.broadcast(`dishComments:${dishKey}`, 'dishComments', comments);
   if (rawId !== dishKey) sseManager.broadcast(`dishComments:${rawId}`, 'dishComments', comments);
 }

@@ -3,8 +3,8 @@ import { z } from 'zod';
 import { prisma } from '../db';
 import { optionalAuth, requireAuth } from '../middleware/auth';
 import { readLimiter, writeLimiter } from '../middleware/rateLimiter';
-import { sseManager } from '../services/sse';
 import { resolveDishKey, slugifyDishName } from '../utils/dishKey';
+import { publishDishRatings, ratingsPayload, reclaimDishRatings, type DishRatingsPayload } from '../services/dishRatings';
 
 const router = Router();
 
@@ -12,24 +12,14 @@ const router = Router();
 // UUID. That way a reset — which regenerates dish rows — never orphans a
 // rating, and same-name dishes in Sommer/Winter share the same rating.
 
-async function getDishRatingsData(dishKey: string, myStableUid: string) {
+async function getDishRatingsData(dishKey: string, myStableUid: string | undefined): Promise<DishRatingsPayload> {
   const rows = await prisma.dishRating.findMany({ where: { dishId: dishKey } });
-  const ratings: Record<string, number> = {};
-  let myRating: number | null = null;
-
-  for (const row of rows) {
-    ratings[row.stableUid] = row.stars;
-    if (row.stableUid === myStableUid) {
-      myRating = row.stars;
-    }
-  }
-
-  return { ratings, myRating };
+  return ratingsPayload(rows, myStableUid);
 }
 
 // Guests may read ratings, but never see who rated: replace stableUids with
 // positional keys so only the average and count can be derived.
-function anonymizeRatings(data: { ratings: Record<string, number>; myRating: number | null }) {
+function anonymizeRatings(data: DishRatingsPayload): DishRatingsPayload {
   const ratings: Record<string, number> = {};
   Object.values(data.ratings).forEach((stars, i) => { ratings[String(i)] = stars; });
   return { ratings, myRating: null };
@@ -41,7 +31,7 @@ router.get('/:dishId', readLimiter, optionalAuth, async (req: Request, res: Resp
   const stableUid = req.user?.stableUid;
 
   const dishKey = await resolveDishKey(raw);
-  const data = await getDishRatingsData(dishKey, stableUid ?? '');
+  const data = await getDishRatingsData(dishKey, stableUid);
   res.json(stableUid ? data : anonymizeRatings(data));
 });
 
@@ -64,18 +54,12 @@ router.post('/batch', readLimiter, optionalAuth, async (req: Request, res: Respo
     where: { dishId: { in: uniqueKeys } },
   });
 
-  const byKey = new Map<string, { ratings: Record<string, number>; myRating: number | null }>();
-  for (const k of uniqueKeys) byKey.set(k, { ratings: {}, myRating: null });
-  for (const row of rows) {
-    const entry = byKey.get(row.dishId);
-    if (!entry) continue;
-    entry.ratings[row.stableUid] = row.stars;
-    if (row.stableUid === stableUid) entry.myRating = row.stars;
-  }
+  const rowsByKey = new Map<string, typeof rows>();
+  for (const row of rows) rowsByKey.set(row.dishId, [...(rowsByKey.get(row.dishId) ?? []), row]);
 
-  const result: Record<string, { ratings: Record<string, number>; myRating: number | null }> = {};
+  const result: Record<string, DishRatingsPayload> = {};
   for (const [inputId, key] of keyByInput) {
-    const entry = byKey.get(key) ?? { ratings: {}, myRating: null };
+    const entry = ratingsPayload(rowsByKey.get(key) ?? [], stableUid);
     result[inputId] = stableUid ? entry : anonymizeRatings(entry);
   }
 
@@ -91,7 +75,7 @@ const rateSchema = z.object({
 
 router.post('/:dishId', writeLimiter, requireAuth, async (req: Request, res: Response) => {
   const raw = req.params['dishId'] as string;
-  const { stableUid } = req.user!;
+  const { stableUid, username } = req.user!;
   const { stars, name } = rateSchema.parse(req.body);
 
   // Prefer resolving via existing dish → its slug. If nothing matches and a
@@ -101,19 +85,20 @@ router.post('/:dishId', writeLimiter, requireAuth, async (req: Request, res: Res
   if (!dishKey && name) dishKey = slugifyDishName(name);
   if (!dishKey) dishKey = raw; // last resort — echo back
 
+  // Pull any earlier vote of this person (under an old stableUid) onto the
+  // current one first, so the upsert changes it instead of adding a second.
+  await reclaimDishRatings(stableUid, username);
+
   await prisma.dishRating.upsert({
     where: { dishId_stableUid: { dishId: dishKey, stableUid } },
-    create: { dishId: dishKey, stableUid, stars },
-    update: { stars },
+    create: { dishId: dishKey, stableUid, username, stars },
+    update: { stars, username },
   });
 
-  const data = await getDishRatingsData(dishKey, stableUid);
-  // Broadcast on BOTH channels so old frontends (subscribing by the raw id
-  // they last saw) still get updates alongside new frontends (using the key).
-  sseManager.broadcast(`dishRatings:${dishKey}`, 'dishRatings', data);
-  if (raw !== dishKey) sseManager.broadcast(`dishRatings:${raw}`, 'dishRatings', data);
+  // Every open app and browser — Android and web — gets the new numbers live.
+  await publishDishRatings(dishKey);
 
-  res.json(data);
+  res.json(await getDishRatingsData(dishKey, stableUid));
 });
 
 export { router as dishRatingsRouter };

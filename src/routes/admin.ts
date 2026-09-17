@@ -17,6 +17,8 @@ import { generateClassCode, generateClassId } from '../utils/uid';
 import { revokeUserTokens } from '../utils/revokedTokens';
 import { logger } from '../utils/logger';
 import { invalidateDishesCache } from '../utils/cache';
+import { publishDishRatings } from '../services/dishRatings';
+import { broadcastDishComments } from './dishComments';
 import { getLearnConfig, updateLearnConfig } from '../services/learnConfig';
 import { seedStarterVocabCourses, ensureAllTeamMembersVocabAccess, ensureTeamMemberVocabAccess } from '../services/learnTeamVocab';
 import {
@@ -1557,7 +1559,7 @@ router.get('/dish-ratings', requireAdmin, async (_req: Request, res: Response): 
         plans, // e.g. ["summer"], ["winter"], or ["summer","winter"] when shared
         ratings: entries.map((e) => ({
           stableUid: e.stableUid,
-          username: uidToUsername[e.stableUid] ?? e.stableUid,
+          username: uidToUsername[e.stableUid] ?? e.username ?? e.stableUid,
           stars: e.stars,
           createdAt: e.createdAt.toISOString(),
           updatedAt: e.updatedAt.toISOString(),
@@ -1585,6 +1587,7 @@ router.patch('/dish-ratings/:dishId/:stableUid', requireAdmin, async (req: Reque
     where: { dishId_stableUid: { dishId, stableUid } },
     data: { stars },
   });
+  await publishDishRatings(dishId);
 
   res.status(204).send();
 });
@@ -1598,6 +1601,7 @@ router.delete('/dish-ratings/:dishId/:stableUid', requireAdmin, async (req: Requ
   await prisma.dishRating.delete({
     where: { dishId_stableUid: { dishId, stableUid } },
   }).catch(() => null);
+  await publishDishRatings(dishId);
 
   res.status(204).send();
 });
@@ -1701,7 +1705,11 @@ router.delete('/comments/reminder/:id', requireAdmin, async (req: Request, res: 
 
 router.delete('/comments/dish/:id', requireAdmin, async (req: Request, res: Response): Promise<void> => {
   const id = String(req.params['id']);
-  await prisma.dishComment.delete({ where: { id } }).catch(() => null);
+  const deleted = await prisma.dishComment.delete({ where: { id } }).catch(() => null);
+  if (deleted) {
+    const comments = await prisma.dishComment.findMany({ where: { dishId: deleted.dishId }, orderBy: { createdAt: 'asc' } });
+    broadcastDishComments(deleted.dishId, deleted.dishId, comments);
+  }
   res.status(204).send();
 });
 

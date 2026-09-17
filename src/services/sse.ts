@@ -4,12 +4,15 @@ import { config } from '../config';
 interface SseClient {
   res: Response;
   heartbeatInterval: NodeJS.Timeout;
+  // Who is listening — lets a broadcast tailor the payload per viewer (e.g.
+  // myRating) instead of sending one user's view to everyone.
+  stableUid?: string;
 }
 
 class SseManager {
   private clients: Map<string, Set<SseClient>> = new Map();
 
-  addClient(key: string, res: Response): void {
+  addClient(key: string, res: Response, stableUid?: string): void {
     if (!this.clients.has(key)) {
       this.clients.set(key, new Set());
     }
@@ -22,7 +25,7 @@ class SseManager {
       }
     }, config.sseHeartbeatMs);
 
-    const client: SseClient = { res, heartbeatInterval };
+    const client: SseClient = { res, heartbeatInterval, stableUid };
     this.clients.get(key)!.add(client);
 
     // Clean up on disconnect
@@ -54,15 +57,24 @@ class SseManager {
   }
 
   broadcast(key: string, event: string, data: unknown): void {
+    const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+    this.write(key, () => payload);
+  }
+
+  // Like broadcast, but builds the data for each listener from its stableUid.
+  broadcastPerClient(key: string, event: string, dataFor: (stableUid: string | undefined) => unknown): void {
+    this.write(key, (client) => `event: ${event}\ndata: ${JSON.stringify(dataFor(client.stableUid))}\n\n`);
+  }
+
+  private write(key: string, payloadFor: (client: SseClient) => string): void {
     const set = this.clients.get(key);
     if (!set || set.size === 0) return;
 
-    const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
     const toRemove: SseClient[] = [];
 
     for (const client of set) {
       try {
-        client.res.write(payload);
+        client.res.write(payloadFor(client));
       } catch {
         toRemove.push(client);
       }
