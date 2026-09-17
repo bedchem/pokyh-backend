@@ -622,7 +622,15 @@ router.get('/classes', requireAdmin, async (_req: Request, res: Response): Promi
   const classes = await prisma.class.findMany({
     orderBy: { createdAt: 'desc' },
     include: {
+      // A parent account's WebUntis klasseId is their child's class, so a
+      // parent legitimately gets a ClassMember row too (see syncUserClass in
+      // routes/auth.ts) — but they were never meant to be a visible class
+      // *member*. Every other class route (classes.ts) already excludes
+      // role: 'parent' from member lists/counts; this admin listing had been
+      // missed, which is what made a parent account look "assigned to a
+      // class" here.
       members: {
+        where: { role: { not: 'parent' } },
         select: {
           stableUid: true,
           username: true,
