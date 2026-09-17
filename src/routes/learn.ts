@@ -7,6 +7,7 @@ import { optionalAuth, requireAuth } from '../middleware/auth';
 import { learnReadLimiter, learnWriteLimiter, readLimiter } from '../middleware/rateLimiter';
 import { getDictionarySuggestion, validateVocabularyWord } from '../services/learnDictionary';
 import { getLearnConfig } from '../services/learnConfig';
+import { ensureTeamMemberVocabAccess } from '../services/learnTeamVocab';
 import { config } from '../config';
 import { asPercent, learningDayKey, learningDayKeys, nextAdaptiveReview } from '../services/learnAnalytics';
 import { analyticsCacheKey, getCachedJson, invalidateAnalyticsCache, setCachedJson } from '../services/learnCache';
@@ -2410,6 +2411,12 @@ router.post('/teams/:teamId/members', requireAuth, learnWriteLimiter, async (req
       update: {},
     }),
   ]);
+  // Runs after the membership transaction commits, not inside it — this
+  // route uses the array form of $transaction, which can't accept a
+  // conditional read-then-write step mid-array. Every write inside is an
+  // idempotent upsert, so this is safe without the extra transactional
+  // coupling.
+  await ensureTeamMemberVocabAccess(prisma, teamId, user.stableUid);
   learnAudit(req, 'team_member_added', { teamId, targetStableUid: user.stableUid, role: body.role });
   res.json({ member: { ...member, username: user.username } });
 });
@@ -2432,6 +2439,43 @@ router.get('/teams/:teamId/members', requireAuth, learnReadLimiter, async (req: 
     select: { stableUid: true, role: true, joinedAt: true, user: { select: { username: true } } },
   });
   res.json({ members: members.map((member) => ({ stableUid: member.stableUid, role: member.role, joinedAt: member.joinedAt, username: member.user?.username ?? null })) });
+});
+
+// A teammate's streak/minutes/contribution-heatmap — never their course
+// list, per-course breakdown, or review queue. Both caller and target must
+// be members of the SAME team (or the caller is a platform admin); this is
+// deliberately narrower than "any shared team" to avoid the ambiguity of
+// which of potentially several teams grants the view. buildLearningAnalytics
+// scopes its own queries to every course the target can access, which can
+// include courses from a team the caller isn't in — so only the
+// course-agnostic aggregate fields are ever returned here, never `courses`
+// or the per-day `days` breakdown (which can reveal per-course activity),
+// `queues`, or `recommendation` (personal review state, not a public stat).
+router.get('/teams/:teamId/members/:stableUid/analytics', requireAuth, learnReadLimiter, async (req: Request, res: Response) => {
+  const teamId = uuidSchema.parse(req.params['teamId']);
+  const targetStableUid = z.string().trim().min(1).max(100).parse(req.params['stableUid']);
+  const { stableUid } = req.user!;
+  await ensureLearnProfile(stableUid, false);
+  const isAdmin = await isLearnAdmin(stableUid);
+  const [callerIsMember, targetIsMember] = await Promise.all([
+    isAdmin ? true : prisma.learnTeamMember.findUnique({ where: { teamId_stableUid: { teamId, stableUid } }, select: { stableUid: true } }),
+    prisma.learnTeamMember.findUnique({ where: { teamId_stableUid: { teamId, stableUid: targetStableUid } }, select: { stableUid: true } }),
+  ]);
+  if (!callerIsMember) throw new ForbiddenError('You are not a member of this team');
+  if (!targetIsMember) throw new NotFoundError('This person is not a member of this team');
+
+  const { user: targetUser, profile: targetProfile } = await ensureLearnProfile(targetStableUid, false);
+  const analytics = await buildLearningAnalytics({ stableUid: targetStableUid, timezone: targetProfile.timezone, range: '7d' });
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.json({
+    username: targetUser.username,
+    totals: {
+      streakDays: analytics.totals.streakDays,
+      minutesLearned: analytics.totals.minutesLearned,
+      activeDays: analytics.totals.activeDays,
+    },
+    yearActivity: analytics.yearActivity,
+  });
 });
 
 // A minimal, owner/admin-only search used to populate the "add member"

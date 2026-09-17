@@ -19,7 +19,7 @@ import {
 } from 'lucide-react';
 import { adminApi } from '../api';
 import { useToast } from '../components/Toast';
-import type { AdminLearnTeam, AdminLearnTeamMember, LearnTeamAssignableRole } from '../types';
+import type { AdminLearnTeam, AdminLearnTeamMember, AdminUser, LearnTeamAssignableRole } from '../types';
 
 const inputStyle: CSSProperties = {
   background: '#1c1c1e',
@@ -84,12 +84,33 @@ function TeamCard({
   const [userId, setUserId] = useState('');
   const [memberRole, setMemberRole] = useState<LearnTeamAssignableRole>('MEMBER');
   const [savingMember, setSavingMember] = useState(false);
+  const [userResults, setUserResults] = useState<AdminUser[]>([]);
+  const [userSearchOpen, setUserSearchOpen] = useState(false);
+  const [userSearchLoading, setUserSearchLoading] = useState(false);
   const [changingMemberId, setChangingMemberId] = useState<string | null>(null);
   const [removingMemberId, setRemovingMemberId] = useState<string | null>(null);
   const [showDelete, setShowDelete] = useState(false);
   const [deleteConfirmation, setDeleteConfirmation] = useState('');
   const [deleting, setDeleting] = useState(false);
   const [seedingVocab, setSeedingVocab] = useState(false);
+  const existingMemberIds = new Set(team.members.map((m) => m.stableUid));
+
+  // Browsable + searchable: an empty query still fetches (a page of all
+  // users), so the picker isn't blind like the old plain text input —
+  // matches the equivalent fix on learn.pokyh.com's team-member-manager.
+  useEffect(() => {
+    if (!userSearchOpen) return;
+    let cancelled = false;
+    const handle = setTimeout(() => {
+      setUserSearchLoading(true);
+      adminApi.users(userId.trim() || undefined, 1, 20)
+        .then((res) => { if (!cancelled) setUserResults(res.users.filter((u) => !existingMemberIds.has(u.stableUid))); })
+        .catch(() => { if (!cancelled) setUserResults([]); })
+        .finally(() => { if (!cancelled) setUserSearchLoading(false); });
+    }, 250);
+    return () => { cancelled = true; clearTimeout(handle); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- existingMemberIds is a derived Set recreated every render; keying off team.members would be equivalent but noisier to read
+  }, [userId, userSearchOpen, team.id]);
 
   function cancelEdit() {
     setName(team.name);
@@ -160,15 +181,15 @@ function TeamCard({
 
   async function handleMakeOwner(member: AdminLearnTeamMember) {
     const memberName = member.user?.username ?? member.stableUid;
-    if (!window.confirm(`„${memberName}“ zum Eigentümer von „${team.name}“ machen? Der bisherige Eigentümer wird zum Verwalter herabgestuft.`)) return;
+    if (!window.confirm(`„${memberName}“ als zusätzlichen Eigentümer von „${team.name}“ hinzufügen? Bestehende Eigentümer bleiben Eigentümer — ein Team kann mehrere haben.`)) return;
 
     setChangingMemberId(member.stableUid);
     try {
-      await adminApi.transferLearnTeamOwnership(team.id, member.stableUid);
+      await adminApi.addLearnTeamOwner(team.id, member.stableUid);
       await onRefreshed();
-      showToast(`${memberName} ist jetzt Eigentümer`, 'success');
+      showToast(`${memberName} ist jetzt zusätzlicher Eigentümer`, 'success');
     } catch (error) {
-      showToast(error instanceof Error ? error.message : 'Eigentümerwechsel fehlgeschlagen', 'error');
+      showToast(error instanceof Error ? error.message : 'Eigentümer hinzufügen fehlgeschlagen', 'error');
     } finally {
       setChangingMemberId(null);
     }
@@ -384,7 +405,7 @@ function TeamCard({
                         type="button"
                         onClick={() => void handleMakeOwner(member)}
                         disabled={isBusy}
-                        title="Zum Eigentümer machen"
+                        title="Als zusätzlichen Eigentümer hinzufügen"
                         className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-[8px] text-[12px] font-medium disabled:opacity-50"
                         style={{ background: 'rgba(191,90,242,0.09)', color: '#bf5af2', border: '1px solid rgba(191,90,242,0.19)' }}
                       >
@@ -414,18 +435,47 @@ function TeamCard({
               <h4 className="text-[12px] font-semibold text-white">Mitglied hinzufügen oder Rolle aktualisieren</h4>
             </div>
             <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_130px_auto]">
-              <div>
-                <label htmlFor={`member-identifier-${team.id}`} className="sr-only">POKYH-Benutzername oder stabile Nutzer-ID</label>
+              <div className="relative">
+                <label htmlFor={`member-identifier-${team.id}`} className="sr-only">POKYH-Benutzername suchen oder auswählen</label>
                 <input
                   id={`member-identifier-${team.id}`}
                   value={userId}
                   onChange={(event) => setUserId(event.target.value)}
-                  placeholder="POKYH-Benutzername oder Nutzer-ID"
+                  onFocus={() => setUserSearchOpen(true)}
+                  onBlur={() => setTimeout(() => setUserSearchOpen(false), 150)}
+                  placeholder="POKYH-Benutzername suchen oder auswählen…"
                   maxLength={100}
                   required
+                  autoComplete="off"
                   className="apple-input w-full px-3 py-2 text-[13px]"
                   style={inputStyle}
                 />
+                {userSearchOpen && (
+                  <div
+                    className="absolute left-0 right-0 mt-1 rounded-[10px] overflow-hidden z-10 max-h-[220px] overflow-y-auto"
+                    style={{ background: '#1c1c1e', border: '1px solid rgba(255,255,255,0.1)', boxShadow: '0 12px 28px rgba(0,0,0,0.4)' }}
+                  >
+                    {userSearchLoading ? (
+                      <div className="px-3 py-2.5 text-[12px] flex items-center gap-2" style={mutedText}><Loader2 size={12} className="animate-spin" /> Lädt…</div>
+                    ) : userResults.length === 0 ? (
+                      <div className="px-3 py-2.5 text-[12px]" style={mutedText}>Keine passenden Nutzer gefunden.</div>
+                    ) : (
+                      userResults.map((candidate) => (
+                        <button
+                          type="button"
+                          key={candidate.stableUid}
+                          onMouseDown={(event) => { event.preventDefault(); setUserId(candidate.username); setUserSearchOpen(false); }}
+                          className="w-full text-left px-3 py-2 text-[13px] text-white transition-colors"
+                          style={{ background: 'transparent' }}
+                          onMouseEnter={(event) => { (event.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.06)'; }}
+                          onMouseLeave={(event) => { (event.currentTarget as HTMLElement).style.background = 'transparent'; }}
+                        >
+                          {candidate.username}
+                        </button>
+                      ))
+                    )}
+                  </div>
+                )}
               </div>
               <div>
                 <label htmlFor={`new-member-role-${team.id}`} className="sr-only">Rolle</label>

@@ -18,6 +18,7 @@ import { revokeUserTokens } from '../utils/revokedTokens';
 import { logger } from '../utils/logger';
 import { invalidateDishesCache } from '../utils/cache';
 import { getLearnConfig, updateLearnConfig } from '../services/learnConfig';
+import { seedStarterVocabCourses, ensureAllTeamMembersVocabAccess, ensureTeamMemberVocabAccess } from '../services/learnTeamVocab';
 import {
   getBackupConfig, updateBackupConfig, listBackups, runBackup, pruneOldBackups,
   resolveBackupPath, restoreBackup,
@@ -3043,59 +3044,6 @@ router.get('/learn/teams', requireAdmin, async (_req: Request, res: Response): P
   res.json({ teams: teams.map(learnTeamAdminRow) });
 });
 
-function slugify(title: string): string {
-  const normalized = title
-    .normalize('NFKD')
-    .replace(/\p{M}/gu, '')
-    .toLocaleLowerCase('en-US')
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 150);
-  return `${normalized || 'course'}-${uuidv4().slice(0, 8)}`;
-}
-
-// Every team gets an Italian and an English vocabulary course (TEAM-
-// visibility, DRAFT status — visible and usable by team members immediately
-// per resolveCourseAccess in learn.ts, just not catalog-listed). Vocabulary
-// lives on a course, and course access is already correctly scoped to the
-// owning team's members, so this gives each team its own isolated starter
-// vocabulary with no separate scoping mechanism needed. Idempotent: only
-// creates the ones this team doesn't already have, keyed by (teamId,
-// language) — safe to call again for a team created before this existed.
-const STARTER_VOCAB_COURSES = [
-  { language: 'Italienisch', title: 'Italienisch – Teamvokabular' },
-  { language: 'Englisch', title: 'Englisch – Teamvokabular' },
-] as const;
-
-async function seedStarterVocabCourses(
-  tx: Omit<typeof prisma, '$transaction' | '$connect' | '$disconnect' | '$on' | '$use' | '$extends'>,
-  teamId: string,
-  teamName: string,
-  createdBy: string,
-): Promise<number> {
-  const existing = await tx.learnCourse.findMany({
-    where: { teamId, language: { in: STARTER_VOCAB_COURSES.map((s) => s.language) } },
-    select: { language: true },
-  });
-  const existingLanguages = new Set(existing.map((c) => c.language));
-  const missing = STARTER_VOCAB_COURSES.filter((s) => !existingLanguages.has(s.language));
-  for (const starter of missing) {
-    await tx.learnCourse.create({
-      data: {
-        slug: slugify(starter.title),
-        title: starter.title,
-        summary: `Gemeinsames ${starter.language}-Vokabular für „${teamName}“ — von allen Teammitgliedern erweiterbar.`,
-        language: starter.language,
-        visibility: 'TEAM',
-        status: 'DRAFT',
-        createdBy,
-        teamId,
-      },
-    });
-  }
-  return missing.length;
-}
-
 router.post('/learn/teams', requireAdmin, async (req: Request, res: Response): Promise<void> => {
   const body = adminLearnTeamCreateSchema.parse(req.body);
   const actor = await learnAdminActor(req);
@@ -3110,20 +3058,23 @@ router.post('/learn/teams', requireAdmin, async (req: Request, res: Response): P
       include: learnTeamAdminInclude,
     });
     await seedStarterVocabCourses(tx, created.id, created.name, actor.stableUid);
+    await ensureAllTeamMembersVocabAccess(tx, created.id);
     return created;
   });
   logger.info('Admin action: Learn team created', { action: 'learn_team_created', adminUsername: actor.username, teamId: team.id });
   res.status(201).json({ team: learnTeamAdminRow(team) });
 });
 
-// Retrofits the starter vocabulary courses onto a team created before this
-// existed. Idempotent — safe to call repeatedly.
+// Retrofits the starter vocabulary courses (and access to them for every
+// current member) onto a team created before this existed. Idempotent —
+// safe to call repeatedly.
 router.post('/learn/teams/:teamId/seed-vocab-courses', requireAdmin, async (req: Request, res: Response): Promise<void> => {
   const teamId = z.string().uuid().parse(req.params['teamId']);
   const actor = await learnAdminActor(req);
   const team = await prisma.learnTeam.findUnique({ where: { id: teamId }, select: { id: true, name: true } });
   if (!team) throw new NotFoundError('Learn team not found');
   const created = await seedStarterVocabCourses(prisma, team.id, team.name, actor.stableUid);
+  await ensureAllTeamMembersVocabAccess(prisma, team.id);
   logger.info('Admin action: Learn team starter vocab courses seeded', {
     action: 'learn_team_vocab_courses_seeded', adminUsername: actor.username, teamId, created,
   });
@@ -3172,6 +3123,7 @@ router.post('/learn/teams/:teamId/members', requireAdmin, async (req: Request, r
     create: { stableUid: user.stableUid },
     update: {},
   });
+  await ensureTeamMemberVocabAccess(prisma, teamId, user.stableUid);
   logger.info('Admin action: Learn team member saved', {
     action: 'learn_team_member_saved', adminUsername: actor.username, teamId, targetStableUid: user.stableUid, role: body.role,
   });
@@ -3198,14 +3150,16 @@ router.delete('/learn/teams/:teamId/members/:stableUid', requireAdmin, async (re
   res.status(204).send();
 });
 
-// Makes an existing team member the sole owner, demoting any other current
-// owner(s) to MANAGER in the same transaction. There was previously no way
-// to assign OWNER at all after team creation — the member-role endpoints
-// above deliberately only accept MANAGER/MEMBER, and the admin UI never
-// offered OWNER as a role choice, so this is a dedicated, explicit action
-// rather than folding OWNER into the generic role dropdown (which could
-// otherwise leave a team with an ambiguous multiple-owner state from an
-// offhand role edit).
+// Makes an existing team member an additional owner, alongside every other
+// current owner — this repo's own ownerCount<=1 guard on member removal
+// (above) already anticipated multiple simultaneous owners as a valid
+// state, so promoting one never demotes another. There was previously no
+// way to assign OWNER at all after team creation — the member-role
+// endpoints above deliberately only accept MANAGER/MEMBER, and the admin
+// UI never offered OWNER as a role choice, so this is a dedicated, explicit
+// action rather than folding OWNER into the generic role dropdown (which
+// could otherwise make an accidental ownership grant as easy as any other
+// role edit).
 router.post('/learn/teams/:teamId/owner', requireAdmin, async (req: Request, res: Response): Promise<void> => {
   const teamId = z.string().uuid().parse(req.params['teamId']);
   const body = adminLearnTeamOwnerSchema.parse(req.body);
@@ -3219,18 +3173,12 @@ router.post('/learn/teams/:teamId/owner', requireAdmin, async (req: Request, res
     res.json({ ok: true });
     return;
   }
-  await prisma.$transaction([
-    prisma.learnTeamMember.updateMany({
-      where: { teamId, role: 'OWNER' },
-      data: { role: 'MANAGER' },
-    }),
-    prisma.learnTeamMember.update({
-      where: { teamId_stableUid: { teamId, stableUid: body.stableUid } },
-      data: { role: 'OWNER' },
-    }),
-  ]);
-  logger.info('Admin action: Learn team ownership transferred', {
-    action: 'learn_team_owner_transferred', adminUsername: actor.username, teamId, targetStableUid: body.stableUid,
+  await prisma.learnTeamMember.update({
+    where: { teamId_stableUid: { teamId, stableUid: body.stableUid } },
+    data: { role: 'OWNER' },
+  });
+  logger.info('Admin action: Learn team owner added', {
+    action: 'learn_team_owner_added', adminUsername: actor.username, teamId, targetStableUid: body.stableUid,
   });
   res.json({ ok: true });
 });
