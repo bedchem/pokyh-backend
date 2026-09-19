@@ -14,6 +14,8 @@
     "revoke-admin": "node scripts/revoke-admin.js",
     "set-admin-password": "node scripts/set-admin-password.js",
     "create-user": "node scripts/create-user.js",
+    "grant-ai-access": "node scripts/grant-ai-access.js",
+    "revoke-ai-access": "node scripts/revoke-ai-access.js",
     "admin:build": "cd admin && npm install && npm run build",
     "admin:dev": "cd admin && npm run dev"
   },

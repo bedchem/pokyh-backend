@@ -15,6 +15,7 @@ import { subjectImagesRouter } from './subjectImages';
 import { activityLogRouter } from './activityLog';
 import { pushRouter } from './push';
 import { learnRouter } from './learn';
+import { learnAiRouter } from './learnAi';
 import { popupsAdminRouter, popupsRouter } from './popups';
 import { config } from '../config';
 
@@ -71,6 +72,10 @@ router.use('/activity-log', activityLogRouter);
 router.use('/push', pushRouter);
 // Announcement popups (admin-authored, shown in the web and Android apps)
 router.use('/popups', popupsRouter);
+// AI assistant — mounted ahead of the general /learn prefix below so it is
+// matched first; a separate router keeps it out of the large, actively
+// shared learn.ts file (see pokyh-backend/AGENTS.md).
+router.use('/learn/ai', requireLearnBrowserOrigin, learnAiRouter);
 // Pokyh Learn — catalog reads remain JWT-optional inside the router, while the
 // shared API-key middleware above protects every Learn request.
 router.use('/learn', requireLearnBrowserOrigin, learnRouter);

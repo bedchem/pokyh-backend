@@ -216,6 +216,7 @@ npx web-push generate-vapid-keys
 | `LEARN_ALLOWED_ORIGINS`  | Exact browser-origin allow-list for the additive `/learn` router.                        |
 | `LEARN_LEGAL_*`          | Production WebUntis activation gate: non-secret approval reference, HTTPS notice URL and notice version. |
 | `LEARN_DICTIONARY_*`     | Optional, server-only vocabulary suggestion policy, HTTPS endpoint, pairs, timeout and bounded cache. |
+| `LEARN_AI_*`             | Self-hosted, CPU-only AI assistant ("KIbo"): disabled by default; even when enabled, access still requires a per-user `LearnAiAccessGrant` (see `npm run grant-ai-access`). Model, context-window cap, per-hour rate limit and the internal-only Ollama base URL. |
 | `LEARN_IMPORT_*`         | Maximum personal Learn courses, sections and vocabulary entries accepted in one import.  |
 | `LEARN_REVIEW_*` / `LEARN_ANALYTICS_RETENTION_DAYS` | Bounded adaptive-review policy and retention for private daily activity aggregates. |
 | `LEARN_REDIS_URL` / `LEARN_REDIS_KEY_PREFIX` / `LEARN_ANALYTICS_CACHE_TTL_SECONDS` | Optional internal course-specific analytics cache. Do not expose Redis publicly or use it for tokens, answers, permissions, or durable state. |
@@ -385,6 +386,26 @@ reviewed, backed up, or rehearsed. Before a production schema change, use a
 reviewed migration plan, take and test an operator-managed backup/restore, and
 verify the target database separately. Do not treat personal Learn JSON export
 or the admin UI as a platform backup.
+
+### AI assistant service (optional)
+
+The self-hosted, CPU-only Ollama container is opt-in via a Compose profile —
+plain `./scripts/compose-stack.sh up -d` does **not** start it, so an existing
+deployment is unaffected:
+
+```bash
+./scripts/compose-stack.sh --profile ai up -d
+```
+
+It runs on its own internal-only network with no host port, is not a hard
+dependency of `app` (every non-AI route keeps working if it is stopped,
+disabled, or still pulling its model), and persists its downloaded model in
+the named `ollama_data` volume so it is not re-fetched on every restart. Grant
+a pilot user access with `npm run grant-ai-access <username>` (revoke with
+`npm run revoke-ai-access <username>`) — there is no platform-wide toggle for
+end users, only the admin `LEARN_AI_ENABLED` kill-switch plus this per-user
+grant. No GPU is requested anywhere in the compose file; do not install
+`nvidia-container-toolkit` for this service.
 
 ### Logs
 

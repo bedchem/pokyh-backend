@@ -100,6 +100,9 @@ services:
       # The same service can run without Redis outside Compose by setting this
       # explicitly blank; the app degrades safely to MySQL reads.
       - LEARN_REDIS_URL=${LEARN_REDIS_URL:-redis://redis:6379}
+      # Always the internal Docker service name under Compose, regardless of
+      # what an operator's .env sets for non-Compose local development.
+      - LEARN_AI_OLLAMA_BASE_URL=${LEARN_AI_OLLAMA_BASE_URL:-http://ollama:11434}
     # Scheduled/manual mysqldump backups (src/services/dbBackup.ts) persist
     # here so they survive a redeploy — this volume, not the container
     # filesystem, is the durable copy. Configure retention/schedule via the
@@ -125,10 +128,67 @@ services:
     networks:
       - edge
       - database
+      - ai-internal
+
+  # Self-hosted, CPU-only AI assistant model runtime ("KIbo"). Opt-in via a
+  # Compose profile so an existing deployment that has not chosen to run the
+  # assistant is unaffected by `docker compose up` — start it explicitly with
+  # `docker compose --profile ai up -d` (or `COMPOSE_PROFILES=ai`). The `app`
+  # service does NOT hard-depend on this one: it stays reachable and every
+  # non-AI route keeps working if Ollama is stopped, disabled, or still
+  # pulling its model — src/services/learnAiOllama.ts's isModelReady() gates
+  # only the /learn/ai/* routes themselves.
+  #
+  # No GPU device is requested anywhere in this file — the stock (non-CUDA)
+  # image auto-falls-back to CPU inference. Do not install
+  # nvidia-container-toolkit on the host for this service.
+  ollama:
+    # Pinned to the latest stable release verified at the time this was
+    # written (github.com/ollama/ollama/releases). Gemma 4 needs a recent
+    # Ollama release to load correctly — re-verify this tag against the
+    # releases page before deploying if time has passed since.
+    image: ollama/ollama:0.34.2
+    profiles: ["ai"]
+    restart: unless-stopped
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      # Unload the model after idle time instead of holding RAM forever. 30m
+      # (not Ollama's short default) because a cold reload measured ~150s on
+      # CPU-only hardware in testing — worth keeping resident through a
+      # normal gap between a pilot user's messages rather than reloading on
+      # every conversation.
+      - OLLAMA_KEEP_ALIVE=${OLLAMA_KEEP_ALIVE:-30m}
+      # Concurrent in-flight requests per loaded model — this is the actual
+      # "multiple people at once" mechanism. Keep low on CPU to avoid thread
+      # oversubscription; raise only after load-testing the real host.
+      - OLLAMA_NUM_PARALLEL=${OLLAMA_NUM_PARALLEL:-2}
+      # Phase 0 loads only the chat model. Raise to 2 once a knowledge-base
+      # embedding model is added (later phase) so the two don't swap-thrash.
+      - OLLAMA_MAX_LOADED_MODELS=${OLLAMA_MAX_LOADED_MODELS:-1}
+      - OLLAMA_NUM_THREAD=${OLLAMA_NUM_THREAD:-4}
+    # PLACEHOLDERS — verify against the real host's available RAM/CPU before
+    # relying on these in production (see docs/architecture.md). Sized for
+    # gemma4:e4b at a short, admin-configured context window.
+    mem_limit: ${OLLAMA_MEM_LIMIT:-10g}
+    cpus: ${OLLAMA_CPUS:-4}
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - ai-internal
 
 volumes:
   mysql_data:
   backups:
+  ollama_data:
 
 networks:
   # Allows the app to reach the configured public integrations/tunnel while
@@ -136,3 +196,13 @@ networks:
   edge:
   database:
     internal: true
+  # Separate from `database` so the AI runtime is isolated even from MySQL
+  # and Redis, which have no reason to be reachable from it. Deliberately
+  # NOT `internal: true`, unlike `database`: Ollama needs outbound internet
+  # access to pull a model from its registry (a later phase's SearXNG search
+  # also needs real outbound egress). Inbound protection already comes from
+  # never publishing a host port for any service on this network — an
+  # `internal: true` network blocks egress too, which broke the model pull
+  # (confirmed live: "dial tcp: lookup registry.ollama.ai ...: server
+  # misbehaving" — the embedded DNS resolver has no path out on that mode).
+  ai-internal:

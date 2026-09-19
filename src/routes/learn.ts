@@ -7,6 +7,8 @@ import { optionalAuth, requireAuth } from '../middleware/auth';
 import { learnReadLimiter, learnWriteLimiter, readLimiter } from '../middleware/rateLimiter';
 import { getDictionarySuggestion, validateVocabularyWord } from '../services/learnDictionary';
 import { getLearnConfig } from '../services/learnConfig';
+import { hasActiveAiGrant } from '../services/learnAiAccess';
+import { getLearnAiConfig } from '../services/learnAiConfig';
 import { ensureAllTeamMembersVocabAccess, ensureTeamMemberVocabAccess, seedStarterVocabCourses } from '../services/learnTeamVocab';
 import { expectedAnswers, normalizeAnswer } from '../services/learnVocabularyText';
 import { config } from '../config';
@@ -38,8 +40,10 @@ router.get('/sign-in-config', readLimiter, async (_req: Request, res: Response) 
 
 // Structured, DB-independent audit trail for sensitive Learn actions. Never
 // pass answer text, vocabulary text, or other learner-authored content here —
-// only IDs, counts, and outcomes (see CLAUDE.md's privacy rules).
-function learnAudit(req: Request, action: string, details: Record<string, unknown> = {}): void {
+// only IDs, counts, and outcomes (see CLAUDE.md's privacy rules). Exported so
+// sibling Learn routers (e.g. learnAi.ts) reuse the same convention instead
+// of duplicating it.
+export function learnAudit(req: Request, action: string, details: Record<string, unknown> = {}): void {
   logger.info('learn.audit', {
     action,
     actorStableUid: req.user?.stableUid ?? null,
@@ -393,7 +397,7 @@ async function isTeamOwner(stableUid: string, teamId: string): Promise<boolean> 
   return member?.role === 'OWNER';
 }
 
-async function ensureLearnProfile(stableUid: string, touch = true) {
+export async function ensureLearnProfile(stableUid: string, touch = true) {
   const user = await prisma.user.findUnique({
     where: { stableUid },
     select: { stableUid: true, username: true, role: true, isUntisUser: true },
@@ -975,14 +979,22 @@ router.get('/catalog/:slug', readLimiter, async (req: Request, res: Response) =>
 // GET /learn/me — creates a durable profile only after a valid POKYH JWT.
 router.get('/me', requireAuth, learnReadLimiter, async (req: Request, res: Response) => {
   const { stableUid } = req.user!;
-  const [{ user, profile }, isAdmin] = await Promise.all([
+  const [{ user, profile }, isAdmin, hasAiGrant, aiConfig] = await Promise.all([
     ensureLearnProfile(stableUid),
     isLearnAdmin(stableUid),
+    hasActiveAiGrant(stableUid),
+    getLearnAiConfig(),
   ]);
   res.json({
     user: { stableUid: user.stableUid, username: user.username, role: user.role },
     profile,
     isAdmin,
+    // A capability hint only — every /learn/ai/* route independently
+    // re-checks the pilot grant via requireAiPilotAccess (see CLAUDE.md's
+    // rule that a client-visible flag is never itself an authorization
+    // decision). Combines the grant with the admin kill-switch so the
+    // launcher doesn't render into a feature the admin has turned off.
+    canUseAiAssistant: hasAiGrant && aiConfig.enabled,
   });
 });
 

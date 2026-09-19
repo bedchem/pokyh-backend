@@ -45,6 +45,9 @@ model User {
   learnTeamsCreated      LearnTeam[]             @relation("LearnTeamCreator")
   learnTeamMemberships   LearnTeamMember[]
   learnSectionCompletions LearnSectionCompletion[]
+  learnAiConversations   LearnAiConversation[]
+  learnAiAccessGrant     LearnAiAccessGrant?
+  learnAiUsageCounters   LearnAiUsageCounter[]
 
   @@map("users")
 }
@@ -812,6 +815,116 @@ model LearnConfig {
   updatedBy                    String?  @map("updated_by")
 
   @@map("learn_config")
+}
+
+// ─── Pokyh Learn Assistant ("KIbo") ────────────────────────────────────────
+// Self-hosted, CPU-only Ollama-backed AI assistant. Pilot-gated: holding a
+// non-revoked LearnAiAccessGrant is the ONLY thing that grants access, not a
+// global switch — see src/services/learnAiAccess.ts. Conversations/messages
+// are the durable record; LearnAiConfig is admin-editable operational policy,
+// a sibling singleton to LearnConfig (kept separate since LearnConfig already
+// carries ~30 unrelated fields), following the same nullable-field/env-
+// fallback pattern resolved by src/services/learnAiConfig.ts.
+model LearnAiConversation {
+  id            String    @id @default(uuid())
+  stableUid     String    @map("stable_uid")
+  title         String    @default("") @db.VarChar(200)
+  archivedAt    DateTime? @map("archived_at")
+  lastMessageAt DateTime? @map("last_message_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  user     User             @relation(fields: [stableUid], references: [stableUid], onDelete: Cascade)
+  messages LearnAiMessage[]
+
+  @@index([stableUid, lastMessageAt])
+  @@map("learn_ai_conversations")
+}
+
+model LearnAiMessage {
+  id               String   @id @default(uuid())
+  conversationId   String   @map("conversation_id")
+  // 'user' or 'assistant'.
+  role             String   @db.VarChar(20)
+  content          String   @db.LongText
+  // 'fast' | 'thinking'; null for user-authored rows and until the
+  // thinking-mode toggle ships. Kept now so that later phase is purely
+  // additive data, not a schema change.
+  mode             String?  @db.VarChar(20)
+  modelName        String?  @map("model_name") @db.VarChar(120)
+  modelDigest      String?  @map("model_digest") @db.VarChar(80)
+  promptTokens     Int?     @map("prompt_tokens")
+  completionTokens Int?     @map("completion_tokens")
+  // Client-supplied, present only on the user-authored row of a send-message
+  // call. A retry with the same key returns the already-stored exchange
+  // instead of calling the model (and counting against the quota) again —
+  // mirrors LearnQuizAttempt's idempotency pattern. MySQL treats multiple
+  // NULLs in a unique index as distinct, so assistant rows (always null
+  // here) never collide with each other.
+  idempotencyKey   String?  @map("idempotency_key") @db.VarChar(100)
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  conversation LearnAiConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@unique([conversationId, idempotencyKey])
+  @@index([conversationId, createdAt])
+  @@map("learn_ai_messages")
+}
+
+// Pilot allowlist — the only source of AI-assistant access. A learner with no
+// row here, or whose grant has revokedAt set, gets 403 on every /learn/ai/*
+// route regardless of any other configuration.
+model LearnAiAccessGrant {
+  stableUid String    @id @map("stable_uid")
+  grantedBy String    @map("granted_by")
+  grantedAt DateTime  @default(now()) @map("granted_at")
+  revokedBy String?   @map("revoked_by")
+  revokedAt DateTime? @map("revoked_at")
+  note      String    @default("") @db.VarChar(500)
+
+  user User @relation(fields: [stableUid], references: [stableUid], onDelete: Cascade)
+
+  @@index([revokedAt])
+  @@map("learn_ai_access_grants")
+}
+
+// The authoritative per-user quota ledger (src/services/learnAiRateLimit.ts).
+// Redis may accelerate the check but this table enforces it, so the limit
+// still holds correctly if Redis is absent or fails.
+model LearnAiUsageCounter {
+  stableUid    String   @map("stable_uid")
+  windowStart  DateTime @map("window_start")
+  messageCount Int      @default(0) @map("message_count")
+  tokenCount   Int      @default(0) @map("token_count")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [stableUid], references: [stableUid], onDelete: Cascade)
+
+  @@id([stableUid, windowStart])
+  @@index([windowStart])
+  @@map("learn_ai_usage_counters")
+}
+
+// Admin-editable AI operational policy. A missing row, or a null field on it,
+// falls back to the LEARN_AI_* environment defaults in src/config.ts.
+model LearnAiConfig {
+  id                         Int      @id @default(1)
+  // Global kill-switch, independent of per-user pilot grants — both must
+  // allow a request through.
+  enabled                    Boolean? @map("enabled")
+  modelName                  String?  @map("model_name") @db.VarChar(120)
+  // num_ctx sent to Ollama. Deliberately kept small by default: RAM for a
+  // CPU-quantized model grows sharply with context length (see docs).
+  contextTokens              Int?     @map("context_tokens")
+  numPredictFast             Int?     @map("num_predict_fast")
+  rateLimitMessagesPerHour   Int?     @map("rate_limit_messages_per_hour")
+  ollamaBaseUrl              String?  @map("ollama_base_url") @db.VarChar(300)
+  ollamaTimeoutMs            Int?     @map("ollama_timeout_ms")
+  personalizedContextEnabled Boolean? @map("personalized_context_enabled")
+  updatedAt                  DateTime @updatedAt @map("updated_at")
+  updatedBy                  String?  @map("updated_by")
+
+  @@map("learn_ai_config")
 }
 
 // ─── Announcement popups ──────────────────────────────────────────────────────

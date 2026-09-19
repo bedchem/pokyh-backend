@@ -25,6 +25,7 @@ import { migrateStableKeys } from './utils/dishKey';
 import { reconcileDishRatings } from './services/dishRatings';
 import { logger } from './utils/logger';
 import { getLearnConfig } from './services/learnConfig';
+import { ensureModelReady } from './services/learnAiOllama';
 import { learningDayKey } from './services/learnAnalytics';
 import { closeLearnCache } from './services/learnCache';
 
@@ -289,6 +290,13 @@ function startBackgroundJobs() {
   // Scheduled full-database backups (mysqldump, gzip), retained for the
   // configured number of days and pruned automatically after each run.
   startBackupScheduler();
+
+  // AI assistant model provisioning ("check, else pull, then start"):
+  // deliberately fire-and-forget, never awaited here. A multi-GB first-boot
+  // model pull must never delay the HTTP server from listening or gate
+  // /readyz — chat requests check isModelReady() themselves and return a
+  // friendly 503 until the pull completes.
+  void ensureModelReady();
 }
 
 // Create the database (if missing) and apply the schema via `prisma db push`.

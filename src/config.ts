@@ -194,6 +194,33 @@ export const config = {
     .split(',')
     .map((host) => host.trim().toLocaleLowerCase('en-US'))
     .filter((host) => /^[a-z0-9.-]+$/.test(host)),
+  // Self-hosted, CPU-only Ollama assistant ("KIbo"). Disabled by default and
+  // pilot-gated (see LearnAiAccessGrant) even when enabled — this flag is a
+  // second, independent switch, not the access control itself.
+  learnAi: {
+    enabled: (process.env['LEARN_AI_ENABLED'] ?? 'false') === 'true',
+    modelName: strEnv('LEARN_AI_MODEL', 'gemma4:e4b'),
+    // Kept deliberately small: RAM for a CPU-quantized model grows sharply
+    // with context length (see docs/architecture.md).
+    contextTokens: boundedIntEnv('LEARN_AI_CONTEXT_TOKENS', 4_096, 512, 32_768),
+    numPredictFast: boundedIntEnv('LEARN_AI_NUM_PREDICT_FAST', 512, 32, 4_096),
+    rateLimitMessagesPerHour: boundedIntEnv('LEARN_AI_RATE_LIMIT_MESSAGES_PER_HOUR', 30, 1, 1_000),
+    ollamaBaseUrl: strEnv('LEARN_AI_OLLAMA_BASE_URL', 'http://ollama:11434').replace(/\/$/, ''),
+    // 60s was measured too short for a real CPU-only cold start (loading a
+    // ~9.6GB model into memory before the first inference on an idle/just-
+    // restarted Ollama instance measured ~150s on modest hardware) — a
+    // subsequent call within OLLAMA_KEEP_ALIVE is far faster since the model
+    // stays resident, but the timeout must cover the worst case.
+    ollamaTimeoutMs: intEnv('LEARN_AI_OLLAMA_TIMEOUT_MS', 180_000),
+    personalizedContextEnabled: (process.env['LEARN_AI_PERSONALIZED_CONTEXT_ENABLED'] ?? 'true') === 'true',
+  },
+  // Egress policy, not editor content — stays environment-only so an admin
+  // setting can never repoint the assistant at an arbitrary external host.
+  // Defaults to the internal Docker service name only.
+  learnAiAllowedHosts: (process.env['LEARN_AI_ALLOWED_HOSTS'] ?? 'ollama')
+    .split(',')
+    .map((host) => host.trim().toLocaleLowerCase('en-US'))
+    .filter((host) => /^[a-z0-9.-]+$/.test(host)),
   learnImport: {
     maxCourses: intEnv('LEARN_IMPORT_MAX_COURSES', 20),
     maxSectionsPerCourse: intEnv('LEARN_IMPORT_MAX_SECTIONS_PER_COURSE', 100),
