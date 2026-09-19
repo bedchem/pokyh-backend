@@ -429,6 +429,7 @@ export const adminApi = {
     q?: string;
     status?: LearnCourseStatus;
     visibility?: LearnCourseVisibility;
+    teamId?: string;
   }): Promise<AdminLearnCoursesResponse> => {
     const query = new URLSearchParams();
     if (params?.page) query.set('page', String(params.page));
@@ -436,6 +437,7 @@ export const adminApi = {
     if (params?.q) query.set('q', params.q);
     if (params?.status) query.set('status', params.status);
     if (params?.visibility) query.set('visibility', params.visibility);
+    if (params?.teamId) query.set('teamId', params.teamId);
     const suffix = query.size > 0 ? `?${query.toString()}` : '';
     return request<AdminLearnCoursesResponse>('GET', `/api/admin/learn/courses${suffix}`);
   },

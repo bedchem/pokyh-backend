@@ -2733,6 +2733,9 @@ const adminLearnCourseListQuerySchema = z.object({
   q: z.string().trim().min(1).max(120).optional(),
   status: adminLearnCourseStatusSchema.optional(),
   visibility: adminLearnCourseVisibilitySchema.optional(),
+  // Lets the admin Teams page fetch one team's own courses instead of the
+  // whole catalogue — the UI otherwise gets confusing once many teams exist.
+  teamId: z.string().uuid().optional(),
 });
 
 const adminLearnCourseAccessQuerySchema = z.object({
@@ -2914,6 +2917,7 @@ router.get('/learn/courses', requireAdmin, async (req: Request, res: Response): 
   const where = {
     ...(query.status ? { status: query.status } : {}),
     ...(query.visibility ? { visibility: query.visibility } : {}),
+    ...(query.teamId ? { teamId: query.teamId } : {}),
     ...(query.q ? {
       OR: [
         { title: { contains: query.q } },

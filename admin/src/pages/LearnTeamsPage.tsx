@@ -19,7 +19,8 @@ import {
 } from 'lucide-react';
 import { adminApi } from '../api';
 import { useToast } from '../components/Toast';
-import type { AdminLearnTeam, AdminLearnTeamMember, AdminUser, LearnTeamAssignableRole } from '../types';
+import { VocabularyPanel } from '../components/VocabularyPanel';
+import type { AdminLearnCourse, AdminLearnTeam, AdminLearnTeamMember, AdminUser, LearnCourseStatus, LearnTeamAssignableRole } from '../types';
 
 const inputStyle: CSSProperties = {
   background: '#1c1c1e',
@@ -52,6 +53,22 @@ function roleColor(role: AdminLearnTeamMember['role']): string {
   }
 }
 
+function courseStatusColor(status: LearnCourseStatus): string {
+  switch (status) {
+    case 'PUBLISHED': return '#30d158';
+    case 'ARCHIVED': return '#bf5af2';
+    default: return '#ff9f0a';
+  }
+}
+
+function courseStatusLabel(status: LearnCourseStatus): string {
+  switch (status) {
+    case 'PUBLISHED': return 'Veröffentlicht';
+    case 'ARCHIVED': return 'Archiviert';
+    default: return 'Entwurf';
+  }
+}
+
 function Card({ children, title, icon }: { children: ReactNode; title: string; icon: ReactNode }) {
   return (
     <section className="rounded-[16px] p-5" style={{ background: '#0d0d0d', border: '1px solid rgba(255,255,255,0.07)' }}>
@@ -61,6 +78,85 @@ function Card({ children, title, icon }: { children: ReactNode; title: string; i
       </div>
       {children}
     </section>
+  );
+}
+
+// Fetches and shows only this team's own courses (server-side teamId filter,
+// see GET /api/admin/learn/courses) — deliberately scoped per team rather
+// than showing/filtering the whole catalogue client-side, so this stays
+// legible once many teams exist. Each course expands into the same
+// VocabularyPanel used on the flat Kurse page (export/import a list's words),
+// which is exactly the workflow this per-team grouping exists to make findable.
+function TeamCoursesPanel({ teamId }: { teamId: string }) {
+  const { showToast } = useToast();
+  const [courses, setCourses] = useState<AdminLearnCourse[] | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [openCourseId, setOpenCourseId] = useState<string | null>(null);
+
+  const loadCourses = useCallback(async () => {
+    setLoading(true);
+    try {
+      const result = await adminApi.listLearnCourses({ teamId, limit: 50 });
+      setCourses(result.courses);
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Kurse dieser Gruppe konnten nicht geladen werden', 'error');
+    } finally {
+      setLoading(false);
+    }
+  }, [teamId, showToast]);
+
+  useEffect(() => { void loadCourses(); }, [loadCourses]);
+
+  function replaceCourse(updated: AdminLearnCourse) {
+    setCourses((current) => current?.map((course) => course.id === updated.id ? updated : course) ?? current);
+  }
+
+  if (loading) {
+    return (
+      <div className="flex flex-col gap-2">
+        {Array.from({ length: 2 }).map((_, index) => <div key={index} className="h-16 rounded-[12px] shimmer" />)}
+      </div>
+    );
+  }
+
+  if (!courses || courses.length === 0) {
+    return <p className="text-[13px] py-3 text-center rounded-[10px]" style={{ background: 'rgba(255,255,255,0.03)', ...mutedText }}>Dieser Gruppe sind keine Kurse zugeordnet.</p>;
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      {courses.map((course) => {
+        const open = openCourseId === course.id;
+        const color = courseStatusColor(course.status);
+        return (
+          <div key={course.id} className="rounded-[12px] overflow-hidden" style={{ border: '1px solid rgba(255,255,255,0.06)' }}>
+            <div className="flex items-center justify-between gap-3 p-3 flex-wrap">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-[13px] font-medium text-white">{course.title}</span>
+                  <span className="text-[11px] px-2 py-0.5 rounded-[6px] font-medium" style={{ background: `${color}1f`, color, border: `1px solid ${color}3c` }}>{courseStatusLabel(course.status)}</span>
+                </div>
+                <div className="mt-1 text-[11px]" style={mutedText}>{course.counts.vocabulary} Vokabeln · Aktualisiert {formatDate(course.updatedAt)}</div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setOpenCourseId(open ? null : course.id)}
+                aria-expanded={open}
+                className="flex items-center gap-1.5 text-[12px] font-medium flex-shrink-0"
+                style={{ color: '#0a84ff' }}
+              >
+                {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />} Vokabeln {open ? 'ausblenden' : 'verwalten'}
+              </button>
+            </div>
+            {open && (
+              <div className="px-3 pb-3">
+                <VocabularyPanel course={course} onCourseChanged={replaceCourse} />
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
@@ -497,16 +593,11 @@ function TeamCard({
           </form>
 
           <div className="mt-5 pt-4" style={{ borderTop: '1px solid rgba(255,255,255,0.06)' }}>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 mb-3">
               <BookOpen size={14} style={{ color: '#0a84ff' }} />
-              <h3 className="text-[13px] font-semibold text-white">Kurszuordnung</h3>
+              <h3 className="text-[13px] font-semibold text-white">Kurse dieser Gruppe{team.courseCount > 0 ? ` (${team.courseCount})` : ''}</h3>
             </div>
-            <p className="text-[12px] mt-1.5 leading-relaxed" style={mutedText}>
-              {team.courseCount === 0
-                ? 'Dieser Gruppe sind keine Kurse zugeordnet.'
-                : `${team.courseCount} ${team.courseCount === 1 ? 'Kurs ist' : 'Kurse sind'} zugeordnet.`}{' '}
-              Der Verwaltungsendpunkt liefert bewusst nur die Anzahl; Kursinhalte und Lernantworten bleiben außerhalb der Gruppenverwaltung geschützt.
-            </p>
+            <TeamCoursesPanel teamId={team.id} />
           </div>
 
           <div className="mt-5 pt-4" style={{ borderTop: '1px solid rgba(255,255,255,0.06)' }}>
