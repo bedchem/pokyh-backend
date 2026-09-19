@@ -498,6 +498,42 @@ export interface LearnConfigValues {
   importMaxVocabularyPerCourse: number;
 }
 
+// ── Learn AI assistant ("KIbo") administration ──────────────────────────────
+// Access is separate from this config: it always additionally requires a
+// LearnAiGrant (personal) or LearnAiTeamGrant (team) below — `enabled` here
+// is only the platform-wide kill-switch, never a substitute for a grant.
+export interface LearnAiConfigValues {
+  enabled: boolean;
+  modelName: string;
+  contextTokens: number;
+  numPredictFast: number;
+  rateLimitMessagesPerHour: number;
+  ollamaBaseUrl: string;
+  ollamaTimeoutMs: number;
+  personalizedContextEnabled: boolean;
+}
+
+export interface LearnAiGrant {
+  stableUid: string;
+  username: string;
+  grantedBy: string;
+  grantedAt: string;
+  revokedBy: string | null;
+  revokedAt: string | null;
+  note: string;
+}
+
+export interface LearnAiTeamGrant {
+  teamId: string;
+  teamName: string;
+  memberCount: number;
+  grantedBy: string;
+  grantedAt: string;
+  revokedBy: string | null;
+  revokedAt: string | null;
+  note: string;
+}
+
 // ── Learn group administration ──────────────────────────────────────────────
 // These values intentionally reflect the admin-only `/api/admin/learn/teams`
 // response. It exposes membership and aggregate course counts, never course

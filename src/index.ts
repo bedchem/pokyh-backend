@@ -300,6 +300,17 @@ function startBackgroundJobs() {
   // model pull must never delay the HTTP server from listening or gate
   // /readyz — chat requests check isModelReady() themselves and return a
   // friendly 503 until the pull completes.
+  //
+  // Never re-downloads an already-present model: ensureModelReady() checks
+  // Ollama's /api/tags first and only calls /api/pull if the configured
+  // model is missing from it. The pulled model is stored in the named
+  // `ollama_data` Docker volume (docker-compose.yml), which persists across
+  // container restarts/redeploys — so every subsequent boot (including a
+  // Dokploy redeploy) finds the model already there and skips the pull
+  // entirely. Live-verified: recreating both the `app` and `ollama`
+  // containers with the model already pulled produced no re-pull, only the
+  // "Database ready" log line. Also re-invoked (same no-op-if-present
+  // behaviour) after an admin changes the model in the Pokyh AI admin page.
   void ensureModelReady();
 }
 

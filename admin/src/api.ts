@@ -1,4 +1,4 @@
-import type { AdminStats, AdminClass, AdminSession, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish, AdminDishFull, AdminDishImportResult, AdminDishShiftResult, AdminDishRotateResult, AdminDishResetResult, AdminDishAnchorResult, DishPlan, AdminCommentsResponse, FileLogFile, FileLogResponse, FileLogEntry, FrontendActivityLogsResponse, FrontendActivityStats, AllTodosResponse, AllRemindersResponse, SchoolYearsResponse, ArchivedUsersResponse, ArchivedClass, ArchivedTodosResponse, ArchivedRemindersResponse, RolloverResult, RollbackResult, AdminApiKey, CreatedApiKey, LearnConfigValues, AdminLearnTeam, LearnTeamAssignableRole, AdminLearnCoursesResponse, AdminLearnCourseAccessResponse, AdminLearnCourse, AdminLearnCourseAccess, LearnCoursePermission, LearnCourseStatus, LearnCourseVisibility, AdminLearnCourseVocabularyResponse, AdminLearnVocabularyImportResponse, BackupsResponse, AdminPopup, PopupInput } from './types';
+import type { AdminStats, AdminClass, AdminSession, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish, AdminDishFull, AdminDishImportResult, AdminDishShiftResult, AdminDishRotateResult, AdminDishResetResult, AdminDishAnchorResult, DishPlan, AdminCommentsResponse, FileLogFile, FileLogResponse, FileLogEntry, FrontendActivityLogsResponse, FrontendActivityStats, AllTodosResponse, AllRemindersResponse, SchoolYearsResponse, ArchivedUsersResponse, ArchivedClass, ArchivedTodosResponse, ArchivedRemindersResponse, RolloverResult, RollbackResult, AdminApiKey, CreatedApiKey, LearnConfigValues, LearnAiConfigValues, LearnAiGrant, LearnAiTeamGrant, AdminLearnTeam, LearnTeamAssignableRole, AdminLearnCoursesResponse, AdminLearnCourseAccessResponse, AdminLearnCourse, AdminLearnCourseAccess, LearnCoursePermission, LearnCourseStatus, LearnCourseVisibility, AdminLearnCourseVocabularyResponse, AdminLearnVocabularyImportResponse, BackupsResponse, AdminPopup, PopupInput } from './types';
 
 const TOKEN_KEY = 'pokyh_admin_token';
 
@@ -391,6 +391,31 @@ export const adminApi = {
 
   updateLearnConfig: (data: Partial<LearnConfigValues> & { webUntisAuthorizationReference?: string }): Promise<{ ok: boolean }> =>
     request<{ ok: boolean }>('PATCH', '/api/admin/learn-config', data),
+
+  // ── Learn AI assistant ("KIbo") ───────────────────────────────────────────
+  getLearnAiConfig: (): Promise<LearnAiConfigValues> =>
+    request<LearnAiConfigValues>('GET', '/api/admin/learn-ai/config'),
+
+  updateLearnAiConfig: (data: Partial<LearnAiConfigValues>): Promise<{ ok: boolean }> =>
+    request<{ ok: boolean }>('PATCH', '/api/admin/learn-ai/config', data),
+
+  getLearnAiGrants: (): Promise<{ grants: LearnAiGrant[] }> =>
+    request<{ grants: LearnAiGrant[] }>('GET', '/api/admin/learn-ai/grants'),
+
+  grantLearnAi: (username: string, note?: string): Promise<{ ok: boolean }> =>
+    request<{ ok: boolean }>('POST', '/api/admin/learn-ai/grants', { username, note }),
+
+  revokeLearnAi: (stableUid: string): Promise<{ ok: boolean }> =>
+    request<{ ok: boolean }>('DELETE', `/api/admin/learn-ai/grants/${stableUid}`),
+
+  getLearnAiTeamGrants: (): Promise<{ grants: LearnAiTeamGrant[] }> =>
+    request<{ grants: LearnAiTeamGrant[] }>('GET', '/api/admin/learn-ai/team-grants'),
+
+  grantLearnAiTeam: (teamId: string, note?: string): Promise<{ ok: boolean }> =>
+    request<{ ok: boolean }>('POST', '/api/admin/learn-ai/team-grants', { teamId, note }),
+
+  revokeLearnAiTeam: (teamId: string): Promise<{ ok: boolean }> =>
+    request<{ ok: boolean }>('DELETE', `/api/admin/learn-ai/team-grants/${teamId}`),
 
   // ── Learn groups and access ──────────────────────────────────────────────
   // Group administration remains in the canonical admin authority. The

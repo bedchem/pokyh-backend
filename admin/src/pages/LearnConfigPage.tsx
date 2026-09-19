@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { Link } from 'react-router-dom';
-import { GraduationCap, Save, ShieldCheck, ShieldAlert, BookOpen, Upload } from 'lucide-react';
+import { GraduationCap, Save, ShieldCheck, ShieldAlert, BookOpen, Upload, Bot } from 'lucide-react';
 import { adminApi } from '../api';
 import { useToast } from '../components/Toast';
 import type { LearnConfigValues } from '../types';
@@ -142,6 +142,13 @@ export function LearnConfigPage() {
             style={{ background: 'rgba(255,255,255,0.05)', color: 'rgba(235,235,245,0.78)', border: '1px solid rgba(255,255,255,0.1)' }}
           >
             <GraduationCap size={14} /> Teams &amp; Zugriffe
+          </Link>
+          <Link
+            to="/learn/ai"
+            className="flex items-center gap-2 px-4 py-2.5 rounded-[10px] text-[13px] font-medium transition-all"
+            style={{ background: 'rgba(255,255,255,0.05)', color: 'rgba(235,235,245,0.78)', border: '1px solid rgba(255,255,255,0.1)' }}
+          >
+            <Bot size={14} /> Pokyh AI
           </Link>
           <button
             onClick={() => void handleSave()}

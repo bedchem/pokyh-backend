@@ -21,6 +21,7 @@ import { publishDishRatings } from '../services/dishRatings';
 import { broadcastDishComments } from './dishComments';
 import { getLearnConfig, updateLearnConfig } from '../services/learnConfig';
 import { getLearnAiConfig, updateLearnAiConfig } from '../services/learnAiConfig';
+import { ensureModelReady } from '../services/learnAiOllama';
 import {
   grantAiAccess,
   grantAiAccessToTeam,
@@ -2742,6 +2743,12 @@ router.patch('/learn-ai/config', requireAdmin, writeLimiter, async (req: Request
   const adminUsername = adminUsernameFromReq(req.headers['authorization']);
   await updateLearnAiConfig(parsed.data, adminUsername);
   logger.info('Admin action: Learn AI config updated', { action: 'learn_ai_config_updated', adminUsername, fields: Object.keys(parsed.data) });
+  // Re-check readiness whenever the config changes (fire-and-forget, same as
+  // boot): ensureModelReady() reads the model name fresh and is a cheap
+  // no-op if it's already present, so this never re-downloads anything that
+  // is already pulled — it only matters the one time an admin actually
+  // switches to a model that isn't local yet.
+  void ensureModelReady();
   res.json({ ok: true });
 });
 

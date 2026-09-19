@@ -18,6 +18,7 @@ import { SettingsPage } from './pages/SettingsPage';
 import { SchoolYearsPage } from './pages/SchoolYearsPage';
 import { ApiKeysPage } from './pages/ApiKeysPage';
 import { LearnConfigPage } from './pages/LearnConfigPage';
+import { LearnAiPage } from './pages/LearnAiPage';
 import { LearnTeamsPage } from './pages/LearnTeamsPage';
 import { LearnCoursesPage } from './pages/LearnCoursesPage';
 import { BackupsPage } from './pages/BackupsPage';
@@ -108,6 +109,7 @@ export default function App() {
             <Route path="/school-years"      element={<ProtectedRoute><SchoolYearsPage /></ProtectedRoute>} />
             <Route path="/api-keys"          element={<ProtectedRoute><ApiKeysPage /></ProtectedRoute>} />
             <Route path="/learn"             element={<ProtectedRoute><LearnConfigPage /></ProtectedRoute>} />
+            <Route path="/learn/ai"          element={<ProtectedRoute><LearnAiPage /></ProtectedRoute>} />
             <Route path="/learn/teams"       element={<ProtectedRoute><LearnTeamsPage /></ProtectedRoute>} />
             <Route path="/learn/courses"     element={<ProtectedRoute><LearnCoursesPage /></ProtectedRoute>} />
             <Route path="/backups"           element={<ProtectedRoute><BackupsPage /></ProtectedRoute>} />
