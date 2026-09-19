@@ -2732,6 +2732,8 @@ const learnAiConfigSchema = z.object({
   ollamaBaseUrl: z.string().trim().min(1).max(300).optional(),
   ollamaTimeoutMs: z.number().int().positive().optional(),
   personalizedContextEnabled: z.boolean().optional(),
+  uploadsEnabled: z.boolean().optional(),
+  uploadMaxBytes: z.number().int().min(1024).max(20 * 1024 * 1024).optional(),
 });
 
 router.patch('/learn-ai/config', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {

@@ -13,6 +13,11 @@ export type ChatRole = 'system' | 'user' | 'assistant';
 export interface ChatMessageInput {
   role: ChatRole;
   content: string;
+  // Base64-encoded images (no data-URI prefix), Ollama's own native vision
+  // input format — only ever set on the current user turn, never persisted
+  // history (history is replayed as plain text; re-sending image bytes on
+  // every follow-up turn would multiply request size for no benefit here).
+  images?: string[];
 }
 
 export interface ChatResult {

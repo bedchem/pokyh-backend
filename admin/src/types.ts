@@ -511,6 +511,8 @@ export interface LearnAiConfigValues {
   ollamaBaseUrl: string;
   ollamaTimeoutMs: number;
   personalizedContextEnabled: boolean;
+  uploadsEnabled: boolean;
+  uploadMaxBytes: number;
 }
 
 export interface LearnAiGrant {

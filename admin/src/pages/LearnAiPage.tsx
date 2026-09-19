@@ -234,6 +234,17 @@ export function LearnAiPage() {
           <div className="mt-3">
             <Toggle checked={cfg.personalizedContextEnabled} onChange={(v) => set('personalizedContextEnabled', v)} label="Persönlichen Lernkontext einbeziehen (Fälligkeiten, Kurse, Serie)" />
           </div>
+          <div className="mt-1">
+            <Toggle checked={cfg.uploadsEnabled} onChange={(v) => set('uploadsEnabled', v)} label="Datei-Uploads im Chat erlauben (Bilder & kurzer Text)" />
+          </div>
+          {cfg.uploadsEnabled && (
+            <div className="mt-3">
+              <Field label="Max. Dateigröße (Bytes)">
+                <input type="number" min={1024} max={20 * 1024 * 1024} value={cfg.uploadMaxBytes} onChange={(e) => set('uploadMaxBytes', Number(e.target.value))}
+                  className="apple-input px-3 py-2 text-[13px]" style={inputStyle} />
+              </Field>
+            </div>
+          )}
         </Card>
 
         <Card title="Persönliche Freigaben" icon={<Users size={17} />}>

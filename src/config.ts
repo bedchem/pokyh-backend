@@ -213,6 +213,11 @@ export const config = {
     // stays resident, but the timeout must cover the worst case.
     ollamaTimeoutMs: intEnv('LEARN_AI_OLLAMA_TIMEOUT_MS', 180_000),
     personalizedContextEnabled: (process.env['LEARN_AI_PERSONALIZED_CONTEXT_ENABLED'] ?? 'true') === 'true',
+    // Disabled by default like every other new capability. 4MB comfortably
+    // covers a single photo/screenshot at typical phone-camera compression
+    // while keeping a CPU-only host's per-request memory/bandwidth bounded.
+    uploadsEnabled: (process.env['LEARN_AI_UPLOADS_ENABLED'] ?? 'false') === 'true',
+    uploadMaxBytes: boundedIntEnv('LEARN_AI_UPLOAD_MAX_BYTES', 4 * 1024 * 1024, 1024, 20 * 1024 * 1024),
   },
   // Egress policy, not editor content — stays environment-only so an admin
   // setting can never repoint the assistant at an arbitrary external host.
@@ -306,6 +311,12 @@ export const config = {
   bodyLimit: strEnv('BODY_LIMIT', '10kb'),
   bodyLimitUpload: strEnv('BODY_LIMIT_UPLOAD', '4mb'),
   bodyLimitImport: strEnv('BODY_LIMIT_IMPORT', '100mb'),
+  // AI chat attachments travel as base64 JSON (~33% inflation) and up to 3
+  // per message — sized well above LEARN_AI_UPLOAD_MAX_BYTES's default (4MB)
+  // so a legitimate upload never hits this before reaching the application's
+  // own, cleaner validation error. Raise this if uploadMaxBytes is configured
+  // close to its 20MB ceiling.
+  bodyLimitAi: strEnv('BODY_LIMIT_AI', '24mb'),
 
   // ── Database bootstrap / connection resilience ────────────────────────────
   // On startup, create the database (if missing) and apply the schema via

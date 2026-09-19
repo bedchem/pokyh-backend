@@ -109,6 +109,9 @@ app.use('/learn/library/import', express.json({ limit: config.bodyLimitImport })
 app.use('/api/admin/learn/courses/:courseId/vocabulary/import', express.json({ limit: config.bodyLimitImport }));
 app.use('/subject-images', express.json({ limit: config.bodyLimitUpload }));
 app.use('/api/admin', express.json({ limit: config.bodyLimitUpload }));
+// AI chat attachments (images/text files, base64-encoded) need more than the
+// general default below — see BODY_LIMIT_AI's comment in src/config.ts.
+app.use('/learn/ai', express.json({ limit: config.bodyLimitAi }));
 app.use(express.json({ limit: config.bodyLimit }));
 app.use(express.urlencoded({ extended: false }));
 app.use(cookieParser());
@@ -208,6 +211,14 @@ app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
   // CORS errors
   if (err instanceof Error && err.message.startsWith('CORS:')) {
     res.status(403).json({ error: err.message });
+    return;
+  }
+
+  // body-parser's request-too-large error (e.g. a chat attachment exceeding
+  // BODY_LIMIT_AI) previously fell through to the generic 500 below —
+  // give it its own clean, non-leaking response instead.
+  if (err && typeof err === 'object' && 'type' in err && (err as { type?: unknown }).type === 'entity.too.large') {
+    res.status(413).json({ error: 'Request body is too large' });
     return;
   }
 

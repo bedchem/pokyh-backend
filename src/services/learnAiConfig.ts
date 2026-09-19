@@ -17,6 +17,8 @@ export interface LearnAiConfigValues {
   ollamaBaseUrl: string;
   ollamaTimeoutMs: number;
   personalizedContextEnabled: boolean;
+  uploadsEnabled: boolean;
+  uploadMaxBytes: number;
 }
 
 const SINGLETON_ID = 1;
@@ -37,6 +39,8 @@ function resolve(row: LearnAiConfigRow): LearnAiConfigValues {
     ollamaBaseUrl: row?.ollamaBaseUrl ?? config.learnAi.ollamaBaseUrl,
     ollamaTimeoutMs: row?.ollamaTimeoutMs ?? config.learnAi.ollamaTimeoutMs,
     personalizedContextEnabled: row?.personalizedContextEnabled ?? config.learnAi.personalizedContextEnabled,
+    uploadsEnabled: row?.uploadsEnabled ?? config.learnAi.uploadsEnabled,
+    uploadMaxBytes: row?.uploadMaxBytes ?? config.learnAi.uploadMaxBytes,
   };
 }
 
@@ -59,6 +63,8 @@ export type LearnAiConfigInput = Partial<{
   ollamaBaseUrl: string;
   ollamaTimeoutMs: number;
   personalizedContextEnabled: boolean;
+  uploadsEnabled: boolean;
+  uploadMaxBytes: number;
 }>;
 
 export async function updateLearnAiConfig(partial: LearnAiConfigInput, updatedBy: string): Promise<void> {
