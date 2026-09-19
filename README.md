@@ -212,7 +212,7 @@ npx web-push generate-vapid-keys
 | `REFRESH_TOKEN_SECRET`   | Secret for refresh-token handling.                                                       |
 | `API_KEY`                | Public-ish key every client must send as `X-API-Key`. Must match the frontend/iOS key.  |
 | `SERVER_KEY`             | **Secret.** Trusted server-to-server login key (`X-Server-Key`). Only the web/iOS servers hold it. |
-| `CORS_ORIGIN`            | Comma-separated allowed origins (e.g. `https://pokyh.com,https://api.pokyh.com`).        |
+| `CORS_ORIGIN`            | Comma-separated allowed browser origins (e.g. `https://pokyh.com`). The matching `www`/apex host is accepted too; list other subdomains explicitly. |
 | `LEARN_ALLOWED_ORIGINS`  | Exact browser-origin allow-list for the additive `/learn` router.                        |
 | `LEARN_LEGAL_*`          | Production WebUntis activation gate: non-secret approval reference, HTTPS notice URL and notice version. |
 | `LEARN_DICTIONARY_*`     | Optional, server-only vocabulary suggestion policy, HTTPS endpoint, pairs, timeout and bounded cache. |
@@ -470,7 +470,7 @@ Dockerfile · docker-compose.yml · entrypoint.sh
 | Symptom                                   | Likely cause / fix                                                                 |
 | ----------------------------------------- | ---------------------------------------------------------------------------------- |
 | Logins fail with **429** at scale         | `TRUST_PROXY` unset → all clients share one IP bucket. Set `TRUST_PROXY=loopback`. Server-to-server logins must send a valid `X-Server-Key` (those bypass the limiter). |
-| Browser **CORS** error from the frontend  | Add the frontend origin to `CORS_ORIGIN` (the tunnel host & its parent domain are auto-added). |
+| Browser **CORS** error from the frontend  | Add the frontend origin to `CORS_ORIGIN`. Its conventional `www`/apex counterpart is accepted too; list every other subdomain explicitly. |
 | `/auth/me` returns **401** right after login | The frontend/iOS didn't receive a token — check the server-to-server login response and `X-Server-Key`/`X-API-Key`. |
 | **422** on `/auth/login`                  | Body validation failed — `klasseId` may be `0` (no class); the schema accepts that, but check the logged Zod error. |
 | Prisma **"property does not exist"**      | Run `npx prisma generate` after schema changes.                                    |

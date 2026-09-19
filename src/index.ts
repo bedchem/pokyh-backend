@@ -28,6 +28,7 @@ import { getLearnConfig } from './services/learnConfig';
 import { ensureModelReady } from './services/learnAiOllama';
 import { learningDayKey } from './services/learnAnalytics';
 import { closeLearnCache } from './services/learnCache';
+import { withWwwOriginAlias } from './utils/cors';
 
 const app = express();
 
@@ -61,7 +62,10 @@ app.use('/admin', (_req: Request, res: Response) => {
 
 app.use(helmet({ contentSecurityPolicy: false }));
 
-// CORS origins — fully config-driven, zero hardcoded values.
+// CORS origins — fully config-driven. The www/apex form of each configured
+// HTTP(S) origin is included as the conventional equivalent browser host.
+// This avoids an accidental outage when the public site redirects between
+// `pokyh.com` and `www.pokyh.com`, without opening access to arbitrary origins.
 const parsedCorsOrigins = config.corsOrigin.split(',').map((o) => o.trim()).filter(Boolean);
 // A malformed CORS_ORIGIN (e.g. only commas/whitespace) silently degrades to
 // zero origins from this source. That alone won't break CORS entirely — the
@@ -72,7 +76,7 @@ if (parsedCorsOrigins.length === 0 && config.corsOrigin.trim() !== '') {
 }
 
 const allowedOrigins = new Set([
-  ...parsedCorsOrigins,
+  ...parsedCorsOrigins.flatMap(withWwwOriginAlias),
   ...config.learnAllowedOrigins,
   ...(config.isDev ? ['http://localhost:3000', 'http://localhost:3001', 'http://localhost:3005', 'http://localhost:5173'] : []),
   `http://localhost:${config.port}`,
