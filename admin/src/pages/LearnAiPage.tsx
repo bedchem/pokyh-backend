@@ -226,7 +226,7 @@ export function LearnAiPage() {
               <input type="number" value={cfg.ollamaTimeoutMs} onChange={(e) => set('ollamaTimeoutMs', Number(e.target.value))}
                 className="apple-input px-3 py-2 text-[13px]" style={inputStyle} />
             </Field>
-            <Field label="KI-Satzanfragen / Stunde / Person">
+            <Field label="KI-Modellaufrufe / Stunde / Person">
               <input type="number" min={1} max={1000} value={cfg.rateLimitMessagesPerHour} onChange={(e) => set('rateLimitMessagesPerHour', Number(e.target.value))}
                 className="apple-input px-3 py-2 text-[13px]" style={inputStyle} />
             </Field>

@@ -833,6 +833,9 @@ model LearnAiTrainingPrompt {
   entryId      String   @map("entry_id")
   direction    String   @db.VarChar(20)
   promptText   String   @map("prompt_text") @db.VarChar(1000)
+  // SHA-256 of normalized promptText. Repeated calls for the same learner and
+  // word must not recycle an earlier AI sentence.
+  promptFingerprint String? @map("prompt_fingerprint") @db.Char(64)
   expectedText String   @map("expected_text") @db.VarChar(1000)
   modelName    String   @map("model_name") @db.VarChar(120)
   createdAt    DateTime @default(now()) @map("created_at")
@@ -845,6 +848,7 @@ model LearnAiTrainingPrompt {
 
   @@index([stableUid, expiresAt])
   @@index([entryId])
+  @@unique([stableUid, entryId, promptFingerprint])
   @@map("learn_ai_training_prompts")
 }
 
