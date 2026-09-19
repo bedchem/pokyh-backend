@@ -387,15 +387,15 @@ reviewed migration plan, take and test an operator-managed backup/restore, and
 verify the target database separately. Do not treat personal Learn JSON export
 or the admin UI as a platform backup.
 
-### AI assistant service (optional)
+### AI assistant service
 
-The self-hosted, CPU-only Ollama container is opt-in via a Compose profile —
-plain `./scripts/compose-stack.sh up -d` does **not** start it, so an existing
-deployment is unaffected:
-
-```bash
-./scripts/compose-stack.sh --profile ai up -d
-```
+The self-hosted, CPU-only Ollama container starts automatically with the rest
+of the stack — a plain `docker compose up -d` (which is how Dokploy and
+similar platforms deploy this file directly, without
+`scripts/compose-stack.sh`) brings it up along with `mysql`/`redis`/`app`. No
+profile flag is needed. It stays functionally dormant until an operator sets
+`LEARN_AI_ENABLED=true` (the model is only pulled once that flag is on) — see
+"AI assistant" configuration above.
 
 It runs on its own internal-only network with no host port, is not a hard
 dependency of `app` (every non-AI route keeps working if it is stopped,

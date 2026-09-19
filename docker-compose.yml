@@ -130,14 +130,15 @@ services:
       - database
       - ai-internal
 
-  # Self-hosted, CPU-only AI assistant model runtime ("KIbo"). Opt-in via a
-  # Compose profile so an existing deployment that has not chosen to run the
-  # assistant is unaffected by `docker compose up` — start it explicitly with
-  # `docker compose --profile ai up -d` (or `COMPOSE_PROFILES=ai`). The `app`
+  # Self-hosted, CPU-only AI assistant model runtime ("KIbo"). Starts
+  # automatically with the rest of the stack — `docker compose up -d` alone
+  # is enough, no profile flag or wrapper script required, since Dokploy (and
+  # any similar platform) deploys straight from this file with an
+  # operator-supplied `.env`, not through scripts/compose-stack.sh. The `app`
   # service does NOT hard-depend on this one: it stays reachable and every
-  # non-AI route keeps working if Ollama is stopped, disabled, or still
-  # pulling its model — src/services/learnAiOllama.ts's isModelReady() gates
-  # only the /learn/ai/* routes themselves.
+  # non-AI route keeps working if Ollama is stopped, disabled (LEARN_AI_ENABLED
+  # unset/false), or still pulling its model — src/services/learnAiOllama.ts's
+  # isModelReady() gates only the /learn/ai/* routes themselves.
   #
   # No GPU device is requested anywhere in this file — the stock (non-CUDA)
   # image auto-falls-back to CPU inference. Do not install
@@ -148,7 +149,6 @@ services:
     # Ollama release to load correctly — re-verify this tag against the
     # releases page before deploying if time has passed since.
     image: ollama/ollama:0.34.2
-    profiles: ["ai"]
     restart: unless-stopped
     volumes:
       - ollama_data:/root/.ollama
