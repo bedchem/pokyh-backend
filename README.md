@@ -402,10 +402,21 @@ dependency of `app` (every non-AI route keeps working if it is stopped,
 disabled, or still pulling its model), and persists its downloaded model in
 the named `ollama_data` volume so it is not re-fetched on every restart. Grant
 a pilot user access with `npm run grant-ai-access <username>` (revoke with
-`npm run revoke-ai-access <username>`) — there is no platform-wide toggle for
-end users, only the admin `LEARN_AI_ENABLED` kill-switch plus this per-user
-grant. No GPU is requested anywhere in the compose file; do not install
-`nvidia-container-toolkit` for this service.
+`npm run revoke-ai-access <username>`), or a whole team at once with `npm run
+grant-ai-access-team <team-id-or-name>` — there is no platform-wide toggle for
+end users, only the admin `LEARN_AI_ENABLED` kill-switch plus at least one of
+these grants. No GPU is requested anywhere in the compose file; do not
+install `nvidia-container-toolkit` for this service.
+
+**Size `OLLAMA_MEM_LIMIT`/`OLLAMA_CPUS` to the real host, always leaving
+headroom for MySQL/Redis/the app/OS** — see the commented block in
+`.env.example`. These two, plus `OLLAMA_KEEP_ALIVE`/`OLLAMA_NUM_PARALLEL`/
+`OLLAMA_MAX_LOADED_MODELS`/`OLLAMA_NUM_THREAD`, only reach the deployed
+container through `scripts/compose-stack.sh` (it extracts this specific
+non-secret set and exports them as real shell variables) — setting them in
+`.env` alone does nothing if the stack is started any other way, since
+Compose's own `.env` auto-loading is deliberately disabled here to protect
+`$`-containing secrets elsewhere in that file.
 
 ### Logs
 
