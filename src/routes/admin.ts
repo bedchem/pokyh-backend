@@ -20,6 +20,15 @@ import { invalidateDishesCache } from '../utils/cache';
 import { publishDishRatings } from '../services/dishRatings';
 import { broadcastDishComments } from './dishComments';
 import { getLearnConfig, updateLearnConfig } from '../services/learnConfig';
+import { getLearnAiConfig, updateLearnAiConfig } from '../services/learnAiConfig';
+import {
+  grantAiAccess,
+  grantAiAccessToTeam,
+  listAiAccessGrants,
+  listAiTeamAccessGrants,
+  revokeAiAccess,
+  revokeAiAccessFromTeam,
+} from '../services/learnAiAccess';
 import { seedStarterVocabCourses, ensureAllTeamMembersVocabAccess, ensureTeamMemberVocabAccess } from '../services/learnTeamVocab';
 import { parseTags } from '../services/learnVocabularyText';
 import { mergeVocabularyEntries } from '../services/learnVocabularyMerge';
@@ -2697,6 +2706,104 @@ router.patch('/learn-config', requireAdmin, writeLimiter, async (req: Request, r
   const adminUsername = adminUsernameFromReq(req.headers['authorization']);
   await updateLearnConfig(parsed.data, adminUsername);
   logger.info('Admin action: Learn config updated', { action: 'learn_config_updated', adminUsername, fields: Object.keys(parsed.data) });
+  res.json({ ok: true });
+});
+
+// ─── Learn AI assistant ("KIbo") administration ────────────────────────────
+// Same DB-backed-with-env-fallback pattern as /learn-config above, kept as a
+// sibling singleton (LearnAiConfig) rather than merged into LearnConfig's
+// already-large row. Access is separate from this config: it always
+// additionally requires a LearnAiAccessGrant (personal) or
+// LearnAiTeamAccessGrant (team) — this config's `enabled` flag is only the
+// platform-wide kill-switch, never a substitute for a grant.
+
+router.get('/learn-ai/config', requireAdmin, async (_req: Request, res: Response): Promise<void> => {
+  const cfg = await getLearnAiConfig();
+  res.json(cfg);
+});
+
+const learnAiConfigSchema = z.object({
+  enabled: z.boolean().optional(),
+  modelName: z.string().trim().min(1).max(120).optional(),
+  contextTokens: z.number().int().min(512).max(32_768).optional(),
+  numPredictFast: z.number().int().min(32).max(4_096).optional(),
+  rateLimitMessagesPerHour: z.number().int().min(1).max(1_000).optional(),
+  ollamaBaseUrl: z.string().trim().min(1).max(300).optional(),
+  ollamaTimeoutMs: z.number().int().positive().optional(),
+  personalizedContextEnabled: z.boolean().optional(),
+});
+
+router.patch('/learn-ai/config', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+  const parsed = learnAiConfigSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(422).json({ error: parsed.error.errors.map((e) => e.message).join('; ') });
+    return;
+  }
+  const adminUsername = adminUsernameFromReq(req.headers['authorization']);
+  await updateLearnAiConfig(parsed.data, adminUsername);
+  logger.info('Admin action: Learn AI config updated', { action: 'learn_ai_config_updated', adminUsername, fields: Object.keys(parsed.data) });
+  res.json({ ok: true });
+});
+
+router.get('/learn-ai/grants', requireAdmin, async (_req: Request, res: Response): Promise<void> => {
+  const grants = await listAiAccessGrants();
+  res.json({ grants });
+});
+
+const learnAiGrantSchema = z.object({
+  username: z.string().trim().min(1).max(100),
+  note: z.string().trim().max(500).optional(),
+});
+
+router.post('/learn-ai/grants', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+  const body = learnAiGrantSchema.parse(req.body);
+  const user = await prisma.user.findUnique({ where: { username: body.username }, select: { stableUid: true } });
+  if (!user) {
+    res.status(404).json({ error: 'User not found' });
+    return;
+  }
+  const adminUsername = adminUsernameFromReq(req.headers['authorization']);
+  await grantAiAccess(user.stableUid, adminUsername, body.note ?? '');
+  logger.info('Admin action: Learn AI access granted', { action: 'learn_ai_access_granted', adminUsername, targetUsername: body.username });
+  res.json({ ok: true });
+});
+
+router.delete('/learn-ai/grants/:stableUid', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+  const stableUid = String(req.params['stableUid']);
+  const adminUsername = adminUsernameFromReq(req.headers['authorization']);
+  await revokeAiAccess(stableUid, adminUsername);
+  logger.info('Admin action: Learn AI access revoked', { action: 'learn_ai_access_revoked', adminUsername, targetStableUid: stableUid });
+  res.json({ ok: true });
+});
+
+router.get('/learn-ai/team-grants', requireAdmin, async (_req: Request, res: Response): Promise<void> => {
+  const grants = await listAiTeamAccessGrants();
+  res.json({ grants });
+});
+
+const learnAiTeamGrantSchema = z.object({
+  teamId: z.string().trim().min(1),
+  note: z.string().trim().max(500).optional(),
+});
+
+router.post('/learn-ai/team-grants', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+  const body = learnAiTeamGrantSchema.parse(req.body);
+  const team = await prisma.learnTeam.findUnique({ where: { id: body.teamId }, select: { id: true, name: true } });
+  if (!team) {
+    res.status(404).json({ error: 'Team not found' });
+    return;
+  }
+  const adminUsername = adminUsernameFromReq(req.headers['authorization']);
+  await grantAiAccessToTeam(team.id, adminUsername, body.note ?? '');
+  logger.info('Admin action: Learn AI team access granted', { action: 'learn_ai_team_access_granted', adminUsername, teamId: team.id });
+  res.json({ ok: true });
+});
+
+router.delete('/learn-ai/team-grants/:teamId', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+  const teamId = String(req.params['teamId']);
+  const adminUsername = adminUsernameFromReq(req.headers['authorization']);
+  await revokeAiAccessFromTeam(teamId, adminUsername);
+  logger.info('Admin action: Learn AI team access revoked', { action: 'learn_ai_team_access_revoked', adminUsername, teamId });
   res.json({ ok: true });
 });
 
