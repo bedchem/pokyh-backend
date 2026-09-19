@@ -2,6 +2,14 @@
 FROM node:22-alpine AS builder
 WORKDIR /app
 
+# Silences Prisma's "failed to detect the libssl/openssl version" warning
+# during `npm run build`'s `prisma generate` step below — cosmetic only,
+# since this stage's node_modules/generated client is never copied into the
+# runner image (only dist/ is); the runner stage already installs openssl
+# and does its own separate `prisma generate` that actually matters at
+# runtime. Added anyway so the build log stays clean.
+RUN apk add --no-cache openssl
+
 # Backend deps + build
 COPY package*.json ./
 RUN npm ci
