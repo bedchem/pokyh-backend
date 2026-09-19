@@ -7,7 +7,8 @@ import { optionalAuth, requireAuth } from '../middleware/auth';
 import { learnReadLimiter, learnWriteLimiter, readLimiter } from '../middleware/rateLimiter';
 import { getDictionarySuggestion, validateVocabularyWord } from '../services/learnDictionary';
 import { getLearnConfig } from '../services/learnConfig';
-import { ensureTeamMemberVocabAccess } from '../services/learnTeamVocab';
+import { ensureAllTeamMembersVocabAccess, ensureTeamMemberVocabAccess, seedStarterVocabCourses } from '../services/learnTeamVocab';
+import { expectedAnswers, normalizeAnswer } from '../services/learnVocabularyText';
 import { config } from '../config';
 import { asPercent, learningDayKey, learningDayKeys, nextAdaptiveReview } from '../services/learnAnalytics';
 import { analyticsCacheKey, getCachedJson, invalidateAnalyticsCache, setCachedJson } from '../services/learnCache';
@@ -339,25 +340,6 @@ const courseAccessSchema = z.object({
   userId: trimmedText(100),
   permission: coursePermissionSchema,
 });
-
-function normalizeAnswer(value: string): string {
-  return value
-    .normalize('NFKD')
-    .replace(/\p{M}/gu, '')
-    .toLocaleLowerCase('de-DE')
-    .replace(/[^\p{L}\p{N}\s'-]/gu, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function expectedAnswers(value: string): string[] {
-  // Semicolons, pipes and slashes are intentionally treated as author-provided
-  // alternative translations; commas remain valid parts of a phrase.
-  return value
-    .split(/\s*(?:;|\||\/)\s*/)
-    .map(normalizeAnswer)
-    .filter(Boolean);
-}
 
 function isCatalogCourse(course: { visibility: string; status: string }): boolean {
   return course.visibility === 'PUBLIC' && course.status === 'PUBLISHED';
@@ -2357,14 +2339,19 @@ router.post('/teams', requireAuth, learnWriteLimiter, async (req: Request, res: 
   const body = teamCreateSchema.parse(req.body);
   const { stableUid } = req.user!;
   await requireLearnAdmin(stableUid);
-  const team = await prisma.learnTeam.create({
-    data: {
-      name: body.name,
-      description: body.description,
-      createdBy: stableUid,
-      members: { create: { stableUid, role: 'OWNER' } },
-    },
-    include: { members: { where: { stableUid }, select: { role: true, joinedAt: true } } },
+  const team = await prisma.$transaction(async (tx) => {
+    const created = await tx.learnTeam.create({
+      data: {
+        name: body.name,
+        description: body.description,
+        createdBy: stableUid,
+        members: { create: { stableUid, role: 'OWNER' } },
+      },
+      include: { members: { where: { stableUid }, select: { role: true, joinedAt: true } } },
+    });
+    await seedStarterVocabCourses(tx, created.id, created.name, stableUid);
+    await ensureAllTeamMembersVocabAccess(tx, created.id);
+    return created;
   });
   learnAudit(req, 'team_created', { teamId: team.id });
   res.status(201).json(team);

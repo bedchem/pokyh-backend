@@ -21,6 +21,9 @@ import { publishDishRatings } from '../services/dishRatings';
 import { broadcastDishComments } from './dishComments';
 import { getLearnConfig, updateLearnConfig } from '../services/learnConfig';
 import { seedStarterVocabCourses, ensureAllTeamMembersVocabAccess, ensureTeamMemberVocabAccess } from '../services/learnTeamVocab';
+import { parseTags } from '../services/learnVocabularyText';
+import { mergeVocabularyEntries } from '../services/learnVocabularyMerge';
+import { getDictionarySuggestion } from '../services/learnDictionary';
 import {
   getBackupConfig, updateBackupConfig, listBackups, runBackup, pruneOldBackups,
   resolveBackupPath, restoreBackup,
@@ -2752,6 +2755,97 @@ const adminLearnCourseDeleteSchema = z.object({
   confirmation: z.string().trim().min(1).max(191),
 });
 
+const adminLearnVocabularyQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).max(100_000).default(1),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+  q: z.string().trim().min(1).max(120).optional(),
+});
+
+// Deliberately not .strict() at the entry level: a personal-export course's
+// vocabulary items (which also carry sourceRef/sectionRef/review fields, see
+// GET /learn/library/export in routes/learn.ts) parse here too — the extra
+// fields are simply dropped — so a list exported by that unrelated feature
+// is still a usable import source for this one. targetText is required,
+// unlike the learner-facing vocabularyCreateSchema, since a curated list
+// import should always carry a complete translation.
+const adminLearnVocabularyImportEntrySchema = z.object({
+  sourceLanguage: z.string().trim().min(1).max(20),
+  targetLanguage: z.string().trim().min(1).max(20),
+  sourceText: z.string().trim().min(1).max(500),
+  targetText: z.string().trim().min(1).max(500),
+  article: z.string().trim().max(40).default(''),
+  partOfSpeech: z.string().trim().max(80).default(''),
+  notes: z.string().trim().max(2000).default(''),
+  tags: z.array(z.string().trim().min(1).max(80)).max(25).default([]),
+});
+
+// Deliberately not .strict() at the envelope level either: this feature's own
+// GET .../vocabulary/export response includes exportedAt/course metadata
+// fields alongside kind/version/vocabulary, and re-importing exactly what was
+// just exported (unmodified, or lightly edited) must work — the kind/version
+// literals already reject an unrelated file format (e.g. the personal-export
+// envelope, which carries a different kind) without needing .strict() here.
+function buildAdminVocabularyImportSchema(maxEntries: number) {
+  return z.object({
+    kind: z.literal('pokyh-learn-vocabulary-list-export'),
+    version: z.literal(1),
+    vocabulary: z.array(adminLearnVocabularyImportEntrySchema).min(1).max(Math.max(1, maxEntries)),
+  });
+}
+
+const adminLearnVocabularyEntrySelect = {
+  id: true,
+  sourceLanguage: true,
+  targetLanguage: true,
+  sourceText: true,
+  targetText: true,
+  normalizedSource: true,
+  normalizedTarget: true,
+  article: true,
+  partOfSpeech: true,
+  notes: true,
+  tagsJson: true,
+  verificationStatus: true,
+  verificationSource: true,
+  createdAt: true,
+  updatedAt: true,
+  creator: { select: { username: true } },
+};
+
+function adminLearnVocabularyEntryRow(entry: {
+  id: string;
+  sourceLanguage: string;
+  targetLanguage: string;
+  sourceText: string;
+  targetText: string;
+  article: string;
+  partOfSpeech: string;
+  notes: string;
+  tagsJson: string;
+  verificationStatus: string;
+  verificationSource: string;
+  createdAt: Date;
+  updatedAt: Date;
+  creator: { username: string };
+}) {
+  return {
+    id: entry.id,
+    sourceLanguage: entry.sourceLanguage,
+    targetLanguage: entry.targetLanguage,
+    sourceText: entry.sourceText,
+    targetText: entry.targetText,
+    article: entry.article,
+    partOfSpeech: entry.partOfSpeech,
+    notes: entry.notes,
+    tags: parseTags(entry.tagsJson),
+    verificationStatus: entry.verificationStatus,
+    verificationSource: entry.verificationSource,
+    createdAt: entry.createdAt.toISOString(),
+    updatedAt: entry.updatedAt.toISOString(),
+    creator: { username: entry.creator.username },
+  };
+}
+
 const adminLearnCourseMetadataSelect = {
   id: true,
   slug: true,
@@ -2965,6 +3059,148 @@ router.delete('/learn/courses/:courseId/access/:stableUid', requireAdmin, async 
     action: 'learn_course_access_revoked', adminUsername: actor.username, courseId, targetStableUid: stableUid,
   });
   res.status(204).send();
+});
+
+// ─── Learn vocabulary list administration ───────────────────────────────────
+// A "vocabulary list" is a LearnCourse's vocabulary entries — there is no
+// separate list model. Unlike the learner-facing GET /learn/vocabulary
+// (routes/learn.ts), these views intentionally include targetText: this is
+// the admin's own authoritative view of curated content, not a quiz surface
+// a learner could read answers from.
+
+router.get('/learn/courses/:courseId/vocabulary', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const courseId = z.string().uuid().parse(req.params['courseId']);
+  const query = adminLearnVocabularyQuerySchema.parse(req.query);
+  const course = await prisma.learnCourse.findUnique({ where: { id: courseId }, select: adminLearnCourseMetadataSelect });
+  if (!course) throw new NotFoundError('Learn course not found');
+
+  const where = {
+    courseId,
+    ...(query.q ? {
+      OR: [
+        { sourceText: { contains: query.q } },
+        { targetText: { contains: query.q } },
+      ],
+    } : {}),
+  };
+  const [total, entries] = await Promise.all([
+    prisma.learnVocabularyEntry.count({ where }),
+    prisma.learnVocabularyEntry.findMany({
+      where,
+      orderBy: [{ sourceText: 'asc' }, { createdAt: 'asc' }],
+      skip: (query.page - 1) * query.limit,
+      take: query.limit,
+      select: adminLearnVocabularyEntrySelect,
+    }),
+  ]);
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.json({
+    course: learnCourseAdminRow(course),
+    vocabulary: {
+      items: entries.map(adminLearnVocabularyEntryRow),
+      total,
+      page: query.page,
+      limit: query.limit,
+    },
+  });
+});
+
+router.get('/learn/courses/:courseId/vocabulary/export', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const courseId = z.string().uuid().parse(req.params['courseId']);
+  const actor = await learnAdminActor(req);
+  const course = await prisma.learnCourse.findUnique({
+    where: { id: courseId },
+    select: { id: true, slug: true, title: true, language: true },
+  });
+  if (!course) throw new NotFoundError('Learn course not found');
+
+  const entries = await prisma.learnVocabularyEntry.findMany({
+    where: { courseId },
+    orderBy: [{ sourceText: 'asc' }, { createdAt: 'asc' }],
+    select: adminLearnVocabularyEntrySelect,
+  });
+
+  logger.info('Admin action: Learn vocabulary list exported', {
+    action: 'learn_vocabulary_list_exported', adminUsername: actor.username, courseId, count: entries.length,
+  });
+
+  res.setHeader('Content-Type', 'application/json');
+  res.setHeader('Content-Disposition', `attachment; filename="pokyh-learn-vocab-${course.slug}-${new Date().toISOString().slice(0, 10)}.json"`);
+  res.json({
+    kind: 'pokyh-learn-vocabulary-list-export',
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    course: { id: course.id, slug: course.slug, title: course.title, language: course.language },
+    vocabulary: entries.map((entry) => ({
+      sourceLanguage: entry.sourceLanguage,
+      targetLanguage: entry.targetLanguage,
+      sourceText: entry.sourceText,
+      targetText: entry.targetText,
+      article: entry.article,
+      partOfSpeech: entry.partOfSpeech,
+      notes: entry.notes,
+      tags: parseTags(entry.tagsJson),
+      verificationStatus: entry.verificationStatus,
+      verificationSource: entry.verificationSource,
+    })),
+  });
+});
+
+router.post('/learn/courses/:courseId/vocabulary/import', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+  const courseId = z.string().uuid().parse(req.params['courseId']);
+  const actor = await learnAdminActor(req);
+  const course = await prisma.learnCourse.findUnique({
+    where: { id: courseId },
+    select: { id: true, _count: { select: { vocabulary: true } } },
+  });
+  if (!course) throw new NotFoundError('Learn course not found');
+
+  const learnCfg = await getLearnConfig();
+  const importSchema = buildAdminVocabularyImportSchema(learnCfg.importMaxVocabularyPerCourse);
+  const body = importSchema.parse(req.body);
+
+  const existing = await prisma.learnVocabularyEntry.findMany({
+    where: { courseId },
+    select: { sourceText: true, targetText: true, normalizedSource: true, normalizedTarget: true },
+  });
+
+  const merge = await mergeVocabularyEntries({
+    existing,
+    incoming: body.vocabulary,
+    createdBy: actor.stableUid,
+    dictionaryLookup: learnCfg.dictionaryEnabled
+      ? async ({ sourceText, sourceLanguage, targetLanguage }) => {
+        const suggestion = await getDictionarySuggestion({ sourceText, sourceLanguage, targetLanguage });
+        return { translation: suggestion.translation };
+      }
+      : undefined,
+  });
+
+  if (course._count.vocabulary + merge.toCreate.length > learnCfg.importMaxVocabularyPerCourse) {
+    throw new ValidationError(
+      `This import would exceed the configured limit of ${learnCfg.importMaxVocabularyPerCourse} vocabulary entries for one list`,
+    );
+  }
+
+  if (merge.toCreate.length > 0) {
+    await prisma.$transaction(
+      merge.toCreate.map((row) => prisma.learnVocabularyEntry.create({
+        data: { ...row, courseId, sectionId: null },
+      })),
+    );
+  }
+
+  const updatedCourse = await prisma.learnCourse.findUnique({ where: { id: courseId }, select: adminLearnCourseMetadataSelect });
+
+  logger.info('Admin action: Learn vocabulary list imported', {
+    action: 'learn_vocabulary_list_imported', adminUsername: actor.username, courseId, ...merge.summary,
+  });
+
+  res.status(201).json({
+    course: updatedCourse ? learnCourseAdminRow(updatedCourse) : null,
+    summary: merge.summary,
+    results: merge.results,
+  });
 });
 
 router.delete('/learn/courses/:courseId', requireAdmin, async (req: Request, res: Response): Promise<void> => {

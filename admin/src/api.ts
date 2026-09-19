@@ -1,4 +1,4 @@
-import type { AdminStats, AdminClass, AdminSession, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish, AdminDishFull, AdminDishImportResult, AdminDishShiftResult, AdminDishRotateResult, AdminDishResetResult, AdminDishAnchorResult, DishPlan, AdminCommentsResponse, FileLogFile, FileLogResponse, FileLogEntry, FrontendActivityLogsResponse, FrontendActivityStats, AllTodosResponse, AllRemindersResponse, SchoolYearsResponse, ArchivedUsersResponse, ArchivedClass, ArchivedTodosResponse, ArchivedRemindersResponse, RolloverResult, RollbackResult, AdminApiKey, CreatedApiKey, LearnConfigValues, AdminLearnTeam, LearnTeamAssignableRole, AdminLearnCoursesResponse, AdminLearnCourseAccessResponse, AdminLearnCourse, AdminLearnCourseAccess, LearnCoursePermission, LearnCourseStatus, LearnCourseVisibility, BackupsResponse, AdminPopup, PopupInput } from './types';
+import type { AdminStats, AdminClass, AdminSession, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish, AdminDishFull, AdminDishImportResult, AdminDishShiftResult, AdminDishRotateResult, AdminDishResetResult, AdminDishAnchorResult, DishPlan, AdminCommentsResponse, FileLogFile, FileLogResponse, FileLogEntry, FrontendActivityLogsResponse, FrontendActivityStats, AllTodosResponse, AllRemindersResponse, SchoolYearsResponse, ArchivedUsersResponse, ArchivedClass, ArchivedTodosResponse, ArchivedRemindersResponse, RolloverResult, RollbackResult, AdminApiKey, CreatedApiKey, LearnConfigValues, AdminLearnTeam, LearnTeamAssignableRole, AdminLearnCoursesResponse, AdminLearnCourseAccessResponse, AdminLearnCourse, AdminLearnCourseAccess, LearnCoursePermission, LearnCourseStatus, LearnCourseVisibility, AdminLearnCourseVocabularyResponse, AdminLearnVocabularyImportResponse, BackupsResponse, AdminPopup, PopupInput } from './types';
 
 const TOKEN_KEY = 'pokyh_admin_token';
 
@@ -454,6 +454,39 @@ export const adminApi = {
 
   deleteLearnCourse: (courseId: string, confirmation: string): Promise<void> =>
     request<void>('DELETE', `/api/admin/learn/courses/${courseId}`, { confirmation }),
+
+  // ── Learn vocabulary list administration ─────────────────────────────────
+  // A "vocabulary list" is a Learn course's vocabulary entries.
+  getLearnCourseVocabulary: (courseId: string, params?: { page?: number; limit?: number; q?: string }): Promise<AdminLearnCourseVocabularyResponse> => {
+    const query = new URLSearchParams();
+    if (params?.page) query.set('page', String(params.page));
+    if (params?.limit) query.set('limit', String(params.limit));
+    if (params?.q) query.set('q', params.q);
+    const suffix = query.size > 0 ? `?${query.toString()}` : '';
+    return request<AdminLearnCourseVocabularyResponse>('GET', `/api/admin/learn/courses/${courseId}/vocabulary${suffix}`);
+  },
+
+  // Requires the Bearer token, so fetch as a blob and trigger a client-side
+  // download, same pattern as exportDatabase() above.
+  exportLearnCourseVocabulary: async (courseId: string, courseSlug: string): Promise<void> => {
+    const token = getToken();
+    const res = await fetch(`/api/admin/learn/courses/${courseId}/vocabulary/export`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!res.ok) throw new Error(`Export fehlgeschlagen (HTTP ${res.status})`);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `pokyh-learn-vocab-${courseSlug}-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  },
+
+  importLearnCourseVocabulary: (courseId: string, payload: unknown): Promise<AdminLearnVocabularyImportResponse> =>
+    request<AdminLearnVocabularyImportResponse>('POST', `/api/admin/learn/courses/${courseId}/vocabulary/import`, payload),
 
   // ── Database backups ──────────────────────────────────────────────────────
   getBackups: (): Promise<BackupsResponse> =>

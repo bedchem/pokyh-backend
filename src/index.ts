@@ -98,6 +98,10 @@ app.use('/api/admin/import', express.json({ limit: config.bodyLimitImport }));
 // Learn personal imports are separately scoped and never share the legacy
 // database-import route, but they need the same configured size budget.
 app.use('/learn/library/import', express.json({ limit: config.bodyLimitImport }));
+// A vocabulary-list merge import can carry up to a course's full configured
+// word cap worth of text/notes/tags, which can exceed the general admin
+// body limit below.
+app.use('/api/admin/learn/courses/:courseId/vocabulary/import', express.json({ limit: config.bodyLimitImport }));
 app.use('/subject-images', express.json({ limit: config.bodyLimitUpload }));
 app.use('/api/admin', express.json({ limit: config.bodyLimitUpload }));
 app.use(express.json({ limit: config.bodyLimit }));

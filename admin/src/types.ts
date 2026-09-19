@@ -589,6 +589,71 @@ export interface AdminLearnCourseAccessResponse {
   };
 }
 
+// ── Learn vocabulary list administration ────────────────────────────────────
+// A "vocabulary list" is a Learn course's vocabulary entries. Unlike the
+// learner-facing quiz surface, these admin views intentionally include the
+// target-language translation — this is the admin's own authoritative view
+// of curated content, not something a learner could read answers from.
+export type LearnVocabularyVerificationStatus = 'UNVERIFIED' | 'VERIFIED' | 'FLAGGED';
+
+export interface AdminLearnVocabularyEntry {
+  id: string;
+  sourceLanguage: string;
+  targetLanguage: string;
+  sourceText: string;
+  targetText: string;
+  article: string;
+  partOfSpeech: string;
+  notes: string;
+  tags: string[];
+  verificationStatus: LearnVocabularyVerificationStatus;
+  verificationSource: string;
+  createdAt: string;
+  updatedAt: string;
+  creator: { username: string };
+}
+
+export interface AdminLearnCourseVocabularyResponse {
+  course: AdminLearnCourse;
+  vocabulary: {
+    items: AdminLearnVocabularyEntry[];
+    total: number;
+    page: number;
+    limit: number;
+  };
+}
+
+export type LearnVocabularyImportOutcome =
+  | 'added'
+  | 'synonym_added'
+  | 'duplicate_exact'
+  | 'duplicate_near_translation'
+  | 'duplicate_near_source';
+
+export interface AdminLearnVocabularyImportResultItem {
+  sourceText: string;
+  targetText: string;
+  outcome: LearnVocabularyImportOutcome;
+  matchedExisting: { sourceText: string; targetText: string } | null;
+  possibleTypoOf: string | null;
+  dictionaryAdvisory: { translation: string; matchesIncoming: boolean } | null;
+}
+
+export interface AdminLearnVocabularyImportSummary {
+  totalIncoming: number;
+  added: number;
+  synonymAdded: number;
+  duplicateExact: number;
+  duplicateNearTranslation: number;
+  duplicateNearSource: number;
+}
+
+export interface AdminLearnVocabularyImportResponse {
+  course: AdminLearnCourse | null;
+  summary: AdminLearnVocabularyImportSummary;
+  results: AdminLearnVocabularyImportResultItem[];
+}
+
 export interface BackupFile {
   filename: string;
   createdAt: string;

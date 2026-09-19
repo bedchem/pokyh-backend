@@ -271,7 +271,7 @@ function isPlausibleSpelling(word: string, language: string): { plausible: boole
   return { plausible: true, reasonCode: null, message: null };
 }
 
-function levenshteinDistance(a: string, b: string): number {
+export function levenshteinDistance(a: string, b: string): number {
   if (a === b) return 0;
   if (!a.length) return b.length;
   if (!b.length) return a.length;
