@@ -216,7 +216,7 @@ npx web-push generate-vapid-keys
 | `LEARN_ALLOWED_ORIGINS`  | Exact browser-origin allow-list for the additive `/learn` router.                        |
 | `LEARN_LEGAL_*`          | Production WebUntis activation gate: non-secret approval reference, HTTPS notice URL and notice version. |
 | `LEARN_DICTIONARY_*`     | Optional, server-only vocabulary suggestion policy, HTTPS endpoint, pairs, timeout and bounded cache. |
-| `LEARN_AI_*`             | Self-hosted, CPU-only AI assistant ("KIbo"): disabled by default; even when enabled, access still requires a per-user `LearnAiAccessGrant` (see `npm run grant-ai-access`). Model, context-window cap, per-hour rate limit and the internal-only Ollama base URL. |
+| `LEARN_AI_*`             | Self-hosted, CPU-only AI assistant ("KIbo"): disabled by default; even when enabled, access still requires a `LearnAiAccessGrant` for the person (`npm run grant-ai-access`) or a `LearnAiTeamAccessGrant` for their whole team (`npm run grant-ai-access-team`). Model, context-window cap, per-hour rate limit and the internal-only Ollama base URL. |
 | `LEARN_IMPORT_*`         | Maximum personal Learn courses, sections and vocabulary entries accepted in one import.  |
 | `LEARN_REVIEW_*` / `LEARN_ANALYTICS_RETENTION_DAYS` | Bounded adaptive-review policy and retention for private daily activity aggregates. |
 | `LEARN_REDIS_URL` / `LEARN_REDIS_KEY_PREFIX` / `LEARN_ANALYTICS_CACHE_TTL_SECONDS` | Optional internal course-specific analytics cache. Do not expose Redis publicly or use it for tokens, answers, permissions, or durable state. |

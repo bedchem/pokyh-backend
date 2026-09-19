@@ -747,6 +747,7 @@ model LearnTeam {
   creator User              @relation("LearnTeamCreator", fields: [createdBy], references: [stableUid], onDelete: Cascade)
   members LearnTeamMember[]
   courses LearnCourse[]
+  aiAccessGrant LearnAiTeamAccessGrant?
 
   @@index([createdBy])
   @@map("learn_teams")
@@ -886,6 +887,25 @@ model LearnAiAccessGrant {
 
   @@index([revokedAt])
   @@map("learn_ai_access_grants")
+}
+
+// A whole-team grant: every current and future member of the team has
+// assistant access without an individual LearnAiAccessGrant row per person —
+// canonical Pokyh administrator action only, same spirit as team creation
+// itself. hasActiveAiGrant() (learnAiAccess.ts) checks both this and the
+// per-user grant above; either is sufficient.
+model LearnAiTeamAccessGrant {
+  teamId    String    @id @map("team_id")
+  grantedBy String    @map("granted_by")
+  grantedAt DateTime  @default(now()) @map("granted_at")
+  revokedBy String?   @map("revoked_by")
+  revokedAt DateTime? @map("revoked_at")
+  note      String    @default("") @db.VarChar(500)
+
+  team LearnTeam @relation(fields: [teamId], references: [id], onDelete: Cascade)
+
+  @@index([revokedAt])
+  @@map("learn_ai_team_access_grants")
 }
 
 // The authoritative per-user quota ledger (src/services/learnAiRateLimit.ts).

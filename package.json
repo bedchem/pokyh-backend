@@ -16,6 +16,8 @@
     "create-user": "node scripts/create-user.js",
     "grant-ai-access": "node scripts/grant-ai-access.js",
     "revoke-ai-access": "node scripts/revoke-ai-access.js",
+    "grant-ai-access-team": "node scripts/grant-ai-access-team.js",
+    "revoke-ai-access-team": "node scripts/revoke-ai-access-team.js",
     "admin:build": "cd admin && npm install && npm run build",
     "admin:dev": "cd admin && npm run dev"
   },
