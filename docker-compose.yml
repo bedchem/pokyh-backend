@@ -130,7 +130,7 @@ services:
       - database
       - ai-internal
 
-  # Self-hosted, CPU-only AI assistant model runtime ("KIbo"). Starts
+  # Self-hosted, CPU-only AI vocabulary trainer model runtime. Starts
   # automatically with the rest of the stack — `docker compose up -d` alone
   # is enough, no profile flag or wrapper script required, since Dokploy (and
   # any similar platform) deploys straight from this file with an
@@ -159,12 +159,10 @@ services:
       # normal gap between a pilot user's messages rather than reloading on
       # every conversation.
       - OLLAMA_KEEP_ALIVE=${OLLAMA_KEEP_ALIVE:-30m}
-      # Concurrent in-flight requests per loaded model — this is the actual
-      # "multiple people at once" mechanism. Keep low on CPU to avoid thread
-      # oversubscription; raise only after load-testing the real host.
-      - OLLAMA_NUM_PARALLEL=${OLLAMA_NUM_PARALLEL:-2}
-      # Phase 0 loads only the chat model. Raise to 2 once a knowledge-base
-      # embedding model is added (later phase) so the two don't swap-thrash.
+      # Concurrent vocabulary-sentence requests per loaded model. The app
+      # applies the same bounded cap first, then Ollama queues accepted work.
+      - OLLAMA_NUM_PARALLEL=${OLLAMA_NUM_PARALLEL:-10}
+      # Exactly one trainer model stays resident; no unused model is loaded.
       - OLLAMA_MAX_LOADED_MODELS=${OLLAMA_MAX_LOADED_MODELS:-1}
       - OLLAMA_NUM_THREAD=${OLLAMA_NUM_THREAD:-4}
     # PLACEHOLDERS — verify against the real host's available RAM/CPU before

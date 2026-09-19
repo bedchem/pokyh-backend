@@ -498,7 +498,7 @@ export interface LearnConfigValues {
   importMaxVocabularyPerCourse: number;
 }
 
-// ── Learn AI assistant ("KIbo") administration ──────────────────────────────
+// ── Learn AI vocabulary trainer administration ───────────────────────────────────
 // Access is separate from this config: it always additionally requires a
 // LearnAiGrant (personal) or LearnAiTeamGrant (team) below — `enabled` here
 // is only the platform-wide kill-switch, never a substitute for a grant.
@@ -508,11 +508,9 @@ export interface LearnAiConfigValues {
   contextTokens: number;
   numPredictFast: number;
   rateLimitMessagesPerHour: number;
+  maxConcurrentTrainingGenerations: number;
   ollamaBaseUrl: string;
   ollamaTimeoutMs: number;
-  personalizedContextEnabled: boolean;
-  uploadsEnabled: boolean;
-  uploadMaxBytes: number;
 }
 
 export interface LearnAiGrant {

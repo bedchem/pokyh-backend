@@ -575,19 +575,27 @@ function asReviewQuestion(entry: {
   sourceLanguage: string;
   targetLanguage: string;
   sourceText: string;
+  targetText: string;
 }, review?: {
   dueAt: Date;
   correctCount: number;
   incorrectCount: number;
   lastWasCorrect: boolean;
+  lastDirection: string | null;
 }) {
+  // The server owns direction selection. Every successful or failed attempt
+  // records its direction, and the next review flips it so English↔German and
+  // Italian↔German are both practiced instead of permanently testing one way.
+  const direction = review?.lastDirection === 'SOURCE_TO_TARGET'
+    ? 'TARGET_TO_SOURCE' as const
+    : 'SOURCE_TO_TARGET' as const;
   return {
     entryId: entry.id,
     courseId: entry.courseId,
-    direction: 'SOURCE_TO_TARGET' as const,
-    prompt: entry.sourceText,
-    sourceLanguage: entry.sourceLanguage,
-    targetLanguage: entry.targetLanguage,
+    direction,
+    prompt: direction === 'SOURCE_TO_TARGET' ? entry.sourceText : entry.targetText,
+    sourceLanguage: direction === 'SOURCE_TO_TARGET' ? entry.sourceLanguage : entry.targetLanguage,
+    targetLanguage: direction === 'SOURCE_TO_TARGET' ? entry.targetLanguage : entry.sourceLanguage,
     review: review ? {
       dueAt: review.dueAt,
       correctCount: review.correctCount,
@@ -2071,7 +2079,7 @@ router.get('/reviews', requireAuth, learnReadLimiter, async (req: Request, res: 
       where: { courseId: { in: courseIds }, normalizedTarget: { not: '' }, reviewStates: { none: { stableUid } } },
       orderBy: { createdAt: 'asc' },
       take: query.limit,
-      select: { id: true, courseId: true, sourceLanguage: true, targetLanguage: true, sourceText: true },
+      select: { id: true, courseId: true, sourceLanguage: true, targetLanguage: true, sourceText: true, targetText: true },
     });
     res.json({ questions: entries.map((entry) => asReviewQuestion(entry)) });
     return;
@@ -2095,7 +2103,8 @@ router.get('/reviews', requireAuth, learnReadLimiter, async (req: Request, res: 
       correctCount: true,
       incorrectCount: true,
       lastWasCorrect: true,
-      entry: { select: { id: true, courseId: true, sourceLanguage: true, targetLanguage: true, sourceText: true } },
+      lastDirection: true,
+      entry: { select: { id: true, courseId: true, sourceLanguage: true, targetLanguage: true, sourceText: true, targetText: true } },
     },
   });
 
@@ -2110,7 +2119,7 @@ router.get('/reviews', requireAuth, learnReadLimiter, async (req: Request, res: 
       },
       orderBy: { createdAt: 'asc' },
       take: query.limit - reviews.length,
-      select: { id: true, courseId: true, sourceLanguage: true, targetLanguage: true, sourceText: true },
+      select: { id: true, courseId: true, sourceLanguage: true, targetLanguage: true, sourceText: true, targetText: true },
     });
     res.json({
       questions: [
@@ -2227,8 +2236,9 @@ router.post('/quiz-attempts', requireAuth, learnWriteLimiter, async (req: Reques
             dueAt: next.dueAt,
             lastReviewedAt: now,
             correctCount: answer.correct ? 1 : 0,
-            incorrectCount: answer.correct ? 0 : 1,
-            lastWasCorrect: answer.correct,
+          incorrectCount: answer.correct ? 0 : 1,
+          lastWasCorrect: answer.correct,
+          lastDirection: answer.direction,
           },
           update: {
             intervalDays: next.intervalDays,
@@ -2236,8 +2246,9 @@ router.post('/quiz-attempts', requireAuth, learnWriteLimiter, async (req: Reques
             dueAt: next.dueAt,
             lastReviewedAt: now,
             correctCount: { increment: answer.correct ? 1 : 0 },
-            incorrectCount: { increment: answer.correct ? 0 : 1 },
-            lastWasCorrect: answer.correct,
+          incorrectCount: { increment: answer.correct ? 0 : 1 },
+          lastWasCorrect: answer.correct,
+          lastDirection: answer.direction,
           },
         });
       }

@@ -127,9 +127,9 @@ export const learnWriteLimiter = rateLimit({
   keyGenerator: (req) => `learn-write:${req.user?.stableUid ?? 'unauthenticated'}`,
 });
 
-// Baseline abuse protection for the AI assistant, keyed like the other Learn
+// Baseline abuse protection for the AI vocabulary trainer, keyed like the other Learn
 // limiters above. This is deliberately generous compared to the real quota:
-// the admin-configurable per-hour message limit (src/services/learnAiRateLimit.ts)
+// the admin-configurable per-hour sentence-request limit (src/services/learnAiRateLimit.ts)
 // is the actual product-facing control; this just bounds request rate itself
 // so one client can't hammer the endpoint (and the self-hosted CPU model)
 // with malformed/duplicate requests faster than a person could ever type.
@@ -138,7 +138,7 @@ export const learnAiLimiter = rateLimit({
   max: config.rateLimit.writeMax,
   standardHeaders: true,
   legacyHeaders: false,
-  message: { error: 'Too many assistant requests, please slow down.' },
+  message: { error: 'Too many vocabulary trainer requests, please slow down.' },
   keyGenerator: (req) => `learn-ai:${req.user?.stableUid ?? 'unauthenticated'}`,
 });
 

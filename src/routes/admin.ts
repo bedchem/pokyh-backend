@@ -2710,7 +2710,7 @@ router.patch('/learn-config', requireAdmin, writeLimiter, async (req: Request, r
   res.json({ ok: true });
 });
 
-// ─── Learn AI assistant ("KIbo") administration ────────────────────────────
+// ─── Learn AI vocabulary trainer ("Pokyh AI") administration ───────────────────
 // Same DB-backed-with-env-fallback pattern as /learn-config above, kept as a
 // sibling singleton (LearnAiConfig) rather than merged into LearnConfig's
 // already-large row. Access is separate from this config: it always
@@ -2729,11 +2729,9 @@ const learnAiConfigSchema = z.object({
   contextTokens: z.number().int().min(512).max(32_768).optional(),
   numPredictFast: z.number().int().min(32).max(4_096).optional(),
   rateLimitMessagesPerHour: z.number().int().min(1).max(1_000).optional(),
+  maxConcurrentTrainingGenerations: z.number().int().min(1).max(32).optional(),
   ollamaBaseUrl: z.string().trim().min(1).max(300).optional(),
   ollamaTimeoutMs: z.number().int().positive().optional(),
-  personalizedContextEnabled: z.boolean().optional(),
-  uploadsEnabled: z.boolean().optional(),
-  uploadMaxBytes: z.number().int().min(1024).max(20 * 1024 * 1024).optional(),
 });
 
 router.patch('/learn-ai/config', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {

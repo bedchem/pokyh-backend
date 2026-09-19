@@ -216,8 +216,7 @@ npx web-push generate-vapid-keys
 | `LEARN_ALLOWED_ORIGINS`  | Exact browser-origin allow-list for the additive `/learn` router.                        |
 | `LEARN_LEGAL_*`          | Production WebUntis activation gate: non-secret approval reference, HTTPS notice URL and notice version. |
 | `LEARN_DICTIONARY_*`     | Optional, server-only vocabulary suggestion policy, HTTPS endpoint, pairs, timeout and bounded cache. |
-| `LEARN_AI_*`             | Self-hosted, CPU-only AI assistant ("KIbo"): disabled by default; even when enabled, access still requires a `LearnAiAccessGrant` for the person (`npm run grant-ai-access`) or a `LearnAiTeamAccessGrant` for their whole team (`npm run grant-ai-access-team`). Model, context-window cap, per-hour rate limit, the internal-only Ollama base URL, and chat file-attachment enable/size-limit (validated by actual file bytes, never the claimed type). |
-| `BODY_LIMIT_AI`          | Express body-size limit for `/learn/ai/*` (default 24mb) — chat attachments travel as base64 JSON; raise this if `LEARN_AI_UPLOAD_MAX_BYTES` is configured close to its ceiling. |
+| `LEARN_AI_*`             | Self-hosted, CPU-only vocabulary-sentence trainer: disabled by default; even when enabled, access still requires a `LearnAiAccessGrant` for the person (`npm run grant-ai-access`) or a `LearnAiTeamAccessGrant` for their whole team (`npm run grant-ai-access-team`). It only receives a server-authorized vocabulary entry and returns a structured sentence/translation; the model has thinking disabled and cannot browse or receive user prompts/files. |
 | `LEARN_IMPORT_*`         | Maximum personal Learn courses, sections and vocabulary entries accepted in one import.  |
 | `LEARN_REVIEW_*` / `LEARN_ANALYTICS_RETENTION_DAYS` | Bounded adaptive-review policy and retention for private daily activity aggregates. |
 | `LEARN_REDIS_URL` / `LEARN_REDIS_KEY_PREFIX` / `LEARN_ANALYTICS_CACHE_TTL_SECONDS` | Optional internal course-specific analytics cache. Do not expose Redis publicly or use it for tokens, answers, permissions, or durable state. |
@@ -388,7 +387,7 @@ reviewed migration plan, take and test an operator-managed backup/restore, and
 verify the target database separately. Do not treat personal Learn JSON export
 or the admin UI as a platform backup.
 
-### AI assistant service
+### AI vocabulary trainer service
 
 The self-hosted, CPU-only Ollama container starts automatically with the rest
 of the stack — a plain `docker compose up -d` (which is how Dokploy and
@@ -396,7 +395,7 @@ similar platforms deploy this file directly, without
 `scripts/compose-stack.sh`) brings it up along with `mysql`/`redis`/`app`. No
 profile flag is needed. It stays functionally dormant until an operator sets
 `LEARN_AI_ENABLED=true` (the model is only pulled once that flag is on) — see
-"AI assistant" configuration above.
+"AI vocabulary trainer" configuration above.
 
 It runs on its own internal-only network with no host port, is not a hard
 dependency of `app` (every non-AI route keeps working if it is stopped,

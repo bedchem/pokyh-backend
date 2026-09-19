@@ -177,7 +177,7 @@ export function LearnAiPage() {
         <div>
           <h1 className="text-[22px] font-bold text-white tracking-[-0.02em]">Pokyh AI</h1>
           <p className="text-[13px] mt-1" style={{ color: 'rgba(235,235,245,0.45)' }}>
-            Selbst gehosteter, CPU-only KI-Assistent ("KIbo") für Pokyh Learn — wirkt sofort, kein Neustart nötig.
+            Selbst gehosteter, CPU-only KI-Vokabeltrainer für Pokyh Learn — nur beim Vokabeltraining, ohne allgemeinen Chat.
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
@@ -201,9 +201,9 @@ export function LearnAiPage() {
 
       <div className="grid gap-4 max-w-[720px]">
         <Card title="Modell & Verhalten" icon={<Bot size={17} />}>
-          <Toggle checked={cfg.enabled} onChange={(v) => set('enabled', v)} label="Assistent aktiviert (Kill-Switch)" />
+          <Toggle checked={cfg.enabled} onChange={(v) => set('enabled', v)} label="Vokabeltrainer aktiviert (Kill-Switch)" />
           <p className="text-[12px] mt-2 mb-3 leading-relaxed" style={{ color: 'rgba(235,235,245,0.45)' }}>
-            Dieser Schalter allein macht den Assistenten für niemanden zugänglich — zusätzlich braucht jede Person eine persönliche oder Team-Freigabe (siehe unten).
+            Dieser Schalter allein macht den Trainer für niemanden zugänglich — zusätzlich braucht jede Person eine persönliche oder Team-Freigabe (siehe unten).
           </p>
           <div className="grid grid-cols-2 gap-3">
             <Field label="Modell">
@@ -226,30 +226,20 @@ export function LearnAiPage() {
               <input type="number" value={cfg.ollamaTimeoutMs} onChange={(e) => set('ollamaTimeoutMs', Number(e.target.value))}
                 className="apple-input px-3 py-2 text-[13px]" style={inputStyle} />
             </Field>
-            <Field label="Nachrichtenlimit / Stunde / Person">
+            <Field label="KI-Satzanfragen / Stunde / Person">
               <input type="number" min={1} max={1000} value={cfg.rateLimitMessagesPerHour} onChange={(e) => set('rateLimitMessagesPerHour', Number(e.target.value))}
                 className="apple-input px-3 py-2 text-[13px]" style={inputStyle} />
             </Field>
+            <Field label="Gleichzeitige KI-Trainingseinheiten">
+              <input type="number" min={1} max={32} value={cfg.maxConcurrentTrainingGenerations} onChange={(e) => set('maxConcurrentTrainingGenerations', Number(e.target.value))}
+                className="apple-input px-3 py-2 text-[13px]" style={inputStyle} />
+            </Field>
           </div>
-          <div className="mt-3">
-            <Toggle checked={cfg.personalizedContextEnabled} onChange={(v) => set('personalizedContextEnabled', v)} label="Persönlichen Lernkontext einbeziehen (Fälligkeiten, Kurse, Serie)" />
-          </div>
-          <div className="mt-1">
-            <Toggle checked={cfg.uploadsEnabled} onChange={(v) => set('uploadsEnabled', v)} label="Datei-Uploads im Chat erlauben (Bilder & kurzer Text)" />
-          </div>
-          {cfg.uploadsEnabled && (
-            <div className="mt-3">
-              <Field label="Max. Dateigröße (Bytes)">
-                <input type="number" min={1024} max={20 * 1024 * 1024} value={cfg.uploadMaxBytes} onChange={(e) => set('uploadMaxBytes', Number(e.target.value))}
-                  className="apple-input px-3 py-2 text-[13px]" style={inputStyle} />
-              </Field>
-            </div>
-          )}
         </Card>
 
         <Card title="Persönliche Freigaben" icon={<Users size={17} />}>
           <p className="text-[12px] mb-3 leading-relaxed" style={{ color: 'rgba(235,235,245,0.45)' }}>
-            Nur Personen mit einer aktiven Freigabe (hier oder über ein Team) sehen den Assistenten überhaupt.
+            Nur Personen mit einer aktiven Freigabe (hier oder über ein Team) können KI-Übungssätze erzeugen.
           </p>
           <div className="flex items-end gap-2 mb-4 flex-wrap">
             <Field label="Benutzername">

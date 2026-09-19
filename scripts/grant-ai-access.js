@@ -1,8 +1,6 @@
 #!/usr/bin/env node
 // Usage: npm run grant-ai-access <username> ["note"]
-// Phase 0 has no admin UI yet for the AI assistant pilot allowlist (that
-// ships in Phase 1) — this script is the interim way to add a pilot user,
-// mirroring the existing make-admin.js/create-user.js scripts.
+// This is the CLI alternative to the admin UI for the trainer pilot allowlist.
 require('dotenv').config({ quiet: true });
 const { PrismaClient } = require('@prisma/client');
 
@@ -28,7 +26,7 @@ async function main() {
     update: { grantedBy: 'cli', note, revokedBy: null, revokedAt: null, grantedAt: new Date() },
   });
 
-  console.log(`✅ "${username}" now has AI assistant pilot access`);
+  console.log(`✅ "${username}" now has AI vocabulary trainer access`);
 }
 
 main()

@@ -24,10 +24,10 @@ async function main() {
   });
 
   if (result.count === 0) {
-    console.log(`ℹ️  "${username}" had no active AI assistant grant`);
+    console.log(`ℹ️  "${username}" had no active AI vocabulary trainer grant`);
     return;
   }
-  console.log(`✅ "${username}"'s AI assistant pilot access has been revoked`);
+  console.log(`✅ "${username}"'s AI vocabulary trainer access has been revoked`);
 }
 
 main()

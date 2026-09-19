@@ -1,7 +1,7 @@
 import { prisma } from '../db';
 import { ForbiddenError } from '../utils/errors';
 
-// The pilot allowlist is the ONLY thing that grants assistant access — there
+// The pilot allowlist is the ONLY thing that grants vocabulary-trainer access — there
 // is deliberately no global on/off flag for end users (LearnAiConfig.enabled
 // is a separate, independent kill-switch a platform administrator controls,
 // not an access grant). A grant with revokedAt set is treated exactly like
@@ -24,7 +24,7 @@ export async function hasActiveAiGrant(stableUid: string): Promise<boolean> {
 
 export async function requireAiPilotAccess(stableUid: string): Promise<void> {
   if (!await hasActiveAiGrant(stableUid)) {
-    throw new ForbiddenError('The assistant is not enabled for this account yet');
+    throw new ForbiddenError('The vocabulary trainer is not enabled for this account yet');
   }
 }
 

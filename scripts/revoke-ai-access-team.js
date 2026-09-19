@@ -38,10 +38,10 @@ async function main() {
   });
 
   if (result.count === 0) {
-    console.log(`ℹ️  Team "${team.name}" had no active AI assistant grant`);
+    console.log(`ℹ️  Team "${team.name}" had no active AI vocabulary trainer grant`);
     return;
   }
-  console.log(`✅ Team "${team.name}"'s AI assistant access has been revoked`);
+  console.log(`✅ Team "${team.name}"'s AI vocabulary trainer access has been revoked`);
 }
 
 main()

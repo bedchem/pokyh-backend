@@ -109,9 +109,6 @@ app.use('/learn/library/import', express.json({ limit: config.bodyLimitImport })
 app.use('/api/admin/learn/courses/:courseId/vocabulary/import', express.json({ limit: config.bodyLimitImport }));
 app.use('/subject-images', express.json({ limit: config.bodyLimitUpload }));
 app.use('/api/admin', express.json({ limit: config.bodyLimitUpload }));
-// AI chat attachments (images/text files, base64-encoded) need more than the
-// general default below — see BODY_LIMIT_AI's comment in src/config.ts.
-app.use('/learn/ai', express.json({ limit: config.bodyLimitAi }));
 app.use(express.json({ limit: config.bodyLimit }));
 app.use(express.urlencoded({ extended: false }));
 app.use(cookieParser());
@@ -214,9 +211,8 @@ app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
     return;
   }
 
-  // body-parser's request-too-large error (e.g. a chat attachment exceeding
-  // BODY_LIMIT_AI) previously fell through to the generic 500 below —
-  // give it its own clean, non-leaking response instead.
+  // body-parser's request-too-large error previously fell through to the
+  // generic 500 below — give it its own clean, non-leaking response instead.
   if (err && typeof err === 'object' && 'type' in err && (err as { type?: unknown }).type === 'entity.too.large') {
     res.status(413).json({ error: 'Request body is too large' });
     return;
@@ -306,10 +302,10 @@ function startBackgroundJobs() {
   // configured number of days and pruned automatically after each run.
   startBackupScheduler();
 
-  // AI assistant model provisioning ("check, else pull, then start"):
+  // AI vocabulary trainer model provisioning ("check, else pull, then start"):
   // deliberately fire-and-forget, never awaited here. A multi-GB first-boot
   // model pull must never delay the HTTP server from listening or gate
-  // /readyz — chat requests check isModelReady() themselves and return a
+  // /readyz — training requests check isModelReady() themselves and return a
   // friendly 503 until the pull completes.
   //
   // Never re-downloads an already-present model: ensureModelReady() checks
@@ -322,7 +318,7 @@ function startBackgroundJobs() {
   // containers with the model already pulled produced no re-pull, only the
   // "Database ready" log line. Also re-invoked (same no-op-if-present
   // behaviour) after an admin changes the model in the Pokyh AI admin page.
-  void ensureModelReady();
+void ensureModelReady();
 }
 
 // Create the database (if missing) and apply the schema via `prisma db push`.

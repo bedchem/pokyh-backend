@@ -1,9 +1,7 @@
 #!/usr/bin/env node
 // Usage: npm run grant-ai-access-team <team-id-or-exact-name> ["note"]
-// Grants every current and future member of a team assistant access, without
-// an individual LearnAiAccessGrant row per person. Phase 0 has no admin UI
-// yet for this (that ships in Phase 1) — interim CLI, same style as
-// grant-ai-access.js.
+// Grants every current and future member of a team vocabulary-trainer access,
+// without an individual LearnAiAccessGrant row per person.
 require('dotenv').config({ quiet: true });
 const { PrismaClient } = require('@prisma/client');
 
@@ -43,7 +41,7 @@ async function main() {
     update: { grantedBy: 'cli', note, revokedBy: null, revokedAt: null, grantedAt: new Date() },
   });
 
-  console.log(`✅ Team "${team.name}" (${team.id}) now has AI assistant access for every member`);
+  console.log(`✅ Team "${team.name}" (${team.id}) now has AI vocabulary trainer access for every member`);
 }
 
 main()

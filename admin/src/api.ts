@@ -392,7 +392,7 @@ export const adminApi = {
   updateLearnConfig: (data: Partial<LearnConfigValues> & { webUntisAuthorizationReference?: string }): Promise<{ ok: boolean }> =>
     request<{ ok: boolean }>('PATCH', '/api/admin/learn-config', data),
 
-  // ── Learn AI assistant ("KIbo") ───────────────────────────────────────────
+  // ── Learn AI vocabulary trainer ────────────────────────────────────────────────
   getLearnAiConfig: (): Promise<LearnAiConfigValues> =>
     request<LearnAiConfigValues>('GET', '/api/admin/learn-ai/config'),
 

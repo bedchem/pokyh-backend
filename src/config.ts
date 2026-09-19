@@ -194,7 +194,7 @@ export const config = {
     .split(',')
     .map((host) => host.trim().toLocaleLowerCase('en-US'))
     .filter((host) => /^[a-z0-9.-]+$/.test(host)),
-  // Self-hosted, CPU-only Ollama assistant ("KIbo"). Disabled by default and
+  // Self-hosted, CPU-only Ollama vocabulary trainer ("Pokyh AI"). Disabled by default and
   // pilot-gated (see LearnAiAccessGrant) even when enabled — this flag is a
   // second, independent switch, not the access control itself.
   learnAi: {
@@ -205,6 +205,9 @@ export const config = {
     contextTokens: boundedIntEnv('LEARN_AI_CONTEXT_TOKENS', 4_096, 512, 32_768),
     numPredictFast: boundedIntEnv('LEARN_AI_NUM_PREDICT_FAST', 512, 32, 4_096),
     rateLimitMessagesPerHour: boundedIntEnv('LEARN_AI_RATE_LIMIT_MESSAGES_PER_HOUR', 30, 1, 1_000),
+    // The vocabulary trainer accepts a class-sized number of requests while
+    // keeping a hard server-side cap in front of the local Ollama runtime.
+    maxConcurrentTrainingGenerations: boundedIntEnv('LEARN_AI_MAX_CONCURRENT_TRAINING_GENERATIONS', 10, 1, 32),
     ollamaBaseUrl: strEnv('LEARN_AI_OLLAMA_BASE_URL', 'http://ollama:11434').replace(/\/$/, ''),
     // 60s was measured too short for a real CPU-only cold start (loading a
     // ~9.6GB model into memory before the first inference on an idle/just-
@@ -212,12 +215,6 @@ export const config = {
     // subsequent call within OLLAMA_KEEP_ALIVE is far faster since the model
     // stays resident, but the timeout must cover the worst case.
     ollamaTimeoutMs: intEnv('LEARN_AI_OLLAMA_TIMEOUT_MS', 180_000),
-    personalizedContextEnabled: (process.env['LEARN_AI_PERSONALIZED_CONTEXT_ENABLED'] ?? 'true') === 'true',
-    // Disabled by default like every other new capability. 4MB comfortably
-    // covers a single photo/screenshot at typical phone-camera compression
-    // while keeping a CPU-only host's per-request memory/bandwidth bounded.
-    uploadsEnabled: (process.env['LEARN_AI_UPLOADS_ENABLED'] ?? 'false') === 'true',
-    uploadMaxBytes: boundedIntEnv('LEARN_AI_UPLOAD_MAX_BYTES', 4 * 1024 * 1024, 1024, 20 * 1024 * 1024),
   },
   // Egress policy, not editor content — stays environment-only so an admin
   // setting can never repoint the assistant at an arbitrary external host.
@@ -311,13 +308,6 @@ export const config = {
   bodyLimit: strEnv('BODY_LIMIT', '10kb'),
   bodyLimitUpload: strEnv('BODY_LIMIT_UPLOAD', '4mb'),
   bodyLimitImport: strEnv('BODY_LIMIT_IMPORT', '100mb'),
-  // AI chat attachments travel as base64 JSON (~33% inflation) and up to 3
-  // per message — sized well above LEARN_AI_UPLOAD_MAX_BYTES's default (4MB)
-  // so a legitimate upload never hits this before reaching the application's
-  // own, cleaner validation error. Raise this if uploadMaxBytes is configured
-  // close to its 20MB ceiling.
-  bodyLimitAi: strEnv('BODY_LIMIT_AI', '24mb'),
-
   // ── Database bootstrap / connection resilience ────────────────────────────
   // On startup, create the database (if missing) and apply the schema via
   // `prisma db push` before connecting. All knobs are env-configurable.

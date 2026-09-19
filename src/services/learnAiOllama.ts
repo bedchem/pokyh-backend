@@ -3,24 +3,19 @@ import { config } from '../config';
 import { logger } from '../utils/logger';
 import { getLearnAiConfig } from './learnAiConfig';
 
-// Pulling a multi-GB model needs far longer than any single chat call is
+// Pulling a multi-GB model needs far longer than any single training request is
 // ever allowed to take — this is deliberately its own constant, not derived
 // from LEARN_AI_OLLAMA_TIMEOUT_MS.
 const MODEL_PULL_TIMEOUT_MS = 60 * 60 * 1000;
 
-export type ChatRole = 'system' | 'user' | 'assistant';
+export type ModelRole = 'system' | 'user' | 'assistant';
 
-export interface ChatMessageInput {
-  role: ChatRole;
+export interface ModelMessageInput {
+  role: ModelRole;
   content: string;
-  // Base64-encoded images (no data-URI prefix), Ollama's own native vision
-  // input format — only ever set on the current user turn, never persisted
-  // history (history is replayed as plain text; re-sending image bytes on
-  // every follow-up turn would multiply request size for no benefit here).
-  images?: string[];
 }
 
-export interface ChatResult {
+export interface ModelResult {
   content: string;
   modelName: string;
   promptTokens: number | null;
@@ -120,11 +115,11 @@ async function pullModel(baseUrl: string, modelName: string): Promise<void> {
 }
 
 // Checks whether the configured model is already present locally and pulls
-// it if not, then marks the assistant ready. Safe to call repeatedly —
+// it if not, then marks the vocabulary trainer ready. Safe to call repeatedly —
 // concurrent callers share one in-flight check/pull. Deliberately never
 // awaited by the HTTP server's own startup sequence (src/index.ts): a
 // multi-GB first-boot pull must never block the rest of Pokyh/Learn from
-// serving requests. Chat requests check isModelReady() first instead.
+// serving requests. Training requests check isModelReady() first instead.
 export async function ensureModelReady(): Promise<void> {
   if (pullInFlight) return pullInFlight;
   pullInFlight = (async () => {
@@ -151,10 +146,17 @@ export async function ensureModelReady(): Promise<void> {
   return pullInFlight;
 }
 
-export async function chat(messages: ChatMessageInput[]): Promise<ChatResult> {
+/**
+ * Produces a compact, structured response for the vocabulary trainer.
+ *
+ * The `think: false` request prevents models that support Ollama's thinking
+ * mode from emitting reasoning. `format: 'json'` keeps the model response
+ * machine-readable; the caller still validates every field before storing it.
+ */
+export async function generateStructuredResponse(messages: ModelMessageInput[]): Promise<ModelResult> {
   const aiCfg = await getLearnAiConfig();
-  if (!aiCfg.enabled) throw new AppError('The assistant is currently disabled', 503);
-  if (!modelReady) throw new AppError('The assistant is still starting up — try again shortly', 503);
+  if (!aiCfg.enabled) throw new AppError('The vocabulary trainer is currently disabled', 503);
+  if (!modelReady) throw new AppError('The vocabulary trainer is still starting up — try again shortly', 503);
 
   const url = safeOllamaUrl(aiCfg.ollamaBaseUrl, '/api/chat');
   const res = await fetch(url, {
@@ -164,15 +166,18 @@ export async function chat(messages: ChatMessageInput[]): Promise<ChatResult> {
       model: aiCfg.modelName,
       messages,
       stream: false,
+      format: 'json',
+      think: false,
       options: {
         num_ctx: aiCfg.contextTokens,
-        num_predict: aiCfg.numPredictFast,
+        // A single sentence and translation do not need a long completion.
+        num_predict: Math.min(aiCfg.numPredictFast, 256),
       },
     }),
     signal: AbortSignal.timeout(aiCfg.ollamaTimeoutMs),
   }).catch(() => null);
 
-  if (!res || !res.ok) throw new AppError('The assistant could not be reached', 503);
+  if (!res || !res.ok) throw new AppError('The vocabulary trainer could not be reached', 503);
 
   const data = (await res.json()) as {
     message?: { content?: string };
@@ -181,7 +186,7 @@ export async function chat(messages: ChatMessageInput[]): Promise<ChatResult> {
     eval_count?: number;
   };
   const content = data.message?.content?.trim();
-  if (!content) throw new AppError('The assistant returned an empty response', 503);
+  if (!content) throw new AppError('The vocabulary trainer returned an empty response', 503);
 
   return {
     content,

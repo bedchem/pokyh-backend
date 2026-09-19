@@ -45,10 +45,9 @@ model User {
   learnTeamsCreated      LearnTeam[]             @relation("LearnTeamCreator")
   learnTeamMemberships   LearnTeamMember[]
   learnSectionCompletions LearnSectionCompletion[]
-  learnAiConversations   LearnAiConversation[]
   learnAiAccessGrant     LearnAiAccessGrant?
   learnAiUsageCounters   LearnAiUsageCounter[]
-  learnAiAttachments     LearnAiAttachment[]
+  learnAiTrainingPrompts LearnAiTrainingPrompt[]
 
   @@map("users")
 }
@@ -654,6 +653,7 @@ model LearnVocabularyEntry {
   section      LearnCourseSection?     @relation(fields: [sectionId], references: [id], onDelete: SetNull)
   creator      User                    @relation("LearnVocabularyCreator", fields: [createdBy], references: [stableUid], onDelete: Cascade)
   reviewStates LearnVocabularyReview[]
+  aiTrainingPrompts LearnAiTrainingPrompt[]
 
   @@index([courseId, sectionId])
   @@index([createdBy])
@@ -673,6 +673,9 @@ model LearnVocabularyReview {
   correctCount   Int       @default(0) @map("correct_count")
   incorrectCount Int       @default(0) @map("incorrect_count")
   lastWasCorrect Boolean   @default(false) @map("last_was_correct")
+  // The next prompt reverses this direction. The server stores it rather
+  // than letting a browser choose which translation should be graded.
+  lastDirection  String?   @map("last_direction") @db.VarChar(20)
   createdAt      DateTime  @default(now()) @map("created_at")
   updatedAt      DateTime  @updatedAt @map("updated_at")
 
@@ -819,92 +822,33 @@ model LearnConfig {
   @@map("learn_config")
 }
 
-// ─── Pokyh Learn Assistant ("KIbo") ────────────────────────────────────────
-// Self-hosted, CPU-only Ollama-backed AI assistant. Pilot-gated: holding a
-// non-revoked LearnAiAccessGrant is the ONLY thing that grants access, not a
-// global switch — see src/services/learnAiAccess.ts. Conversations/messages
-// are the durable record; LearnAiConfig is admin-editable operational policy,
-// a sibling singleton to LearnConfig (kept separate since LearnConfig already
-// carries ~30 unrelated fields), following the same nullable-field/env-
-// fallback pattern resolved by src/services/learnAiConfig.ts.
-model LearnAiConversation {
-  id            String    @id @default(uuid())
-  stableUid     String    @map("stable_uid")
-  title         String    @default("") @db.VarChar(200)
-  archivedAt    DateTime? @map("archived_at")
-  lastMessageAt DateTime? @map("last_message_at")
-  createdAt     DateTime  @default(now()) @map("created_at")
-  updatedAt     DateTime  @updatedAt @map("updated_at")
+// ─── Pokyh Learn AI trainer ─────────────────────────────────────────────────
+// AI exists only inside vocabulary practice. A prompt stores the AI-generated
+// sentence and its expected translation server-side for a short time; clients
+// receive only the source sentence, so they cannot supply their own answer key
+// or make a grading decision.
+model LearnAiTrainingPrompt {
+  id           String   @id @default(uuid())
+  stableUid    String   @map("stable_uid")
+  entryId      String   @map("entry_id")
+  direction    String   @db.VarChar(20)
+  promptText   String   @map("prompt_text") @db.VarChar(1000)
+  expectedText String   @map("expected_text") @db.VarChar(1000)
+  modelName    String   @map("model_name") @db.VarChar(120)
+  createdAt    DateTime @default(now()) @map("created_at")
+  expiresAt    DateTime @map("expires_at")
+  completedAt  DateTime? @map("completed_at")
+  resultCorrect Boolean? @map("result_correct")
 
-  user     User             @relation(fields: [stableUid], references: [stableUid], onDelete: Cascade)
-  messages LearnAiMessage[]
+  user  User                 @relation(fields: [stableUid], references: [stableUid], onDelete: Cascade)
+  entry LearnVocabularyEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
 
-  @@index([stableUid, lastMessageAt])
-  @@map("learn_ai_conversations")
+  @@index([stableUid, expiresAt])
+  @@index([entryId])
+  @@map("learn_ai_training_prompts")
 }
 
-model LearnAiMessage {
-  id               String   @id @default(uuid())
-  conversationId   String   @map("conversation_id")
-  // 'user' or 'assistant'.
-  role             String   @db.VarChar(20)
-  content          String   @db.LongText
-  // 'fast' | 'thinking'; null for user-authored rows and until the
-  // thinking-mode toggle ships. Kept now so that later phase is purely
-  // additive data, not a schema change.
-  mode             String?  @db.VarChar(20)
-  modelName        String?  @map("model_name") @db.VarChar(120)
-  modelDigest      String?  @map("model_digest") @db.VarChar(80)
-  promptTokens     Int?     @map("prompt_tokens")
-  completionTokens Int?     @map("completion_tokens")
-  // Client-supplied, present only on the user-authored row of a send-message
-  // call. A retry with the same key returns the already-stored exchange
-  // instead of calling the model (and counting against the quota) again —
-  // mirrors LearnQuizAttempt's idempotency pattern. MySQL treats multiple
-  // NULLs in a unique index as distinct, so assistant rows (always null
-  // here) never collide with each other.
-  idempotencyKey   String?  @map("idempotency_key") @db.VarChar(100)
-  createdAt        DateTime @default(now()) @map("created_at")
-
-  conversation LearnAiConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  attachments  LearnAiAttachment[]
-
-  @@unique([conversationId, idempotencyKey])
-  @@index([conversationId, createdAt])
-  @@map("learn_ai_messages")
-}
-
-// A file attached to one user-authored message. Content lives directly in
-// MySQL (no separate object storage) since uploads are tightly size-bounded
-// by LearnAiConfig.uploadMaxBytes — this stays the durable system of record,
-// same as every other Learn table, rather than a new piece of infrastructure.
-// `kind`/`mimeType` are derived from the actual file bytes (magic-byte/content
-// sniffing in learnAiUploads.ts), never trusted from the client's claimed
-// MIME type or filename extension.
-model LearnAiAttachment {
-  id        String   @id @default(uuid())
-  messageId String   @map("message_id")
-  stableUid String   @map("stable_uid")
-  // 'image' | 'text' — Phase 0 supports only what needs no new parsing
-  // dependency: images go to Ollama's native vision input, text is inlined
-  // as bounded context. PDF/DOCX extraction is a later, separately reviewed
-  // addition (needs a new parsing dependency).
-  kind      String   @db.VarChar(20)
-  mimeType  String   @map("mime_type") @db.VarChar(120)
-  byteSize  Int      @map("byte_size")
-  filename  String   @default("") @db.VarChar(255)
-  // Base64 for images; raw UTF-8 text for the 'text' kind.
-  content   String   @db.LongText
-  createdAt DateTime @default(now()) @map("created_at")
-
-  message LearnAiMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
-  user    User           @relation(fields: [stableUid], references: [stableUid], onDelete: Cascade)
-
-  @@index([messageId])
-  @@map("learn_ai_attachments")
-}
-
-// Pilot allowlist — the only source of AI-assistant access. A learner with no
+// Pilot allowlist — the only source of AI-trainer access. A learner with no
 // row here, or whose grant has revokedAt set, gets 403 on every /learn/ai/*
 // route regardless of any other configuration.
 model LearnAiAccessGrant {
@@ -922,7 +866,7 @@ model LearnAiAccessGrant {
 }
 
 // A whole-team grant: every current and future member of the team has
-// assistant access without an individual LearnAiAccessGrant row per person —
+// trainer access without an individual LearnAiAccessGrant row per person —
 // canonical Pokyh administrator action only, same spirit as team creation
 // itself. hasActiveAiGrant() (learnAiAccess.ts) checks both this and the
 // per-user grant above; either is sufficient.
@@ -970,14 +914,12 @@ model LearnAiConfig {
   contextTokens              Int?     @map("context_tokens")
   numPredictFast             Int?     @map("num_predict_fast")
   rateLimitMessagesPerHour   Int?     @map("rate_limit_messages_per_hour")
+  // The in-app trainer caps outgoing model work before Ollama. This default
+  // is intentionally configurable so a larger verified host can serve a
+  // whole class without exposing an unbounded inference endpoint.
+  maxConcurrentTrainingGenerations Int? @map("max_concurrent_training_generations")
   ollamaBaseUrl              String?  @map("ollama_base_url") @db.VarChar(300)
   ollamaTimeoutMs            Int?     @map("ollama_timeout_ms")
-  personalizedContextEnabled Boolean? @map("personalized_context_enabled")
-  // File attachments in chat. Disabled by default like every other new
-  // capability here. uploadMaxBytes bounds each individual file (checked
-  // against the actual decoded byte length, not the client-claimed size).
-  uploadsEnabled             Boolean? @map("uploads_enabled")
-  uploadMaxBytes             Int?     @map("upload_max_bytes")
   updatedAt                  DateTime @updatedAt @map("updated_at")
   updatedBy                  String?  @map("updated_by")
 

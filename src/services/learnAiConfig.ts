@@ -1,7 +1,7 @@
 import { prisma } from '../db';
 import { config } from '../config';
 
-// Admin-editable AI assistant configuration, backed by the LearnAiConfig
+// Admin-editable AI vocabulary trainer configuration, backed by the LearnAiConfig
 // singleton row (id 1) with a short in-memory cache. Every field falls back
 // to the LEARN_AI_* environment default in src/config.ts when the row — or a
 // field on it — is null, so behaviour is unchanged until an admin explicitly
@@ -14,11 +14,9 @@ export interface LearnAiConfigValues {
   contextTokens: number;
   numPredictFast: number;
   rateLimitMessagesPerHour: number;
+  maxConcurrentTrainingGenerations: number;
   ollamaBaseUrl: string;
   ollamaTimeoutMs: number;
-  personalizedContextEnabled: boolean;
-  uploadsEnabled: boolean;
-  uploadMaxBytes: number;
 }
 
 const SINGLETON_ID = 1;
@@ -36,16 +34,14 @@ function resolve(row: LearnAiConfigRow): LearnAiConfigValues {
     contextTokens: row?.contextTokens ?? config.learnAi.contextTokens,
     numPredictFast: row?.numPredictFast ?? config.learnAi.numPredictFast,
     rateLimitMessagesPerHour: row?.rateLimitMessagesPerHour ?? config.learnAi.rateLimitMessagesPerHour,
+    maxConcurrentTrainingGenerations: row?.maxConcurrentTrainingGenerations ?? config.learnAi.maxConcurrentTrainingGenerations,
     ollamaBaseUrl: row?.ollamaBaseUrl ?? config.learnAi.ollamaBaseUrl,
     ollamaTimeoutMs: row?.ollamaTimeoutMs ?? config.learnAi.ollamaTimeoutMs,
-    personalizedContextEnabled: row?.personalizedContextEnabled ?? config.learnAi.personalizedContextEnabled,
-    uploadsEnabled: row?.uploadsEnabled ?? config.learnAi.uploadsEnabled,
-    uploadMaxBytes: row?.uploadMaxBytes ?? config.learnAi.uploadMaxBytes,
   };
 }
 
 // Reads the live AI config, cached briefly to keep this cheap on hot paths
-// (every chat message). Invalidated immediately on write.
+// (every training request). Invalidated immediately on write.
 export async function getLearnAiConfig(): Promise<LearnAiConfigValues> {
   if (cached && Date.now() - cachedAt < CACHE_TTL_MS) return cached;
   const row = await prisma.learnAiConfig.findUnique({ where: { id: SINGLETON_ID } });
@@ -60,11 +56,9 @@ export type LearnAiConfigInput = Partial<{
   contextTokens: number;
   numPredictFast: number;
   rateLimitMessagesPerHour: number;
+  maxConcurrentTrainingGenerations: number;
   ollamaBaseUrl: string;
   ollamaTimeoutMs: number;
-  personalizedContextEnabled: boolean;
-  uploadsEnabled: boolean;
-  uploadMaxBytes: number;
 }>;
 
 export async function updateLearnAiConfig(partial: LearnAiConfigInput, updatedBy: string): Promise<void> {
