@@ -48,6 +48,7 @@ function importOutcomeLabel(outcome: LearnVocabularyImportOutcome): string {
     case 'duplicate_exact': return 'Bereits vorhanden — übersprungen';
     case 'duplicate_near_translation': return 'Ähnliche Übersetzung bereits vorhanden — übersprungen';
     case 'duplicate_near_source': return 'Ähnliches Wort bereits vorhanden — übersprungen';
+    case 'skipped_missing_translation': return 'Keine Übersetzung vorhanden — übersprungen';
     default: return outcome;
   }
 }
@@ -116,7 +117,8 @@ export function VocabularyPanel({
       setImportResult(result);
       if (result.course) onCourseChanged(result.course);
       await loadVocabulary(1, q);
-      const skipped = result.summary.duplicateExact + result.summary.duplicateNearTranslation + result.summary.duplicateNearSource;
+      const skipped = result.summary.duplicateExact + result.summary.duplicateNearTranslation
+        + result.summary.duplicateNearSource + result.summary.skippedMissingTranslation;
       showToast(`Import: ${result.summary.added} neu, ${result.summary.synonymAdded} als Synonym, ${skipped} übersprungen`, 'success');
     } catch (error) {
       showToast(error instanceof Error ? error.message : 'Import fehlgeschlagen — ist die Datei ein gültiges JSON?', 'error');
@@ -165,6 +167,7 @@ export function VocabularyPanel({
             <span>{importResult.summary.duplicateExact} exakte Duplikate</span>
             <span>{importResult.summary.duplicateNearTranslation} ähnliche Übersetzung</span>
             <span>{importResult.summary.duplicateNearSource} ähnliches Wort</span>
+            <span>{importResult.summary.skippedMissingTranslation} ohne Übersetzung</span>
           </div>
           {reviewableResults.length > 0 && (
             <details className="mt-2">

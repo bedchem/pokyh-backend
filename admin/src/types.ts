@@ -628,7 +628,8 @@ export type LearnVocabularyImportOutcome =
   | 'synonym_added'
   | 'duplicate_exact'
   | 'duplicate_near_translation'
-  | 'duplicate_near_source';
+  | 'duplicate_near_source'
+  | 'skipped_missing_translation';
 
 export interface AdminLearnVocabularyImportResultItem {
   sourceText: string;
@@ -646,6 +647,7 @@ export interface AdminLearnVocabularyImportSummary {
   duplicateExact: number;
   duplicateNearTranslation: number;
   duplicateNearSource: number;
+  skippedMissingTranslation: number;
 }
 
 export interface AdminLearnVocabularyImportResponse {

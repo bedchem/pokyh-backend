@@ -2768,14 +2768,20 @@ const adminLearnVocabularyQuerySchema = z.object({
 // vocabulary items (which also carry sourceRef/sectionRef/review fields, see
 // GET /learn/library/export in routes/learn.ts) parse here too — the extra
 // fields are simply dropped — so a list exported by that unrelated feature
-// is still a usable import source for this one. targetText is required,
-// unlike the learner-facing vocabularyCreateSchema, since a curated list
-// import should always carry a complete translation.
+// is still a usable import source for this one. targetText is allowed to be
+// empty: this feature's own GET .../vocabulary/export faithfully dumps every
+// row, including a learner-authored word that was FLAGGED and never got a
+// translation, so rejecting an empty targetText here would make re-importing
+// an unmodified real-world export fail outright. mergeVocabularyEntries()
+// skips any such row (outcome `skipped_missing_translation`) instead of ever
+// persisting a blank translation — the "always carry a complete translation"
+// requirement is enforced at merge time, per row, not by failing the whole
+// file at the schema boundary.
 const adminLearnVocabularyImportEntrySchema = z.object({
   sourceLanguage: z.string().trim().min(1).max(20),
   targetLanguage: z.string().trim().min(1).max(20),
   sourceText: z.string().trim().min(1).max(500),
-  targetText: z.string().trim().min(1).max(500),
+  targetText: z.string().trim().max(500),
   article: z.string().trim().max(40).default(''),
   partOfSpeech: z.string().trim().max(80).default(''),
   notes: z.string().trim().max(2000).default(''),

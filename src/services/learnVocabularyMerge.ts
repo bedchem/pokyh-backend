@@ -31,7 +31,8 @@ export type VocabularyMergeOutcome =
   | 'synonym_added'
   | 'duplicate_exact'
   | 'duplicate_near_translation'
-  | 'duplicate_near_source';
+  | 'duplicate_near_source'
+  | 'skipped_missing_translation';
 
 export interface VocabularyMergeResultRow {
   sourceText: string;
@@ -65,6 +66,7 @@ export interface VocabularyMergeSummary {
   duplicateExact: number;
   duplicateNearTranslation: number;
   duplicateNearSource: number;
+  skippedMissingTranslation: number;
 }
 
 export interface VocabularyMergeResult {
@@ -120,6 +122,7 @@ export async function mergeVocabularyEntries(params: {
     duplicateExact: 0,
     duplicateNearTranslation: 0,
     duplicateNearSource: 0,
+    skippedMissingTranslation: 0,
   };
   let dictionaryLookupsUsed = 0;
 
@@ -204,6 +207,24 @@ export async function mergeVocabularyEntries(params: {
   }
 
   for (const incoming of params.incoming) {
+    // A row that never got a translation (e.g. a learner-flagged word from
+    // the source course) must never be persisted with a blank targetText —
+    // real quiz grading needs an actual accepted answer. Skip it here rather
+    // than at the schema boundary, so the rest of a real-world export still
+    // imports instead of the whole file failing on a handful of such rows.
+    if (incoming.targetText.trim() === '') {
+      results.push({
+        sourceText: incoming.sourceText,
+        targetText: incoming.targetText,
+        outcome: 'skipped_missing_translation',
+        matchedExisting: null,
+        possibleTypoOf: null,
+        dictionaryAdvisory: null,
+      });
+      summary.skippedMissingTranslation += 1;
+      continue;
+    }
+
     const normalizedSource = normalizeAnswer(incoming.sourceText);
     const normalizedTarget = normalizeAnswer(incoming.targetText);
 
