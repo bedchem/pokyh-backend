@@ -287,8 +287,8 @@ router.post('/users', requireAdmin, async (req: Request, res: Response): Promise
       id: uuidv4(),
       stableUid,
       username: username.trim().toLowerCase(),
-      webuntisKlasseId: webuntisKlasseId ?? 0,
-      webuntisKlasseName: webuntisKlasseName?.trim() || '',
+      webuntisKlasseId: accountRole === 'parent' ? 0 : webuntisKlasseId ?? 0,
+      webuntisKlasseName: accountRole === 'parent' ? '' : webuntisKlasseName?.trim() || '',
       isUntisUser: !passwordHash,
       role: accountRole,
       ...(passwordHash ? { passwordHash } : {}),
@@ -311,8 +311,8 @@ router.post('/users', requireAdmin, async (req: Request, res: Response): Promise
 });
 
 // ─── PATCH /api/admin/users/:stableUid/role ───────────────────────────────────
-// Switch an account between "student" and "parent". Class memberships are kept
-// in sync so a parent never appears in member lists (see ClassMember.role).
+// Switch an account between "student" and "parent". A parent has no class
+// identity and no ClassMember row at all.
 
 router.patch('/users/:stableUid/role', requireAdmin, async (req: Request, res: Response): Promise<void> => {
   const stableUid = String(req.params['stableUid'] ?? '');
@@ -329,11 +329,27 @@ router.patch('/users/:stableUid/role', requireAdmin, async (req: Request, res: R
     return;
   }
 
-  await prisma.$transaction([
-    prisma.user.update({ where: { stableUid }, data: { role } }),
-    // Keep the membership role aligned with the account role.
-    prisma.classMember.updateMany({ where: { stableUid }, data: { role } }),
-  ]);
+  if (role === 'parent') {
+    const memberships = await prisma.classMember.findMany({
+      where: { stableUid },
+      select: { classId: true },
+    });
+    const classIds = [...new Set(memberships.map((membership) => membership.classId))];
+    await prisma.$transaction([
+      prisma.user.update({
+        where: { stableUid },
+        data: { role, webuntisKlasseId: 0, webuntisKlasseName: '' },
+      }),
+      prisma.classMember.deleteMany({ where: { stableUid } }),
+    ]);
+    if (classIds.length > 0) {
+      await prisma.class.deleteMany({
+        where: { id: { in: classIds }, members: { none: {} } },
+      });
+    }
+  } else {
+    await prisma.user.update({ where: { stableUid }, data: { role } });
+  }
 
   const adminUsername = adminUsernameFromReq(req.headers['authorization']);
   logger.info('Admin action: set user role', { action: 'set_user_role', adminUsername, stableUid, role });
@@ -423,12 +439,12 @@ router.get('/users', requireAdmin, async (req: Request, res: Response): Promise<
   const adminSet = new Set(admins.map((a) => a.stableUid));
 
   const result = users.map((u) => {
-    const membership = u.classMembers[0];
+    const membership = u.role === 'parent' ? undefined : u.classMembers[0];
     return {
       stableUid: u.stableUid,
       username: u.username,
-      webuntisKlasseId: u.webuntisKlasseId,
-      webuntisKlasseName: u.webuntisKlasseName,
+      webuntisKlasseId: u.role === 'parent' ? 0 : u.webuntisKlasseId,
+      webuntisKlasseName: u.role === 'parent' ? '' : u.webuntisKlasseName,
       classId: membership?.classId ?? null,
       classCode: membership?.class?.code ?? null,
       isAdmin: adminSet.has(u.stableUid),
@@ -469,8 +485,8 @@ router.get('/users/:stableUid', requireAdmin, async (req: Request, res: Response
   res.json({
     stableUid: user.stableUid,
     username: user.username,
-    webuntisKlasseId: user.webuntisKlasseId,
-    webuntisKlasseName: user.webuntisKlasseName,
+    webuntisKlasseId: user.role === 'parent' ? 0 : user.webuntisKlasseId,
+    webuntisKlasseName: user.role === 'parent' ? '' : user.webuntisKlasseName,
     isAdmin: !!isAdmin,
     role: user.role,
     createdAt: user.createdAt.toISOString(),
@@ -485,7 +501,7 @@ router.get('/users/:stableUid', requireAdmin, async (req: Request, res: Response
       archivedAt: t.archivedAt ? t.archivedAt.toISOString() : null,
       createdAt: t.createdAt.toISOString(),
     })),
-    classes: user.classMembers.map((m) => ({
+    classes: (user.role === 'parent' ? [] : user.classMembers).map((m) => ({
       classId: m.classId,
       className: m.class.name,
       classCode: m.class.code,
@@ -637,13 +653,8 @@ router.get('/classes', requireAdmin, async (_req: Request, res: Response): Promi
   const classes = await prisma.class.findMany({
     orderBy: { createdAt: 'desc' },
     include: {
-      // A parent account's WebUntis klasseId is their child's class, so a
-      // parent legitimately gets a ClassMember row too (see syncUserClass in
-      // routes/auth.ts) — but they were never meant to be a visible class
-      // *member*. Every other class route (classes.ts) already excludes
-      // role: 'parent' from member lists/counts; this admin listing had been
-      // missed, which is what made a parent account look "assigned to a
-      // class" here.
+      // Legacy parent rows remain filtered defensively while normal login and
+      // role changes remove them permanently.
       members: {
         where: { role: { not: 'parent' } },
         select: {
@@ -982,6 +993,10 @@ router.post('/classes/:id/members', requireAdmin, async (req: Request, res: Resp
     res.status(404).json({ error: `User "${username.trim()}" not found` });
     return;
   }
+  if (user.role === 'parent') {
+    res.status(409).json({ error: 'Eltern-Accounts werden keiner Klasse zugeteilt' });
+    return;
+  }
   const cls = await prisma.class.findUnique({ where: { id } });
   if (!cls) {
     res.status(404).json({ error: 'Class not found' });
@@ -989,8 +1004,8 @@ router.post('/classes/:id/members', requireAdmin, async (req: Request, res: Resp
   }
   await prisma.classMember.upsert({
     where: { classId_stableUid: { classId: id, stableUid: user.stableUid } },
-    create: { classId: id, stableUid: user.stableUid, username: user.username },
-    update: {},
+    create: { classId: id, stableUid: user.stableUid, username: user.username, role: 'student' },
+    update: { username: user.username, role: 'student' },
   });
   res.json({ stableUid: user.stableUid, username: user.username, joinedAt: new Date().toISOString() });
 });

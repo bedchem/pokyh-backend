@@ -20,7 +20,7 @@ model User {
   passwordHash       String?  @map("password_hash") @db.VarChar(100)
   isUntisUser        Boolean  @default(true) @map("is_untis_user")
   // Account role: "student" (default) or "parent". Parents have their own todos,
-  // see only the class name (never appear in member lists) and have no reminders.
+  // no class identity/membership and no reminders.
   role               String   @default("student") @db.VarChar(20)
   createdAt          DateTime @default(now()) @map("created_at")
   updatedAt          DateTime @updatedAt @map("updated_at")
@@ -97,8 +97,8 @@ model ClassMember {
   classId   String   @map("class_id")
   stableUid String   @map("stable_uid")
   username  String
-  // "student" members are visible in the class; "parent" members are hidden
-  // (they can see the class name but never appear in the member list).
+  // Parent rows are forbidden by the API; the role remains for compatibility
+  // while older deployments are reconciled through login/admin role changes.
   role      String   @default("student") @db.VarChar(20)
   joinedAt  DateTime @default(now()) @map("joined_at")
 

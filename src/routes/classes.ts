@@ -6,12 +6,22 @@ import { readLimiter, writeLimiter } from '../middleware/rateLimiter';
 import { ForbiddenError, NotFoundError, ConflictError } from '../utils/errors';
 import { generateClassCode, generateClassId } from '../utils/uid';
 import { config } from '../config';
+import { mayJoinClass } from '../utils/accountClass';
 
 const router = Router();
 
 // GET /classes/mine — get user's class
 router.get('/mine', readLimiter, requireAuth, async (req: Request, res: Response) => {
-  const { stableUid, klasseId } = req.user!;
+  const { stableUid, klasseId, role } = req.user!;
+  const currentUser = await prisma.user.findUnique({
+    where: { stableUid },
+    select: { role: true },
+  });
+
+  if (!mayJoinClass(role) || !currentUser || !mayJoinClass(currentUser.role)) {
+    res.json(null);
+    return;
+  }
 
   const membership = await prisma.classMember.findFirst({
     where: {
@@ -21,7 +31,7 @@ router.get('/mine', readLimiter, requireAuth, async (req: Request, res: Response
     include: {
       class: {
         include: {
-          // Parent members are hidden — they never appear in the member list.
+          // Filter legacy parent rows defensively; new parent rows are forbidden.
           members: {
             where: { role: { not: 'parent' } },
             select: { stableUid: true, username: true },
@@ -42,7 +52,15 @@ router.get('/mine', readLimiter, requireAuth, async (req: Request, res: Response
 // GET /classes/:classId — get class with members (must be member)
 router.get('/:classId', readLimiter, requireAuth, async (req: Request, res: Response) => {
   const classId = req.params['classId'] as string;
-  const { stableUid } = req.user!;
+  const { stableUid, role } = req.user!;
+  const currentUser = await prisma.user.findUnique({
+    where: { stableUid },
+    select: { role: true },
+  });
+
+  if (!mayJoinClass(role) || !currentUser || !mayJoinClass(currentUser.role)) {
+    throw new ForbiddenError('Eltern-Accounts werden keiner Klasse zugeteilt');
+  }
 
   const membership = await prisma.classMember.findUnique({
     where: { classId_stableUid: { classId, stableUid } },
@@ -55,7 +73,7 @@ router.get('/:classId', readLimiter, requireAuth, async (req: Request, res: Resp
   const cls = await prisma.class.findUnique({
     where: { id: classId },
     include: {
-      // Parent members are hidden — they never appear in the member list.
+      // Filter legacy parent rows defensively; new parent rows are forbidden.
       members: {
         where: { role: { not: 'parent' } },
         select: { stableUid: true, username: true, joinedAt: true },
@@ -122,6 +140,16 @@ const joinSchema = z.object({
 router.post('/join', writeLimiter, requireAuth, async (req: Request, res: Response) => {
   const { stableUid, username, role } = req.user!;
   const body = joinSchema.parse(req.body);
+  const currentUser = await prisma.user.findUnique({
+    where: { stableUid },
+    select: { role: true },
+  });
+
+  // Consult the persisted role as well as the JWT so a token issued before an
+  // admin changes the account to parent cannot recreate a membership.
+  if (!mayJoinClass(role) || !currentUser || !mayJoinClass(currentUser.role)) {
+    throw new ForbiddenError('Eltern-Accounts werden keiner Klasse zugeteilt');
+  }
 
   const cls = await prisma.class.findUnique({ where: { code: body.code } });
   if (!cls) {
@@ -137,9 +165,8 @@ router.post('/join', writeLimiter, requireAuth, async (req: Request, res: Respon
     return;
   }
 
-  // Parents join as hidden "parent" members (class name only, never listed).
   await prisma.classMember.create({
-    data: { classId: cls.id, stableUid, username, role },
+    data: { classId: cls.id, stableUid, username, role: 'student' },
   });
 
   res.json({ classId: cls.id });

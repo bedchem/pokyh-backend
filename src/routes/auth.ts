@@ -12,6 +12,7 @@ import { validateWebUntis } from '../services/webuntis';
 import { getLearnConfig } from '../services/learnConfig';
 import { reclaimDishRatings } from '../services/dishRatings';
 import { logger } from '../utils/logger';
+import { AccountRole, normalizeAccountClass } from '../utils/accountClass';
 import {
   AppError,
   UnauthorizedError,
@@ -77,16 +78,47 @@ async function generateRefreshToken(stableUid: string): Promise<string> {
   return raw;
 }
 
-// Auto-join / leave / create class based on webuntisKlasseId.
-// `role` marks the membership: "parent" members are hidden everywhere students
-// see the class (they only get the class name, never appear in member lists).
+async function removeUserFromClasses(stableUid: string): Promise<void> {
+  const memberships = await prisma.classMember.findMany({
+    where: { stableUid },
+    select: { classId: true },
+  });
+  if (memberships.length === 0) return;
+
+  const classIds = [...new Set(memberships.map((membership) => membership.classId))];
+  await prisma.classMember.deleteMany({ where: { stableUid } });
+  // Delete only classes that are still empty at deletion time. The relation
+  // filter avoids racing a student who joins after the membership cleanup.
+  await prisma.class.deleteMany({
+    where: { id: { in: classIds }, members: { none: {} } },
+  });
+}
+
+// Auto-join / leave / create class based on webuntisKlasseId. Parent accounts
+// are deliberately never class members, even when a caller submits the class
+// of a child or an old deployment left a parent ClassMember row behind.
 async function syncUserClass(
   stableUid: string,
   username: string,
   klasseId: number,
   klasseName: string,
-  role: string = 'student'
+  role: AccountRole = 'student'
 ): Promise<string | null> {
+  if (role === 'parent') {
+    await prisma.user.updateMany({
+      where: {
+        stableUid,
+        OR: [
+          { webuntisKlasseId: { not: 0 } },
+          { webuntisKlasseName: { not: '' } },
+        ],
+      },
+      data: { webuntisKlasseId: 0, webuntisKlasseName: '' },
+    });
+    await removeUserFromClasses(stableUid);
+    return null;
+  }
+
   // 0. No class assigned (klasseId 0 / missing) — common for parents/teachers,
   // but also a transient client-side resolution miss. Do NOT wipe an existing
   // membership in that case (that would unenrol a user whose class simply failed
@@ -99,45 +131,40 @@ async function syncUserClass(
     return existing?.classId ?? null;
   }
 
-  // 1. Check if user is already in a class with this webuntisKlasseId
-  const existingMembership = await prisma.classMember.findFirst({
-    where: {
-      stableUid,
-      class: { webuntisKlasseId: klasseId },
-    },
-    select: { classId: true },
-  });
-
-  if (existingMembership) {
-    return existingMembership.classId;
-  }
-
-  // 2. Find classes where user is member but webuntisKlasseId differs → leave
-  const wrongMemberships = await prisma.classMember.findMany({
+  // 1. Reconcile every membership. This also repairs legacy users that were in
+  // multiple classes: only the class matching the current WebUntis id survives.
+  const memberships = await prisma.classMember.findMany({
     where: { stableUid },
     include: {
       class: { select: { webuntisKlasseId: true } },
     },
   });
+  const existingMembership = memberships.find(
+    (membership) => membership.class.webuntisKlasseId === klasseId,
+  );
 
-  for (const membership of wrongMemberships) {
-    if (membership.class.webuntisKlasseId !== klasseId) {
-      // Leave this class
-      await prisma.classMember.delete({
-        where: { classId_stableUid: { classId: membership.classId, stableUid } },
-      });
-
-      // If no members left, delete the class
-      const remainingCount = await prisma.classMember.count({
-        where: { classId: membership.classId },
-      });
-      if (remainingCount === 0) {
-        await prisma.class.delete({ where: { id: membership.classId } }).catch(() => {});
-      }
-    }
+  const wrongClassIds = memberships
+    .filter((membership) => membership.class.webuntisKlasseId !== klasseId)
+    .map((membership) => membership.classId);
+  if (wrongClassIds.length > 0) {
+    await prisma.classMember.deleteMany({
+      where: { stableUid, classId: { in: wrongClassIds } },
+    });
+    // Delete only classes that are still empty when this query executes.
+    await prisma.class.deleteMany({
+      where: { id: { in: wrongClassIds }, members: { none: {} } },
+    });
   }
 
-  // 3. Find existing class with this webuntisKlasseId
+  if (existingMembership) {
+    await prisma.classMember.update({
+      where: { classId_stableUid: { classId: existingMembership.classId, stableUid } },
+      data: { username, role: 'student' },
+    });
+    return existingMembership.classId;
+  }
+
+  // 2. Find existing class with this webuntisKlasseId
   const targetClass = await prisma.class.findFirst({
     where: { webuntisKlasseId: klasseId },
     select: { id: true },
@@ -153,7 +180,7 @@ async function syncUserClass(
     return targetClass.id;
   }
 
-  // 4. Create new class
+  // 3. Create new class
   const newClassId = generateClassId();
   const code = generateClassCode();
 
@@ -206,6 +233,9 @@ async function completeWebUntisLogin({
   klasseName: string;
   role: 'student' | 'parent';
 }): Promise<AuthenticatedUserResponse> {
+  const accountClass = normalizeAccountClass(role, klasseId, klasseName);
+  klasseId = accountClass.klasseId;
+  klasseName = accountClass.klasseName;
   let user = await prisma.user.findUnique({ where: { username } });
 
   if (!user) {
@@ -272,8 +302,8 @@ const loginSchema = z.object({
   // Coerce + default so a missing/string klasseId never 422s a valid login.
   klasseId: z.coerce.number().int().nonnegative().default(0),
   klasseName: z.string().min(0).max(100).default(''),
-  // "parent" → invisible class member with own todos and no reminders.
-  // The caller (WebUntis login proxy) resolves the child's klasseId for parents.
+  // The backend normalizes every parent to klasseId=0/name="" and removes any
+  // stale membership, even if a trusted caller accidentally sends child data.
   role: z.enum(['student', 'parent']).optional().default('student'),
 });
 
@@ -349,12 +379,23 @@ router.post('/login', authLimiter, async (req: Request, res: Response) => {
     }
 
     const admin = await prisma.admin.findUnique({ where: { stableUid: user.stableUid } });
-    const membership = await prisma.classMember.findFirst({ where: { stableUid: user.stableUid } });
+    const classId = await syncUserClass(
+      user.stableUid,
+      user.username,
+      user.webuntisKlasseId,
+      user.webuntisKlasseName,
+      user.role === 'parent' ? 'parent' : 'student',
+    );
+    const accountClass = normalizeAccountClass(
+      user.role === 'parent' ? 'parent' : 'student',
+      user.webuntisKlasseId,
+      user.webuntisKlasseName,
+    );
     const token = signJwt({
       stableUid: user.stableUid,
       username: user.username,
-      klasseId: user.webuntisKlasseId,
-      klasseName: user.webuntisKlasseName,
+      klasseId: accountClass.klasseId,
+      klasseName: accountClass.klasseName,
       role: user.role,
       isUntisUser: false,
     });
@@ -366,9 +407,9 @@ router.post('/login', authLimiter, async (req: Request, res: Response) => {
       user: {
         stableUid: user.stableUid,
         username: user.username,
-        webuntisKlasseId: user.webuntisKlasseId,
-        webuntisKlasseName: user.webuntisKlasseName,
-        classId: membership?.classId ?? null,
+        webuntisKlasseId: accountClass.klasseId,
+        webuntisKlasseName: accountClass.klasseName,
+        classId,
         isAdmin: admin !== null,
         isUntisUser: false,
         role: user.role,
@@ -482,12 +523,17 @@ router.post('/refresh', refreshLimiter, async (req: Request, res: Response) => {
   }
 
   const { user } = stored;
+  const accountClass = normalizeAccountClass(
+    user.role === 'parent' ? 'parent' : 'student',
+    user.webuntisKlasseId,
+    user.webuntisKlasseName,
+  );
 
   const token = signJwt({
     stableUid: user.stableUid,
     username: user.username,
-    klasseId: user.webuntisKlasseId,
-    klasseName: user.webuntisKlasseName,
+    klasseId: accountClass.klasseId,
+    klasseName: accountClass.klasseName,
     role: user.role,
   });
   // Rotate on every use: a refresh token that leaks once and gets replayed
@@ -529,14 +575,31 @@ router.get('/me', requireAuth, async (req: Request, res: Response) => {
     throw new UnauthorizedError('User not found');
   }
 
+  if (user.role === 'parent') {
+    await syncUserClass(
+      user.stableUid,
+      user.username,
+      0,
+      '',
+      'parent',
+    );
+  }
+
   const admin = await prisma.admin.findUnique({ where: { stableUid } });
-  const membership = await prisma.classMember.findFirst({ where: { stableUid } });
+  const accountClass = normalizeAccountClass(
+    user.role === 'parent' ? 'parent' : 'student',
+    user.webuntisKlasseId,
+    user.webuntisKlasseName,
+  );
+  const membership = user.role === 'parent'
+    ? null
+    : await prisma.classMember.findFirst({ where: { stableUid } });
 
   res.json({
     stableUid: user.stableUid,
     username: user.username,
-    webuntisKlasseId: user.webuntisKlasseId,
-    webuntisKlasseName: user.webuntisKlasseName,
+    webuntisKlasseId: accountClass.klasseId,
+    webuntisKlasseName: accountClass.klasseName,
     classId: membership?.classId ?? null,
     isAdmin: admin !== null,
     isUntisUser: user.isUntisUser,

@@ -38,8 +38,8 @@ This backend is the **single source of truth** for everything that is *not* WebU
 
 Users never log in here with a password. They authenticate against WebUntis in the
 **web frontend** or the **iOS app**, which then perform a trusted **server-to-server**
-login here (guarded by a shared `SERVER_KEY`) to mint a POKYH session. Parents/guardians get a
-hidden "parent" membership in their child's class.
+login here (guarded by a shared `SERVER_KEY`) to mint a POKYH session. Parents/guardians receive
+no POKYH class identity or membership; child data needed by WebUntis stays outside that assignment.
 
 It also serves a built-in **React admin panel** at `/admin/`. Public DNS, TLS
 termination and ingress are operated outside the application container.
@@ -235,7 +235,7 @@ npx web-push generate-vapid-keys
 Prisma is the single schema source (`prisma/schema.prisma`). Key models:
 
 - **Identity** — `User`, `Admin`, `RefreshToken`, `ApiKey`
-- **Classes** — `Class`, `ClassMember` (a `role` of `parent` marks a hidden member)
+- **Classes** — `Class`, `ClassMember` (student memberships only; parents are always unassigned)
 - **Content** — `Todo`, `Reminder`, `Comment`, `DishComment`
 - **Cafeteria** — `Dish`, `DishImage`, `DishRating`
 - **Subjects** — `KnownSubject`, `SubjectImage`
