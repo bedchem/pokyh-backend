@@ -25,7 +25,29 @@ export function broadcastDishComments(dishKey: string, rawId: string, comments: 
 
 const bodySchema = z.object({ body: z.string().min(1).max(2000) });
 
-// GET /dish-comments/:dishId — public read; guests don't receive stableUids
+const DECOY_WORDS = [
+  'Mensa', 'heute', 'wirklich', 'Essen', 'lecker', 'Portion', 'Soße', 'nochmal', 'eher', 'ganz',
+  'warm', 'Beilage', 'gut', 'Nudeln', 'etwas', 'salzig', 'Nachschlag', 'okay', 'besser', 'als',
+];
+const DECOY_NAMES = ['Anonym', 'Gast', 'Jemand', 'Mensa-Fan'];
+
+// Deterministic per comment so the guest view doesn't reshuffle on every fetch.
+function decoyText(seed: string, length: number): string {
+  let h = 0;
+  for (const ch of seed) h = (h * 31 + ch.charCodeAt(0)) | 0;
+  const words: string[] = [];
+  let len = 0;
+  while (len < length) {
+    h = (h * 1103515245 + 12345) | 0;
+    const word = DECOY_WORDS[Math.abs(h) % DECOY_WORDS.length];
+    words.push(word);
+    len += word.length + 1;
+  }
+  return words.join(' ');
+}
+
+// GET /dish-comments/:dishId — public read. Guests only get placeholders with
+// the real count and timestamps; author and text stay behind the login.
 router.get('/:dishId', readLimiter, optionalAuth, async (req: Request, res: Response) => {
   const raw = req.params['dishId'] as string;
   const key = await resolveDishKey(raw);
@@ -34,7 +56,15 @@ router.get('/:dishId', readLimiter, optionalAuth, async (req: Request, res: Resp
     res.json(comments);
     return;
   }
-  res.json(comments.map(({ stableUid: _stableUid, ...rest }) => ({ ...rest, stableUid: '' })));
+  res.json(comments.map((c, i) => ({
+    id: c.id,
+    dishId: c.dishId,
+    stableUid: '',
+    username: DECOY_NAMES[i % DECOY_NAMES.length],
+    body: decoyText(c.id, Math.min(c.body.length, 160)),
+    createdAt: c.createdAt,
+    updatedAt: c.createdAt,
+  })));
 });
 
 // POST /dish-comments/:dishId
