@@ -52,7 +52,8 @@ router.get('/', readLimiter, requireAuth, async (req: Request, res: Response) =>
 // POST /classes/:classId/reminders
 const createReminderSchema = z.object({
   title: z.string().min(1).max(500),
-  body: z.string().max(10000).optional().default(''),
+  // Bounded by the column width (reminders.body is VARCHAR(5000)).
+  body: z.string().max(5000).optional().default(''),
   remindAt: z.string().datetime(),
 });
 

@@ -3,6 +3,7 @@ import jwt from 'jsonwebtoken';
 import bcrypt from 'bcrypt';
 import { createHash, randomBytes, timingSafeEqual } from 'crypto';
 import { z } from 'zod';
+import { Prisma } from '@prisma/client';
 import { prisma } from '../db';
 import { config } from '../config';
 import { requireAuth } from '../middleware/auth';
@@ -240,16 +241,32 @@ async function completeWebUntisLogin({
 
   if (!user) {
     const stableUid = generateStableUid();
-    user = await prisma.user.create({
-      data: {
-        stableUid,
-        username,
-        webuntisKlasseId: klasseId,
-        webuntisKlasseName: klasseName,
-        isUntisUser: true,
-        role,
-      },
-    });
+    try {
+      user = await prisma.user.create({
+        data: {
+          stableUid,
+          username,
+          webuntisKlasseId: klasseId,
+          webuntisKlasseName: klasseName,
+          isUntisUser: true,
+          role,
+        },
+      });
+    } catch (err) {
+      // Two first logins of the same account can arrive together (two
+      // devices, a retried request). The second create then meets the unique
+      // username; that is a successful login, not a conflict.
+      if (!(err instanceof Prisma.PrismaClientKnownRequestError) || err.code !== 'P2002') throw err;
+      user = await prisma.user.update({
+        where: { username },
+        data: {
+          webuntisKlasseId: klasseId,
+          webuntisKlasseName: klasseName,
+          isUntisUser: true,
+          role,
+        },
+      });
+    }
     // A recreated account (rollover, rebuild) gets its earlier dish votes back.
     reclaimDishRatings(user.stableUid, user.username).catch((err) => {
       logger.warn('dish rating reclaim failed', { error: err instanceof Error ? err.message : String(err) });
@@ -331,18 +348,22 @@ router.post('/learn-login', learnLoginLimiter, async (req: Request, res: Respons
   if (learnCfg.legalGateEnabled && privacyNoticeVersion !== learnCfg.privacyNoticeVersion) {
     throw new ValidationError('Please acknowledge the current Pokyh Learn privacy notice before signing in');
   }
-  let result: AuthenticatedUserResponse;
+  // Only a rejected WebUntis validation is an authentication failure. A
+  // fault while creating the Pokyh session afterwards (for example the
+  // database being unavailable) must surface as a server error, not tell a
+  // correctly authenticated person that their credentials are wrong.
+  let untis: Awaited<ReturnType<typeof validateWebUntis>>;
   try {
-    const untis = await validateWebUntis(username, password);
-    result = await completeWebUntisLogin({
-      username,
-      klasseId: untis.klasseId,
-      klasseName: untis.klasseName,
-      role: 'student',
-    });
+    untis = await validateWebUntis(username, password);
   } catch {
     throw new UnauthorizedError('WebUntis-Anmeldung fehlgeschlagen');
   }
+  const result: AuthenticatedUserResponse = await completeWebUntisLogin({
+    username,
+    klasseId: untis.klasseId,
+    klasseName: untis.klasseName,
+    role: 'student',
+  });
   if (learnCfg.legalGateEnabled) {
     await prisma.learnProfile.upsert({
       where: { stableUid: result.user.stableUid },
@@ -535,6 +556,7 @@ router.post('/refresh', refreshLimiter, async (req: Request, res: Response) => {
     klasseId: accountClass.klasseId,
     klasseName: accountClass.klasseName,
     role: user.role,
+    isUntisUser: user.isUntisUser,
   });
   // Rotate on every use: a refresh token that leaks once and gets replayed
   // would otherwise stay valid for its entire lifetime with no signal.

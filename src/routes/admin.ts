@@ -46,6 +46,8 @@ import {
 } from '../utils/mensaRotate';
 import { slugifyDishName } from '../utils/dishKey';
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from '../utils/errors';
+import { intQueryParam } from '../utils/duration';
+import { clientIp } from '../middleware/requestLogger';
 
 function safeParseTags(raw: string): string[] {
   try { return JSON.parse(raw) as string[]; } catch { return []; }
@@ -101,15 +103,48 @@ function weekOrdinalFromSourceId(sourceId: string | null | undefined): number {
   return Number.isFinite(n) && n > 0 && n < 1000 ? n : 0;
 }
 
+// Fetches an operator-supplied JSON source. Bounded in time and size and
+// limited to plain web URLs, so a slow, endless or mistyped source can only
+// fail the one admin request that asked for it.
+const FETCH_TIMEOUT_MS = 10_000;
+const FETCH_MAX_BYTES = 5 * 1024 * 1024;
+
 function fetchUrl(url: string): Promise<string> {
   return new Promise((resolve, reject) => {
-    const lib = url.startsWith('https') ? https : http;
-    lib.get(url, { headers: { 'User-Agent': 'pokyh-backend/1.0' } }, (res) => {
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      reject(new Error('invalid URL'));
+      return;
+    }
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+      reject(new Error('unsupported URL scheme'));
+      return;
+    }
+    const lib = parsed.protocol === 'https:' ? https : http;
+    const req = lib.get(parsed, { headers: { 'User-Agent': 'pokyh-backend/1.0' } }, (res) => {
+      const status = res.statusCode ?? 0;
+      if (status < 200 || status >= 300) {
+        res.resume();
+        reject(new Error(`unexpected HTTP status ${status}`));
+        return;
+      }
       const chunks: Buffer[] = [];
-      res.on('data', (c: Buffer) => chunks.push(c));
+      let received = 0;
+      res.on('data', (c: Buffer) => {
+        received += c.length;
+        if (received > FETCH_MAX_BYTES) {
+          req.destroy(new Error('response too large'));
+          return;
+        }
+        chunks.push(c);
+      });
       res.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
       res.on('error', reject);
-    }).on('error', reject);
+    });
+    req.on('error', reject);
+    req.setTimeout(FETCH_TIMEOUT_MS, () => { req.destroy(new Error('fetch timeout')); });
   });
 }
 
@@ -140,7 +175,7 @@ router.post('/auth/login', loginLimiter, async (req: Request, res: Response): Pr
     ? await prisma.admin.findUnique({ where: { stableUid: user.stableUid } })
     : null;
 
-  const loginIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() ?? req.socket.remoteAddress ?? 'unknown';
+  const loginIp = clientIp(req);
   const isEnvAdmin = config.adminUsernames.includes(username);
   if (!adminRecord && !isEnvAdmin) {
     logger.warn('Admin login failed: unknown user', { action: 'admin_login_failed', username, ip: loginIp });
@@ -162,7 +197,7 @@ router.post('/auth/login', loginLimiter, async (req: Request, res: Response): Pr
     return;
   }
 
-  const ip = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() ?? req.socket.remoteAddress ?? 'unknown';
+  const ip = loginIp;
   const token = jwt.sign(
     { role: 'admin', sub: 'admin-panel', username },
     config.jwtSecret,
@@ -403,8 +438,8 @@ router.get('/users', requireAdmin, async (req: Request, res: Response): Promise<
   // Optional role filter: 'student' or 'parent'. Anything else means "no filter".
   const roleRaw = typeof req.query['role'] === 'string' ? req.query['role'] : undefined;
   const roleFilter = roleRaw === 'student' || roleRaw === 'parent' ? roleRaw : undefined;
-  const page = Math.max(1, parseInt(String(req.query['page'] ?? '1'), 10));
-  const limit = Math.min(100, Math.max(1, parseInt(String(req.query['limit'] ?? '20'), 10)));
+  const page = intQueryParam(req.query['page'], 1, 1, 1_000_000);
+  const limit = intQueryParam(req.query['limit'], 20, 1, 100);
   const skip = (page - 1) * limit;
 
   const where = {
@@ -536,8 +571,9 @@ router.patch('/users/:stableUid/todos/:todoId', requireAdmin, async (req: Reques
   };
 
   const data: Record<string, unknown> = {};
-  if (title !== undefined) data['title'] = title;
-  if (details !== undefined) data['details'] = details;
+  // Bounded by the column widths (todos.title VARCHAR(500), details VARCHAR(5000)).
+  if (title !== undefined) data['title'] = String(title).slice(0, 500);
+  if (details !== undefined) data['details'] = String(details).slice(0, 5000);
   if (dueAt !== undefined) data['dueAt'] = dueAt ? new Date(dueAt) : null;
   if (done !== undefined) {
     data['done'] = done;
@@ -590,7 +626,7 @@ router.post('/users/:stableUid/todos', requireAdmin, async (req: Request, res: R
     data: {
       stableUid,
       title: String(title).trim().slice(0, 500),
-      details: details ? String(details).slice(0, 10000) : '',
+      details: details ? String(details).slice(0, 5000) : '',
       dueAt: dueAt ? new Date(dueAt) : null,
     },
   });
@@ -771,11 +807,12 @@ router.delete('/sessions/:id', requireAdmin, async (req: Request, res: Response)
 // General request logs with optional filters
 
 router.get('/logs', requireAdmin, async (req: Request, res: Response): Promise<void> => {
-  const page = Math.max(1, parseInt(String(req.query['page'] ?? '1'), 10));
-  const limit = Math.min(200, Math.max(1, parseInt(String(req.query['limit'] ?? '50'), 10)));
+  const page = intQueryParam(req.query['page'], 1, 1, 1_000_000);
+  const limit = intQueryParam(req.query['limit'], 50, 1, 200);
   const skip = (page - 1) * limit;
   const method = req.query['method'] ? String(req.query['method']).toUpperCase() : undefined;
-  const status = req.query['status'] ? parseInt(String(req.query['status']), 10) : undefined;
+  const statusRaw = req.query['status'] ? Number.parseInt(String(req.query['status']), 10) : NaN;
+  const status = Number.isFinite(statusRaw) ? statusRaw : undefined;
   const pathFilter = req.query['path'] ? String(req.query['path']) : undefined;
   const username = req.query['username'] ? String(req.query['username']) : undefined;
   const scope = req.query['scope'] === 'learn' || req.query['scope'] === 'core' ? String(req.query['scope']) : undefined;
@@ -808,8 +845,8 @@ router.get('/logs', requireAdmin, async (req: Request, res: Response): Promise<v
 
 router.get('/logs/users/:stableUid', requireAdmin, async (req: Request, res: Response): Promise<void> => {
   const stableUid = String(req.params['stableUid']);
-  const page = Math.max(1, parseInt(String(req.query['page'] ?? '1'), 10));
-  const limit = Math.min(200, Math.max(1, parseInt(String(req.query['limit'] ?? '50'), 10)));
+  const page = intQueryParam(req.query['page'], 1, 1, 1_000_000);
+  const limit = intQueryParam(req.query['limit'], 50, 1, 200);
   const skip = (page - 1) * limit;
 
   const [logs, total, user] = await Promise.all([
@@ -924,7 +961,7 @@ router.post('/classes/:id/reminders', requireAdmin, async (req: Request, res: Re
     data: {
       classId: id,
       title: String(title).trim().slice(0, 500),
-      body: body ? String(body).slice(0, 10000) : '',
+      body: body ? String(body).slice(0, 5000) : '',
       remindAt: new Date(remindAt),
       createdBy: 'admin',
       createdByName: config.adminUsername,
@@ -953,7 +990,7 @@ router.patch('/reminders/:id', requireAdmin, async (req: Request, res: Response)
 
   const data: Record<string, unknown> = {};
   if (title !== undefined) data['title'] = String(title).trim().slice(0, 500);
-  if (body !== undefined) data['body'] = String(body).slice(0, 10000);
+  if (body !== undefined) data['body'] = String(body).slice(0, 5000);
   if (remindAt !== undefined) data['remindAt'] = new Date(remindAt);
 
   const reminder = await prisma.reminder.update({ where: { id }, data });
@@ -1638,8 +1675,8 @@ router.delete('/dish-ratings/:dishId/:stableUid', requireAdmin, async (req: Requ
 // Returns all reminder comments + dish comments, newest first, paginated
 
 router.get('/comments', requireAdmin, async (req: Request, res: Response): Promise<void> => {
-  const page = Math.max(1, parseInt(String(req.query['page'] ?? '1'), 10));
-  const limit = Math.min(100, Math.max(1, parseInt(String(req.query['limit'] ?? '50'), 10)));
+  const page = intQueryParam(req.query['page'], 1, 1, 1_000_000);
+  const limit = intQueryParam(req.query['limit'], 50, 1, 100);
   const skip = (page - 1) * limit;
   const type = String(req.query['type'] ?? 'all');
   const search = String(req.query['search'] ?? '').trim().toLowerCase();
@@ -1777,8 +1814,8 @@ router.get('/file-logs/:date', requireAdmin, async (req: Request, res: Response)
   const filename = `app-${dateParam}.log`;
   const filePath = path.join(process.cwd(), 'logs', filename);
 
-  const page = Math.max(1, parseInt(String(req.query['page'] ?? '1'), 10));
-  const limit = Math.min(500, Math.max(1, parseInt(String(req.query['limit'] ?? '100'), 10)));
+  const page = intQueryParam(req.query['page'], 1, 1, 1_000_000);
+  const limit = intQueryParam(req.query['limit'], 100, 1, 500);
 
   let content: string;
   try {
@@ -1948,8 +1985,8 @@ router.delete('/dishes/:id/image', requireAdmin, async (req: Request, res: Respo
 // Frontend activity logs (page views, downloads, logins, etc.)
 
 router.get('/activity-logs', requireAdmin, async (req: Request, res: Response): Promise<void> => {
-  const page  = Math.max(1, parseInt(String(req.query['page']  ?? '1'),   10));
-  const limit = Math.min(200, Math.max(1, parseInt(String(req.query['limit'] ?? '50'), 10)));
+  const page  = intQueryParam(req.query['page'], 1, 1, 1_000_000);
+  const limit = intQueryParam(req.query['limit'], 50, 1, 200);
   const skip  = (page - 1) * limit;
   const event    = req.query['event']    ? String(req.query['event'])    : undefined;
   const username = req.query['username'] ? String(req.query['username']) : undefined;
@@ -2011,7 +2048,7 @@ router.get('/activity-logs/stats', requireAdmin, async (_req: Request, res: Resp
 
 // GET /api/admin/audit-log — recent admin actions from file logs (last 3 days)
 router.get('/audit-log', requireAdmin, async (req: Request, res: Response): Promise<void> => {
-  const limit = Math.min(200, parseInt(String(req.query['limit'] ?? '100'), 10) || 100);
+  const limit = intQueryParam(req.query['limit'], 100, 1, 200);
   const logDir = path.join(process.cwd(), 'logs');
   const entries: unknown[] = [];
 
@@ -2039,8 +2076,8 @@ router.get('/audit-log', requireAdmin, async (req: Request, res: Response): Prom
 // All todos across all users, server-side paginated. status=active|done|archived|all
 
 router.get('/todos', requireAdmin, async (req: Request, res: Response): Promise<void> => {
-  const page    = Math.max(1, parseInt(String(req.query['page']  ?? '1'),  10));
-  const limit   = Math.min(200, Math.max(1, parseInt(String(req.query['limit'] ?? '50'), 10)));
+  const page    = intQueryParam(req.query['page'], 1, 1, 1_000_000);
+  const limit   = intQueryParam(req.query['limit'], 50, 1, 200);
   const skip    = (page - 1) * limit;
   const search  = String(req.query['search'] ?? '').trim();
   const status  = String(req.query['status'] ?? 'all');
@@ -2083,8 +2120,8 @@ router.get('/todos', requireAdmin, async (req: Request, res: Response): Promise<
 // All reminders across all classes, server-side paginated. status=active|archived|all
 
 router.get('/reminders', requireAdmin, async (req: Request, res: Response): Promise<void> => {
-  const page    = Math.max(1, parseInt(String(req.query['page']  ?? '1'),  10));
-  const limit   = Math.min(200, Math.max(1, parseInt(String(req.query['limit'] ?? '50'), 10)));
+  const page    = intQueryParam(req.query['page'], 1, 1, 1_000_000);
+  const limit   = intQueryParam(req.query['limit'], 50, 1, 200);
   const skip    = (page - 1) * limit;
   const search  = String(req.query['search'] ?? '').trim();
   const status  = String(req.query['status'] ?? 'all');
@@ -2124,8 +2161,8 @@ router.get('/reminders', requireAdmin, async (req: Request, res: Response): Prom
 // Archived (expired >24h) todos — server-only, admin-viewable.
 
 router.get('/archive/todos', requireAdmin, async (req: Request, res: Response): Promise<void> => {
-  const page = Math.max(1, parseInt(String(req.query['page'] ?? '1'), 10));
-  const limit = Math.min(200, Math.max(1, parseInt(String(req.query['limit'] ?? '50'), 10)));
+  const page = intQueryParam(req.query['page'], 1, 1, 1_000_000);
+  const limit = intQueryParam(req.query['limit'], 50, 1, 200);
   const skip = (page - 1) * limit;
 
   const [todos, total] = await Promise.all([
@@ -2164,8 +2201,8 @@ router.get('/archive/todos', requireAdmin, async (req: Request, res: Response): 
 // ─── GET /api/admin/archive/reminders ────────────────────────────────────────
 
 router.get('/archive/reminders', requireAdmin, async (req: Request, res: Response): Promise<void> => {
-  const page = Math.max(1, parseInt(String(req.query['page'] ?? '1'), 10));
-  const limit = Math.min(200, Math.max(1, parseInt(String(req.query['limit'] ?? '50'), 10)));
+  const page = intQueryParam(req.query['page'], 1, 1, 1_000_000);
+  const limit = intQueryParam(req.query['limit'], 50, 1, 200);
   const skip = (page - 1) * limit;
 
   const [reminders, total] = await Promise.all([
@@ -2398,8 +2435,8 @@ router.get('/school-years', requireAdmin, async (_req: Request, res: Response): 
 
 router.get('/school-years/:id/users', requireAdmin, async (req: Request, res: Response): Promise<void> => {
   const id      = String(req.params['id']);
-  const page    = Math.max(1, parseInt(String(req.query['page']  ?? '1'),  10));
-  const limit   = Math.min(200, Math.max(1, parseInt(String(req.query['limit'] ?? '50'), 10)));
+  const page    = intQueryParam(req.query['page'], 1, 1, 1_000_000);
+  const limit   = intQueryParam(req.query['limit'], 50, 1, 200);
   const skip    = (page - 1) * limit;
   const search  = String(req.query['search'] ?? '').trim();
   const role    = String(req.query['role']   ?? '').trim();
@@ -2435,8 +2472,8 @@ router.get('/school-years/:id/classes', requireAdmin, async (req: Request, res: 
 
 router.get('/school-years/:id/todos', requireAdmin, async (req: Request, res: Response): Promise<void> => {
   const id      = String(req.params['id']);
-  const page    = Math.max(1, parseInt(String(req.query['page']  ?? '1'),  10));
-  const limit   = Math.min(200, Math.max(1, parseInt(String(req.query['limit'] ?? '50'), 10)));
+  const page    = intQueryParam(req.query['page'], 1, 1, 1_000_000);
+  const limit   = intQueryParam(req.query['limit'], 50, 1, 200);
   const skip    = (page - 1) * limit;
   const search  = String(req.query['search'] ?? '').trim();
   const status  = String(req.query['status'] ?? 'all');
@@ -2469,8 +2506,8 @@ router.get('/school-years/:id/todos', requireAdmin, async (req: Request, res: Re
 
 router.get('/school-years/:id/reminders', requireAdmin, async (req: Request, res: Response): Promise<void> => {
   const id      = String(req.params['id']);
-  const page    = Math.max(1, parseInt(String(req.query['page']  ?? '1'),  10));
-  const limit   = Math.min(200, Math.max(1, parseInt(String(req.query['limit'] ?? '50'), 10)));
+  const page    = intQueryParam(req.query['page'], 1, 1, 1_000_000);
+  const limit   = intQueryParam(req.query['limit'], 50, 1, 200);
   const skip    = (page - 1) * limit;
   const search  = String(req.query['search'] ?? '').trim();
   const status  = String(req.query['status'] ?? 'all');

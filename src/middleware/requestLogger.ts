@@ -7,6 +7,10 @@ import { logger } from '../utils/logger';
 const SKIP_PATHS = new Set(['/health', '/readyz', '/favicon.ico']);
 const SKIP_PREFIXES = ['/admin/', '/admin'];
 
+export function clientIp(req: Request): string {
+  return (req.ip ?? req.socket.remoteAddress ?? 'unknown').slice(0, 45);
+}
+
 export function requestLogger(req: Request, res: Response, next: NextFunction): void {
   // Skip static assets and noise
   if (
@@ -25,12 +29,13 @@ export function requestLogger(req: Request, res: Response, next: NextFunction): 
 
   res.on('finish', () => {
     const duration = Date.now() - start;
-    const ip =
-      (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() ??
-      req.socket.remoteAddress ??
-      'unknown';
+    // `req.ip` honours the operator's TRUST_PROXY setting: a forwarded
+    // address is used only when it comes from a trusted proxy, so a caller
+    // cannot choose the address that ends up in the logs. Bounded to the
+    // column width so an unusual value can never make the insert fail.
+    const ip = clientIp(req);
 
-    const username = req.user?.username ?? req.adminUser?.role ?? null;
+    const username = req.user?.username ?? req.adminUser?.username ?? req.adminUser?.role ?? null;
     const logMeta = {
       method: req.method,
       path: req.path,
@@ -64,7 +69,7 @@ export function requestLogger(req: Request, res: Response, next: NextFunction): 
         duration,
         ip,
         stableUid: req.user?.stableUid ?? null,
-        username,
+        username: username ? username.slice(0, 100) : null,
         userAgent: (req.headers['user-agent'] ?? '').slice(0, 500) || null,
         requestId: req.id,
         scope,

@@ -75,6 +75,27 @@ npx prisma db push
 npx prisma studio
 ```
 
+## Tests
+
+```bash
+# Unit tests
+npm test
+
+# Multi-node cluster test: starts a throw-away MySQL container and three
+# backend processes (needs Docker; does not use your .env or database)
+npm run test:cluster
+```
+
+## Cluster
+
+Nodes are linked in the admin panel under **Cluster**: enter the other node's
+address and the same pairing key on both nodes. See README.md → "Cluster".
+
+```bash
+# Status of this node and its peers (admin token required)
+curl -s -H "Authorization: Bearer $ADMIN_TOKEN" http://localhost:4000/api/admin/cluster
+```
+
 ## Useful Checks
 
 ```bash

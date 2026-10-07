@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { rateLimit } from 'express-rate-limit';
 import { prisma } from '../db';
 import { optionalAuth } from '../middleware/auth';
+import { clientIp } from '../middleware/requestLogger';
 import { logger } from '../utils/logger';
 
 const router = Router();
@@ -12,8 +13,9 @@ const limiter = rateLimit({
   max: 200,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req) =>
-    ((req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() ?? req.socket.remoteAddress ?? 'unknown'),
+  // Keyed by the default client address (`req.ip`, which follows TRUST_PROXY).
+  // Keying on the raw X-Forwarded-For header would let a caller pick a fresh
+  // bucket for every request.
   message: { error: 'Too many activity log events' },
 });
 
@@ -40,10 +42,7 @@ router.post('/', limiter, optionalAuth, async (req: Request, res: Response): Pro
     return;
   }
 
-  const ip =
-    (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() ??
-    req.socket.remoteAddress ??
-    'unknown';
+  const ip = clientIp(req);
 
   const stableUid = req.user?.stableUid ?? null;
   const username  = req.user?.username  ?? null;

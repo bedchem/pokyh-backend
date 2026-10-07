@@ -1,4 +1,4 @@
-import type { AdminStats, AdminClass, AdminSession, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish, AdminDishFull, AdminDishImportResult, AdminDishShiftResult, AdminDishRotateResult, AdminDishResetResult, AdminDishAnchorResult, DishPlan, AdminCommentsResponse, FileLogFile, FileLogResponse, FileLogEntry, FrontendActivityLogsResponse, FrontendActivityStats, AllTodosResponse, AllRemindersResponse, SchoolYearsResponse, ArchivedUsersResponse, ArchivedClass, ArchivedTodosResponse, ArchivedRemindersResponse, RolloverResult, RollbackResult, AdminApiKey, CreatedApiKey, LearnConfigValues, LearnAiConfigValues, LearnAiGrant, LearnAiTeamGrant, AdminLearnTeam, LearnTeamAssignableRole, AdminLearnCoursesResponse, AdminLearnCourseAccessResponse, AdminLearnCourse, AdminLearnCourseAccess, LearnCoursePermission, LearnCourseStatus, LearnCourseVisibility, AdminLearnCourseVocabularyResponse, AdminLearnVocabularyImportResponse, BackupsResponse, AdminPopup, PopupInput } from './types';
+import type { AdminStats, AdminClass, AdminSession, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish, AdminDishFull, AdminDishImportResult, AdminDishShiftResult, AdminDishRotateResult, AdminDishResetResult, AdminDishAnchorResult, DishPlan, AdminCommentsResponse, FileLogFile, FileLogResponse, FileLogEntry, FrontendActivityLogsResponse, FrontendActivityStats, AllTodosResponse, AllRemindersResponse, SchoolYearsResponse, ArchivedUsersResponse, ArchivedClass, ArchivedTodosResponse, ArchivedRemindersResponse, RolloverResult, RollbackResult, AdminApiKey, CreatedApiKey, LearnConfigValues, LearnAiConfigValues, LearnAiGrant, LearnAiTeamGrant, AdminLearnTeam, LearnTeamAssignableRole, AdminLearnCoursesResponse, AdminLearnCourseAccessResponse, AdminLearnCourse, AdminLearnCourseAccess, LearnCoursePermission, LearnCourseStatus, LearnCourseVisibility, AdminLearnCourseVocabularyResponse, AdminLearnVocabularyImportResponse, BackupsResponse, AdminPopup, PopupInput, ClusterStatus } from './types';
 
 const TOKEN_KEY = 'pokyh_admin_token';
 
@@ -569,6 +569,34 @@ export const adminApi = {
 
   renderPopup: (content: string): Promise<{ html: string }> =>
     request<{ html: string }>('POST', '/api/admin/popups/render', { content }),
+
+  // ── Cluster ───────────────────────────────────────────────────────────────
+  getCluster: (): Promise<ClusterStatus> =>
+    request<ClusterStatus>('GET', '/api/admin/cluster'),
+
+  generatePairingKey: (): Promise<{ pairingKey: string }> =>
+    request<{ pairingKey: string }>('POST', '/api/admin/cluster/pairing-key'),
+
+  addClusterPeer: (data: { address: string; name?: string; pairingKey: string }): Promise<{ id: string }> =>
+    request<{ id: string }>('POST', '/api/admin/cluster/peers', data),
+
+  updateClusterPeer: (id: string, data: { address?: string; name?: string; enabled?: boolean }): Promise<{ ok: boolean }> =>
+    request<{ ok: boolean }>('PATCH', `/api/admin/cluster/peers/${id}`, data),
+
+  pairClusterPeer: (id: string, pairingKey: string): Promise<{ ok: boolean }> =>
+    request<{ ok: boolean }>('POST', `/api/admin/cluster/peers/${id}/pair`, { pairingKey }),
+
+  resyncClusterPeer: (id: string, acceptStale = false): Promise<{ ok: boolean }> =>
+    request<{ ok: boolean }>('POST', `/api/admin/cluster/peers/${id}/resync`, { acceptStale }),
+
+  removeClusterPeer: (id: string): Promise<void> =>
+    request<void>('DELETE', `/api/admin/cluster/peers/${id}`),
+
+  rebuildCluster: (): Promise<{ rows: number }> =>
+    request<{ rows: number }>('POST', '/api/admin/cluster/rebuild', { confirmation: 'REBUILD' }),
+
+  renameClusterNode: (name: string): Promise<{ ok: boolean }> =>
+    request<{ ok: boolean }>('PATCH', '/api/admin/cluster/node', { name }),
 
   getToken,
 };

@@ -36,6 +36,14 @@ function extractToken(req: Request): string | null {
 function verifyToken(token: string): JwtPayload | null {
   try {
     const decoded = jwt.verify(token, config.jwtSecret) as JwtPayload & jwt.JwtPayload;
+    // Only a user session token is acceptable here. The admin panel signs its
+    // own tokens with the same secret but without a stable user id; letting
+    // one through would hand routes an undefined id, which a database filter
+    // treats as "no filter at all".
+    if (typeof decoded.stableUid !== 'string' || decoded.stableUid === ''
+      || typeof decoded.username !== 'string' || decoded.username === '') {
+      return null;
+    }
     // Reject tokens issued before this user's session was revoked
     if (isTokenRevoked(decoded.stableUid, decoded.iat ?? 0)) return null;
     return {

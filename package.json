@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "scripts": {
     "test": "node --test tests/*.test.mjs",
+    "test:cluster": "npm run build && node --test --test-timeout=900000 tests/cluster/e2e.mjs",
     "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
     "build": "prisma generate && tsc",
     "start": "node dist/index.js",

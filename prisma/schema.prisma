@@ -967,3 +967,122 @@ model Popup {
   @@index([enabled, platform])
   @@map("popups")
 }
+
+// ─── Session revocation ──────────────────────────────────────────────────────
+// One row per account whose access tokens were force-revoked (admin session
+// revoke, password reset, account deletion). Auth middleware rejects any JWT
+// issued before `revokedAt`. Persisted so a restart does not silently re-admit
+// a revoked token, and replicated so every node in a cluster enforces it.
+model TokenRevocation {
+  stableUid String   @id @map("stable_uid") @db.VarChar(191)
+  revokedAt DateTime @map("revoked_at")
+
+  @@map("token_revocations")
+}
+
+// ─── Cluster (multi-node replication) ────────────────────────────────────────
+// Every table below is node-local operational state and is never replicated.
+// See src/cluster/ for the protocol; README.md documents the operator workflow.
+
+// Identity of this node — a singleton row (id is always 1).
+model ClusterNode {
+  id        Int      @id @default(1)
+  nodeId    String   @unique @map("node_id") @db.VarChar(36)
+  name      String   @default("") @db.VarChar(120)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("cluster_node")
+}
+
+// A manually configured peer node. `nodeId` is learned during pairing. Key
+// material is stored only in wrapped (AES-256-GCM) form and never returned by
+// any API.
+model ClusterPeer {
+  id               String    @id @default(uuid()) @db.VarChar(36)
+  nodeId           String?   @unique @map("node_id") @db.VarChar(36)
+  name             String    @default("") @db.VarChar(120)
+  address          String    @db.VarChar(255)
+  // PENDING, ACTIVE, DISABLED, EXPIRED, LOCKED, or REMOVED.
+  status           String    @default("PENDING") @db.VarChar(20)
+  linkKeyEnc       String?   @map("link_key_enc") @db.VarChar(255)
+  // Present only while a pairing window is open; wiped on success or expiry.
+  pairingSecretEnc String?   @map("pairing_secret_enc") @db.Text
+  pairingStateEnc  String?   @map("pairing_state_enc") @db.Text
+  pairingExpiresAt DateTime? @map("pairing_expires_at")
+  pairingFailures  Int       @default(0) @map("pairing_failures")
+  // Set when this node must ask the peer to resend its complete state.
+  resyncRequested  Boolean   @default(false) @map("resync_requested")
+  // Progress of a complete transfer to this peer (first pairing, resync): the
+  // version registry is walked in key order from this position. Changes made
+  // meanwhile reach the peer through the ordinary queue.
+  scanActive       Boolean   @default(false) @map("scan_active")
+  scanTable        String?   @map("scan_table") @db.VarChar(64)
+  scanHash         String?   @map("scan_hash") @db.Char(64)
+  lastSyncedAt     DateTime? @map("last_synced_at")
+  createdBy        String?   @map("created_by") @db.VarChar(100)
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  @@map("cluster_peers")
+}
+
+// The peers that currently receive changes. Kept apart from ClusterPeer so the
+// capture triggers read a table that only changes when a peer is activated or
+// removed, never on routine peer bookkeeping.
+model ClusterTarget {
+  peerId String @id @map("peer_id") @db.VarChar(36)
+
+  @@map("cluster_targets")
+}
+
+// Version and tombstone registry: one row per replicated data row. `version`
+// is a microsecond timestamp that only ever grows for a given row; together
+// with `origin` it decides last-writer-wins.
+model ClusterRowState {
+  tableName String   @map("table_name") @db.VarChar(64)
+  pkHash    String   @map("pk_hash") @db.Char(64)
+  pk        String   @db.VarChar(1024)
+  version   BigInt   @db.UnsignedBigInt
+  origin    String   @db.VarChar(36)
+  deleted   Boolean  @default(false)
+  changedAt DateTime @default(now()) @map("changed_at")
+
+  @@id([tableName, pkHash])
+  @@index([deleted, changedAt])
+  @@map("cluster_row_state")
+}
+
+// Rows a peer has not confirmed yet. Written in the same transaction as the
+// change itself, removed once the peer acknowledges it.
+model ClusterOutbox {
+  peerId     String   @map("peer_id") @db.VarChar(36)
+  tableName  String   @map("table_name") @db.VarChar(64)
+  pkHash     String   @map("pk_hash") @db.Char(64)
+  gen        Int      @default(0)
+  offerFirst Boolean  @default(false) @map("offer_first")
+  queuedAt   DateTime @default(now()) @map("queued_at")
+
+  @@id([peerId, tableName, pkHash])
+  @@map("cluster_outbox")
+}
+
+// Received changes that cannot be applied yet (parent row not here yet, or a
+// unique value still held by a row whose own update is in flight).
+model ClusterDeferred {
+  tableName   String   @map("table_name") @db.VarChar(64)
+  pkHash      String   @map("pk_hash") @db.Char(64)
+  fromPeer    String   @map("from_peer") @db.VarChar(36)
+  version     BigInt   @db.UnsignedBigInt
+  origin      String   @db.VarChar(36)
+  payload     String   @db.LongText
+  reason      String   @default("") @db.VarChar(40)
+  detail      String   @default("") @db.VarChar(500)
+  attempts    Int      @default(0)
+  firstSeenAt DateTime @default(now()) @map("first_seen_at")
+  lastTriedAt DateTime @default(now()) @map("last_tried_at")
+
+  @@id([tableName, pkHash])
+  @@index([lastTriedAt])
+  @@map("cluster_deferred")
+}

@@ -746,3 +746,53 @@ export interface PopupInput {
   enabled: boolean;
   resetSeen?: boolean;
 }
+
+// ── Cluster (multi-node replication) ─────────────────────────────────────────
+
+export type ClusterPeerState = 'PENDING' | 'ACTIVE' | 'DISABLED' | 'EXPIRED' | 'LOCKED' | 'REMOVED';
+export type ClusterPeerHealth = 'UNKNOWN' | 'ONLINE' | 'SUSPECT' | 'OFFLINE';
+
+export interface ClusterPeer {
+  id: string;
+  nodeId: string | null;
+  name: string;
+  address: string;
+  status: ClusterPeerState;
+  health: ClusterPeerHealth | null;
+  isLeader: boolean;
+  lastSeenAt: string | null;
+  latencyMs: number | null;
+  clockSkewMs: number | null;
+  queuedRows: number;
+  fullTransfer: boolean;
+  rowsSent: number;
+  rowsReceived: number;
+  lastSyncAt: string | null;
+  lastError: string | null;
+  schemaMatch: boolean | null;
+  pairing: { expiresAt: string | null; failures: number; message: string } | null;
+  knownPeers: Array<{ id: string; health: string }>;
+  warnings: string[];
+  createdAt: string;
+}
+
+export interface ClusterStatus {
+  enabled: boolean;
+  running: boolean;
+  paused: boolean;
+  node: {
+    id: string;
+    name: string;
+    isLeader: boolean;
+    leaderId: string;
+    schema: string | null;
+    replicatedTables: number;
+    captureReady: boolean;
+    captureError: string | null;
+    captureGap: boolean;
+    deferredChanges: number;
+    uptimeSeconds: number;
+  };
+  peers: ClusterPeer[];
+  events: Array<{ at: string; level: 'info' | 'warn' | 'error'; message: string }>;
+}

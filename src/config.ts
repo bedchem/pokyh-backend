@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import os from 'os';
 import path from 'path';
 
 // Docker Compose environment files keep wrapping quotes as literal characters.
@@ -349,6 +350,38 @@ export const config = {
   // Month (1-12) and day on which the rollover fires. Defaults to August 1st.
   schoolYearRolloverMonth: intEnv('SCHOOL_YEAR_ROLLOVER_MONTH', 8),
   schoolYearRolloverDay:   intEnv('SCHOOL_YEAR_ROLLOVER_DAY',   1),
+
+  // ── Cluster (multi-node replication) ───────────────────────────────────────
+  // Dormant until an administrator pairs the first peer: no triggers, no
+  // background traffic and no extra writes on a standalone node. Every value
+  // here is optional. See README.md → "Cluster".
+  cluster: {
+    enabled: boolEnv('CLUSTER_ENABLED', true),
+    nodeName: strEnv('CLUSTER_NODE_NAME', os.hostname()).slice(0, 120),
+    // Source of the key that wraps stored link keys. When unset it is derived
+    // from JWT_SECRET, so nothing new has to be provisioned for a first setup.
+    secret: strEnv('CLUSTER_SECRET', ''),
+    heartbeatIntervalMs: boundedIntEnv('CLUSTER_HEARTBEAT_INTERVAL_MS', 5_000, 500, 60_000),
+    requestTimeoutMs: boundedIntEnv('CLUSTER_REQUEST_TIMEOUT_MS', 4_000, 500, 60_000),
+    syncTimeoutMs: boundedIntEnv('CLUSTER_SYNC_TIMEOUT_MS', 60_000, 5_000, 600_000),
+    suspectAfterFailures: boundedIntEnv('CLUSTER_SUSPECT_AFTER_FAILURES', 2, 1, 20),
+    offlineAfterFailures: boundedIntEnv('CLUSTER_OFFLINE_AFTER_FAILURES', 4, 2, 100),
+    syncIntervalMs: boundedIntEnv('CLUSTER_SYNC_INTERVAL_MS', 1_000, 100, 60_000),
+    batchSize: boundedIntEnv('CLUSTER_BATCH_SIZE', 200, 10, 1_000),
+    maxMessageBytes: boundedIntEnv('CLUSTER_MAX_MESSAGE_BYTES', 16 * 1024 * 1024, 1024 * 1024, 64 * 1024 * 1024),
+    pairingTtlMinutes: boundedIntEnv('CLUSTER_PAIRING_TTL_MINUTES', 30, 1, 24 * 60),
+    pairingMaxFailures: boundedIntEnv('CLUSTER_PAIRING_MAX_FAILURES', 5, 1, 100),
+    // LWW conflict resolution compares clocks; a larger measured difference is
+    // reported as a warning in the cluster status.
+    maxClockSkewMs: boundedIntEnv('CLUSTER_MAX_CLOCK_SKEW_MS', 10_000, 100, 3_600_000),
+    tombstoneRetentionDays: boundedIntEnv('CLUSTER_TOMBSTONE_RETENTION_DAYS', 30, 1, 3_650),
+    deferredMaxAgeHours: boundedIntEnv('CLUSTER_DEFERRED_MAX_AGE_HOURS', 72, 1, 24 * 90),
+    // Additional tables kept node-local, on top of the built-in exclusions.
+    excludeTables: (process.env['CLUSTER_EXCLUDE_TABLES'] ?? '')
+      .split(',')
+      .map((table) => table.trim().toLocaleLowerCase('en-US'))
+      .filter((table) => /^[a-z0-9_]+$/.test(table)),
+  },
 
   // ── Misc tunables (no hardcoded values) ────────────────────────────────────
   sseHeartbeatMs: intEnv('SSE_HEARTBEAT_MS', 30 * 1000),

@@ -3,10 +3,12 @@ import { createHash } from 'crypto';
 import { createReadStream, createWriteStream } from 'fs';
 import { mkdir, readdir, rename, stat, unlink } from 'fs/promises';
 import path from 'path';
+import { pipeline, Writable } from 'stream';
 import { createGunzip, createGzip } from 'zlib';
 import { prisma } from '../db';
 import { config } from '../config';
 import { logger } from '../utils/logger';
+import { runDatabaseRestore } from '../cluster/hooks';
 
 // Alpine's mariadb-client (the mysqldump/mysql binaries available in this
 // image) doesn't ship the caching_sha2_password plugin that MySQL 8 uses by
@@ -209,10 +211,16 @@ async function runBackupInternal(trigger: 'scheduled' | 'manual'): Promise<{ fil
       // database and nothing here filters tables out. Keep it that way —
       // a future change that adds a table-name argument would silently
       // turn this into a partial backup.
+      //
+      // Triggers are deliberately left out. The only triggers this database
+      // can contain are the cluster change-capture triggers, which the
+      // application regenerates itself; dumping them would make a restore
+      // fail on their DEFINER, because the scoped backup account may not
+      // create objects on behalf of another account.
       const dump = spawn('mysqldump', [
         '--single-transaction',
         '--routines',
-        '--triggers',
+        '--skip-triggers',
         '--events',
         '--host', conn.host,
         '--port', conn.port,
@@ -228,18 +236,38 @@ async function runBackupInternal(trigger: 'scheduled' | 'manual'): Promise<{ fil
       let stderr = '';
       dump.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
 
-      const gzip = createGzip();
-      const out = createWriteStream(partPath);
-      dump.stdout.pipe(gzip).pipe(out);
+      // The backup is complete only when BOTH hold: mysqldump exited with
+      // code 0, and every byte it produced has been flushed to disk. Either
+      // event can arrive first, so neither may declare success on its own —
+      // otherwise a dump that dies part-way could be kept as a good backup.
+      let exitCode: number | null | undefined;
+      let written = false;
+      let settled = false;
+      const settle = (err?: Error) => {
+        if (settled) return;
+        settled = true;
+        if (err) reject(err); else resolve();
+      };
+      const settleWhenComplete = () => {
+        if (exitCode === 0 && written) settle();
+      };
 
-      const fail = (message: string) => reject(new Error(message));
-      dump.on('error', (err) => fail(`mysqldump could not start: ${err.message}`));
-      out.on('error', (err) => fail(`backup write failed: ${err.message}`));
-      out.on('finish', () => {
-        if (dump.exitCode === 0 || dump.exitCode === null) resolve();
-      });
+      dump.on('error', (err) => settle(new Error(`mysqldump could not start: ${err.message}`)));
       dump.on('close', (code) => {
-        if (code !== 0) fail(`mysqldump exited with code ${code}: ${stderr.slice(0, 500)}`);
+        exitCode = code;
+        if (code !== 0) {
+          settle(new Error(`mysqldump exited with code ${code}: ${stderr.slice(0, 500)}`));
+          return;
+        }
+        settleWhenComplete();
+      });
+      pipeline(dump.stdout, createGzip(), createWriteStream(partPath), (err) => {
+        if (err) {
+          settle(new Error(`backup write failed: ${err.message}`));
+          return;
+        }
+        written = true;
+        settleWhenComplete();
       });
     });
 
@@ -279,9 +307,20 @@ export async function pruneOldBackups(): Promise<number> {
 // Deliberately not wired to any scheduled path — restoring overwrites the live
 // database and must always be a deliberate, single admin action.
 
-export async function restoreBackup(filename: string): Promise<void> {
-  const filePath = resolveBackupPath(filename);
-  if (!filePath) throw new Error('Invalid backup filename');
+// Reads a backup file to its end through gunzip without using the output.
+// A truncated or corrupt archive fails here, before a single statement has
+// been sent to the database.
+function verifyBackupArchive(filePath: string): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const discard = new Writable({ write(_chunk, _encoding, done) { done(); } });
+    pipeline(createReadStream(filePath), createGunzip(), discard, (err) => {
+      if (err) reject(new Error(`backup file is unreadable or corrupt: ${err.message}`));
+      else resolve();
+    });
+  });
+}
+
+async function restoreBackupInternal(filename: string, filePath: string): Promise<void> {
   const conn = await backupConnection();
 
   await new Promise<void>((resolve, reject) => {
@@ -298,23 +337,52 @@ export async function restoreBackup(filename: string): Promise<void> {
     let stderr = '';
     restore.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
 
-    const source = createReadStream(filePath);
-    source.pipe(createGunzip()).pipe(restore.stdin);
+    let settled = false;
+    const settle = (err?: Error) => {
+      if (settled) return;
+      settled = true;
+      if (err) reject(err); else resolve();
+    };
+    let inputError: Error | null = null;
 
-    restore.on('error', (err) => reject(new Error(`mysql could not start: ${err.message}`)));
+    restore.on('error', (err) => settle(new Error(`mysql could not start: ${err.message}`)));
     restore.on('close', (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(`mysql restore exited with code ${code}: ${stderr.slice(0, 500)}`));
+      if (code === 0 && !inputError) {
+        settle();
+        return;
+      }
+      settle(new Error(
+        code === 0 && inputError
+          ? `backup file could not be read completely: ${inputError.message}`
+          : `mysql restore exited with code ${code}: ${stderr.slice(0, 500)}`,
+      ));
+    });
+
+    // Every stream in the chain gets an error handler through pipeline(): a
+    // read error, a gunzip error, or mysql closing its input early (EPIPE)
+    // must surface as a failed restore, never as an uncaught exception.
+    pipeline(createReadStream(filePath), createGunzip(), restore.stdin, (err) => {
+      if (!err) return;
+      inputError = err;
+      restore.stdin.destroy();
     });
   });
 
   logger.info('Database backup restored', { action: 'db_backup_restored', filename });
 }
 
+export async function restoreBackup(filename: string): Promise<void> {
+  const filePath = resolveBackupPath(filename);
+  if (!filePath) throw new Error('Invalid backup filename');
+  await verifyBackupArchive(filePath);
+  await runDatabaseRestore(() => restoreBackupInternal(filename, filePath));
+}
+
 // ─── Scheduling ────────────────────────────────────────────────────────────────
 // Checked hourly (config.backupCheckIntervalMs); runs once per UTC calendar
 // day at/after the configured hour, tracked via lastRunAt on the singleton row
-// so a restart never causes a duplicate same-day run.
+// so a restart never causes a duplicate same-day run. Only a successful run
+// counts as "done for today": a failed one is retried on the next check.
 
 async function checkAndRunScheduled(): Promise<void> {
   const cfg = await getBackupConfig();
@@ -323,7 +391,8 @@ async function checkAndRunScheduled(): Promise<void> {
   const now = new Date();
   if (now.getUTCHours() < cfg.scheduleHour) return;
 
-  const alreadyRanToday = cfg.lastRunAt
+  const alreadyRanToday = cfg.lastRunStatus === 'ok'
+    && cfg.lastRunAt
     && cfg.lastRunAt.getUTCFullYear() === now.getUTCFullYear()
     && cfg.lastRunAt.getUTCMonth() === now.getUTCMonth()
     && cfg.lastRunAt.getUTCDate() === now.getUTCDate();
@@ -337,9 +406,11 @@ async function checkAndRunScheduled(): Promise<void> {
 }
 
 export function startBackupScheduler(): void {
+  // The check always runs: whether backups are enabled is decided per check
+  // from the admin-editable BackupConfig row (falling back to BACKUP_ENABLED),
+  // so enabling them in the admin panel takes effect without a restart.
   if (!config.backupEnabled) {
-    logger.info('Scheduled database backups disabled (BACKUP_ENABLED=false)');
-    return;
+    logger.info('Scheduled database backups are off by default (BACKUP_ENABLED=false) until enabled in the admin panel');
   }
   setTimeout(() => void checkAndRunScheduled().catch(() => {}), 30_000);
   setInterval(() => void checkAndRunScheduled().catch(() => {}), config.backupCheckIntervalMs);

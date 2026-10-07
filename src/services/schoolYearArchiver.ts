@@ -393,13 +393,19 @@ async function checkAndRollover() {
   }
 }
 
-export function startSchoolYearArchiver(): void {
+// `shouldRun` lets a clustered deployment restrict the automatic rollover to
+// one node; a rollover performed twice in parallel would archive the year twice.
+export function startSchoolYearArchiver(shouldRun: () => boolean = () => true): void {
   if (!config.schoolYearRolloverAuto) {
     logger.info('School year auto-rollover disabled (SCHOOL_YEAR_ROLLOVER_AUTO=false)');
     return;
   }
+  const run = () => {
+    if (!shouldRun()) return;
+    void checkAndRollover().catch(() => {});
+  };
   // Slight delay so DB is definitely ready before first check
-  setTimeout(() => void checkAndRollover().catch(() => {}), 15_000);
-  setInterval(() => void checkAndRollover().catch(() => {}), config.schoolYearRolloverCheckIntervalMs);
+  setTimeout(run, 15_000);
+  setInterval(run, config.schoolYearRolloverCheckIntervalMs);
   logger.info(`School year archiver started — checks every ${config.schoolYearRolloverCheckIntervalMs}ms`);
 }

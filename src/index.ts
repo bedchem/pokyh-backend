@@ -29,6 +29,11 @@ import { ensureModelReady } from './services/learnAiOllama';
 import { learningDayKey } from './services/learnAnalytics';
 import { closeLearnCache } from './services/learnCache';
 import { withWwwOriginAlias } from './utils/cors';
+import { loadTokenRevocations } from './utils/revokedTokens';
+import { isClusterLeader } from './cluster/hooks';
+import { CLUSTER_PATH } from './cluster/protocol';
+import { clusterRouter } from './cluster/router';
+import { startCluster, stopCluster } from './cluster';
 
 const app = express();
 
@@ -55,7 +60,11 @@ if (config.debug) {
 const adminDist = path.join(__dirname, '..', 'admin', 'dist');
 app.use('/admin', express.static(adminDist, { index: false }));
 app.use('/admin', (_req: Request, res: Response) => {
-  res.sendFile(path.join(adminDist, 'index.html'));
+  res.sendFile(path.join(adminDist, 'index.html'), (err) => {
+    // Without a built admin panel there is nothing to serve; that is a plain
+    // "not found", not a server fault.
+    if (err && !res.headersSent) res.status(404).json({ error: 'Admin panel is not built' });
+  });
 });
 
 // ─── Security middleware ─────────────────────────────────────────────────────
@@ -95,6 +104,12 @@ app.use(
     allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key', 'X-Server-Key', 'Idempotency-Key'],
   })
 );
+
+// ─── Node-to-node replication channel ────────────────────────────────────────
+// Mounted ahead of the body parsers, request log and rate limiter: it carries
+// encrypted binary frames between paired nodes and authenticates them itself.
+// It answers 404 for everything while no peer is configured.
+app.use(CLUSTER_PATH, clusterRouter);
 
 // ─── Body parsing ────────────────────────────────────────────────────────────
 
@@ -177,6 +192,19 @@ app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
     logger.debug('[error]', { stack: err.stack, requestId: req.id });
   }
 
+  // A stream (SSE, file download) that fails after its headers went out
+  // cannot be turned into an error response any more. Writing one anyway
+  // would raise a second error from inside this handler; closing the
+  // connection is the only correct signal left.
+  if (res.headersSent) {
+    logger.warn('[server] request failed after the response had started', {
+      message: err instanceof Error ? err.message.split('\n')[0] : String(err),
+      requestId: req.id,
+    });
+    res.end();
+    return;
+  }
+
   // Operational errors (our AppError subclasses)
   if (err instanceof AppError) {
     res.status(err.statusCode).json({ error: err.message });
@@ -228,6 +256,8 @@ app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
 const SESSION_CLEANUP_INTERVAL = config.sessionCleanupIntervalMs;
 
 async function cleanupExpiredSessions() {
+  // Replicated data: in a cluster one node cleaning up is enough.
+  if (!isClusterLeader()) return;
   const cutoff = new Date(Date.now() - 12 * 60 * 60 * 1000);
   const { count } = await prisma.refreshToken.deleteMany({
     where: {
@@ -251,6 +281,7 @@ async function cleanupExpiredRequestLogs() {
 }
 
 async function cleanupExpiredLearnAnalytics() {
+  if (!isClusterLeader()) return;
   const learnCfg = await getLearnConfig();
   const cutoff = new Date(Date.now() - learnCfg.analyticsRetentionDays * 24 * 60 * 60 * 1000);
   // Activity rows contain a user-local calendar key. UTC gives a stable,
@@ -289,18 +320,32 @@ function startBackgroundJobs() {
   setTimeout(() => void cleanupExpiredLearnAnalytics().catch(() => {}), 15_000);
   setInterval(() => void cleanupExpiredLearnAnalytics().catch(() => {}), 24 * 60 * 60 * 1000);
 
+  // Each job is started on its own: one that cannot start (for example a
+  // rejected configuration value) must not keep the others from running.
+  const startJob = (name: string, start: () => void) => {
+    try {
+      start();
+    } catch (err) {
+      logger.error(`Background job "${name}" could not be started: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
+  // In a cluster, jobs whose effect must happen exactly once (sending a
+  // notification, archiving, the school-year rollover) run on one node only.
+  // On a standalone server `isClusterLeader` is always true.
+
   // Archive expired todos/reminders (>24h) — server-only, admin-viewable.
-  startArchiver();
+  startJob('archiver', () => startArchiver(isClusterLeader));
 
   // Push notification poller (no-op if VAPID keys not configured)
-  startPushPoller();
+  startJob('push poller', () => startPushPoller(isClusterLeader));
 
   // School year rollover: on August 1st, snapshot non-admin users/classes/todos/reminders
-  startSchoolYearArchiver();
+  startJob('school-year archiver', () => startSchoolYearArchiver(isClusterLeader));
 
   // Scheduled full-database backups (mysqldump, gzip), retained for the
   // configured number of days and pruned automatically after each run.
-  startBackupScheduler();
+  startJob('backup scheduler', () => startBackupScheduler());
 
   // AI vocabulary trainer model provisioning ("check, else pull, then start"):
   // deliberately fire-and-forget, never awaited here. A multi-GB first-boot
@@ -318,7 +363,7 @@ function startBackgroundJobs() {
   // containers with the model already pulled produced no re-pull, only the
   // "Database ready" log line. Also re-invoked (same no-op-if-present
   // behaviour) after an admin changes the model in the Pokyh AI admin page.
-void ensureModelReady();
+  void ensureModelReady();
 }
 
 // Create the database (if missing) and apply the schema via `prisma db push`.
@@ -388,6 +433,13 @@ async function connectDatabaseWithRetry() {
       try { await reconcileDishRatings(); } catch (err) {
         logger.warn(`dish rating reconcile failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
       }
+      // Session revocations survive a restart through the database.
+      try { await loadTokenRevocations(); } catch (err) {
+        logger.warn(`token revocation load failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+      }
+      // Before the background jobs: they ask the cluster layer whether this
+      // node is the one that should run them. Never throws.
+      await startCluster();
       startBackgroundJobs();
       return;
     } catch (err) {
@@ -404,11 +456,13 @@ async function connectDatabaseWithRetry() {
   }
 }
 
+let server: ReturnType<typeof app.listen> | null = null;
+
 function start() {
   // Listen immediately — startup never waits on the database.
   // Bind to 0.0.0.0 so the server is reachable on every network interface
   // (LAN/containers), not just loopback.
-  app.listen(config.port, '0.0.0.0', () => {
+  server = app.listen(config.port, '0.0.0.0', () => {
     logger.info(`Server running on port ${config.port} (${config.nodeEnv})`);
     logger.info(`API: http://localhost:${config.port}`);
     logger.info(`Admin: http://localhost:${config.port}/admin/`);
@@ -425,17 +479,50 @@ function start() {
 
 start();
 
-process.on('SIGTERM', async () => {
-  logger.info('SIGTERM received, shutting down...');
-  databaseReady = false;
-  await closeLearnCache();
-  await prisma.$disconnect();
-  process.exit(0);
+// A rejected promise nobody handled is a bug worth knowing about, but not a
+// reason to drop every connected client: log it and keep serving.
+process.on('unhandledRejection', (reason) => {
+  logger.error('[server] unhandled promise rejection', {
+    message: reason instanceof Error ? reason.message.split('\n')[0] : String(reason),
+    stack: reason instanceof Error ? reason.stack : undefined,
+  });
 });
 
-process.on('SIGINT', async () => {
-  logger.info('SIGINT received, shutting down...');
+// Kept well below the ten seconds a container runtime allows before it kills
+// the process, so the orderly path below is the one that normally completes.
+const SHUTDOWN_GRACE_MS = 4_000;
+let shuttingDown = false;
+
+// Stop accepting connections, let requests in flight finish, then release the
+// cache and database. Long-lived streams (SSE) never finish by themselves, so
+// after a grace period the remaining connections are closed.
+async function shutdown(signal: string) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  logger.info(`${signal} received, shutting down...`);
   databaseReady = false;
-  await prisma.$disconnect();
+
+  const forced = setTimeout(() => process.exit(0), SHUTDOWN_GRACE_MS + 3_000);
+  forced.unref();
+
+  const active = server;
+  if (active) {
+    await new Promise<void>((resolve) => {
+      const closeAll = setTimeout(() => active.closeAllConnections(), SHUTDOWN_GRACE_MS);
+      closeAll.unref();
+      active.close(() => {
+        clearTimeout(closeAll);
+        resolve();
+      });
+      active.closeIdleConnections();
+    });
+  }
+
+  await stopCluster().catch(() => {});
+  await closeLearnCache().catch(() => {});
+  await prisma.$disconnect().catch(() => {});
   process.exit(0);
-});
+}
+
+process.on('SIGTERM', () => { void shutdown('SIGTERM'); });
+process.on('SIGINT', () => { void shutdown('SIGINT'); });

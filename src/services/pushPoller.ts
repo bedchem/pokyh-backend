@@ -140,23 +140,40 @@ async function checkDueItems() {
   }
 }
 
-export function startPushPoller() {
+// A poll or due-item pass that fails (database briefly unavailable, WebUntis
+// unreachable) must only skip that pass. Left unhandled, the rejection would
+// take the whole API process down.
+function runSafely(name: string, job: () => Promise<void>, shouldRun: () => boolean): void {
+  if (!shouldRun()) return;
+  job().catch((err) => {
+    logger.warn(`[push] ${name} failed: ${err instanceof Error ? err.message : String(err)}`);
+  });
+}
+
+// `shouldRun` lets a clustered deployment restrict polling to one node so a
+// notification is never sent once per node.
+export function startPushPoller(shouldRun: () => boolean = () => true) {
   if (!config.vapidPublicKey || !config.vapidPrivateKey) {
     logger.info('[push] VAPID keys not set — push notifications disabled');
     return;
   }
 
-  webpush.setVapidDetails(
-    `mailto:${config.vapidEmail}`,
-    config.vapidPublicKey,
-    config.vapidPrivateKey,
-  );
+  try {
+    webpush.setVapidDetails(
+      `mailto:${config.vapidEmail}`,
+      config.vapidPublicKey,
+      config.vapidPrivateKey,
+    );
+  } catch (err) {
+    logger.error(`[push] VAPID configuration rejected — push notifications disabled: ${err instanceof Error ? err.message : String(err)}`);
+    return;
+  }
 
-  void pollAll();
-  setInterval(() => void pollAll(), POLL_INTERVAL_MS);
+  runSafely('message poll', pollAll, shouldRun);
+  setInterval(() => runSafely('message poll', pollAll, shouldRun), POLL_INTERVAL_MS);
 
-  void checkDueItems();
-  setInterval(() => void checkDueItems(), DUE_CHECK_INTERVAL_MS);
+  runSafely('due-item check', checkDueItems, shouldRun);
+  setInterval(() => runSafely('due-item check', checkDueItems, shouldRun), DUE_CHECK_INTERVAL_MS);
 
   logger.info('[push] Poller started (messages: 5 min, due items: 1 min)');
 }

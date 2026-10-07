@@ -22,6 +22,7 @@ import {
   DatabaseBackup,
   Megaphone,
   Bot,
+  Network,
 } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
 
@@ -125,6 +126,7 @@ function SidebarContent({ adminUser, onLogout, onNavClick }: SidebarContentProps
         <NavItem to="/learn/courses"  icon={<BookOpen size={16} />}          label="Learn-Kurse"  onClick={onNavClick} />
         <NavItem to="/learn/ai"       icon={<Bot size={16} />}               label="Pokyh AI"     onClick={onNavClick} />
         <NavItem to="/backups"        icon={<DatabaseBackup size={16} />}    label="Backups"      onClick={onNavClick} />
+        <NavItem to="/cluster"        icon={<Network size={16} />}           label="Cluster"      onClick={onNavClick} />
         <NavItem to="/settings"       icon={<Settings size={16} />}          label="Einstellungen" onClick={onNavClick} />
       </nav>
 

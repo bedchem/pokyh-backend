@@ -35,7 +35,8 @@ router.get('/', readLimiter, requireAuth, async (req: Request, res: Response) =>
 // POST /users/:username/todos
 const createTodoSchema = z.object({
   title: z.string().min(1).max(500),
-  details: z.string().max(10000).optional().default(''),
+  // Bounded by the column width (todos.details is VARCHAR(5000)).
+  details: z.string().max(5000).optional().default(''),
   dueAt: z.string().datetime().optional().nullable(),
 });
 
@@ -68,7 +69,7 @@ router.post('/', writeLimiter, requireAuth, async (req: Request, res: Response) 
 // PATCH /users/:username/todos/:todoId
 const updateTodoSchema = z.object({
   title: z.string().min(1).max(500).optional(),
-  details: z.string().max(10000).optional(),
+  details: z.string().max(5000).optional(),
   dueAt: z.string().datetime().optional().nullable(),
   done: z.boolean().optional(),
   doneAt: z.string().datetime().optional().nullable(),

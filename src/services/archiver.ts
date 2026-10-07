@@ -65,10 +65,14 @@ export async function archiveExpiredItems(): Promise<void> {
 
 // Starts the periodic archiver. Runs once on boot (deferred, non-blocking) and
 // then on the configured interval. Never throws — a failed run is logged only.
-export function startArchiver(): void {
-  const run = () => void archiveExpiredItems().catch((err) =>
-    logger.warn(`Archive run failed: ${err instanceof Error ? err.message : String(err)}`),
-  );
+// `shouldRun` lets a clustered deployment restrict archiving to one node.
+export function startArchiver(shouldRun: () => boolean = () => true): void {
+  const run = () => {
+    if (!shouldRun()) return;
+    void archiveExpiredItems().catch((err) =>
+      logger.warn(`Archive run failed: ${err instanceof Error ? err.message : String(err)}`),
+    );
+  };
   // Defer the first run so it never delays server startup.
   setTimeout(run, 5000);
   setInterval(run, config.archiveCheckIntervalMs);

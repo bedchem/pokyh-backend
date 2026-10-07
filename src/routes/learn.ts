@@ -16,6 +16,7 @@ import { asPercent, learningDayKey, learningDayKeys, nextAdaptiveReview } from '
 import { analyticsCacheKey, getCachedJson, invalidateAnalyticsCache, setCachedJson } from '../services/learnCache';
 import { ForbiddenError, NotFoundError, ValidationError } from '../utils/errors';
 import { logger } from '../utils/logger';
+import { retryOnWriteConflict } from '../utils/dbRetry';
 
 const router = Router();
 
@@ -1420,7 +1421,11 @@ router.post('/courses/:courseId/sections/reorder', requireAuth, learnWriteLimite
     throw new ValidationError('Section order must contain every section in this course exactly once');
   }
 
-  const reordered = await prisma.$transaction(async (tx) => {
+  // Two reorders of the same course at the same moment (two editors, a double
+  // submit) lock the same rows in different order, and the database then
+  // rolls one of them back. The transaction is self-contained, so it is
+  // simply run again instead of failing the request.
+  const reordered = await retryOnWriteConflict(() => prisma.$transaction(async (tx) => {
     await tx.learnCourseSection.updateMany({
       where: { courseId },
       data: { sortOrder: { increment: 1_000_000 } },
@@ -1433,7 +1438,7 @@ router.post('/courses/:courseId/sections/reorder', requireAuth, learnWriteLimite
       where: { courseId },
       orderBy: { sortOrder: 'asc' },
     });
-  });
+  }));
   res.json({ sections: reordered.map(serializeSection) });
 });
 
@@ -1702,6 +1707,13 @@ router.post('/library/import', requireAuth, learnWriteLimiter, async (req: Reque
       }
     }
     return { courses, sectionCount, vocabularyCount };
+  }, {
+    // An import within the configured limits writes tens of thousands of rows
+    // one by one. The default interactive-transaction limit of five seconds
+    // would abort every larger import half-way (and roll it back), so the
+    // limit follows the size the import is allowed to have.
+    timeout: 180_000,
+    maxWait: 20_000,
   });
   learnAudit(req, 'library_imported', {
     courseCount: result.courses.length,
