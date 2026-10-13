@@ -8,7 +8,6 @@ import {
   ChevronRight,
   Crown,
   Edit3,
-  GraduationCap,
   Loader2,
   Plus,
   RefreshCw,
@@ -19,16 +18,18 @@ import {
 } from 'lucide-react';
 import { adminApi } from '../api';
 import { useToast } from '../components/Toast';
+import { useLive } from '../live';
+import { Collapse, IconButton, PageHeader } from '../components/kit';
 import { VocabularyPanel } from '../components/VocabularyPanel';
 import type { AdminLearnCourse, AdminLearnTeam, AdminLearnTeamMember, AdminUser, LearnCourseStatus, LearnTeamAssignableRole } from '../types';
 
 const inputStyle: CSSProperties = {
-  background: '#1c1c1e',
-  border: '1px solid rgba(255,255,255,0.08)',
-  color: 'rgba(235,235,245,0.88)',
+  background: 'var(--well)',
+  border: '1px solid transparent',
+  color: 'rgb(var(--ink-rgb) / 0.964)',
 };
 
-const mutedText: CSSProperties = { color: 'rgba(235,235,245,0.45)' };
+const mutedText: CSSProperties = { color: 'rgb(var(--ink-rgb) / 0.62)' };
 
 function formatDate(value: string): string {
   const date = new Date(value);
@@ -47,17 +48,17 @@ function roleLabel(role: AdminLearnTeamMember['role']): string {
 
 function roleColor(role: AdminLearnTeamMember['role']): string {
   switch (role) {
-    case 'OWNER': return '#bf5af2';
-    case 'MANAGER': return '#0a84ff';
-    default: return '#30d158';
+    case 'OWNER': return 'var(--violet-deep)';
+    case 'MANAGER': return 'var(--sky-deep)';
+    default: return 'var(--mint-deep)';
   }
 }
 
 function courseStatusColor(status: LearnCourseStatus): string {
   switch (status) {
-    case 'PUBLISHED': return '#30d158';
-    case 'ARCHIVED': return '#bf5af2';
-    default: return '#ff9f0a';
+    case 'PUBLISHED': return 'var(--mint-deep)';
+    case 'ARCHIVED': return 'var(--violet-deep)';
+    default: return 'var(--amber-deep)';
   }
 }
 
@@ -71,10 +72,10 @@ function courseStatusLabel(status: LearnCourseStatus): string {
 
 function Card({ children, title, icon }: { children: ReactNode; title: string; icon: ReactNode }) {
   return (
-    <section className="rounded-[16px] p-5" style={{ background: '#0d0d0d', border: '1px solid rgba(255,255,255,0.07)' }}>
-      <div className="flex items-center gap-2.5 mb-4">
-        <span style={{ color: '#0a84ff' }}>{icon}</span>
-        <h2 className="text-[15px] font-semibold text-white tracking-[-0.01em]">{title}</h2>
+    <section className="plain-section">
+      <div className="mb-5 flex items-center gap-3.5">
+        <span className="orb h-11 w-11">{icon}</span>
+        <h2 className="text-[17px] font-semibold leading-snug">{title}</h2>
       </div>
       {children}
     </section>
@@ -114,13 +115,13 @@ function TeamCoursesPanel({ teamId }: { teamId: string }) {
   if (loading) {
     return (
       <div className="flex flex-col gap-2">
-        {Array.from({ length: 2 }).map((_, index) => <div key={index} className="h-16 rounded-[12px] shimmer" />)}
+        {Array.from({ length: 2 }).map((_, index) => <div key={index} className="h-16 rounded-[14px] shimmer" />)}
       </div>
     );
   }
 
   if (!courses || courses.length === 0) {
-    return <p className="text-[13px] py-3 text-center rounded-[10px]" style={{ background: 'rgba(255,255,255,0.03)', ...mutedText }}>Dieser Gruppe sind keine Kurse zugeordnet.</p>;
+    return <p className="text-[13px] py-3 text-center rounded-[12px]" style={{ background: 'rgb(var(--ink-rgb) / calc(0.024 * var(--veil)))', ...mutedText }}>Dieser Gruppe sind keine Kurse zugeordnet.</p>;
   }
 
   return (
@@ -129,12 +130,12 @@ function TeamCoursesPanel({ teamId }: { teamId: string }) {
         const open = openCourseId === course.id;
         const color = courseStatusColor(course.status);
         return (
-          <div key={course.id} className="rounded-[12px] overflow-hidden" style={{ border: '1px solid rgba(255,255,255,0.06)' }}>
+          <div key={course.id} className="rounded-[14px] overflow-hidden" style={{ border: '1px solid rgb(var(--ink-rgb) / calc(0.076 * var(--veil)))' }}>
             <div className="flex items-center justify-between gap-3 p-3 flex-wrap">
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2 flex-wrap">
-                  <span className="text-[13px] font-medium text-white">{course.title}</span>
-                  <span className="text-[11px] px-2 py-0.5 rounded-[6px] font-medium" style={{ background: `${color}1f`, color, border: `1px solid ${color}3c` }}>{courseStatusLabel(course.status)}</span>
+                  <span className="text-[13px] font-medium text-ink">{course.title}</span>
+                  <span className="text-[11px] px-2 py-0.5 rounded-[8px] font-medium" style={{ background: `color-mix(in srgb, ${color} 12%, transparent)`, color, border: `1px solid color-mix(in srgb, ${color} 24%, transparent)` }}>{courseStatusLabel(course.status)}</span>
                 </div>
                 <div className="mt-1 text-[11px]" style={mutedText}>{course.counts.vocabulary} Vokabeln · Aktualisiert {formatDate(course.updatedAt)}</div>
               </div>
@@ -143,16 +144,16 @@ function TeamCoursesPanel({ teamId }: { teamId: string }) {
                 onClick={() => setOpenCourseId(open ? null : course.id)}
                 aria-expanded={open}
                 className="flex items-center gap-1.5 text-[12px] font-medium flex-shrink-0"
-                style={{ color: '#0a84ff' }}
+                style={{ color: 'var(--sky-deep)' }}
               >
                 {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />} Vokabeln {open ? 'ausblenden' : 'verwalten'}
               </button>
             </div>
-            {open && (
+            <Collapse open={open}>
               <div className="px-3 pb-3">
                 <VocabularyPanel course={course} onCourseChanged={replaceCourse} />
               </div>
-            )}
+            </Collapse>
           </div>
         );
       })}
@@ -337,8 +338,8 @@ function TeamCard({
   const canDelete = team.courseCount === 0;
 
   return (
-    <section className="rounded-[16px] overflow-hidden" style={{ background: '#0d0d0d', border: '1px solid rgba(255,255,255,0.07)' }}>
-      <div className="p-5">
+    <section className="plain-section">
+      <div>
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0 flex-1">
             {editing ? (
@@ -351,8 +352,7 @@ function TeamCard({
                     onChange={(event) => setName(event.target.value)}
                     maxLength={120}
                     required
-                    className="apple-input w-full px-3 py-2 text-[13px]"
-                    style={inputStyle}
+                    className="field h-11 px-4 text-[14px] w-full"
                   />
                 </div>
                 <div>
@@ -363,15 +363,14 @@ function TeamCard({
                     onChange={(event) => setDescription(event.target.value)}
                     maxLength={1000}
                     rows={3}
-                    className="apple-input w-full px-3 py-2 text-[13px] resize-y"
-                    style={inputStyle}
+                    className="field px-4 py-3 text-[14px] w-full resize-y"
                   />
                 </div>
                 <div className="flex items-center gap-2">
-                  <button type="submit" disabled={savingDetails || !name.trim()} className="apple-btn flex items-center gap-1.5 px-3 py-2 text-[12px] disabled:opacity-50">
+                  <button type="submit" disabled={savingDetails || !name.trim()} className="btn btn-sm btn-primary">
                     {savingDetails ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />} Speichern
                   </button>
-                  <button type="button" onClick={cancelEdit} disabled={savingDetails} className="apple-btn-ghost px-3 py-2 text-[12px] disabled:opacity-50">
+                  <button type="button" onClick={cancelEdit} disabled={savingDetails} className="btn btn-sm btn-quiet">
                     Abbrechen
                   </button>
                 </div>
@@ -379,13 +378,13 @@ function TeamCard({
             ) : (
               <>
                 <div className="flex items-center gap-2 flex-wrap">
-                  <h2 className="text-[16px] font-semibold text-white tracking-[-0.01em]">{team.name}</h2>
-                  <span className="text-[11px] px-2 py-0.5 rounded-[6px]" style={{ background: 'rgba(10,132,255,0.13)', color: '#0a84ff', border: '1px solid rgba(10,132,255,0.22)' }}>
+                  <h2 className="text-[16px] font-semibold text-ink tracking-[-0.01em]">{team.name}</h2>
+                  <span className="text-[11px] px-2 py-0.5 rounded-[8px]" style={{ background: 'rgba(60,135,215,0.13)', color: 'var(--sky-deep)', border: '1px solid transparent' }}>
                     Learn-Gruppe
                   </span>
                 </div>
                 {team.description ? (
-                  <p className="mt-1.5 text-[13px] leading-relaxed whitespace-pre-wrap" style={{ color: 'rgba(235,235,245,0.64)' }}>{team.description}</p>
+                  <p className="mt-1.5 text-[13px] leading-relaxed whitespace-pre-wrap" style={{ color: 'rgb(var(--ink-rgb) / 0.772)' }}>{team.description}</p>
                 ) : (
                   <p className="mt-1.5 text-[13px]" style={mutedText}>Keine Beschreibung hinterlegt.</p>
                 )}
@@ -396,8 +395,8 @@ function TeamCard({
             <button
               type="button"
               onClick={() => setEditing(true)}
-              className="flex-shrink-0 flex items-center gap-1.5 px-3 py-2 rounded-[9px] text-[12px] font-medium transition-colors"
-              style={{ background: 'rgba(255,255,255,0.05)', color: 'rgba(235,235,245,0.68)', border: '1px solid rgba(255,255,255,0.08)' }}
+              className="flex-shrink-0 flex items-center gap-1.5 px-3 py-2 rounded-full text-[12px] font-medium transition-colors"
+              style={{ background: 'rgb(var(--ink-rgb) / calc(0.04 * var(--veil)))', color: 'rgb(var(--ink-rgb) / 0.804)', border: '1px solid transparent' }}
             >
               <Edit3 size={12} /> Bearbeiten
             </button>
@@ -407,17 +406,17 @@ function TeamCard({
         {!editing && (
           <>
             <div className="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-2">
-              <div className="rounded-[10px] px-3 py-2" style={{ background: 'rgba(255,255,255,0.035)' }}>
+              <div className="rounded-[12px] px-3 py-2" style={{ background: 'rgb(var(--ink-rgb) / calc(0.028 * var(--veil)))' }}>
                 <div className="text-[11px]" style={mutedText}>Mitglieder</div>
-                <div className="mt-0.5 text-[15px] font-semibold text-white">{team.memberCount}</div>
+                <div className="mt-0.5 text-[15px] font-semibold text-ink">{team.memberCount}</div>
               </div>
-              <div className="rounded-[10px] px-3 py-2" style={{ background: 'rgba(255,255,255,0.035)' }}>
+              <div className="rounded-[12px] px-3 py-2" style={{ background: 'rgb(var(--ink-rgb) / calc(0.028 * var(--veil)))' }}>
                 <div className="text-[11px] flex items-center gap-1" style={mutedText}><BookOpen size={11} /> Kurse</div>
-                <div className="mt-0.5 text-[15px] font-semibold text-white">{team.courseCount}</div>
+                <div className="mt-0.5 text-[15px] font-semibold text-ink">{team.courseCount}</div>
               </div>
-              <div className="rounded-[10px] px-3 py-2 col-span-2" style={{ background: 'rgba(255,255,255,0.035)' }}>
+              <div className="rounded-[12px] px-3 py-2 col-span-2" style={{ background: 'rgb(var(--ink-rgb) / calc(0.028 * var(--veil)))' }}>
                 <div className="text-[11px]" style={mutedText}>Erstellt von</div>
-                <div className="mt-0.5 text-[13px] font-medium truncate" style={{ color: 'rgba(235,235,245,0.82)' }}>{team.creator?.username ?? 'Nicht verfügbar'}</div>
+                <div className="mt-0.5 text-[13px] font-medium truncate" style={{ color: 'rgb(var(--ink-rgb) / 0.916)' }}>{team.creator?.username ?? 'Nicht verfügbar'}</div>
               </div>
             </div>
             <div className="mt-3 flex items-center justify-between gap-3 flex-wrap text-[11px]" style={mutedText}>
@@ -428,7 +427,7 @@ function TeamCard({
                   onClick={() => void handleSeedVocabCourses()}
                   disabled={seedingVocab}
                   className="flex items-center gap-1 transition-colors disabled:opacity-50"
-                  style={{ color: '#0a84ff' }}
+                  style={{ color: 'var(--sky-deep)' }}
                   title="Italienisch- und Englisch-Vokabelkurs für dieses Team anlegen, falls noch nicht vorhanden"
                 >
                   {seedingVocab ? <Loader2 size={13} className="animate-spin" /> : <BookOpen size={13} />}
@@ -439,7 +438,7 @@ function TeamCard({
                   onClick={() => setExpanded((value) => !value)}
                   aria-expanded={expanded}
                   className="flex items-center gap-1 transition-colors"
-                  style={{ color: '#0a84ff' }}
+                  style={{ color: 'var(--sky-deep)' }}
                 >
                   {expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
                   Mitglieder &amp; Zugriffe {expanded ? 'ausblenden' : 'anzeigen'}
@@ -450,36 +449,36 @@ function TeamCard({
         )}
       </div>
 
-      {expanded && !editing && (
-        <div className="px-5 pb-5 pt-4" style={{ borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+      <Collapse open={expanded && !editing}>
+        <div className="pb-2 pt-6">
           <div className="flex items-center gap-2 mb-3">
-            <Users size={15} style={{ color: '#0a84ff' }} />
-            <h3 className="text-[13px] font-semibold text-white">Mitglieder &amp; Rollen</h3>
+            <Users size={15} style={{ color: 'var(--sky-deep)' }} />
+            <h3 className="text-[13px] font-semibold text-ink">Mitglieder &amp; Rollen</h3>
           </div>
           <p className="text-[12px] mb-3 leading-relaxed" style={mutedText}>
             Neue Personen müssen bereits als verifizierte WebUntis-Nutzer in POKYH existieren. Gruppen gewähren Kurszugriff; sie geben keine Admin-Rechte.
           </p>
 
           {team.members.length === 0 ? (
-            <p className="text-[13px] py-3 text-center rounded-[10px]" style={{ background: 'rgba(255,255,255,0.03)', ...mutedText }}>Keine Mitglieder vorhanden.</p>
+            <p className="text-[13px] py-3 text-center rounded-[12px]" style={{ background: 'rgb(var(--ink-rgb) / calc(0.024 * var(--veil)))', ...mutedText }}>Keine Mitglieder vorhanden.</p>
           ) : (
-            <div className="flex flex-col rounded-[10px] overflow-hidden" style={{ border: '1px solid rgba(255,255,255,0.06)' }}>
+            <div className="flex flex-col rounded-[12px] overflow-hidden" style={{ border: '1px solid rgb(var(--ink-rgb) / calc(0.076 * var(--veil)))' }}>
               {team.members.map((member, index) => {
                 const color = roleColor(member.role);
                 const displayName = member.user?.username ?? 'Nicht verfügbar';
                 const isOwner = member.role === 'OWNER';
                 const isBusy = changingMemberId === member.stableUid || removingMemberId === member.stableUid;
                 return (
-                  <div key={member.stableUid} className="flex items-center gap-3 p-3 flex-wrap sm:flex-nowrap" style={{ borderTop: index === 0 ? undefined : '1px solid rgba(255,255,255,0.055)' }}>
-                    <div className="w-8 h-8 rounded-full flex items-center justify-center text-[12px] font-semibold flex-shrink-0" style={{ background: `${color}22`, color, border: `1px solid ${color}44` }}>
+                  <div key={member.stableUid} className="flex items-center gap-3 p-3 flex-wrap sm:flex-nowrap" style={{ borderTop: index === 0 ? undefined : '1px solid rgb(var(--ink-rgb) / calc(0.071 * var(--veil)))' }}>
+                    <div className="w-8 h-8 rounded-full flex items-center justify-center text-[12px] font-semibold flex-shrink-0" style={{ background: `color-mix(in srgb, ${color} 13%, transparent)`, color, border: `1px solid color-mix(in srgb, ${color} 27%, transparent)` }}>
                       {displayName.slice(0, 1).toUpperCase()}
                     </div>
                     <div className="min-w-0 flex-1">
-                      <div className="text-[13px] font-medium text-white truncate">{displayName}</div>
+                      <div className="text-[13px] font-medium text-ink truncate">{displayName}</div>
                       <div className="text-[11px] mt-0.5" style={mutedText}>{member.user?.isUntisUser ? 'WebUntis verifiziert' : 'Verifikation nicht verfügbar'} · seit {formatDate(member.joinedAt)}</div>
                     </div>
                     {isOwner ? (
-                      <span className="text-[11px] px-2 py-1 rounded-[6px] font-medium" style={{ background: `${color}1f`, color, border: `1px solid ${color}3e` }}>{roleLabel(member.role)}</span>
+                      <span className="text-[11px] px-2 py-1 rounded-[8px] font-medium" style={{ background: `color-mix(in srgb, ${color} 12%, transparent)`, color, border: `1px solid color-mix(in srgb, ${color} 24%, transparent)` }}>{roleLabel(member.role)}</span>
                     ) : (
                       <label className="sr-only" htmlFor={`member-role-${team.id}-${member.stableUid}`}>Rolle für {displayName}</label>
                     )}
@@ -489,8 +488,8 @@ function TeamCard({
                         value={member.role}
                         disabled={isBusy}
                         onChange={(event) => void handleMemberRoleChange(member, event.target.value as LearnTeamAssignableRole)}
-                        className="apple-input px-2 py-1.5 text-[12px] disabled:opacity-50"
-                        style={{ ...inputStyle, colorScheme: 'dark' }}
+                        className="field h-11 px-4 text-[14px] disabled:opacity-50"
+                        style={inputStyle}
                       >
                         <option value="MEMBER">Mitglied</option>
                         <option value="MANAGER">Verwalter</option>
@@ -502,8 +501,8 @@ function TeamCard({
                         onClick={() => void handleMakeOwner(member)}
                         disabled={isBusy}
                         title="Als zusätzlichen Eigentümer hinzufügen"
-                        className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-[8px] text-[12px] font-medium disabled:opacity-50"
-                        style={{ background: 'rgba(191,90,242,0.09)', color: '#bf5af2', border: '1px solid rgba(191,90,242,0.19)' }}
+                        className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-[12px] font-medium disabled:opacity-50"
+                        style={{ background: 'rgba(150,80,205,0.09)', color: 'var(--violet-deep)', border: '1px solid transparent' }}
                       >
                         {changingMemberId === member.stableUid ? <Loader2 size={12} className="animate-spin" /> : <Crown size={12} />}
                         Eigentümer
@@ -513,8 +512,8 @@ function TeamCard({
                       type="button"
                       onClick={() => void handleMemberRemoval(member)}
                       disabled={isBusy}
-                      className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-[8px] text-[12px] font-medium disabled:opacity-50"
-                      style={{ background: 'rgba(255,69,58,0.09)', color: '#ff453a', border: '1px solid rgba(255,69,58,0.19)' }}
+                      className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-[12px] font-medium disabled:opacity-50"
+                      style={{ background: 'rgba(225,70,75,0.09)', color: 'var(--rose-deep)', border: '1px solid transparent' }}
                     >
                       {removingMemberId === member.stableUid ? <Loader2 size={12} className="animate-spin" /> : <UserMinus size={12} />}
                       Entfernen
@@ -525,10 +524,10 @@ function TeamCard({
             </div>
           )}
 
-          <form onSubmit={(event) => void handleMemberSave(event)} className="mt-4 rounded-[12px] p-3" style={{ background: 'rgba(10,132,255,0.055)', border: '1px solid rgba(10,132,255,0.16)' }}>
+          <form onSubmit={(event) => void handleMemberSave(event)} className="mt-4 rounded-[14px] p-3" style={{ background: 'rgba(60,135,215,0.055)', border: '1px solid transparent' }}>
             <div className="flex items-center gap-2 mb-2">
-              <UserPlus size={14} style={{ color: '#0a84ff' }} />
-              <h4 className="text-[12px] font-semibold text-white">Mitglied hinzufügen oder Rolle aktualisieren</h4>
+              <UserPlus size={14} style={{ color: 'var(--sky-deep)' }} />
+              <h4 className="text-[12px] font-semibold text-ink">Mitglied hinzufügen oder Rolle aktualisieren</h4>
             </div>
             <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_130px_auto]">
               <div className="relative">
@@ -543,13 +542,12 @@ function TeamCard({
                   maxLength={100}
                   required
                   autoComplete="off"
-                  className="apple-input w-full px-3 py-2 text-[13px]"
-                  style={inputStyle}
+                  className="field h-11 px-4 text-[14px] w-full"
                 />
                 {userSearchOpen && (
                   <div
-                    className="absolute left-0 right-0 mt-1 rounded-[10px] overflow-hidden z-10 max-h-[220px] overflow-y-auto"
-                    style={{ background: '#1c1c1e', border: '1px solid rgba(255,255,255,0.1)', boxShadow: '0 12px 28px rgba(0,0,0,0.4)' }}
+                    className="absolute left-0 right-0 mt-1 rounded-[12px] overflow-hidden z-10 max-h-[220px] overflow-y-auto"
+                    style={{ background: 'var(--well)', border: '1px solid transparent', boxShadow: 'none' }}
                   >
                     {userSearchLoading ? (
                       <div className="px-3 py-2.5 text-[12px] flex items-center gap-2" style={mutedText}><Loader2 size={12} className="animate-spin" /> Lädt…</div>
@@ -561,9 +559,9 @@ function TeamCard({
                           type="button"
                           key={candidate.stableUid}
                           onMouseDown={(event) => { event.preventDefault(); setUserId(candidate.username); setUserSearchOpen(false); }}
-                          className="w-full text-left px-3 py-2 text-[13px] text-white transition-colors"
+                          className="w-full text-left px-3 py-2 text-[13px] text-ink transition-colors"
                           style={{ background: 'transparent' }}
-                          onMouseEnter={(event) => { (event.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.06)'; }}
+                          onMouseEnter={(event) => { (event.currentTarget as HTMLElement).style.background = 'rgb(var(--ink-rgb) / calc(0.048 * var(--veil)))'; }}
                           onMouseLeave={(event) => { (event.currentTarget as HTMLElement).style.background = 'transparent'; }}
                         >
                           {candidate.username}
@@ -579,47 +577,47 @@ function TeamCard({
                   id={`new-member-role-${team.id}`}
                   value={memberRole}
                   onChange={(event) => setMemberRole(event.target.value as LearnTeamAssignableRole)}
-                  className="apple-input w-full px-3 py-2 text-[13px]"
-                  style={{ ...inputStyle, colorScheme: 'dark' }}
+                  className="field h-11 px-4 text-[14px] w-full"
+                  style={inputStyle}
                 >
                   <option value="MEMBER">Mitglied</option>
                   <option value="MANAGER">Verwalter</option>
                 </select>
               </div>
-              <button type="submit" disabled={savingMember || !userId.trim()} className="apple-btn flex items-center justify-center gap-1.5 px-3 py-2 text-[12px] disabled:opacity-50">
+              <button type="submit" disabled={savingMember || !userId.trim()} className="btn btn-sm btn-primary">
                 {savingMember ? <Loader2 size={13} className="animate-spin" /> : <UserPlus size={13} />} Speichern
               </button>
             </div>
           </form>
 
-          <div className="mt-5 pt-4" style={{ borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+          <div className="mt-5 pt-4" style={{ borderTop: '1px solid rgb(var(--ink-rgb) / calc(0.076 * var(--veil)))' }}>
             <div className="flex items-center gap-2 mb-3">
-              <BookOpen size={14} style={{ color: '#0a84ff' }} />
-              <h3 className="text-[13px] font-semibold text-white">Kurse dieser Gruppe{team.courseCount > 0 ? ` (${team.courseCount})` : ''}</h3>
+              <BookOpen size={14} style={{ color: 'var(--sky-deep)' }} />
+              <h3 className="text-[13px] font-semibold text-ink">Kurse dieser Gruppe{team.courseCount > 0 ? ` (${team.courseCount})` : ''}</h3>
             </div>
             <TeamCoursesPanel teamId={team.id} />
           </div>
 
-          <div className="mt-5 pt-4" style={{ borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+          <div className="mt-5 pt-4" style={{ borderTop: '1px solid rgb(var(--ink-rgb) / calc(0.076 * var(--veil)))' }}>
             {!canDelete ? (
-              <div className="flex items-start gap-2.5 rounded-[10px] px-3 py-2.5" style={{ background: 'rgba(255,159,10,0.08)', border: '1px solid rgba(255,159,10,0.2)' }}>
-                <AlertTriangle size={14} className="flex-shrink-0 mt-0.5" style={{ color: '#ff9f0a' }} />
-                <p className="text-[12px] leading-relaxed" style={{ color: '#ff9f0a' }}>Löschen gesperrt: Zuerst müssen alle {team.courseCount} zugeordneten Kurse entkoppelt oder archiviert werden.</p>
+              <div className="flex items-start gap-2.5 rounded-[12px] px-3 py-2.5" style={{ background: 'rgba(236,140,40,0.08)', border: '1px solid transparent' }}>
+                <AlertTriangle size={14} className="flex-shrink-0 mt-0.5" style={{ color: 'var(--amber-deep)' }} />
+                <p className="text-[12px] leading-relaxed" style={{ color: 'var(--amber-deep)' }}>Löschen gesperrt: Zuerst müssen alle {team.courseCount} zugeordneten Kurse entkoppelt oder archiviert werden.</p>
               </div>
             ) : !showDelete ? (
               <button
                 type="button"
                 onClick={() => setShowDelete(true)}
-                className="flex items-center gap-1.5 px-3 py-2 rounded-[9px] text-[12px] font-medium"
-                style={{ background: 'rgba(255,69,58,0.09)', color: '#ff453a', border: '1px solid rgba(255,69,58,0.19)' }}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-full text-[12px] font-medium"
+                style={{ background: 'rgba(225,70,75,0.09)', color: 'var(--rose-deep)', border: '1px solid transparent' }}
               >
                 <Trash2 size={12} /> Leere Gruppe löschen
               </button>
             ) : (
-              <div className="rounded-[12px] p-3" style={{ background: 'rgba(255,69,58,0.06)', border: '1px solid rgba(255,69,58,0.2)' }}>
+              <div className="rounded-[14px] p-3" style={{ background: 'rgba(225,70,75,0.06)', border: '1px solid transparent' }}>
                 <div className="flex items-start gap-2 mb-3">
-                  <AlertTriangle size={14} className="flex-shrink-0 mt-0.5" style={{ color: '#ff453a' }} />
-                  <p className="text-[12px] leading-relaxed" style={{ color: 'rgba(235,235,245,0.8)' }}>Diese Aktion entfernt die leere Gruppe. Gib zur Bestätigung den Namen <strong>{team.name}</strong> exakt ein.</p>
+                  <AlertTriangle size={14} className="flex-shrink-0 mt-0.5" style={{ color: 'var(--rose-deep)' }} />
+                  <p className="text-[12px] leading-relaxed" style={{ color: 'rgb(var(--ink-rgb) / 0.9)' }}>Diese Aktion entfernt die leere Gruppe. Gib zur Bestätigung den Namen <strong>{team.name}</strong> exakt ein.</p>
                 </div>
                 <label htmlFor={`delete-confirm-${team.id}`} className="sr-only">Gruppenname zur Löschbestätigung</label>
                 <input
@@ -627,18 +625,17 @@ function TeamCard({
                   value={deleteConfirmation}
                   onChange={(event) => setDeleteConfirmation(event.target.value)}
                   placeholder={team.name}
-                  className="apple-input w-full px-3 py-2 text-[13px]"
-                  style={inputStyle}
+                  className="field h-11 px-4 text-[14px] w-full"
                   autoComplete="off"
                 />
                 <div className="mt-3 flex gap-2">
-                  <button type="button" onClick={() => { setShowDelete(false); setDeleteConfirmation(''); }} disabled={deleting} className="apple-btn-ghost px-3 py-2 text-[12px] disabled:opacity-50">Abbrechen</button>
+                  <button type="button" onClick={() => { setShowDelete(false); setDeleteConfirmation(''); }} disabled={deleting} className="btn btn-sm btn-quiet">Abbrechen</button>
                   <button
                     type="button"
                     onClick={() => void handleTeamDelete()}
                     disabled={deleting || deleteConfirmation !== team.name}
-                    className="flex items-center gap-1.5 px-3 py-2 rounded-[9px] text-[12px] font-medium disabled:opacity-50"
-                    style={{ background: 'rgba(255,69,58,0.16)', color: '#ff453a', border: '1px solid rgba(255,69,58,0.28)' }}
+                    className="flex items-center gap-1.5 px-3 py-2 rounded-full text-[12px] font-medium disabled:opacity-50"
+                    style={{ background: 'rgba(225,70,75,0.16)', color: 'var(--rose-deep)', border: '1px solid transparent' }}
                   >
                     {deleting ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />} Gruppe endgültig löschen
                   </button>
@@ -647,7 +644,7 @@ function TeamCard({
             )}
           </div>
         </div>
-      )}
+      </Collapse>
     </section>
   );
 }
@@ -676,6 +673,7 @@ export function LearnTeamsPage() {
   }, [showToast]);
 
   useEffect(() => { void loadTeams(true); }, [loadTeams]);
+  useLive(['learn', 'users'], () => { void loadTeams(false); });
 
   async function handleCreate(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -704,38 +702,27 @@ export function LearnTeamsPage() {
   }
 
   return (
-    <div className="animate-page max-w-[980px]">
-      <div className="mb-6 flex items-start justify-between gap-4 flex-wrap">
-        <div>
-          <div className="flex items-center gap-2 mb-2">
-            <GraduationCap size={17} style={{ color: '#0a84ff' }} />
-            <span className="text-[12px] font-medium" style={{ color: '#0a84ff' }}>Pokyh Learn · Administration</span>
-          </div>
-          <h1 className="text-[22px] font-bold text-white tracking-[-0.02em]">Teams &amp; Zugriffe</h1>
-          <p className="text-[13px] mt-1 max-w-[720px]" style={mutedText}>
-            Gruppen steuern den Zugriff auf Learn-Kurse. Nur POKYH-Administratoren können sie verwalten; Mitglieder erhalten dadurch keine Admin-Rechte.
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <Link to="/learn" className="apple-btn-ghost px-3 py-2 text-[12px]">Konfiguration</Link>
-          <button type="button" onClick={() => void loadTeams(false)} disabled={loading || refreshing} className="apple-btn-ghost flex items-center gap-1.5 px-3 py-2 text-[12px] disabled:opacity-50">
-            <RefreshCw size={13} className={refreshing ? 'animate-spin' : ''} /> Aktualisieren
-          </button>
-        </div>
-      </div>
+    <div>
+      <PageHeader
+        title="Teams & Zugriffe"
+        subtitle="Gruppen steuern den Zugriff auf Learn-Kurse. Nur POKYH-Administratoren können sie verwalten; Mitglieder erhalten dadurch keine Admin-Rechte."
+      >
+        <IconButton icon={RefreshCw} label="Aktualisieren" size={42} busy={refreshing} disabled={loading} onClick={() => void loadTeams(false)} />
+        <Link to="/learn" className="btn btn-quiet">Konfiguration</Link>
+      </PageHeader>
 
-      <div className="grid gap-4">
+      <div className="mt-10 max-w-[1120px]">
         <Card title="Neue Learn-Gruppe" icon={<Plus size={17} />}>
           <form onSubmit={(event) => void handleCreate(event)} className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1.3fr)_auto] sm:items-end">
             <div>
               <label htmlFor="new-team-name" className="block text-[12px] mb-1" style={mutedText}>Name</label>
-              <input id="new-team-name" value={name} onChange={(event) => setName(event.target.value)} maxLength={120} required placeholder="z. B. Englisch 4A" className="apple-input w-full px-3 py-2 text-[13px]" style={inputStyle} />
+              <input id="new-team-name" value={name} onChange={(event) => setName(event.target.value)} maxLength={120} required placeholder="z. B. Englisch 4A" className="field h-11 px-4 text-[14px] w-full" />
             </div>
             <div>
-              <label htmlFor="new-team-description" className="block text-[12px] mb-1" style={mutedText}>Beschreibung <span style={{ color: 'rgba(235,235,245,0.28)' }}>(optional)</span></label>
-              <input id="new-team-description" value={description} onChange={(event) => setDescription(event.target.value)} maxLength={1000} placeholder="Zweck oder Klasse" className="apple-input w-full px-3 py-2 text-[13px]" style={inputStyle} />
+              <label htmlFor="new-team-description" className="block text-[12px] mb-1" style={mutedText}>Beschreibung <span style={{ color: 'rgb(var(--ink-rgb) / 0.484)' }}>(optional)</span></label>
+              <input id="new-team-description" value={description} onChange={(event) => setDescription(event.target.value)} maxLength={1000} placeholder="Zweck oder Klasse" className="field h-11 px-4 text-[14px] w-full" />
             </div>
-            <button type="submit" disabled={creating || !name.trim()} className="apple-btn flex items-center justify-center gap-1.5 px-4 py-2 text-[12px] disabled:opacity-50">
+            <button type="submit" disabled={creating || !name.trim()} className="btn btn-sm btn-primary">
               {creating ? <Loader2 size={13} className="animate-spin" /> : <Plus size={13} />} Erstellen
             </button>
           </form>
@@ -743,16 +730,16 @@ export function LearnTeamsPage() {
 
         <div className="flex items-center justify-between gap-3 pt-1">
           <div className="flex items-center gap-2">
-            <Users size={16} style={{ color: '#0a84ff' }} />
-            <h2 className="text-[15px] font-semibold text-white">Bestehende Gruppen</h2>
-            {!loading && <span className="text-[11px] px-2 py-0.5 rounded-[6px]" style={{ background: 'rgba(255,255,255,0.06)', ...mutedText }}>{teams.length}</span>}
+            <Users size={16} style={{ color: 'var(--sky-deep)' }} />
+            <h2 className="text-[15px] font-semibold text-ink">Bestehende Gruppen</h2>
+            {!loading && <span className="text-[11px] px-2 py-0.5 rounded-[8px]" style={{ background: 'rgb(var(--ink-rgb) / calc(0.048 * var(--veil)))', ...mutedText }}>{teams.length}</span>}
           </div>
           <span className="text-[11px]" style={mutedText}>Kursinhalte bleiben separat geschützt.</span>
         </div>
 
         {loading ? (
           <div className="grid gap-4">
-            {Array.from({ length: 2 }).map((_, index) => <div key={index} className="h-64 rounded-[16px] shimmer" />)}
+            {Array.from({ length: 2 }).map((_, index) => <div key={index} className="h-64 rounded-[22px] shimmer" />)}
           </div>
         ) : teams.length === 0 ? (
           <Card title="Noch keine Learn-Gruppen" icon={<Users size={17} />}>
@@ -772,9 +759,9 @@ export function LearnTeamsPage() {
           </div>
         )}
 
-        <div className="flex items-start gap-2.5 rounded-[12px] px-4 py-3" style={{ background: 'rgba(10,132,255,0.06)', border: '1px solid rgba(10,132,255,0.15)' }}>
-          <AlertTriangle size={14} className="flex-shrink-0 mt-0.5" style={{ color: '#0a84ff' }} />
-          <p className="text-[12px] leading-relaxed" style={{ color: 'rgba(235,235,245,0.62)' }}>
+        <div className="flex items-start gap-2.5 rounded-[14px] px-4 py-3" style={{ background: 'rgba(60,135,215,0.06)', border: '1px solid transparent' }}>
+          <AlertTriangle size={14} className="flex-shrink-0 mt-0.5" style={{ color: 'var(--sky-deep)' }} />
+          <p className="text-[12px] leading-relaxed" style={{ color: 'rgb(var(--ink-rgb) / 0.756)' }}>
             Eine Gruppe lässt sich nur löschen, wenn sie keine Kurse mehr enthält; der Gruppenname muss zusätzlich exakt bestätigt werden. Die API prüft beide Bedingungen erneut auf dem Server.
           </p>
         </div>

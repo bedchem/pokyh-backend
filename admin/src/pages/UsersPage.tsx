@@ -1,27 +1,23 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { Search, Shield, ShieldOff, ChevronLeft, ChevronRight, ScrollText, Users, RefreshCw, UserPlus, Trash2, X, Download, Upload, GraduationCap, UserCog } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { Shield, ScrollText, Users, RefreshCw, UserPlus, Trash2, Download, Upload, GraduationCap, UserCog, ShieldCheck } from 'lucide-react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { adminApi } from '../api';
 import { useToast } from '../components/Toast';
 import { useAutoRefresh } from '../hooks/useAutoRefresh';
+import { useLive } from '../live';
 import { UserDetailDrawer } from '../components/UserDetailDrawer';
+import { Avatar, Delta, Dialog, Empty, FieldLabel, Figures, IconButton, PageHeader, Pager, SearchField, Section, Segmented, Spinner, Status, Tag } from '../components/kit';
+import { Bars, SplitBar } from '../components/charts';
 import type { AdminUser } from '../types';
-
-const AVATAR_COLORS = ['#0a84ff', '#bf5af2', '#40c8e0', '#30d158', '#ff9f0a', '#ff453a'];
-
-function avatarColor(username: string): string {
-  let hash = 0;
-  for (let i = 0; i < username.length; i++) hash = username.charCodeAt(i) + ((hash << 5) - hash);
-  return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length]!;
-}
 
 function relativeDate(dateStr: string): string {
   const diff = Date.now() - new Date(dateStr).getTime();
   const days = Math.floor(diff / 86400000);
-  if (days === 0) return 'Heute';
+  if (days <= 0) return 'Heute';
   if (days === 1) return 'Gestern';
-  if (days < 30) return `${days}T`;
-  return `${Math.floor(days / 30)}M`;
+  if (days < 30) return `vor ${days} Tagen`;
+  const months = Math.floor(days / 30);
+  return months === 1 ? 'vor 1 Monat' : `vor ${months} Monaten`;
 }
 
 type FilterTab = 'all' | 'students' | 'parents' | 'admins';
@@ -34,14 +30,35 @@ function roleForFilter(filter: FilterTab): 'student' | 'parent' | undefined {
   return undefined;
 }
 
+// Totals for the figures and diagrams above the list. They come from their own
+// requests, so the list still works if one of them fails.
+interface Summary {
+  total: number;
+  admins: number;
+  students: number;
+  parents: number;
+  newThisWeek: number;
+  byDay: Array<{ date: string; count: number }>;
+}
+
+const TABS: Array<{ value: FilterTab; label: string }> = [
+  { value: 'all',      label: 'Alle' },
+  { value: 'students', label: 'Schüler' },
+  { value: 'parents',  label: 'Eltern' },
+  { value: 'admins',   label: 'Admin' },
+];
+
+const EMPTY_FORM = { username: '', password: '', webuntisKlasseId: '', webuntisKlasseName: '', role: 'student' as 'student' | 'parent' };
+
 function SkeletonRow() {
   return (
-    <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
-      {[140, 80, 90, 60, 70, 90, 80].map((w, i) => (
-        <td key={i} className="px-4 py-3.5">
-          <div className="h-3.5 rounded shimmer" style={{ width: `${w}px` }} />
-        </td>
-      ))}
+    <tr>
+      <td><div className="flex items-center gap-4"><div className="shimmer h-11 w-11 rounded-full" /><div className="shimmer h-3.5 w-32 rounded-full" /></div></td>
+      <td className="hidden md:table-cell"><div className="shimmer h-3.5 w-20 rounded-full" /></td>
+      <td className="hidden lg:table-cell"><div className="shimmer h-3.5 w-8 rounded-full" /></td>
+      <td><div className="shimmer h-3.5 w-24 rounded-full" /></td>
+      <td className="hidden sm:table-cell"><div className="shimmer h-3.5 w-20 rounded-full" /></td>
+      <td><div className="shimmer ml-auto h-9 w-36 rounded-full" /></td>
     </tr>
   );
 }
@@ -49,11 +66,15 @@ function SkeletonRow() {
 export function UsersPage() {
   const { showToast } = useToast();
   const navigate = useNavigate();
+  const location = useLocation();
+  // The dashboard's jump field hands over a search term.
+  const handedSearch = (location.state as { search?: string } | null)?.search ?? '';
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [total, setTotal] = useState(0);
+  const [summary, setSummary] = useState<Summary | null>(null);
   const [page, setPage] = useState(1);
-  const [search, setSearch] = useState('');
-  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [search, setSearch] = useState(handedSearch);
+  const [debouncedSearch, setDebouncedSearch] = useState(handedSearch);
   const [filter, setFilter] = useState<FilterTab>('all');
   const [loading, setLoading] = useState(true);
   const [pendingAdmin, setPendingAdmin] = useState<string | null>(null);
@@ -61,7 +82,7 @@ export function UsersPage() {
   const [confirmDeleteUid, setConfirmDeleteUid] = useState<string | null>(null);
   const [selectedUid, setSelectedUid] = useState<string | null>(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
-  const [createForm, setCreateForm] = useState<{ username: string; password: string; webuntisKlasseId: string; webuntisKlasseName: string; role: 'student' | 'parent' }>({ username: '', password: '', webuntisKlasseId: '', webuntisKlasseName: '', role: 'student' });
+  const [createForm, setCreateForm] = useState(EMPTY_FORM);
   const [creating, setCreating] = useState(false);
   const [pendingRole, setPendingRole] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
@@ -75,6 +96,23 @@ export function UsersPage() {
     searchTimer.current = setTimeout(() => { setDebouncedSearch(search); setPage(1); }, 300);
     return () => { if (searchTimer.current) clearTimeout(searchTimer.current); };
   }, [search]);
+
+  const fetchSummary = useCallback(() => {
+    Promise.all([
+      adminApi.stats(),
+      adminApi.users(undefined, 1, 1, 'student'),
+      adminApi.users(undefined, 1, 1, 'parent'),
+    ]).then(([stats, students, parents]) => {
+      setSummary({
+        total: stats.totalUsers,
+        admins: stats.totalAdmins,
+        students: students.total,
+        parents: parents.total,
+        newThisWeek: stats.newUsersThisWeek ?? 0,
+        byDay: stats.usersByDay ?? [],
+      });
+    }).catch(() => { /* the list below does not depend on the summary */ });
+  }, []);
 
   const fetchUsers = useCallback(async () => {
     setLoading(true);
@@ -93,8 +131,15 @@ export function UsersPage() {
   useEffect(() => { setPage(1); }, [filter]);
 
   useEffect(() => { void fetchUsers(); }, [fetchUsers]);
+  useEffect(() => { fetchSummary(); }, [fetchSummary]);
 
-  const { refresh, refreshing } = useAutoRefresh(fetchUsers, 30000);
+  const refreshAll = useCallback(async () => {
+    fetchSummary();
+    await fetchUsers();
+  }, [fetchSummary, fetchUsers]);
+
+  const { refresh, refreshing } = useAutoRefresh(refreshAll, 30000);
+  useLive(['users'], () => { void refreshAll(); });
 
   // 'admins' narrows the fetched page client-side; role tabs filter server-side.
   const filteredUsers = filter === 'admins' ? users.filter((u) => u.isAdmin) : users;
@@ -113,6 +158,7 @@ export function UsersPage() {
         await adminApi.grantAdmin(user.stableUid);
         showToast(`Admin-Rechte an ${user.username} vergeben`, 'success');
       }
+      fetchSummary();
     } catch (err) {
       setUsers((prev) => prev.map((u) => u.stableUid === user.stableUid ? { ...u, isAdmin: user.isAdmin } : u));
       showToast(err instanceof Error ? err.message : 'Aktion fehlgeschlagen', 'error');
@@ -124,7 +170,7 @@ export function UsersPage() {
   async function handleDelete(user: AdminUser) {
     if (confirmDeleteUid !== user.stableUid) {
       setConfirmDeleteUid(user.stableUid);
-      setTimeout(() => setConfirmDeleteUid(null), 3000);
+      setTimeout(() => setConfirmDeleteUid((uid) => (uid === user.stableUid ? null : uid)), 3000);
       return;
     }
     setDeletingUid(user.stableUid);
@@ -134,6 +180,7 @@ export function UsersPage() {
       setUsers((prev) => prev.filter((u) => u.stableUid !== user.stableUid));
       setTotal((t) => t - 1);
       showToast(`Benutzer "${user.username}" gelöscht`, 'success');
+      fetchSummary();
     } catch (err) {
       showToast(err instanceof Error ? err.message : 'Löschen fehlgeschlagen', 'error');
     } finally {
@@ -156,8 +203,9 @@ export function UsersPage() {
       setUsers((prev) => [user, ...prev]);
       setTotal((t) => t + 1);
       setShowCreateModal(false);
-      setCreateForm({ username: '', password: '', webuntisKlasseId: '', webuntisKlasseName: '', role: 'student' });
+      setCreateForm(EMPTY_FORM);
       showToast(`Benutzer "${user.username}" erstellt`, 'success');
+      fetchSummary();
     } catch (err) {
       showToast(err instanceof Error ? err.message : 'Erstellen fehlgeschlagen', 'error');
     } finally {
@@ -172,6 +220,7 @@ export function UsersPage() {
     try {
       await adminApi.setUserRole(user.stableUid, newRole);
       showToast(`${user.username} ist jetzt ${newRole === 'parent' ? 'Elternteil' : 'Schüler:in'}`, 'success');
+      fetchSummary();
       // If a role filter is active, the row may no longer belong on this page.
       if (roleForFilter(filter)) void fetchUsers();
     } catch (err) {
@@ -206,7 +255,7 @@ export function UsersPage() {
       await adminApi.importDatabase(payload);
       showToast('Import erfolgreich — Daten wiederhergestellt', 'success');
       setPage(1);
-      void fetchUsers();
+      void refreshAll();
     } catch (err) {
       showToast(err instanceof Error ? err.message : 'Import fehlgeschlagen', 'error');
     } finally {
@@ -214,478 +263,262 @@ export function UsersPage() {
     }
   }
 
-  const tabs: { key: FilterTab; label: string }[] = [
-    { key: 'all',      label: 'Alle' },
-    { key: 'students', label: 'Schüler' },
-    { key: 'parents',  label: 'Eltern' },
-    { key: 'admins',   label: 'Admin' },
-  ];
+  // Last 14 days of registrations, with gaps filled in as zero.
+  const signupDays = Array.from({ length: 14 }, (_, i) => {
+    const d = new Date();
+    d.setDate(d.getDate() - (13 - i));
+    return d;
+  });
+  const byDay = new Map((summary?.byDay ?? []).map((d) => [d.date, d.count]));
+  const signupValues = signupDays.map((d) => byDay.get(d.toISOString().slice(0, 10)) ?? 0);
 
   return (
-    <div className="flex flex-col gap-6 animate-page">
-      {/* Create modal */}
+    <div>
       {showCreateModal && (
-        <div
-          className="fixed inset-0 z-50 flex items-start justify-center p-4 pt-20 overflow-y-auto"
-          style={{ background: 'rgba(0,0,0,0.75)', backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)' }}
-          onClick={() => setShowCreateModal(false)}
-        >
-          <div
-            className="w-full max-w-md rounded-[20px] p-6 flex flex-col gap-5 animate-scaleIn"
-            style={{
-              background: '#1c1c1e',
-              border: '1px solid rgba(255,255,255,0.1)',
-              boxShadow: '0 32px 80px rgba(0,0,0,0.65)',
-            }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-center justify-between">
-              <div>
-                <h2 className="text-[18px] font-bold text-white" style={{ letterSpacing: '-0.02em' }}>
-                  Benutzer erstellen
-                </h2>
-                <p className="text-[13px] mt-0.5" style={{ color: 'rgba(235,235,245,0.4)' }}>
-                  Neuen Benutzer hinzufügen
-                </p>
-              </div>
-              <button
-                onClick={() => setShowCreateModal(false)}
-                style={{ color: 'rgba(235,235,245,0.35)' }}
-                className="p-1.5 rounded-[8px] transition-colors hover:bg-white/5"
-              >
-                <X size={16} />
+        <Dialog title="Benutzer erstellen" subtitle="Neues Konto hinzufügen" onClose={() => setShowCreateModal(false)}>
+          <form onSubmit={(e) => void handleCreate(e)} className="flex flex-col gap-5">
+            <FieldLabel label="Benutzername *">
+              <input
+                type="text"
+                placeholder="z.B. max.muster"
+                required
+                autoCapitalize="none"
+                spellCheck={false}
+                value={createForm.username}
+                onChange={(e) => setCreateForm((f) => ({ ...f, username: e.target.value }))}
+                className="field h-12 w-full px-4 text-[14.5px]"
+              />
+            </FieldLabel>
+            <FieldLabel label="Passwort" hint="Optional, mindestens 8 Zeichen.">
+              <input
+                type="password"
+                placeholder="••••••••"
+                autoComplete="new-password"
+                value={createForm.password}
+                onChange={(e) => setCreateForm((f) => ({ ...f, password: e.target.value }))}
+                className="field h-12 w-full px-4 text-[14.5px]"
+              />
+            </FieldLabel>
+            <div className="grid grid-cols-2 gap-4">
+              <FieldLabel label="WebUntis Klassen-ID">
+                <input
+                  type="number"
+                  placeholder="0"
+                  value={createForm.webuntisKlasseId}
+                  onChange={(e) => setCreateForm((f) => ({ ...f, webuntisKlasseId: e.target.value }))}
+                  className="field h-12 w-full px-4 text-[14.5px]"
+                />
+              </FieldLabel>
+              <FieldLabel label="Klassenname">
+                <input
+                  type="text"
+                  placeholder="z.B. 4AHIF"
+                  value={createForm.webuntisKlasseName}
+                  onChange={(e) => setCreateForm((f) => ({ ...f, webuntisKlasseName: e.target.value }))}
+                  className="field h-12 w-full px-4 text-[14.5px]"
+                />
+              </FieldLabel>
+            </div>
+            {/* Account type — Schüler vs. Eltern */}
+            <div className="flex flex-col gap-2">
+              <span className="text-[13px] text-ink-2">Kontotyp</span>
+              <Segmented
+                label="Kontotyp"
+                value={createForm.role}
+                onChange={(role) => setCreateForm((f) => ({ ...f, role }))}
+                options={[{ value: 'student', label: 'Schüler:in' }, { value: 'parent', label: 'Elternteil' }]}
+              />
+            </div>
+            <div className="mt-2 flex gap-3">
+              <button type="button" onClick={() => setShowCreateModal(false)} className="btn btn-quiet flex-1">Abbrechen</button>
+              <button type="submit" disabled={creating} className="btn btn-primary flex-1">
+                {creating ? <Spinner /> : <UserPlus size={16} strokeWidth={1.7} />}
+                {creating ? 'Erstelle…' : 'Erstellen'}
               </button>
             </div>
-            <form onSubmit={(e) => void handleCreate(e)} className="flex flex-col gap-4">
-              {[
-                { label: 'Benutzername', key: 'username', placeholder: 'z.B. max.muster', required: true, type: 'text' },
-                { label: 'Passwort', key: 'password', placeholder: 'Min. 8 Zeichen (optional)', required: false, type: 'password' },
-                { label: 'WebUntis Klassen-ID', key: 'webuntisKlasseId', placeholder: '0', required: false, type: 'number' },
-                { label: 'Klassenname', key: 'webuntisKlasseName', placeholder: 'z.B. 4AHIF', required: false, type: 'text' },
-              ].map(({ label, key, placeholder, required, type }) => (
-                <div key={key} className="flex flex-col gap-1.5">
-                  <label
-                    className="text-[11px] font-semibold uppercase tracking-[0.05em]"
-                    style={{ color: 'rgba(235,235,245,0.4)' }}
-                  >
-                    {label}{required && ' *'}
-                  </label>
-                  <input
-                    type={type}
-                    placeholder={placeholder}
-                    required={required}
-                    value={createForm[key as keyof typeof createForm]}
-                    onChange={(e) => setCreateForm((f) => ({ ...f, [key]: e.target.value }))}
-                    className="apple-input w-full px-3 py-2.5 text-[14px]"
-                  />
-                </div>
-              ))}
-              {/* Account type — Schüler vs. Eltern */}
-              <div className="flex flex-col gap-1.5">
-                <label
-                  className="text-[11px] font-semibold uppercase tracking-[0.05em]"
-                  style={{ color: 'rgba(235,235,245,0.4)' }}
-                >
-                  Kontotyp
-                </label>
-                <div
-                  className="flex p-1 gap-0.5 rounded-[10px]"
-                  style={{ background: '#0f0f10', border: '1px solid rgba(255,255,255,0.07)' }}
-                >
-                  {([
-                    { value: 'student' as const, label: 'Schüler:in' },
-                    { value: 'parent' as const,  label: 'Elternteil' },
-                  ]).map((opt) => (
-                    <button
-                      key={opt.value}
-                      type="button"
-                      onClick={() => setCreateForm((f) => ({ ...f, role: opt.value }))}
-                      className="flex-1 px-3 py-1.5 text-[13px] font-medium transition-all rounded-[8px]"
-                      style={{
-                        background: createForm.role === opt.value ? 'rgba(10,132,255,0.16)' : 'transparent',
-                        color:      createForm.role === opt.value ? '#0a84ff'               : 'rgba(235,235,245,0.45)',
-                      }}
-                    >
-                      {opt.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div className="flex gap-3 pt-1">
-                <button
-                  type="button"
-                  onClick={() => setShowCreateModal(false)}
-                  className="apple-btn-ghost flex-1 py-2.5 rounded-[10px] text-[14px]"
-                >
-                  Abbrechen
-                </button>
-                <button
-                  type="submit"
-                  disabled={creating}
-                  className="apple-btn flex-1 py-2.5 text-[14px] flex items-center justify-center gap-2"
-                >
-                  {creating
-                    ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                    : <UserPlus size={14} />
-                  }
-                  {creating ? 'Erstelle…' : 'Erstellen'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
+          </form>
+        </Dialog>
       )}
 
       {selectedUid && (
         <UserDetailDrawer
           stableUid={selectedUid}
           onClose={() => setSelectedUid(null)}
-          onUserDeleted={(uid) => { setUsers((prev) => prev.filter((u) => u.stableUid !== uid)); setTotal((t) => t - 1); setSelectedUid(null); }}
-          onAdminToggled={(uid, isAdmin) => { setUsers((prev) => prev.map((u) => u.stableUid === uid ? { ...u, isAdmin } : u)); }}
+          onUserDeleted={(uid) => { setUsers((prev) => prev.filter((u) => u.stableUid !== uid)); setTotal((t) => t - 1); setSelectedUid(null); fetchSummary(); }}
+          onAdminToggled={(uid, isAdmin) => { setUsers((prev) => prev.map((u) => u.stableUid === uid ? { ...u, isAdmin } : u)); fetchSummary(); }}
         />
       )}
 
-      {/* Page header */}
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-[28px] font-bold text-white" style={{ letterSpacing: '-0.03em' }}>Benutzer</h1>
-          <p className="text-[14px] mt-1" style={{ color: 'rgba(235,235,245,0.4)' }}>
-            Konten und Admin-Berechtigungen verwalten
-          </p>
-        </div>
-        <div className="flex gap-2 flex-wrap justify-end">
-          <button
-            onClick={() => setShowCreateModal(true)}
-            className="apple-btn flex items-center gap-2 px-3 py-2 text-[13px]"
-          >
-            <UserPlus size={14} />
-            Neu
-          </button>
-          <button
-            onClick={() => void handleExport()}
-            disabled={exporting}
-            className="apple-btn-ghost flex items-center gap-2 px-3 py-2 text-[13px]"
-            title="Vollständiges Backup als JSON herunterladen"
-          >
-            {exporting
-              ? <div className="w-3.5 h-3.5 border-2 border-current border-t-transparent rounded-full animate-spin" />
-              : <Download size={14} />}
-            Export
-          </button>
-          <button
-            onClick={() => importInputRef.current?.click()}
-            disabled={importing}
-            className="apple-btn-ghost flex items-center gap-2 px-3 py-2 text-[13px]"
-            title="Backup-JSON importieren (überschreibt alle Daten)"
-          >
-            {importing
-              ? <div className="w-3.5 h-3.5 border-2 border-current border-t-transparent rounded-full animate-spin" />
-              : <Upload size={14} />}
-            Import
-          </button>
-          <input
-            ref={importInputRef}
-            type="file"
-            accept="application/json,.json"
-            className="hidden"
-            onChange={(e) => void handleImportFile(e)}
-          />
-          <button
-            onClick={() => void refresh()}
-            disabled={refreshing}
-            className="apple-btn-ghost flex items-center gap-2 px-3 py-2 text-[13px]"
-          >
-            <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
-            {refreshing ? 'Lädt…' : 'Aktualisieren'}
-          </button>
-        </div>
+      <PageHeader title="Benutzer" subtitle="Konten, Rollen und Admin-Berechtigungen verwalten.">
+        <IconButton icon={RefreshCw} label="Aktualisieren" size={42} busy={refreshing} onClick={() => void refresh()} />
+        <IconButton icon={Download} label="Vollständiges Backup als JSON herunterladen" size={42} busy={exporting} onClick={() => void handleExport()} />
+        <IconButton icon={Upload} label="Backup-JSON importieren (überschreibt alle Daten)" size={42} busy={importing} onClick={() => importInputRef.current?.click()} />
+        <input
+          ref={importInputRef}
+          type="file"
+          accept="application/json,.json"
+          className="hidden"
+          onChange={(e) => void handleImportFile(e)}
+        />
+        <button type="button" onClick={() => setShowCreateModal(true)} className="btn btn-primary">
+          <UserPlus size={16} strokeWidth={1.7} />
+          Neuer Benutzer
+        </button>
+      </PageHeader>
+
+      <Figures
+        className="mt-10"
+        items={[
+          {
+            label: 'Konten',
+            value: summary?.total ?? total,
+            icon: Users,
+            note: summary && summary.newThisWeek > 0
+              ? <Delta trend="up" tone="mint"><span title="Neue Konten in dieser Woche">+{summary.newThisWeek.toLocaleString('de-AT')} neu</span></Delta>
+              : undefined,
+          },
+          { label: 'Schüler:innen', value: summary?.students ?? '–', icon: GraduationCap },
+          { label: 'Eltern',        value: summary?.parents ?? '–',  icon: UserCog },
+          { label: 'Admins',        value: summary?.admins ?? '–',   icon: ShieldCheck },
+        ]}
+      />
+
+      <div className="mt-[46px] grid gap-x-16 gap-y-12 xl:grid-cols-[minmax(0,1.55fr)_minmax(0,1fr)]">
+        <Section title="Registrierungen" meta="Letzte 14 Tage">
+          <div className="mt-8">
+            <Bars
+              values={signupValues}
+              labels={signupDays.map((d) => String(d.getDate()).padStart(2, '0'))}
+              titles={signupDays.map((d) => d.toLocaleDateString('de-AT', { weekday: 'short', day: 'numeric', month: 'long' }))}
+              unit="neue Konten"
+              tickEvery={2}
+              ariaLabel="Neue Konten pro Tag in den letzten 14 Tagen"
+            />
+          </div>
+        </Section>
+        <Section title="Rollen">
+          <div className="mt-9">
+            <SplitBar
+              ariaLabel="Verteilung der Konten nach Rolle"
+              parts={[
+                { label: 'Schüler:innen', value: summary?.students ?? 0, color: 'var(--mint)' },
+                { label: 'Eltern',        value: summary?.parents ?? 0,  color: '#a98be0' },
+              ]}
+            />
+          </div>
+        </Section>
       </div>
 
-      {/* Filters */}
-      <div className="flex items-center gap-3 flex-wrap">
-        <div className="relative flex-1" style={{ minWidth: '200px' }}>
-          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: 'rgba(235,235,245,0.3)' }} />
-          <input
-            type="text"
-            placeholder="Benutzername suchen…"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="apple-input w-full pl-9 pr-4 py-2.5 text-[14px]"
-          />
-        </div>
-        <div
-          className="flex p-1 gap-0.5 rounded-[10px]"
-          style={{ background: '#1c1c1e', border: '1px solid rgba(255,255,255,0.07)' }}
-        >
-          {tabs.map((tab) => (
-            <button
-              key={tab.key}
-              onClick={() => setFilter(tab.key)}
-              className="px-3 py-1.5 text-[13px] font-medium transition-all rounded-[8px]"
-              style={{
-                background: filter === tab.key ? 'rgba(10,132,255,0.16)' : 'transparent',
-                color:      filter === tab.key ? '#0a84ff'               : 'rgba(235,235,245,0.45)',
-              }}
-            >
-              {tab.label}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <div className="text-[12px]" style={{ color: 'rgba(235,235,245,0.3)' }}>
-        <span style={{ color: 'rgba(235,235,245,0.6)' }}>{filteredUsers.length}</span>
-        {' '}von{' '}
-        <span style={{ color: 'rgba(235,235,245,0.6)' }}>{total}</span>
-        {' '}Benutzer
-      </div>
-
-      {/* Table */}
-      <div
-        className="rounded-[16px] overflow-hidden"
-        style={{
-          background: '#1c1c1e',
-          border: '1px solid rgba(255,255,255,0.08)',
-          boxShadow: '0 4px 20px rgba(0,0,0,0.4)',
-        }}
+      <Section
+        className="mt-[52px]"
+        title="Alle Konten"
+        meta={`${filteredUsers.length} von ${total.toLocaleString('de-AT')}`}
+        action={(
+          <>
+            <SearchField value={search} onChange={setSearch} placeholder="Benutzername suchen" className="w-full sm:w-[260px]" />
+            <Segmented label="Konten filtern" value={filter} onChange={setFilter} options={TABS} />
+          </>
+        )}
       >
-        <div className="overflow-x-auto scroll-touch">
-          <table className="w-full">
+        <div className="tbl-scroll mt-7">
+          <table className="tbl">
             <thead>
-              <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
-                {[
-                  { label: 'Benutzer', cls: '' },
-                  { label: 'Klasse',   cls: 'hidden md:table-cell' },
-                  { label: 'Todos',    cls: 'hidden md:table-cell' },
-                  { label: 'Status',   cls: '' },
-                  { label: 'Beitritt', cls: 'hidden sm:table-cell' },
-                  { label: 'Aktionen', cls: '' },
-                ].map(({ label, cls }) => (
-                  <th
-                    key={label}
-                    className={`px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.05em] ${cls}`}
-                    style={{ color: 'rgba(235,235,245,0.3)' }}
-                  >
-                    {label}
-                  </th>
-                ))}
+              <tr>
+                <th>Benutzer</th>
+                <th className="hidden md:table-cell">Klasse</th>
+                <th className="hidden lg:table-cell">Todos</th>
+                <th>Rolle</th>
+                <th className="hidden sm:table-cell">Beitritt</th>
+                <th><span className="sr-only">Aktionen</span></th>
               </tr>
             </thead>
             <tbody>
-              {loading
+              {loading && users.length === 0
                 ? Array.from({ length: 6 }).map((_, i) => <SkeletonRow key={i} />)
                 : filteredUsers.length === 0
                 ? (
                   <tr>
-                    <td colSpan={6} className="px-4 py-16 text-center">
-                      <div className="flex flex-col items-center gap-3">
-                        <Users size={28} style={{ color: 'rgba(235,235,245,0.2)' }} />
-                        <p className="text-[13px]" style={{ color: 'rgba(235,235,245,0.35)' }}>
-                          {search ? `Kein Benutzer mit "${search}"` : 'Keine Benutzer'}
-                        </p>
-                      </div>
+                    <td colSpan={6}>
+                      <Empty icon={Users}>{search ? `Kein Benutzer mit „${search}“.` : 'Keine Benutzer.'}</Empty>
                     </td>
                   </tr>
                 )
                 : filteredUsers.map((user) => (
-                  <tr
-                    key={user.stableUid}
-                    style={{ borderBottom: '1px solid rgba(255,255,255,0.04)', cursor: 'pointer' }}
-                    className="transition-colors"
-                    onClick={() => setSelectedUid(user.stableUid)}
-                    onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255,255,255,0.025)'; }}
-                    onMouseLeave={(e) => { e.currentTarget.style.background = ''; }}
-                  >
-                    <td className="px-4 py-3.5">
-                      <div className="flex items-center gap-3">
-                        <div
-                          className="w-8 h-8 rounded-full flex items-center justify-center text-[12px] font-bold text-white flex-shrink-0"
-                          style={{ background: avatarColor(user.username) }}
-                        >
-                          {user.username[0]?.toUpperCase() ?? '?'}
-                        </div>
+                  <tr key={user.stableUid} data-clickable onClick={() => setSelectedUid(user.stableUid)}>
+                    <td>
+                      <div className="flex items-center gap-4">
+                        <Avatar name={user.username} size={44} />
                         <div className="min-w-0">
-                          <div className="text-[14px] font-medium truncate text-white">{user.username}</div>
-                          <div className="text-[11px] font-mono truncate" style={{ color: 'rgba(235,235,245,0.28)' }}>
-                            {user.stableUid.slice(0, 8)}&hellip;
-                          </div>
+                          <div className="truncate font-medium">{user.username}</div>
+                          <div className="truncate font-mono text-[11.5px] text-ink-3">{user.stableUid.slice(0, 8)}&hellip;</div>
                         </div>
                       </div>
                     </td>
 
-                    <td className="px-4 py-3.5 hidden md:table-cell">
-                      <div className="flex items-center gap-2">
-                        <span className="text-[13px]" style={{ color: 'rgba(235,235,245,0.5)' }}>
-                          {user.webuntisKlasseName ?? '—'}
-                        </span>
-                        {user.classCode && (
-                          <span
-                            className="text-[11px] px-1.5 py-0.5 font-mono rounded-[6px]"
-                            style={{ background: 'rgba(64,200,224,0.12)', color: '#40c8e0', border: '1px solid rgba(64,200,224,0.2)' }}
-                          >
-                            {user.classCode}
-                          </span>
-                        )}
+                    <td className="hidden md:table-cell">
+                      <div className="flex items-center gap-2.5">
+                        <span className="text-ink-2">{user.webuntisKlasseName ?? '—'}</span>
+                        {user.classCode && <Tag tone="sky" mono>{user.classCode}</Tag>}
                       </div>
                     </td>
 
-                    <td className="px-4 py-3.5 hidden md:table-cell">
-                      <span
-                        className="text-[12px] px-2 py-0.5 rounded-[6px]"
-                        style={{ background: 'rgba(255,255,255,0.05)', color: 'rgba(235,235,245,0.5)' }}
-                      >
-                        {user.todoCount}
-                      </span>
-                    </td>
+                    <td className="tabular hidden text-ink-2 lg:table-cell">{user.todoCount}</td>
 
-                    <td className="px-4 py-3.5">
-                      <div className="flex items-center gap-1.5 flex-wrap">
-                        {user.isAdmin && (
-                          <span className="badge-blue text-[11px] px-2 py-0.5 font-medium">Admin</span>
-                        )}
-                        {user.role === 'parent' ? (
-                          <span
-                            className="text-[11px] px-2 py-0.5 font-medium rounded-[6px]"
-                            style={{ background: 'rgba(191,90,242,0.14)', color: '#bf5af2', border: '1px solid rgba(191,90,242,0.25)' }}
-                          >
-                            Eltern
-                          </span>
-                        ) : (
-                          <span
-                            className="text-[11px] px-2 py-0.5 font-medium rounded-[6px]"
-                            style={{ background: 'rgba(48,209,88,0.12)', color: '#30d158', border: '1px solid rgba(48,209,88,0.22)' }}
-                          >
-                            Schüler
-                          </span>
-                        )}
+                    <td>
+                      <div className="flex flex-col gap-1.5">
+                        <Status tone={user.role === 'parent' ? 'violet' : 'mint'}>{user.role === 'parent' ? 'Elternteil' : 'Schüler:in'}</Status>
+                        {user.isAdmin && <Status tone="sky">Admin</Status>}
                       </div>
                     </td>
 
-                    <td className="px-4 py-3.5 hidden sm:table-cell">
-                      <span className="text-[13px]" style={{ color: 'rgba(235,235,245,0.4)' }}>
-                        {relativeDate(user.createdAt)}
-                      </span>
-                    </td>
+                    <td className="hidden whitespace-nowrap text-ink-3 sm:table-cell">{relativeDate(user.createdAt)}</td>
 
-                    <td className="px-4 py-3.5" onClick={(e) => e.stopPropagation()}>
-                      <div className="flex items-center gap-1.5">
-                        {/* Toggle admin */}
-                        <button
+                    <td onClick={(e) => e.stopPropagation()}>
+                      <div className="row-actions">
+                        <IconButton
+                          icon={Shield}
+                          tone="sky"
+                          active={user.isAdmin}
+                          busy={pendingAdmin === user.stableUid}
+                          label={user.isAdmin ? 'Admin-Rechte entziehen' : 'Admin-Rechte vergeben'}
                           onClick={() => void handleToggleAdmin(user)}
-                          disabled={pendingAdmin === user.stableUid}
-                          className="flex items-center gap-1 text-[12px] px-2.5 py-1.5 rounded-[8px] transition-all font-medium"
-                          style={
-                            user.isAdmin
-                              ? { color: '#ff453a', border: '1px solid rgba(255,69,58,0.25)', background: 'transparent' }
-                              : { color: '#0a84ff', border: '1px solid rgba(10,132,255,0.25)', background: 'transparent' }
-                          }
-                          onMouseEnter={(e) => { e.currentTarget.style.background = user.isAdmin ? 'rgba(255,69,58,0.08)' : 'rgba(10,132,255,0.1)'; }}
-                          onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
-                        >
-                          {pendingAdmin === user.stableUid ? (
-                            <div className="w-3 h-3 border border-current border-t-transparent rounded-full animate-spin" />
-                          ) : user.isAdmin ? (
-                            <><ShieldOff size={12} /><span className="hidden sm:inline">Entziehen</span></>
-                          ) : (
-                            <><Shield size={12} /><span className="hidden sm:inline">Vergeben</span></>
-                          )}
-                        </button>
-
+                        />
                         {/* Toggle role: Schüler ⇄ Eltern */}
-                        <button
+                        <IconButton
+                          icon={user.role === 'parent' ? GraduationCap : UserCog}
+                          tone="violet"
+                          busy={pendingRole === user.stableUid}
+                          label={user.role === 'parent' ? 'Zu Schüler:in machen' : 'Zu Elternteil machen'}
                           onClick={() => void handleToggleRole(user)}
-                          disabled={pendingRole === user.stableUid}
-                          className="flex items-center gap-1 text-[12px] px-2.5 py-1.5 rounded-[8px] transition-all font-medium"
-                          style={{ color: '#bf5af2', border: '1px solid rgba(191,90,242,0.28)', background: 'transparent' }}
-                          onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(191,90,242,0.1)'; }}
-                          onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
-                          title={user.role === 'parent' ? 'Zu Schüler:in machen' : 'Zu Elternteil machen'}
-                        >
-                          {pendingRole === user.stableUid ? (
-                            <div className="w-3 h-3 border border-current border-t-transparent rounded-full animate-spin" />
-                          ) : user.role === 'parent' ? (
-                            <><GraduationCap size={12} /><span className="hidden sm:inline">Schüler</span></>
-                          ) : (
-                            <><UserCog size={12} /><span className="hidden sm:inline">Eltern</span></>
-                          )}
-                        </button>
-
-                        {/* Logs */}
-                        <button
+                        />
+                        <IconButton
+                          icon={ScrollText}
+                          label="Logs anzeigen"
                           onClick={() => navigate('/logs', { state: { username: user.username } })}
-                          className="flex items-center gap-1 text-[12px] px-2.5 py-1.5 rounded-[8px] transition-all font-medium"
-                          style={{ color: 'rgba(235,235,245,0.45)', border: '1px solid rgba(255,255,255,0.08)', background: 'transparent' }}
-                          onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255,255,255,0.05)'; e.currentTarget.style.color = '#fff'; }}
-                          onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'rgba(235,235,245,0.45)'; }}
-                        >
-                          <ScrollText size={12} />
-                          <span className="hidden sm:inline">Logs</span>
-                        </button>
-
-                        {/* Delete */}
-                        <button
-                          onClick={() => void handleDelete(user)}
-                          disabled={deletingUid === user.stableUid}
-                          className="flex items-center gap-1 text-[12px] px-2.5 py-1.5 rounded-[8px] transition-all font-medium"
-                          style={{
-                            color: '#ff453a',
-                            border: '1px solid rgba(255,69,58,0.28)',
-                            background: confirmDeleteUid === user.stableUid ? 'rgba(255,69,58,0.22)' : 'transparent',
-                          }}
-                          onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255,69,58,0.1)'; }}
-                          onMouseLeave={(e) => { e.currentTarget.style.background = confirmDeleteUid === user.stableUid ? 'rgba(255,69,58,0.22)' : 'transparent'; }}
-                        >
-                          {deletingUid === user.stableUid
-                            ? <div className="w-3 h-3 border border-current border-t-transparent rounded-full animate-spin" />
-                            : <Trash2 size={12} />
-                          }
-                          <span className="hidden sm:inline">
-                            {confirmDeleteUid === user.stableUid ? 'Sicher?' : 'Löschen'}
-                          </span>
-                        </button>
+                        />
+                        {confirmDeleteUid === user.stableUid ? (
+                          <button type="button" className="btn btn-sm btn-danger" onClick={() => void handleDelete(user)}>
+                            Wirklich löschen?
+                          </button>
+                        ) : (
+                          <IconButton
+                            icon={Trash2}
+                            tone="rose"
+                            busy={deletingUid === user.stableUid}
+                            label="Benutzer löschen"
+                            onClick={() => void handleDelete(user)}
+                          />
+                        )}
                       </div>
                     </td>
                   </tr>
-                ))
-              }
+                ))}
             </tbody>
           </table>
         </div>
 
-        {/* Pagination */}
-        {totalPages > 1 && (
-          <div
-            className="flex items-center justify-between px-4 py-3"
-            style={{ borderTop: '1px solid rgba(255,255,255,0.06)' }}
-          >
-            <span className="text-[12px]" style={{ color: 'rgba(235,235,245,0.3)' }}>
-              Seite {page} von {totalPages}
-            </span>
-            <div className="flex items-center gap-1.5">
-              <button
-                onClick={() => setPage((p) => Math.max(1, p - 1))}
-                disabled={page === 1}
-                className="p-1.5 rounded-[8px] transition-colors disabled:opacity-25"
-                style={{ color: 'rgba(235,235,245,0.55)' }}
-                onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255,255,255,0.05)'; }}
-                onMouseLeave={(e) => { e.currentTarget.style.background = ''; }}
-              >
-                <ChevronLeft size={16} />
-              </button>
-              <button
-                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                disabled={page === totalPages}
-                className="p-1.5 rounded-[8px] transition-colors disabled:opacity-25"
-                style={{ color: 'rgba(235,235,245,0.55)' }}
-                onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255,255,255,0.05)'; }}
-                onMouseLeave={(e) => { e.currentTarget.style.background = ''; }}
-              >
-                <ChevronRight size={16} />
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
+        <Pager page={page} pages={totalPages} onChange={setPage} />
+      </Section>
     </div>
   );
 }

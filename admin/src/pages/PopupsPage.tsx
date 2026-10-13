@@ -1,22 +1,23 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Globe, Layers, LogIn, Megaphone, Moon, Pencil, Plus, Power, Save, Smartphone, Sun, Trash2, UserRound, Users, X } from 'lucide-react';
+import { CalendarClock, Globe, Layers, LogIn, Megaphone, Moon, Pencil, Plus, Power, Save, Smartphone, Sun, Trash2, UserRound, Users, X } from 'lucide-react';
 import { adminApi } from '../api';
 import { useToast } from '../components/Toast';
+import { useLive } from '../live';
+import { Figures, PageHeader, Segmented as KitSegmented } from '../components/kit';
 import { PopupEditor } from '../components/popups/PopupEditor';
 import { AndroidPopupPreview, WebPopupPreview, type PreviewTheme } from '../components/popups/PopupPreview';
 import type { AdminPopup, PopupAudience, PopupInput, PopupMode, PopupPlatform, PopupStatus } from '../types';
 
-const inputStyle: React.CSSProperties = { background: '#1c1c1e', border: '1px solid rgba(255,255,255,0.08)', color: 'rgba(235,235,245,0.85)' };
-const dimText = { color: 'rgba(235,235,245,0.45)' };
-const blueBtn: React.CSSProperties = { background: 'rgba(10,132,255,0.15)', color: '#0a84ff', border: '1px solid rgba(10,132,255,0.25)' };
+const dimText = { color: 'rgb(var(--ink-rgb) / 0.62)' };
+const blueBtn: React.CSSProperties = {};
 
 const PLATFORM_LABEL: Record<PopupPlatform, string> = { all: 'Alle', android: 'Android', web: 'Website' };
 const AUDIENCE_LABEL: Record<PopupAudience, string> = { all: 'Alle Besucher', users: 'Eingeloggt', guests: 'Gäste' };
 const STATUS: Record<PopupStatus, { label: string; color: string }> = {
-  active: { label: 'Aktiv', color: '#30d158' },
-  scheduled: { label: 'Geplant', color: '#0a84ff' },
-  expired: { label: 'Abgelaufen', color: 'rgba(235,235,245,0.4)' },
-  disabled: { label: 'Deaktiviert', color: '#ff9f0a' },
+  active: { label: 'Aktiv', color: 'var(--mint-deep)' },
+  scheduled: { label: 'Geplant', color: 'var(--sky-deep)' },
+  expired: { label: 'Abgelaufen', color: 'rgb(var(--ink-rgb) / 0.58)' },
+  disabled: { label: 'Deaktiviert', color: 'var(--amber-deep)' },
 };
 
 // ISO <-> <input type="datetime-local"> (browser-local time).
@@ -79,6 +80,7 @@ export function PopupsPage() {
   }, [showToast]);
 
   useEffect(() => { void load(); }, [load]);
+  useLive(['popups'], () => { void load(); });
 
   // Debounced server render — the preview shows exactly what clients receive.
   useEffect(() => {
@@ -184,26 +186,29 @@ export function PopupsPage() {
 
   return (
     <div>
-      <div className="mb-6 flex items-start justify-between gap-4 flex-wrap">
-        <div>
-          <h1 className="text-[22px] font-bold text-white tracking-[-0.02em]">Popups</h1>
-          <p className="text-[13px] mt-1" style={dimText}>
-            Mitteilungen, die in der Android-App und/oder auf der Website als Popup erscheinen.
-          </p>
-        </div>
-        <button onClick={openNew} className="flex items-center gap-2 px-4 py-2.5 rounded-[10px] text-[13px] font-medium" style={blueBtn}>
-          <Plus size={14} /> Neues Popup
+      <PageHeader title="Popups" subtitle="Mitteilungen, die in der Android-App und/oder auf der Website als Popup erscheinen.">
+        <button type="button" onClick={openNew} className="btn btn-primary">
+          <Plus size={16} strokeWidth={1.8} /> Neues Popup
         </button>
-      </div>
+      </PageHeader>
+
+      <Figures
+        className="mt-10"
+        items={[
+          { label: 'Popups', value: popups.length, icon: Megaphone },
+          { label: 'Aktiv', value: popups.filter((p) => p.status === 'active').length, icon: Power },
+          { label: 'Geplant', value: popups.filter((p) => p.status === 'scheduled').length, icon: CalendarClock },
+        ]}
+      />
 
       {editingId !== null && (
-        <div id="popup-editor" className="rounded-[16px] p-5 mb-6 scroll-mt-4" style={{ background: '#0d0d0d', border: '1px solid rgba(255,255,255,0.07)' }}>
-          <div className="flex items-center justify-between mb-4">
-            <div className="flex items-center gap-2.5">
-              <span style={{ color: '#0a84ff' }}><Megaphone size={17} /></span>
-              <h2 className="text-[15px] font-semibold text-white">{editingId ? 'Popup bearbeiten' : 'Neues Popup'}</h2>
+        <div id="popup-editor" className="animate-fadeInUp mt-10 scroll-mt-4 rounded-[26px] bg-well p-6 sm:p-8">
+          <div className="mb-6 flex items-center justify-between">
+            <div className="flex items-center gap-3.5">
+              <span className="orb orb-white h-11 w-11"><Megaphone size={18} strokeWidth={1.6} /></span>
+              <h2 className="text-[17px] font-semibold">{editingId ? 'Popup bearbeiten' : 'Neues Popup'}</h2>
             </div>
-            <button onClick={() => setEditingId(null)} className="p-2 rounded-[8px] hover:bg-white/[0.06]" style={dimText} aria-label="Schließen"><X size={16} /></button>
+            <button type="button" onClick={() => setEditingId(null)} className="orb orb-white h-9 w-9" aria-label="Schließen"><X size={16} strokeWidth={1.7} /></button>
           </div>
 
           <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_minmax(0,520px)]">
@@ -248,7 +253,7 @@ export function PopupsPage() {
                 <label className="text-[12px] block mb-1.5" style={dimText}>Titel</label>
                 <input value={form.title} maxLength={200} onChange={(e) => set('title', e.target.value)}
                   placeholder="z. B. Neue Funktion: Mensa-Bewertungen"
-                  className="apple-input px-3 py-2.5 text-[14px] w-full" style={inputStyle} />
+                  className="field h-11 px-4 text-[14px] w-full" />
               </div>
 
               <div>
@@ -259,7 +264,7 @@ export function PopupsPage() {
                 </p>
               </div>
 
-              <div className="rounded-[12px] p-4 flex flex-col gap-3" style={{ background: '#141416', border: '1px solid rgba(255,255,255,0.06)' }}>
+              <div className="rounded-[14px] p-4 flex flex-col gap-3" style={{ background: '#141416', border: '1px solid transparent' }}>
                 <label className="text-[12px] block" style={dimText}>Häufigkeit</label>
                 <Segmented
                   value={form.mode}
@@ -271,10 +276,10 @@ export function PopupsPage() {
                 />
 
                 {form.mode === 'recurring' && (
-                  <div className="flex items-center gap-2 text-[13px]" style={{ color: 'rgba(235,235,245,0.75)' }}>
+                  <div className="flex items-center gap-2 text-[13px]" style={{ color: 'rgb(var(--ink-rgb) / 0.86)' }}>
                     <input type="number" min={2} max={1000} value={form.showCount}
                       onChange={(e) => set('showCount', Math.max(1, Number(e.target.value) || 1))}
-                      className="apple-input px-3 py-2 text-[13px] w-24" style={inputStyle} />
+                      className="field h-11 px-4 text-[14px] w-24" />
                     <span>× anzeigen zwischen Start und Ende</span>
                   </div>
                 )}
@@ -283,12 +288,12 @@ export function PopupsPage() {
                   <div>
                     <label className="text-[12px] block mb-1" style={dimText}>Start {form.mode === 'once' && '(optional)'}</label>
                     <input type="datetime-local" value={toLocalInput(form.startsAt)} onChange={(e) => set('startsAt', fromLocalInput(e.target.value))}
-                      className="apple-input px-3 py-2 text-[13px] w-full" style={{ ...inputStyle, colorScheme: 'dark' }} />
+                      className="field h-11 px-4 text-[14px] w-full" />
                   </div>
                   <div>
                     <label className="text-[12px] block mb-1" style={dimText}>Ende {form.mode === 'once' && '(optional)'}</label>
                     <input type="datetime-local" value={toLocalInput(form.endsAt)} onChange={(e) => set('endsAt', fromLocalInput(e.target.value))}
-                      className="apple-input px-3 py-2 text-[13px] w-full" style={{ ...inputStyle, colorScheme: 'dark' }} />
+                      className="field h-11 px-4 text-[14px] w-full" />
                   </div>
                 </div>
                 {form.mode === 'recurring' && (
@@ -299,24 +304,24 @@ export function PopupsPage() {
                           const start = form.startsAt ? new Date(form.startsAt) : new Date();
                           setForm((f) => ({ ...f, startsAt: start.toISOString(), endsAt: new Date(start.getTime() + days * 86_400_000).toISOString(), showCount: days }));
                         }}
-                        className="px-2.5 py-1 rounded-full text-[12px] hover:bg-white/[0.08]" style={{ background: 'rgba(255,255,255,0.05)', color: 'rgba(235,235,245,0.7)' }}>
+                        className="px-2.5 py-1 rounded-full text-[12px] hover:bg-ink/[0.1]" style={{ background: 'rgb(var(--ink-rgb) / calc(0.04 * var(--veil)))', color: 'rgb(var(--ink-rgb) / 0.82)' }}>
                         {days}× in {days} Tagen
                       </button>
                     ))}
                   </div>
                 )}
-                {slotHint && <p className="text-[12px]" style={{ color: '#30d158' }}>{slotHint}</p>}
+                {slotHint && <p className="text-[12px]" style={{ color: 'var(--mint-deep)' }}>{slotHint}</p>}
                 {form.mode === 'once' && (
                   <p className="text-[12px]" style={dimText}>Jedes Gerät sieht das Popup genau einmal{form.endsAt ? ', aber nur bis zum Ende' : ''}.</p>
                 )}
               </div>
 
               <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
-                <label className="flex items-center gap-2 text-[13px]" style={{ color: 'rgba(235,235,245,0.75)' }}>
+                <label className="flex items-center gap-2 text-[13px]" style={{ color: 'rgb(var(--ink-rgb) / 0.86)' }}>
                   <input type="checkbox" checked={form.enabled} onChange={(e) => set('enabled', e.target.checked)} /> Aktiviert
                 </label>
                 {editingId && (
-                  <label className="flex items-center gap-2 text-[13px]" style={{ color: 'rgba(235,235,245,0.75)' }}>
+                  <label className="flex items-center gap-2 text-[13px]" style={{ color: 'rgb(var(--ink-rgb) / 0.86)' }}>
                     <input type="checkbox" checked={!!form.resetSeen} onChange={(e) => set('resetSeen', e.target.checked)} />
                     Allen erneut anzeigen (als ungesehen markieren)
                   </label>
@@ -325,11 +330,11 @@ export function PopupsPage() {
 
               <div className="flex items-center gap-2">
                 <button onClick={() => void save()} disabled={saving}
-                  className="flex items-center gap-2 px-4 py-2.5 rounded-[10px] text-[13px] font-medium disabled:opacity-50" style={blueBtn}>
+                  className="flex items-center gap-2 px-4 py-2.5 rounded-full text-[13px] font-medium disabled:opacity-50" style={blueBtn}>
                   <Save size={14} /> {saving ? 'Speichert…' : editingId ? 'Speichern' : 'Erstellen'}
                 </button>
-                <button onClick={() => setEditingId(null)} className="px-4 py-2.5 rounded-[10px] text-[13px]" style={dimText}>Abbrechen</button>
-                {validation && <span className="text-[12px]" style={{ color: '#ff9f0a' }}>{validation}</span>}
+                <button onClick={() => setEditingId(null)} className="px-4 py-2.5 rounded-full text-[13px]" style={dimText}>Abbrechen</button>
+                {validation && <span className="text-[12px]" style={{ color: 'var(--amber-deep)' }}>{validation}</span>}
               </div>
             </div>
 
@@ -354,7 +359,7 @@ export function PopupsPage() {
                 />
               </div>
               {form.platform !== 'all' && form.platform !== previewTarget && (
-                <p className="text-[12px] mb-2" style={{ color: '#ff9f0a' }}>
+                <p className="text-[12px] mb-2" style={{ color: 'var(--amber-deep)' }}>
                   Hinweis: Dieses Popup wird nur auf {PLATFORM_LABEL[form.platform]} angezeigt.
                 </p>
               )}
@@ -368,37 +373,38 @@ export function PopupsPage() {
         </div>
       )}
 
-      <div className="rounded-[16px] p-5" style={{ background: '#0d0d0d', border: '1px solid rgba(255,255,255,0.07)' }}>
-        <h2 className="text-[15px] font-semibold text-white mb-4">Alle Popups ({popups.length})</h2>
+      <div className="mt-[46px]">
+        <h2 className="mb-3 text-[20px] font-semibold">Alle Popups</h2>
         {loading ? (
-          <div className="flex flex-col gap-2">{Array.from({ length: 3 }).map((_, i) => <div key={i} className="h-14 rounded-[10px] shimmer" />)}</div>
+          <div className="flex flex-col gap-2">{Array.from({ length: 3 }).map((_, i) => <div key={i} className="h-14 rounded-[12px] shimmer" />)}</div>
         ) : popups.length === 0 ? (
           <p className="text-[13px] text-center py-8" style={dimText}>Noch keine Popups. Erstelle eins mit „Neues Popup“.</p>
         ) : (
-          <div className="flex flex-col divide-y divide-white/[0.06]">
+          <div className="stack">
             {popups.map((p) => (
-              <div key={p.id} className="flex items-center justify-between gap-3 py-3">
-                <div className="min-w-0">
+              <div key={p.id} className="spot flex items-center gap-4 py-[18px]" style={{ opacity: p.enabled ? 1 : 0.6 }}>
+                <span className="orb h-12 w-12"><Megaphone size={19} strokeWidth={1.6} /></span>
+                <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-[14px] font-medium text-white truncate">{p.title}</span>
+                    <span className="truncate text-[14.5px] font-medium">{p.title}</span>
                     <Badge color={STATUS[p.status].color}>{STATUS[p.status].label}</Badge>
-                    <Badge color="#bf5af2">
+                    <Badge color="var(--violet-deep)">
                       {p.platform === 'android' ? <Smartphone size={11} /> : p.platform === 'web' ? <Globe size={11} /> : <Layers size={11} />}
                       {PLATFORM_LABEL[p.platform]}
                     </Badge>
                     {p.platform !== 'android' && p.audience !== 'all' && (
-                      <Badge color="#40c8e0">
+                      <Badge color="var(--teal-deep)">
                         {p.audience === 'guests' ? <LogIn size={11} /> : <UserRound size={11} />}
                         {AUDIENCE_LABEL[p.audience]}
                       </Badge>
                     )}
                   </div>
-                  <div className="text-[12px] mt-0.5 truncate" style={dimText}>{scheduleSummary(p)}</div>
+                  <div className="mt-1 truncate text-[13px] text-ink-3">{scheduleSummary(p)}</div>
                 </div>
                 <div className="flex-shrink-0 flex items-center gap-1">
-                  <IconBtn label={p.enabled ? 'Deaktivieren' : 'Aktivieren'} color={p.enabled ? '#30d158' : 'rgba(235,235,245,0.4)'} onClick={() => void toggle(p)}><Power size={15} /></IconBtn>
-                  <IconBtn label="Bearbeiten" color="rgba(235,235,245,0.7)" onClick={() => openEdit(p)}><Pencil size={15} /></IconBtn>
-                  <IconBtn label="Löschen" color="#ff453a" onClick={() => void remove(p)}><Trash2 size={15} /></IconBtn>
+                  <IconBtn label={p.enabled ? 'Deaktivieren' : 'Aktivieren'} color={p.enabled ? 'var(--mint-deep)' : 'rgb(var(--ink-rgb) / 0.58)'} onClick={() => void toggle(p)}><Power size={15} /></IconBtn>
+                  <IconBtn label="Bearbeiten" color="rgb(var(--ink-rgb) / 0.82)" onClick={() => openEdit(p)}><Pencil size={15} /></IconBtn>
+                  <IconBtn label="Löschen" color="var(--rose-deep)" onClick={() => void remove(p)}><Trash2 size={15} /></IconBtn>
                 </div>
               </div>
             ))}
@@ -415,24 +421,21 @@ function Segmented<T extends string>({ value, onChange, options }: {
   options: { value: T; label: string; icon?: React.ReactNode }[];
 }) {
   return (
-    <div className="inline-flex p-1 rounded-[10px] gap-1" style={{ background: '#1c1c1e' }}>
-      {options.map((o) => (
-        <button key={o.value} type="button" onClick={() => onChange(o.value)}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-[8px] text-[13px] font-medium transition-colors"
-          style={value === o.value
-            ? { background: 'rgba(10,132,255,0.2)', color: '#0a84ff' }
-            : { color: 'rgba(235,235,245,0.6)' }}>
-          {o.icon}{o.label}
-        </button>
-      ))}
+    <div>
+      <KitSegmented
+        label="Auswahl"
+        value={value}
+        onChange={onChange}
+        options={options.map((o) => ({ value: o.value, label: <>{o.icon}{o.label}</> }))}
+      />
     </div>
   );
 }
 
 function Badge({ color, children }: { color: string; children: React.ReactNode }) {
   return (
-    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium"
-      style={{ color, background: 'rgba(255,255,255,0.06)' }}>
+    <span className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 py-[3px] text-[12px] font-medium"
+      style={{ color, background: `color-mix(in srgb, ${color} 12%, transparent)` }}>
       {children}
     </span>
   );
@@ -440,7 +443,7 @@ function Badge({ color, children }: { color: string; children: React.ReactNode }
 
 function IconBtn({ label, color, onClick, children }: { label: string; color: string; onClick: () => void; children: React.ReactNode }) {
   return (
-    <button onClick={onClick} title={label} aria-label={label} className="p-2 rounded-[8px] transition-colors hover:bg-white/[0.06]" style={{ color }}>
+    <button type="button" onClick={onClick} title={label} aria-label={label} className="orb icon-btn h-[38px] w-[38px]" data-tone="ink" style={{ color }}>
       {children}
     </button>
   );

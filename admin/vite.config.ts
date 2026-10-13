@@ -8,6 +8,7 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': 'http://0.0.0.0:4000',
+      '/readyz': 'http://0.0.0.0:4000',
     }
   }
 })

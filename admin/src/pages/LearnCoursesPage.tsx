@@ -6,7 +6,6 @@ import {
   BookOpen,
   ChevronDown,
   ChevronRight,
-  GraduationCap,
   Loader2,
   Lock,
   RefreshCw,
@@ -18,6 +17,8 @@ import {
 } from 'lucide-react';
 import { adminApi } from '../api';
 import { useToast } from '../components/Toast';
+import { useLive } from '../live';
+import { Collapse, IconButton, PageHeader } from '../components/kit';
 import { VocabularyPanel } from '../components/VocabularyPanel';
 import type {
   AdminLearnCourse,
@@ -27,20 +28,20 @@ import type {
 } from '../types';
 
 const inputStyle: CSSProperties = {
-  background: '#1c1c1e',
-  border: '1px solid rgba(255,255,255,0.08)',
-  color: 'rgba(235,235,245,0.88)',
+  background: 'var(--well)',
+  border: '1px solid transparent',
+  color: 'rgb(var(--ink-rgb) / 0.964)',
 };
 
-const mutedText: CSSProperties = { color: 'rgba(235,235,245,0.45)' };
+const mutedText: CSSProperties = { color: 'rgb(var(--ink-rgb) / 0.62)' };
 const pageSize = 25;
 
 function Card({ children, title, icon }: { children: ReactNode; title: string; icon: ReactNode }) {
   return (
-    <section className="rounded-[16px] p-5" style={{ background: '#0d0d0d', border: '1px solid rgba(255,255,255,0.07)' }}>
-      <div className="flex items-center gap-2.5 mb-4">
-        <span style={{ color: '#0a84ff' }}>{icon}</span>
-        <h2 className="text-[15px] font-semibold text-white tracking-[-0.01em]">{title}</h2>
+    <section className="plain-section">
+      <div className="mb-5 flex items-center gap-3.5">
+        <span className="orb h-11 w-11">{icon}</span>
+        <h2 className="text-[17px] font-semibold leading-snug">{title}</h2>
       </div>
       {children}
     </section>
@@ -49,9 +50,9 @@ function Card({ children, title, icon }: { children: ReactNode; title: string; i
 
 function statusColor(status: LearnCourseStatus): string {
   switch (status) {
-    case 'PUBLISHED': return '#30d158';
-    case 'ARCHIVED': return '#bf5af2';
-    default: return '#ff9f0a';
+    case 'PUBLISHED': return 'var(--mint-deep)';
+    case 'ARCHIVED': return 'var(--violet-deep)';
+    default: return 'var(--amber-deep)';
   }
 }
 
@@ -156,19 +157,19 @@ function CourseAccessPanel({
   }
 
   return (
-    <div className="mt-4 pt-4" style={{ borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+    <div className="mt-4 pt-4" style={{ borderTop: '1px solid rgb(var(--ink-rgb) / calc(0.076 * var(--veil)))' }}>
       <div className="flex items-center gap-2 mb-2">
-        <ShieldCheck size={15} style={{ color: '#0a84ff' }} />
-        <h3 className="text-[13px] font-semibold text-white">Direkte Zugriffe</h3>
+        <ShieldCheck size={15} style={{ color: 'var(--sky-deep)' }} />
+        <h3 className="text-[13px] font-semibold text-ink">Direkte Zugriffe</h3>
       </div>
       <p className="text-[12px] leading-relaxed mb-3" style={mutedText}>
         Diese Liste enthält nur explizite Einzelberechtigungen. Gruppenmitgliedschaft, öffentliche Katalogsichtbarkeit und bestehende Einschreibungen werden dadurch weder angezeigt noch aufgehoben.
       </p>
 
-      <form onSubmit={(event) => void handleSave(event)} className="rounded-[12px] p-3" style={{ background: 'rgba(10,132,255,0.055)', border: '1px solid rgba(10,132,255,0.16)' }}>
+      <form onSubmit={(event) => void handleSave(event)} className="rounded-[14px] p-3" style={{ background: 'rgba(60,135,215,0.055)', border: '1px solid transparent' }}>
         <div className="flex items-center gap-2 mb-2">
-          <UserPlus size={14} style={{ color: '#0a84ff' }} />
-          <h4 className="text-[12px] font-semibold text-white">Zugriff hinzufügen oder aktualisieren</h4>
+          <UserPlus size={14} style={{ color: 'var(--sky-deep)' }} />
+          <h4 className="text-[12px] font-semibold text-ink">Zugriff hinzufügen oder aktualisieren</h4>
         </div>
         <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_130px_auto]">
           <div>
@@ -180,8 +181,7 @@ function CourseAccessPanel({
               placeholder="POKYH-Benutzername oder Nutzer-ID"
               maxLength={100}
               required
-              className="apple-input w-full px-3 py-2 text-[13px]"
-              style={inputStyle}
+              className="field h-11 px-4 text-[14px] w-full"
             />
           </div>
           <div>
@@ -190,15 +190,15 @@ function CourseAccessPanel({
               id={`course-access-permission-${course.id}`}
               value={permission}
               onChange={(event) => setPermission(event.target.value as LearnCoursePermission)}
-              className="apple-input w-full px-3 py-2 text-[13px]"
-              style={{ ...inputStyle, colorScheme: 'dark' }}
+              className="field h-11 px-4 text-[14px] w-full"
+              style={inputStyle}
             >
               <option value="VIEW">Ansehen</option>
               <option value="EDIT">Bearbeiten</option>
               <option value="MANAGE">Verwalten</option>
             </select>
           </div>
-          <button type="submit" disabled={saving || !userId.trim()} className="apple-btn flex items-center justify-center gap-1.5 px-3 py-2 text-[12px] disabled:opacity-50">
+          <button type="submit" disabled={saving || !userId.trim()} className="btn btn-sm btn-primary">
             {saving ? <Loader2 size={13} className="animate-spin" /> : <UserPlus size={13} />} Speichern
           </button>
         </div>
@@ -206,22 +206,22 @@ function CourseAccessPanel({
 
       {loading ? (
         <div className="mt-3 flex flex-col gap-2">
-          {Array.from({ length: 2 }).map((_, index) => <div key={index} className="h-12 rounded-[10px] shimmer" />)}
+          {Array.from({ length: 2 }).map((_, index) => <div key={index} className="h-12 rounded-[12px] shimmer" />)}
         </div>
       ) : !details || details.access.items.length === 0 ? (
-        <p className="mt-3 text-[13px] py-3 text-center rounded-[10px]" style={{ background: 'rgba(255,255,255,0.03)', ...mutedText }}>Keine direkten Zugriffe vorhanden.</p>
+        <p className="mt-3 text-[13px] py-3 text-center rounded-[12px]" style={{ background: 'rgb(var(--ink-rgb) / calc(0.024 * var(--veil)))', ...mutedText }}>Keine direkten Zugriffe vorhanden.</p>
       ) : (
         <>
-          <div className="mt-3 flex flex-col rounded-[10px] overflow-hidden" style={{ border: '1px solid rgba(255,255,255,0.06)' }}>
+          <div className="mt-3 flex flex-col rounded-[12px] overflow-hidden" style={{ border: '1px solid rgb(var(--ink-rgb) / calc(0.076 * var(--veil)))' }}>
             {details.access.items.map((grant, index) => {
               const busy = changingId === grant.stableUid || removingId === grant.stableUid;
               return (
-                <div key={grant.stableUid} className="flex items-center gap-3 p-3 flex-wrap sm:flex-nowrap" style={{ borderTop: index === 0 ? undefined : '1px solid rgba(255,255,255,0.055)' }}>
-                  <div className="w-8 h-8 rounded-full flex items-center justify-center text-[12px] font-semibold flex-shrink-0" style={{ background: 'rgba(10,132,255,0.18)', color: '#0a84ff', border: '1px solid rgba(10,132,255,0.34)' }}>
+                <div key={grant.stableUid} className="flex items-center gap-3 p-3 flex-wrap sm:flex-nowrap" style={{ borderTop: index === 0 ? undefined : '1px solid rgb(var(--ink-rgb) / calc(0.071 * var(--veil)))' }}>
+                  <div className="w-8 h-8 rounded-full flex items-center justify-center text-[12px] font-semibold flex-shrink-0" style={{ background: 'rgba(60,135,215,0.18)', color: 'var(--sky-deep)', border: '1px solid transparent' }}>
                     {grant.user.username.slice(0, 1).toUpperCase()}
                   </div>
                   <div className="min-w-0 flex-1">
-                    <div className="text-[13px] font-medium text-white truncate">{grant.user.username}</div>
+                    <div className="text-[13px] font-medium text-ink truncate">{grant.user.username}</div>
                     <div className="text-[11px] mt-0.5" style={mutedText}>{grant.user.isUntisUser ? 'WebUntis verifiziert' : 'Verifikation nicht verfügbar'} · aktualisiert {formatDate(grant.updatedAt)}</div>
                   </div>
                   <label htmlFor={`course-grant-role-${course.id}-${grant.stableUid}`} className="sr-only">Berechtigung für {grant.user.username}</label>
@@ -230,8 +230,8 @@ function CourseAccessPanel({
                     value={grant.permission}
                     disabled={busy}
                     onChange={(event) => void handlePermissionChange(grant.stableUid, event.target.value as LearnCoursePermission)}
-                    className="apple-input px-2 py-1.5 text-[12px] disabled:opacity-50"
-                    style={{ ...inputStyle, colorScheme: 'dark' }}
+                    className="field h-11 px-4 text-[14px] disabled:opacity-50"
+                    style={inputStyle}
                   >
                     <option value="VIEW">Ansehen</option>
                     <option value="EDIT">Bearbeiten</option>
@@ -241,8 +241,8 @@ function CourseAccessPanel({
                     type="button"
                     onClick={() => void handleRevoke(grant.stableUid, grant.user.username)}
                     disabled={busy}
-                    className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-[8px] text-[12px] font-medium disabled:opacity-50"
-                    style={{ background: 'rgba(255,69,58,0.09)', color: '#ff453a', border: '1px solid rgba(255,69,58,0.19)' }}
+                    className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-[12px] font-medium disabled:opacity-50"
+                    style={{ background: 'rgba(225,70,75,0.09)', color: 'var(--rose-deep)', border: '1px solid transparent' }}
                   >
                     {removingId === grant.stableUid ? <Loader2 size={12} className="animate-spin" /> : <UserMinus size={12} />} Widerrufen
                   </button>
@@ -254,8 +254,8 @@ function CourseAccessPanel({
             <div className="mt-3 flex items-center justify-between gap-3 text-[12px]" style={mutedText}>
               <span>Seite {details.access.page} von {Math.max(1, Math.ceil(details.access.total / details.access.limit))}</span>
               <div className="flex gap-2">
-                <button type="button" onClick={() => void loadAccess(details.access.page - 1)} disabled={loading || details.access.page <= 1} className="apple-btn-ghost px-2.5 py-1.5 disabled:opacity-50">Zurück</button>
-                <button type="button" onClick={() => void loadAccess(details.access.page + 1)} disabled={loading || details.access.page * details.access.limit >= details.access.total} className="apple-btn-ghost px-2.5 py-1.5 disabled:opacity-50">Weiter</button>
+                <button type="button" onClick={() => void loadAccess(details.access.page - 1)} disabled={loading || details.access.page <= 1} className="btn btn-sm btn-quiet">Zurück</button>
+                <button type="button" onClick={() => void loadAccess(details.access.page + 1)} disabled={loading || details.access.page * details.access.limit >= details.access.total} className="btn btn-sm btn-quiet">Weiter</button>
               </div>
             </div>
           )}
@@ -312,18 +312,18 @@ function CourseCard({
   }
 
   return (
-    <section className="rounded-[16px] overflow-hidden" style={{ background: '#0d0d0d', border: '1px solid rgba(255,255,255,0.07)' }}>
-      <div className="p-5">
+    <section className="plain-section">
+      <div>
         <div className="flex items-start justify-between gap-4 flex-wrap">
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2 flex-wrap">
-              <h2 className="text-[16px] font-semibold text-white tracking-[-0.01em]">{course.title}</h2>
-              <span className="text-[11px] px-2 py-0.5 rounded-[6px] font-medium" style={{ background: `${color}1f`, color, border: `1px solid ${color}3c` }}>{statusLabel(course.status)}</span>
-              <span className="text-[11px] px-2 py-0.5 rounded-[6px]" style={{ background: 'rgba(255,255,255,0.06)', ...mutedText }}>{visibilityLabel(course.visibility)}</span>
-              {course.ownerLocked && <span title="Eigentümerwechsel ist gesperrt" className="flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-[6px]" style={{ background: 'rgba(191,90,242,0.12)', color: '#bf5af2', border: '1px solid rgba(191,90,242,0.22)' }}><Lock size={10} /> Besitz gesperrt</span>}
+              <h2 className="text-[16px] font-semibold text-ink tracking-[-0.01em]">{course.title}</h2>
+              <span className="text-[11px] px-2 py-0.5 rounded-[8px] font-medium" style={{ background: `color-mix(in srgb, ${color} 12%, transparent)`, color, border: `1px solid color-mix(in srgb, ${color} 24%, transparent)` }}>{statusLabel(course.status)}</span>
+              <span className="text-[11px] px-2 py-0.5 rounded-[8px]" style={{ background: 'rgb(var(--ink-rgb) / calc(0.048 * var(--veil)))', ...mutedText }}>{visibilityLabel(course.visibility)}</span>
+              {course.ownerLocked && <span title="Eigentümerwechsel ist gesperrt" className="flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-[8px]" style={{ background: 'rgba(150,80,205,0.12)', color: 'var(--violet-deep)', border: '1px solid transparent' }}><Lock size={10} /> Besitz gesperrt</span>}
             </div>
             {course.summary ? (
-              <p className="mt-1.5 text-[13px] leading-relaxed whitespace-pre-wrap" style={{ color: 'rgba(235,235,245,0.64)' }}>{course.summary}</p>
+              <p className="mt-1.5 text-[13px] leading-relaxed whitespace-pre-wrap" style={{ color: 'rgb(var(--ink-rgb) / 0.772)' }}>{course.summary}</p>
             ) : (
               <p className="mt-1.5 text-[13px]" style={mutedText}>Keine Zusammenfassung hinterlegt.</p>
             )}
@@ -343,55 +343,55 @@ function CourseCard({
               value={course.status}
               disabled={lifecycleSaving}
               onChange={(event) => void handleLifecycleChange(event.target.value as LearnCourseStatus)}
-              className="apple-input px-3 py-2 text-[12px] disabled:opacity-50"
-              style={{ ...inputStyle, colorScheme: 'dark' }}
+              className="field h-11 px-4 text-[14px] disabled:opacity-50"
+              style={inputStyle}
             >
               <option value="DRAFT">Entwurf</option>
               <option value="PUBLISHED">Veröffentlichen</option>
               <option value="ARCHIVED">Archivieren</option>
             </select>
-            {lifecycleSaving && <Loader2 size={14} className="animate-spin" style={{ color: '#0a84ff' }} />}
+            {lifecycleSaving && <Loader2 size={14} className="animate-spin" style={{ color: 'var(--sky-deep)' }} />}
           </div>
         </div>
 
         <div className="mt-4 grid grid-cols-2 sm:grid-cols-5 gap-2">
-          <div className="rounded-[10px] px-3 py-2" style={{ background: 'rgba(255,255,255,0.035)' }}><div className="text-[11px]" style={mutedText}>Abschnitte</div><div className="mt-0.5 text-[15px] font-semibold text-white">{course.counts.sections}</div></div>
-          <div className="rounded-[10px] px-3 py-2" style={{ background: 'rgba(255,255,255,0.035)' }}><div className="text-[11px]" style={mutedText}>Vokabeln</div><div className="mt-0.5 text-[15px] font-semibold text-white">{course.counts.vocabulary}</div></div>
-          <div className="rounded-[10px] px-3 py-2" style={{ background: 'rgba(255,255,255,0.035)' }}><div className="text-[11px]" style={mutedText}>Einschreibungen</div><div className="mt-0.5 text-[15px] font-semibold text-white">{course.counts.enrollments}</div></div>
-          <div className="rounded-[10px] px-3 py-2" style={{ background: 'rgba(255,255,255,0.035)' }}><div className="text-[11px]" style={mutedText}>Direktzugriffe</div><div className="mt-0.5 text-[15px] font-semibold text-white">{course.counts.directAccess}</div></div>
-          <div className="rounded-[10px] px-3 py-2" style={{ background: 'rgba(255,255,255,0.035)' }}><div className="text-[11px]" style={mutedText}>Gruppe</div><div className="mt-0.5 text-[13px] font-medium text-white truncate">{course.team?.name ?? '—'}</div></div>
+          <div className="rounded-[12px] px-3 py-2" style={{ background: 'rgb(var(--ink-rgb) / calc(0.028 * var(--veil)))' }}><div className="text-[11px]" style={mutedText}>Abschnitte</div><div className="mt-0.5 text-[15px] font-semibold text-ink">{course.counts.sections}</div></div>
+          <div className="rounded-[12px] px-3 py-2" style={{ background: 'rgb(var(--ink-rgb) / calc(0.028 * var(--veil)))' }}><div className="text-[11px]" style={mutedText}>Vokabeln</div><div className="mt-0.5 text-[15px] font-semibold text-ink">{course.counts.vocabulary}</div></div>
+          <div className="rounded-[12px] px-3 py-2" style={{ background: 'rgb(var(--ink-rgb) / calc(0.028 * var(--veil)))' }}><div className="text-[11px]" style={mutedText}>Einschreibungen</div><div className="mt-0.5 text-[15px] font-semibold text-ink">{course.counts.enrollments}</div></div>
+          <div className="rounded-[12px] px-3 py-2" style={{ background: 'rgb(var(--ink-rgb) / calc(0.028 * var(--veil)))' }}><div className="text-[11px]" style={mutedText}>Direktzugriffe</div><div className="mt-0.5 text-[15px] font-semibold text-ink">{course.counts.directAccess}</div></div>
+          <div className="rounded-[12px] px-3 py-2" style={{ background: 'rgb(var(--ink-rgb) / calc(0.028 * var(--veil)))' }}><div className="text-[11px]" style={mutedText}>Gruppe</div><div className="mt-0.5 text-[13px] font-medium text-ink truncate">{course.team?.name ?? '—'}</div></div>
         </div>
 
         <div className="mt-4 flex items-center justify-between gap-3 flex-wrap">
           <div className="flex items-center gap-4 flex-wrap">
-            <button type="button" onClick={() => setAccessOpen((value) => !value)} aria-expanded={accessOpen} className="flex items-center gap-1.5 text-[12px] font-medium" style={{ color: '#0a84ff' }}>
+            <button type="button" onClick={() => setAccessOpen((value) => !value)} aria-expanded={accessOpen} className="flex items-center gap-1.5 text-[12px] font-medium" style={{ color: 'var(--sky-deep)' }}>
               {accessOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />} Direkte Zugriffe {accessOpen ? 'ausblenden' : 'verwalten'}
             </button>
-            <button type="button" onClick={() => setVocabOpen((value) => !value)} aria-expanded={vocabOpen} className="flex items-center gap-1.5 text-[12px] font-medium" style={{ color: '#0a84ff' }}>
+            <button type="button" onClick={() => setVocabOpen((value) => !value)} aria-expanded={vocabOpen} className="flex items-center gap-1.5 text-[12px] font-medium" style={{ color: 'var(--sky-deep)' }}>
               {vocabOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />} Vokabeln {vocabOpen ? 'ausblenden' : 'verwalten'}
             </button>
           </div>
           {!deleteOpen ? (
-            <button type="button" onClick={() => setDeleteOpen(true)} className="flex items-center gap-1.5 px-3 py-2 rounded-[9px] text-[12px] font-medium" style={{ background: 'rgba(255,69,58,0.09)', color: '#ff453a', border: '1px solid rgba(255,69,58,0.19)' }}>
+            <button type="button" onClick={() => setDeleteOpen(true)} className="flex items-center gap-1.5 px-3 py-2 rounded-full text-[12px] font-medium" style={{ background: 'rgba(225,70,75,0.09)', color: 'var(--rose-deep)', border: '1px solid transparent' }}>
               <Trash2 size={12} /> Dauerhaft löschen
             </button>
           ) : null}
         </div>
 
-        {accessOpen && <CourseAccessPanel course={course} onCourseChanged={onCourseChanged} />}
-        {vocabOpen && <VocabularyPanel course={course} onCourseChanged={onCourseChanged} />}
+        <Collapse open={accessOpen}><CourseAccessPanel course={course} onCourseChanged={onCourseChanged} /></Collapse>
+        <Collapse open={vocabOpen}><VocabularyPanel course={course} onCourseChanged={onCourseChanged} /></Collapse>
 
         {deleteOpen && (
-          <div className="mt-4 rounded-[12px] p-3" style={{ background: 'rgba(255,69,58,0.06)', border: '1px solid rgba(255,69,58,0.2)' }}>
+          <div className="mt-4 rounded-[14px] p-3" style={{ background: 'rgba(225,70,75,0.06)', border: '1px solid transparent' }}>
             <div className="flex items-start gap-2 mb-3">
-              <AlertTriangle size={14} className="flex-shrink-0 mt-0.5" style={{ color: '#ff453a' }} />
-              <p className="text-[12px] leading-relaxed" style={{ color: 'rgba(235,235,245,0.8)' }}>Dauerhaftes Löschen entfernt den Kurs und seine verknüpften Learn-Daten. Gib zur Bestätigung den Slug <strong>{course.slug}</strong> exakt ein.</p>
+              <AlertTriangle size={14} className="flex-shrink-0 mt-0.5" style={{ color: 'var(--rose-deep)' }} />
+              <p className="text-[12px] leading-relaxed" style={{ color: 'rgb(var(--ink-rgb) / 0.9)' }}>Dauerhaftes Löschen entfernt den Kurs und seine verknüpften Learn-Daten. Gib zur Bestätigung den Slug <strong>{course.slug}</strong> exakt ein.</p>
             </div>
             <label htmlFor={`delete-course-${course.id}`} className="sr-only">Kurs-Slug zur Löschbestätigung</label>
-            <input id={`delete-course-${course.id}`} value={confirmation} onChange={(event) => setConfirmation(event.target.value)} placeholder={course.slug} autoComplete="off" className="apple-input w-full px-3 py-2 text-[13px]" style={inputStyle} />
+            <input id={`delete-course-${course.id}`} value={confirmation} onChange={(event) => setConfirmation(event.target.value)} placeholder={course.slug} autoComplete="off" className="field h-11 px-4 text-[14px] w-full" />
             <div className="mt-3 flex gap-2">
-              <button type="button" onClick={() => { setDeleteOpen(false); setConfirmation(''); }} disabled={deleting} className="apple-btn-ghost px-3 py-2 text-[12px] disabled:opacity-50">Abbrechen</button>
-              <button type="button" onClick={() => void handleDelete()} disabled={deleting || confirmation !== course.slug} className="flex items-center gap-1.5 px-3 py-2 rounded-[9px] text-[12px] font-medium disabled:opacity-50" style={{ background: 'rgba(255,69,58,0.16)', color: '#ff453a', border: '1px solid rgba(255,69,58,0.28)' }}>
+              <button type="button" onClick={() => { setDeleteOpen(false); setConfirmation(''); }} disabled={deleting} className="btn btn-sm btn-quiet">Abbrechen</button>
+              <button type="button" onClick={() => void handleDelete()} disabled={deleting || confirmation !== course.slug} className="flex items-center gap-1.5 px-3 py-2 rounded-full text-[12px] font-medium disabled:opacity-50" style={{ background: 'rgba(225,70,75,0.16)', color: 'var(--rose-deep)', border: '1px solid transparent' }}>
                 {deleting ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />} Kurs endgültig löschen
               </button>
             </div>
@@ -425,6 +425,7 @@ export function LearnCoursesPage() {
   }, [page, showToast]);
 
   useEffect(() => { void loadCourses(); }, [loadCourses]);
+  useLive(['learn'], () => { void loadCourses(); });
 
   const replaceCourse = useCallback((updated: AdminLearnCourse) => {
     setCourses((current) => current.map((course) => course.id === updated.id ? updated : course));
@@ -438,31 +439,24 @@ export function LearnCoursesPage() {
   const pageCount = Math.max(1, Math.ceil(total / pageSize));
 
   return (
-    <div className="animate-page max-w-[1040px]">
-      <div className="mb-6 flex items-start justify-between gap-4 flex-wrap">
-        <div>
-          <div className="flex items-center gap-2 mb-2">
-            <GraduationCap size={17} style={{ color: '#0a84ff' }} />
-            <span className="text-[12px] font-medium" style={{ color: '#0a84ff' }}>Pokyh Learn · Administration</span>
-          </div>
-          <h1 className="text-[22px] font-bold text-white tracking-[-0.02em]">Kurse &amp; Zugriffe</h1>
-          <p className="text-[13px] mt-1 max-w-[760px]" style={mutedText}>Verwalte Veröffentlichungsstatus und explizite Berechtigungen zentral. Diese Ansicht zeigt nur Kursmetadaten und Zähler, keine Lernantworten oder Kursinhalte.</p>
-        </div>
-        <div className="flex items-center gap-2 flex-wrap">
-          <Link to="/learn" className="apple-btn-ghost px-3 py-2 text-[12px]">Konfiguration</Link>
-          <Link to="/learn/teams" className="apple-btn-ghost px-3 py-2 text-[12px]">Teams &amp; Zugriffe</Link>
-          <button type="button" onClick={() => { setRefreshing(true); void loadCourses(); }} disabled={loading || refreshing} className="apple-btn-ghost flex items-center gap-1.5 px-3 py-2 text-[12px] disabled:opacity-50"><RefreshCw size={13} className={refreshing ? 'animate-spin' : ''} /> Aktualisieren</button>
-        </div>
-      </div>
+    <div>
+      <PageHeader
+        title="Kurse & Zugriffe"
+        subtitle="Verwalte Veröffentlichungsstatus und explizite Berechtigungen zentral. Diese Ansicht zeigt nur Kursmetadaten und Zähler, keine Lernantworten oder Kursinhalte."
+      >
+        <IconButton icon={RefreshCw} label="Aktualisieren" size={42} busy={refreshing} disabled={loading} onClick={() => { setRefreshing(true); void loadCourses(); }} />
+        <Link to="/learn" className="btn btn-quiet">Konfiguration</Link>
+        <Link to="/learn/teams" className="btn btn-quiet">Teams &amp; Zugriffe</Link>
+      </PageHeader>
 
-      <div className="grid gap-4">
+      <div className="mt-10 max-w-[1120px]">
         <Card title={`Kurse (${total})`} icon={<BookOpen size={17} />}>
           <p className="text-[12px] leading-relaxed" style={mutedText}>Veröffentlichen macht einen öffentlichen Katalogkurs sichtbar. Archivieren ist der reversible Standard; dauerhaftes Löschen erfordert unten eine separate exakte Bestätigung.</p>
         </Card>
 
-        {loading ? (
+        {loading && courses.length === 0 ? (
           <div className="grid gap-4">
-            {Array.from({ length: 2 }).map((_, index) => <div key={index} className="h-72 rounded-[16px] shimmer" />)}
+            {Array.from({ length: 2 }).map((_, index) => <div key={index} className="h-72 rounded-[22px] shimmer" />)}
           </div>
         ) : courses.length === 0 ? (
           <Card title="Keine Learn-Kurse" icon={<Archive size={17} />}>
@@ -475,18 +469,18 @@ export function LearnCoursesPage() {
         )}
 
         {!loading && total > pageSize && (
-          <div className="flex items-center justify-between gap-3 rounded-[12px] px-4 py-3" style={{ background: '#0d0d0d', border: '1px solid rgba(255,255,255,0.07)' }}>
+          <div className="flex items-center justify-between gap-3 rounded-[14px] px-4 py-3" style={{ background: 'rgb(var(--ink-rgb) / calc(0.05 * var(--veil)))', border: '1px solid transparent' }}>
             <span className="text-[12px]" style={mutedText}>Seite {page} von {pageCount}</span>
             <div className="flex gap-2">
-              <button type="button" onClick={() => setPage((value) => Math.max(1, value - 1))} disabled={page <= 1} className="apple-btn-ghost px-3 py-1.5 text-[12px] disabled:opacity-50">Zurück</button>
-              <button type="button" onClick={() => setPage((value) => Math.min(pageCount, value + 1))} disabled={page >= pageCount} className="apple-btn-ghost px-3 py-1.5 text-[12px] disabled:opacity-50">Weiter</button>
+              <button type="button" onClick={() => setPage((value) => Math.max(1, value - 1))} disabled={page <= 1} className="btn btn-sm btn-quiet">Zurück</button>
+              <button type="button" onClick={() => setPage((value) => Math.min(pageCount, value + 1))} disabled={page >= pageCount} className="btn btn-sm btn-quiet">Weiter</button>
             </div>
           </div>
         )}
 
-        <div className="flex items-start gap-2.5 rounded-[12px] px-4 py-3" style={{ background: 'rgba(10,132,255,0.06)', border: '1px solid rgba(10,132,255,0.15)' }}>
-          <Users size={14} className="flex-shrink-0 mt-0.5" style={{ color: '#0a84ff' }} />
-          <p className="text-[12px] leading-relaxed" style={{ color: 'rgba(235,235,245,0.62)' }}>Direkte Berechtigungen gelten zusätzlich zu Gruppen, Katalogsichtbarkeit und Einschreibungen. Beim Widerruf wird nur die explizite Einzelberechtigung entfernt; der Server prüft jede Kursanfrage weiterhin autoritativ.</p>
+        <div className="flex items-start gap-2.5 rounded-[14px] px-4 py-3" style={{ background: 'rgba(60,135,215,0.06)', border: '1px solid transparent' }}>
+          <Users size={14} className="flex-shrink-0 mt-0.5" style={{ color: 'var(--sky-deep)' }} />
+          <p className="text-[12px] leading-relaxed" style={{ color: 'rgb(var(--ink-rgb) / 0.756)' }}>Direkte Berechtigungen gelten zusätzlich zu Gruppen, Katalogsichtbarkeit und Einschreibungen. Beim Widerruf wird nur die explizite Einzelberechtigung entfernt; der Server prüft jede Kursanfrage weiterhin autoritativ.</p>
         </div>
       </div>
     </div>

@@ -7,6 +7,8 @@ import {
 import { adminApi } from '../api';
 import type { AdminDishFull, AdminDish, AdminDishRatingEntry, DishPlan } from '../types';
 import { useToast } from '../components/Toast';
+import { useLive } from '../live';
+import { Collapse, Delta, Figures, PageHeader, SearchField, Segmented, Tag } from '../components/kit';
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -57,6 +59,28 @@ function currentMondayIso(): string {
   const dow = today.getDay() || 7;
   const mon = new Date(today.getFullYear(), today.getMonth(), today.getDate() - dow + 1);
   return toLocalIso(mon);
+}
+
+// "2026-10-12" -> { weekday: "Montag", short: "12.10." }, parsed as a local date.
+function dayParts(iso: string): { weekday: string; short: string } {
+  const [y, m, d] = iso.split('-').map(Number);
+  const date = new Date(y ?? 1970, (m ?? 1) - 1, d ?? 1);
+  if (isNaN(date.getTime())) return { weekday: iso, short: '' };
+  return {
+    weekday: date.toLocaleDateString('de-AT', { weekday: 'long' }),
+    short: date.toLocaleDateString('de-AT', { day: '2-digit', month: '2-digit' }),
+  };
+}
+
+// Consecutive dishes of the same date become one day group (input is date-ordered).
+function groupByDay<T extends { date: string }>(dishes: T[]): Array<[string, T[]]> {
+  const groups: Array<[string, T[]]> = [];
+  for (const dish of dishes) {
+    const last = groups[groups.length - 1];
+    if (last && last[0] === dish.date) last[1].push(dish);
+    else groups.push([dish.date, [dish]]);
+  }
+  return groups;
 }
 
 function formatWeekRange(monIso: string): string {
@@ -136,8 +160,8 @@ function StarsDisplay({ value, size = 13 }: { value: number; size?: number }) {
         <Star
           key={s}
           size={size}
-          fill={value >= s ? '#ffd60a' : 'transparent'}
-          stroke={value >= s ? '#ffd60a' : 'rgba(235,235,245,0.12)'}
+          fill={value >= s ? 'var(--gold-deep)' : 'transparent'}
+          stroke={value >= s ? 'var(--gold-deep)' : 'rgb(var(--ink-rgb) / 0.42)'}
           strokeWidth={1.5}
         />
       ))}
@@ -160,8 +184,8 @@ function StarSelector({ value, onChange }: { value: number; onChange: (v: number
         >
           <Star
             size={18}
-            fill={(hovered || value) >= s ? '#ffd60a' : 'transparent'}
-            stroke={(hovered || value) >= s ? '#ffd60a' : 'rgba(235,235,245,0.3)'}
+            fill={(hovered || value) >= s ? 'var(--gold-deep)' : 'transparent'}
+            stroke={(hovered || value) >= s ? 'var(--gold-deep)' : 'rgb(var(--ink-rgb) / 0.5)'}
             strokeWidth={1.5}
           />
         </button>
@@ -216,10 +240,10 @@ function RatingRow({
 
   return (
     <div
-      className="flex items-center gap-3 px-3 py-2.5 rounded-[12px]"
-      style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.05)' }}
+      className="flex items-center gap-3 px-3 py-2.5 rounded-[14px]"
+      style={{ background: 'rgb(var(--ink-rgb) / calc(0.024 * var(--veil)))', border: '1px solid transparent' }}
     >
-      <span className="flex-1 text-sm font-medium truncate" style={{ color: 'rgba(235,235,245,0.7)' }}>
+      <span className="flex-1 text-sm font-medium truncate" style={{ color: 'rgb(var(--ink-rgb) / 0.82)' }}>
         {entry.username}
       </span>
 
@@ -227,46 +251,46 @@ function RatingRow({
         <div className="flex items-center gap-2 flex-shrink-0">
           <StarSelector value={editStars} onChange={setEditStars} />
           <button onClick={handleSave} disabled={saving}
-            className="px-2.5 py-1 rounded-[8px] text-xs font-semibold"
-            style={{ background: 'rgba(10,132,255,0.2)', color: '#0a84ff', border: '1px solid rgba(10,132,255,0.3)' }}>
+            className="px-2.5 py-1 rounded-full text-xs font-semibold"
+            style={{ background: 'rgba(60,135,215,0.2)', color: 'var(--sky-deep)', border: '1px solid transparent' }}>
             {saving ? '...' : 'OK'}
           </button>
           <button onClick={() => { setEditing(false); setEditStars(entry.stars); }}
-            className="px-2.5 py-1 rounded-[8px] text-xs"
-            style={{ background: 'rgba(255,255,255,0.05)', color: 'rgba(235,235,245,0.6)' }}>
+            className="px-2.5 py-1 rounded-full text-xs"
+            style={{ background: 'rgb(var(--ink-rgb) / calc(0.04 * var(--veil)))', color: 'rgb(var(--ink-rgb) / 0.74)' }}>
             Abbrechen
           </button>
         </div>
       ) : (
         <div className="flex items-center gap-2 flex-shrink-0">
           <StarsDisplay value={entry.stars} />
-          <span className="text-xs w-3 text-center" style={{ color: '#ffd60a' }}>{entry.stars}</span>
+          <span className="text-xs w-3 text-center" style={{ color: 'var(--gold-deep)' }}>{entry.stars}</span>
           <button onClick={() => setEditing(true)}
-            className="p-1.5 rounded-[8px] transition-colors"
-            style={{ color: 'rgba(235,235,245,0.3)' }}
-            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#0a84ff'; }}
-            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'rgba(235,235,245,0.3)'; }}>
+            className="p-1.5 rounded-full transition-colors"
+            style={{ color: 'rgb(var(--ink-rgb) / 0.5)' }}
+            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--sky-deep)'; }}
+            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'rgb(var(--ink-rgb) / 0.5)'; }}>
             <Pencil size={13} />
           </button>
           {confirmDel ? (
             <div className="flex items-center gap-1">
               <button onClick={handleDelete} disabled={deleting}
-                className="px-2 py-1 rounded-[8px] text-xs font-semibold"
-                style={{ background: 'rgba(255,69,58,0.14)', color: '#ff453a', border: '1px solid rgba(255,69,58,0.2)' }}>
+                className="px-2 py-1 rounded-full text-xs font-semibold"
+                style={{ background: 'rgba(225,70,75,0.14)', color: 'var(--rose-deep)', border: '1px solid transparent' }}>
                 {deleting ? '...' : 'Sicher?'}
               </button>
               <button onClick={() => setConfirmDel(false)}
-                className="px-2 py-1 rounded-[8px] text-xs"
-                style={{ background: 'rgba(255,255,255,0.05)', color: 'rgba(235,235,245,0.6)' }}>
+                className="px-2 py-1 rounded-full text-xs"
+                style={{ background: 'rgb(var(--ink-rgb) / calc(0.04 * var(--veil)))', color: 'rgb(var(--ink-rgb) / 0.74)' }}>
                 Nein
               </button>
             </div>
           ) : (
             <button onClick={() => setConfirmDel(true)}
-              className="p-1.5 rounded-[8px] transition-colors"
-              style={{ color: 'rgba(235,235,245,0.3)' }}
-              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#ff453a'; }}
-              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'rgba(235,235,245,0.3)'; }}>
+              className="p-1.5 rounded-full transition-colors"
+              style={{ color: 'rgb(var(--ink-rgb) / 0.5)' }}
+              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--rose-deep)'; }}
+              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'rgb(var(--ink-rgb) / 0.5)'; }}>
               <Trash2 size={13} />
             </button>
           )}
@@ -343,18 +367,18 @@ function DishForm({ dish, ratingData, initialDate, activePlan, onSaved, onClose,
     }
   }
 
-  const inp = 'w-full px-3 py-2 rounded-[8px] text-sm outline-none transition-all';
-  const inpStyle = { background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.09)', color: 'rgba(235,235,245,0.8)' };
+  const inp = 'w-full px-3 py-2 rounded-[10px] text-sm outline-none transition-all';
+  const inpStyle = { background: 'rgb(var(--ink-rgb) / calc(0.032 * var(--veil)))', border: '1px solid transparent', color: 'rgb(var(--ink-rgb) / 0.9)' };
   const focusStyle = (e: React.FocusEvent<HTMLInputElement | HTMLTextAreaElement>) => {
-    (e.target as HTMLElement).style.borderColor = 'rgba(10,132,255,0.45)';
-    (e.target as HTMLElement).style.boxShadow = '0 0 0 3px rgba(10,132,255,0.08)';
+    (e.target as HTMLElement).style.borderColor = 'rgba(60,135,215,0.45)';
+    (e.target as HTMLElement).style.boxShadow = '0 0 0 3px rgba(60,135,215,0.04)';
   };
   const blurStyle = (e: React.FocusEvent<HTMLInputElement | HTMLTextAreaElement>) => {
-    (e.target as HTMLElement).style.borderColor = 'rgba(255,255,255,0.09)';
+    (e.target as HTMLElement).style.borderColor = 'rgb(var(--ink-rgb) / calc(0.109 * var(--veil)))';
     (e.target as HTMLElement).style.boxShadow = '';
   };
-  const lbl = 'block text-xs font-medium mb-1 uppercase tracking-wide';
-  const lblStyle = { color: 'rgba(235,235,245,0.4)' };
+  const lbl = 'block text-[13px] mb-1.5';
+  const lblStyle = { color: 'rgb(var(--ink-rgb) / 0.58)' };
 
   const tabs = [
     { key: 'basic' as const, label: 'Allgemein' },
@@ -365,41 +389,41 @@ function DishForm({ dish, ratingData, initialDate, activePlan, onSaved, onClose,
   return createPortal(
     <div
       className="fixed inset-0 z-[9999] flex items-center justify-center p-4"
-      style={{ background: 'rgba(0,0,0,0.65)', backdropFilter: 'blur(6px)' }}
+      style={{ background: 'var(--scrim)' }}
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
       <div
-        className="w-full max-w-lg flex flex-col animate-scaleIn overflow-hidden rounded-[16px]"
+        className="w-full max-w-lg flex flex-col animate-scaleIn overflow-hidden rounded-[22px]"
         style={{
-          background: '#1c1c1e',
-          border: '1px solid rgba(255,255,255,0.1)',
-          boxShadow: '0 24px 80px rgba(0,0,0,0.6)',
+          background: 'var(--raise)',
+          border: '1px solid transparent',
+          boxShadow: '0 44px 70px -40px rgb(0 0 0 / 0.4)',
           maxHeight: 'calc(100dvh - 32px)',
         }}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 flex-shrink-0" style={{ borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
-          <h2 className="font-semibold" style={{ color: 'rgba(235,235,245,0.9)' }}>
+        <div className="flex items-center justify-between px-5 py-4 flex-shrink-0" style={{ borderBottom: '1px solid rgb(var(--ink-rgb) / calc(0.087 * var(--veil)))' }}>
+          <h2 className="font-semibold" style={{ color: 'rgb(var(--ink-rgb) / 0.98)' }}>
             {isEdit ? 'Gericht bearbeiten' : 'Neues Gericht'}
           </h2>
-          <button onClick={onClose} className="p-1.5 rounded-[8px] transition-colors" style={{ color: 'rgba(235,235,245,0.3)' }}
-            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#ffffff'; }}
-            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'rgba(235,235,245,0.3)'; }}>
+          <button onClick={onClose} className="p-1.5 rounded-full transition-colors" style={{ color: 'rgb(var(--ink-rgb) / 0.5)' }}
+            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--ink)'; }}
+            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'rgb(var(--ink-rgb) / 0.5)'; }}>
             <X size={18} />
           </button>
         </div>
 
         {/* Tabs */}
-        <div className="flex flex-shrink-0 px-5 pt-3 gap-1" style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+        <div className="flex flex-shrink-0 px-5 pt-3 gap-1" style={{ borderBottom: '1px solid rgb(var(--ink-rgb) / calc(0.076 * var(--veil)))' }}>
           {tabs.map((t) => (
             <button
               key={t.key}
               onClick={() => setTab(t.key)}
               className="px-4 py-2 text-xs font-semibold rounded-t-lg transition-all"
               style={{
-                color: tab === t.key ? '#0a84ff' : 'rgba(235,235,245,0.4)',
-                borderBottom: tab === t.key ? '2px solid #0a84ff' : '2px solid transparent',
-                background: tab === t.key ? 'rgba(10,132,255,0.06)' : 'transparent',
+                color: tab === t.key ? 'var(--sky-deep)' : 'rgb(var(--ink-rgb) / 0.58)',
+                borderBottom: tab === t.key ? '2px solid var(--sky-deep)' : '2px solid transparent',
+                background: tab === t.key ? 'rgba(60,135,215,0.06)' : 'transparent',
               }}
             >
               {t.label}
@@ -413,8 +437,8 @@ function DishForm({ dish, ratingData, initialDate, activePlan, onSaved, onClose,
           {tab === 'basic' && (
             <>
               {form.imageUrl && (
-                <div className="w-full h-36 rounded-[12px] overflow-hidden flex-shrink-0"
-                  style={{ border: '1px solid rgba(255,255,255,0.07)' }}>
+                <div className="w-full h-36 rounded-[14px] overflow-hidden flex-shrink-0"
+                  style={{ border: '1px solid rgb(var(--ink-rgb) / calc(0.087 * var(--veil)))' }}>
                   <img src={form.imageUrl} alt="" className="w-full h-full object-cover"
                     onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }} />
                 </div>
@@ -453,11 +477,11 @@ function DishForm({ dish, ratingData, initialDate, activePlan, onSaved, onClose,
                     <button
                       type="button"
                       onClick={() => set('plan', 'summer')}
-                      className="flex items-center gap-1.5 px-3 rounded-[8px] text-xs font-semibold transition-all"
+                      className="flex items-center gap-1.5 px-3 rounded-full text-xs font-semibold transition-all"
                       style={{
-                        background: form.plan === 'summer' ? 'rgba(255,159,10,0.18)' : 'rgba(255,255,255,0.04)',
-                        border: form.plan === 'summer' ? '1px solid rgba(255,159,10,0.45)' : '1px solid rgba(255,255,255,0.09)',
-                        color: form.plan === 'summer' ? '#ff9f0a' : 'rgba(235,235,245,0.4)',
+                        background: form.plan === 'summer' ? 'rgba(236,140,40,0.18)' : 'rgb(var(--ink-rgb) / calc(0.032 * var(--veil)))',
+                        border: form.plan === 'summer' ? '1px solid transparent' : '1px solid transparent',
+                        color: form.plan === 'summer' ? 'var(--amber-deep)' : 'rgb(var(--ink-rgb) / 0.58)',
                       }}
                     >
                       <Sun size={13} /> Sommer
@@ -465,11 +489,11 @@ function DishForm({ dish, ratingData, initialDate, activePlan, onSaved, onClose,
                     <button
                       type="button"
                       onClick={() => set('plan', 'winter')}
-                      className="flex items-center gap-1.5 px-3 rounded-[8px] text-xs font-semibold transition-all"
+                      className="flex items-center gap-1.5 px-3 rounded-full text-xs font-semibold transition-all"
                       style={{
-                        background: form.plan === 'winter' ? 'rgba(64,156,255,0.18)' : 'rgba(255,255,255,0.04)',
-                        border: form.plan === 'winter' ? '1px solid rgba(64,156,255,0.45)' : '1px solid rgba(255,255,255,0.09)',
-                        color: form.plan === 'winter' ? '#409cff' : 'rgba(235,235,245,0.4)',
+                        background: form.plan === 'winter' ? 'rgba(60,135,215,0.18)' : 'rgb(var(--ink-rgb) / calc(0.032 * var(--veil)))',
+                        border: form.plan === 'winter' ? '1px solid transparent' : '1px solid transparent',
+                        color: form.plan === 'winter' ? 'var(--sky-deep)' : 'rgb(var(--ink-rgb) / 0.58)',
                       }}
                     >
                       <Snowflake size={13} /> Winter
@@ -496,11 +520,11 @@ function DishForm({ dish, ratingData, initialDate, activePlan, onSaved, onClose,
                 <button
                   type="button"
                   onClick={() => setForm((p) => ({ ...p, isVegetarian: !p.isVegetarian }))}
-                  className="flex items-center gap-2 px-4 py-2 rounded-[12px] text-sm font-medium transition-all select-none"
+                  className="flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium transition-all select-none"
                   style={{
-                    background: form.isVegetarian ? 'rgba(34,197,94,0.15)' : 'rgba(255,255,255,0.04)',
-                    border: form.isVegetarian ? '1px solid rgba(34,197,94,0.4)' : '1px solid rgba(255,255,255,0.09)',
-                    color: form.isVegetarian ? '#4ade80' : 'rgba(235,235,245,0.4)',
+                    background: form.isVegetarian ? 'rgba(34,197,94,0.15)' : 'rgb(var(--ink-rgb) / calc(0.032 * var(--veil)))',
+                    border: form.isVegetarian ? '1px solid transparent' : '1px solid transparent',
+                    color: form.isVegetarian ? '#4ade80' : 'rgb(var(--ink-rgb) / 0.58)',
                   }}
                 >
                   <Leaf size={14} />
@@ -509,11 +533,11 @@ function DishForm({ dish, ratingData, initialDate, activePlan, onSaved, onClose,
                 <button
                   type="button"
                   onClick={() => setForm((p) => ({ ...p, isVegan: !p.isVegan }))}
-                  className="flex items-center gap-2 px-4 py-2 rounded-[12px] text-sm font-medium transition-all select-none"
+                  className="flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium transition-all select-none"
                   style={{
-                    background: form.isVegan ? 'rgba(134,239,172,0.15)' : 'rgba(255,255,255,0.04)',
-                    border: form.isVegan ? '1px solid rgba(134,239,172,0.4)' : '1px solid rgba(255,255,255,0.09)',
-                    color: form.isVegan ? '#30d158' : 'rgba(235,235,245,0.4)',
+                    background: form.isVegan ? 'rgba(134,239,172,0.15)' : 'rgb(var(--ink-rgb) / calc(0.032 * var(--veil)))',
+                    border: form.isVegan ? '1px solid transparent' : '1px solid transparent',
+                    color: form.isVegan ? 'var(--mint-deep)' : 'rgb(var(--ink-rgb) / 0.58)',
                   }}
                 >
                   <Sprout size={14} />
@@ -561,13 +585,13 @@ function DishForm({ dish, ratingData, initialDate, activePlan, onSaved, onClose,
             <>
               {ratingData && ratingData.count > 0 ? (
                 <>
-                  <div className="flex items-center gap-3 px-4 py-3 rounded-[12px]"
-                    style={{ background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.15)' }}>
+                  <div className="flex items-center gap-3 px-4 py-3 rounded-[14px]"
+                    style={{ background: 'rgba(236,140,40,0.08)', border: '1px solid transparent' }}>
                     <StarsDisplay value={Math.round(ratingData.avgStars)} size={16} />
-                    <span className="text-base font-bold" style={{ color: '#ffd60a' }}>
+                    <span className="text-base font-bold" style={{ color: 'var(--gold-deep)' }}>
                       {ratingData.avgStars.toFixed(1)}
                     </span>
-                    <span className="text-sm" style={{ color: 'rgba(235,235,245,0.4)' }}>
+                    <span className="text-sm" style={{ color: 'rgb(var(--ink-rgb) / 0.58)' }}>
                       · {ratingData.count} {ratingData.count === 1 ? 'Bewertung' : 'Bewertungen'}
                     </span>
                   </div>
@@ -585,8 +609,8 @@ function DishForm({ dish, ratingData, initialDate, activePlan, onSaved, onClose,
                 </>
               ) : (
                 <div className="flex flex-col items-center py-10 gap-2">
-                  <Star size={28} style={{ color: 'rgba(235,235,245,0.12)' }} />
-                  <p className="text-sm" style={{ color: 'rgba(235,235,245,0.3)' }}>Noch keine Bewertungen</p>
+                  <Star size={28} style={{ color: 'rgb(var(--ink-rgb) / 0.42)' }} />
+                  <p className="text-sm" style={{ color: 'rgb(var(--ink-rgb) / 0.5)' }}>Noch keine Bewertungen</p>
                 </div>
               )}
             </>
@@ -595,26 +619,26 @@ function DishForm({ dish, ratingData, initialDate, activePlan, onSaved, onClose,
 
         {/* Footer */}
         {tab !== 'ratings' && (
-          <div className="flex items-center justify-end gap-3 px-5 py-4 flex-shrink-0" style={{ borderTop: '1px solid rgba(255,255,255,0.07)' }}>
-            <button onClick={onClose} className="px-4 py-2 rounded-[12px] text-sm transition-colors"
-              style={{ background: 'rgba(255,255,255,0.05)', color: 'rgba(235,235,245,0.6)', border: '1px solid rgba(255,255,255,0.08)' }}>
+          <div className="flex items-center justify-end gap-3 px-5 py-4 flex-shrink-0" style={{ borderTop: '1px solid rgb(var(--ink-rgb) / calc(0.087 * var(--veil)))' }}>
+            <button onClick={onClose} className="px-4 py-2 rounded-full text-sm transition-colors"
+              style={{ background: 'rgb(var(--ink-rgb) / calc(0.04 * var(--veil)))', color: 'rgb(var(--ink-rgb) / 0.74)', border: '1px solid transparent' }}>
               Abbrechen
             </button>
             <button onClick={handleSave} disabled={saving}
-              className="px-5 py-2 rounded-[12px] text-sm font-semibold transition-all"
+              className="px-5 py-2 rounded-full text-sm font-semibold transition-all"
               style={{
-                background: saving ? 'rgba(10,132,255,0.4)' : 'linear-gradient(135deg,#0a84ff,#0a84ff)',
-                color: '#fff',
-                boxShadow: saving ? 'none' : '0 4px 16px rgba(10,132,255,0.3)',
+                background: saving ? 'rgba(60,135,215,0.4)' : 'var(--sky)',
+                color: 'var(--on-sky)',
+                boxShadow: 'none',
               }}>
               {saving ? 'Speichern...' : isEdit ? 'Speichern' : 'Erstellen'}
             </button>
           </div>
         )}
         {tab === 'ratings' && (
-          <div className="flex items-center justify-end px-5 py-4 flex-shrink-0" style={{ borderTop: '1px solid rgba(255,255,255,0.07)' }}>
-            <button onClick={onClose} className="px-4 py-2 rounded-[12px] text-sm transition-colors"
-              style={{ background: 'rgba(255,255,255,0.05)', color: 'rgba(235,235,245,0.6)', border: '1px solid rgba(255,255,255,0.08)' }}>
+          <div className="flex items-center justify-end px-5 py-4 flex-shrink-0" style={{ borderTop: '1px solid rgb(var(--ink-rgb) / calc(0.087 * var(--veil)))' }}>
+            <button onClick={onClose} className="px-4 py-2 rounded-full text-sm transition-colors"
+              style={{ background: 'rgb(var(--ink-rgb) / calc(0.04 * var(--veil)))', color: 'rgb(var(--ink-rgb) / 0.74)', border: '1px solid transparent' }}>
               Schließen
             </button>
           </div>
@@ -662,10 +686,8 @@ function DishCard({ dish, ratingData, onEdit, onDelete, onDragStart, onDragEnd, 
         onDragStart();
       }}
       onDragEnd={onDragEnd}
-      className="flex items-center gap-3 px-4 py-3 rounded-[12px] card-hover transition-all"
+      className="dish-row spot flex items-center gap-4 py-3.5 pl-3"
       style={{
-        background: '#1c1c1e',
-        border: '1px solid rgba(255,255,255,0.06)',
         opacity: isDragging ? 0.35 : 1,
         cursor: isDragging ? 'grabbing' : 'default',
         transition: 'opacity 0.15s',
@@ -674,81 +696,64 @@ function DishCard({ dish, ratingData, onEdit, onDelete, onDragStart, onDragEnd, 
       {/* Drag grip */}
       <div
         className="flex-shrink-0"
-        style={{ color: 'rgba(235,235,245,0.2)', cursor: 'grab' }}
+        style={{ color: 'rgb(var(--ink-rgb) / 0.42)', cursor: 'grab' }}
         title="Ziehen zum Verschieben"
       >
         <GripVertical size={15} />
       </div>
 
       {/* Image */}
-      <div className="w-12 h-12 rounded-[8px] flex-shrink-0 overflow-hidden flex items-center justify-center"
-        style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.07)' }}>
+      <div className="flex h-12 w-12 flex-shrink-0 items-center justify-center overflow-hidden rounded-full bg-well">
         {dish.imageUrl && !imgError ? (
           <img src={dish.imageUrl} alt={dish.nameDe} className="w-full h-full object-cover"
             onError={() => setImgError(true)} />
         ) : (
-          <UtensilsCrossed size={18} style={{ color: 'rgba(235,235,245,0.12)' }} />
+          <UtensilsCrossed size={18} style={{ color: 'rgb(var(--ink-rgb) / 0.42)' }} />
         )}
       </div>
 
       {/* Info */}
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 flex-wrap">
-          <span className="text-sm font-medium truncate" style={{ color: 'rgba(235,235,245,0.85)' }}>{dish.nameDe}</span>
-          {!!dish.isVegan && <Sprout size={13} style={{ color: '#30d158' }} />}
+          <span className="truncate text-[14.5px] font-medium">{dish.nameDe}</span>
+          {!!dish.isVegan && <Sprout size={13} style={{ color: 'var(--mint-deep)' }} />}
           {!!dish.isVegetarian && !dish.isVegan && <Leaf size={13} style={{ color: '#22c55e' }} />}
         </div>
-        <div className="flex items-center gap-2 mt-0.5 flex-wrap">
-          {dish.category && (
-            <span className="text-xs px-1.5 py-0.5 rounded-md" style={{ background: 'rgba(10,132,255,0.1)', color: '#0a84ff' }}>
-              {dish.category}
-            </span>
-          )}
+        <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
+          {dish.category && <Tag tone="sky">{dish.category}</Tag>}
           {dish.calories > 0 && (
-            <span className="text-xs" style={{ color: 'rgba(235,235,245,0.3)' }}>{dish.calories} kcal</span>
+            <span className="text-xs" style={{ color: 'rgb(var(--ink-rgb) / 0.5)' }}>{dish.calories} kcal</span>
           )}
           {ratingData && ratingData.count > 0 ? (
             <div className="flex items-center gap-1">
               <StarsDisplay value={Math.round(ratingData.avgStars)} size={11} />
-              <span className="text-xs font-semibold" style={{ color: '#ffd60a' }}>{ratingData.avgStars.toFixed(1)}</span>
-              <span className="text-xs" style={{ color: 'rgba(235,235,245,0.12)' }}>({ratingData.count})</span>
+              <span className="text-xs font-semibold" style={{ color: 'var(--gold-deep)' }}>{ratingData.avgStars.toFixed(1)}</span>
+              <span className="text-xs" style={{ color: 'rgb(var(--ink-rgb) / 0.42)' }}>({ratingData.count})</span>
             </div>
           ) : (
-            <span className="text-xs" style={{ color: 'rgba(235,235,245,0.12)' }}>Keine Bewertungen</span>
+            <span className="text-xs" style={{ color: 'rgb(var(--ink-rgb) / 0.42)' }}>Keine Bewertungen</span>
           )}
         </div>
       </div>
 
       {/* Actions */}
-      <div className="flex items-center gap-1 flex-shrink-0">
-        <button onClick={() => onEdit(dish)}
-          className="p-2 rounded-[8px] transition-colors"
-          style={{ color: 'rgba(235,235,245,0.3)' }}
-          onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#0a84ff'; }}
-          onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'rgba(235,235,245,0.3)'; }}>
-          <Pencil size={15} />
-        </button>
+      <div className="flex flex-shrink-0 items-center gap-1.5">
         {confirmDel ? (
-          <div className="flex items-center gap-1">
-            <button onClick={handleDelete} disabled={deleting}
-              className="px-2.5 py-1 rounded-[8px] text-xs font-semibold transition-colors"
-              style={{ background: 'rgba(255,69,58,0.14)', color: '#ff453a', border: '1px solid rgba(255,69,58,0.2)' }}>
-              {deleting ? '...' : 'Löschen?'}
+          <>
+            <button type="button" onClick={handleDelete} disabled={deleting} className="btn btn-sm btn-danger">
+              {deleting ? 'Lösche…' : 'Wirklich löschen?'}
             </button>
-            <button onClick={() => setConfirmDel(false)}
-              className="px-2 py-1 rounded-[8px] text-xs transition-colors"
-              style={{ background: 'rgba(255,255,255,0.05)', color: 'rgba(235,235,245,0.6)' }}>
-              Nein
-            </button>
-          </div>
+            <button type="button" onClick={() => setConfirmDel(false)} className="btn btn-sm btn-quiet">Nein</button>
+          </>
         ) : (
-          <button onClick={() => setConfirmDel(true)}
-            className="p-2 rounded-[8px] transition-colors"
-            style={{ color: 'rgba(235,235,245,0.3)' }}
-            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#ff453a'; }}
-            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'rgba(235,235,245,0.3)'; }}>
-            <Trash2 size={15} />
-          </button>
+          <>
+            <button type="button" onClick={() => onEdit(dish)} className="orb icon-btn h-[38px] w-[38px]" data-tone="sky" title="Gericht bearbeiten" aria-label={`${dish.nameDe} bearbeiten`}>
+              <Pencil size={16} strokeWidth={1.7} />
+            </button>
+            <button type="button" onClick={() => setConfirmDel(true)} className="orb icon-btn h-[38px] w-[38px]" data-tone="rose" title="Gericht löschen" aria-label={`${dish.nameDe} löschen`}>
+              <Trash2 size={16} strokeWidth={1.7} />
+            </button>
+          </>
         )}
       </div>
     </div>
@@ -779,26 +784,26 @@ function ImportDialog({ defaultPlan, onDone, onClose }: { defaultPlan: DishPlan;
   return createPortal(
     <div
       className="fixed inset-0 z-[9999] flex items-center justify-center p-4"
-      style={{ background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)' }}
+      style={{ background: 'var(--scrim)' }}
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
-      <div className="w-full max-w-md rounded-[16px] p-6 animate-scaleIn"
-        style={{ background: '#1c1c1e', border: '1px solid rgba(10,132,255,0.2)' }}>
-        <h3 className="font-bold mb-1" style={{ color: 'rgba(235,235,245,0.9)' }}>Gerichte importieren</h3>
-        <p className="text-xs mb-4" style={{ color: 'rgba(235,235,245,0.4)' }}>
+      <div className="w-full max-w-md rounded-[22px] p-6 animate-scaleIn"
+        style={{ background: 'var(--well)', border: '1px solid transparent' }}>
+        <h3 className="font-bold mb-1" style={{ color: 'rgb(var(--ink-rgb) / 0.98)' }}>Gerichte importieren</h3>
+        <p className="text-xs mb-4" style={{ color: 'rgb(var(--ink-rgb) / 0.58)' }}>
           Lädt alle Gerichte von der externen URL und speichert sie im ausgewählten Plan. Vorhandene werden aktualisiert.
         </p>
 
-        <label className="block text-xs font-medium mb-1.5 uppercase tracking-wide" style={{ color: 'rgba(235,235,245,0.4)' }}>Plan</label>
+        <label className="block text-[13px] mb-1.5" style={{ color: 'rgb(var(--ink-rgb) / 0.58)' }}>Plan</label>
         <div className="flex gap-2 mb-4">
           <button
             type="button"
             onClick={() => setPlan('summer')}
-            className="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-[10px] text-sm font-semibold transition-all"
+            className="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-full text-sm font-semibold transition-all"
             style={{
-              background: plan === 'summer' ? 'rgba(255,159,10,0.18)' : 'rgba(255,255,255,0.04)',
-              border: plan === 'summer' ? '1px solid rgba(255,159,10,0.5)' : '1px solid rgba(255,255,255,0.09)',
-              color: plan === 'summer' ? '#ff9f0a' : 'rgba(235,235,245,0.5)',
+              background: plan === 'summer' ? 'rgba(236,140,40,0.18)' : 'rgb(var(--ink-rgb) / calc(0.032 * var(--veil)))',
+              border: plan === 'summer' ? '1px solid transparent' : '1px solid transparent',
+              color: plan === 'summer' ? 'var(--amber-deep)' : 'rgb(var(--ink-rgb) / 0.66)',
             }}
           >
             <Sun size={15} /> Sommer
@@ -806,35 +811,34 @@ function ImportDialog({ defaultPlan, onDone, onClose }: { defaultPlan: DishPlan;
           <button
             type="button"
             onClick={() => setPlan('winter')}
-            className="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-[10px] text-sm font-semibold transition-all"
+            className="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-full text-sm font-semibold transition-all"
             style={{
-              background: plan === 'winter' ? 'rgba(64,156,255,0.18)' : 'rgba(255,255,255,0.04)',
-              border: plan === 'winter' ? '1px solid rgba(64,156,255,0.5)' : '1px solid rgba(255,255,255,0.09)',
-              color: plan === 'winter' ? '#409cff' : 'rgba(235,235,245,0.5)',
+              background: plan === 'winter' ? 'rgba(60,135,215,0.18)' : 'rgb(var(--ink-rgb) / calc(0.032 * var(--veil)))',
+              border: plan === 'winter' ? '1px solid transparent' : '1px solid transparent',
+              color: plan === 'winter' ? 'var(--sky-deep)' : 'rgb(var(--ink-rgb) / 0.66)',
             }}
           >
             <Snowflake size={15} /> Winter
           </button>
         </div>
 
-        <label className="block text-xs font-medium mb-1.5 uppercase tracking-wide" style={{ color: 'rgba(235,235,245,0.4)' }}>Quell-URL</label>
+        <label className="block text-[13px] mb-1.5" style={{ color: 'rgb(var(--ink-rgb) / 0.58)' }}>Quell-URL</label>
         <input
-          className="w-full px-3 py-2 rounded-[8px] text-sm outline-none mb-4 transition-all"
-          style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.09)', color: 'rgba(235,235,245,0.8)' }}
+          className="field h-11 px-4 text-[14px] w-full mb-4"
           value={url}
           onChange={(e) => setUrl(e.target.value)}
           placeholder="https://..."
         />
         <div className="flex items-center justify-end gap-3">
-          <button onClick={onClose} className="px-4 py-2 rounded-[12px] text-sm"
-            style={{ background: 'rgba(255,255,255,0.05)', color: 'rgba(235,235,245,0.6)' }}>
+          <button onClick={onClose} className="px-4 py-2 rounded-full text-sm"
+            style={{ background: 'rgb(var(--ink-rgb) / calc(0.04 * var(--veil)))', color: 'rgb(var(--ink-rgb) / 0.74)' }}>
             Abbrechen
           </button>
           <button onClick={handleImport} disabled={loading}
-            className="flex items-center gap-2 px-5 py-2 rounded-[12px] text-sm font-semibold transition-all"
+            className="flex items-center gap-2 px-5 py-2 rounded-full text-sm font-semibold transition-all"
             style={{
-              background: loading ? 'rgba(10,132,255,0.4)' : 'linear-gradient(135deg,#0a84ff,#0a84ff)',
-              color: '#fff', boxShadow: loading ? 'none' : '0 4px 16px rgba(10,132,255,0.25)',
+              background: loading ? 'rgba(60,135,215,0.4)' : 'var(--sky)',
+              color: 'var(--on-sky)', boxShadow: 'none',
             }}>
             <Download size={15} />
             {loading ? 'Importiere...' : 'Importieren'}
@@ -869,8 +873,8 @@ function WeekDropzone({
         marginTop: visible ? 6 : 0,
         marginBottom: visible ? 6 : 0,
         borderRadius: 10,
-        border: visible ? `2px dashed ${active ? 'rgba(10,132,255,0.7)' : 'rgba(10,132,255,0.28)'}` : '2px dashed transparent',
-        background: active ? 'rgba(10,132,255,0.12)' : 'transparent',
+        border: visible ? `2px dashed ${active ? 'rgba(60,135,215,0.7)' : 'rgba(60,135,215,0.28)'}` : '2px dashed transparent',
+        background: active ? 'rgba(60,135,215,0.12)' : 'transparent',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
@@ -879,7 +883,7 @@ function WeekDropzone({
       }}
     >
       {visible && (
-        <span className="text-xs font-medium select-none" style={{ color: active ? '#0a84ff' : 'rgba(10,132,255,0.55)' }}>
+        <span className="text-xs font-medium select-none" style={{ color: active ? 'var(--sky-deep)' : 'rgba(42,120,204,0.55)' }}>
           Hier ablegen
         </span>
       )}
@@ -948,6 +952,8 @@ export function DishesPage() {
   }, [showToast]);
 
   useEffect(() => { loadRatings(); }, [loadRatings]);
+  useLive(['ratings'], () => { void loadRatings(); });
+  useLive(['dishes'], () => { void loadDishes(activePlan); });
 
   // Load dishes for the active plan. First time we visit a plan this session,
   // also ask the server to rotate any past weeks to the end so the plan stays
@@ -1243,170 +1249,97 @@ export function DishesPage() {
   // ── render ─────────────────────────────────────────────────────────────────
 
   return (
-    <div className="animate-page">
-      {/* Header */}
-      <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
-        <div>
-          <h1 className="text-2xl font-bold" style={{ color: '#ffffff' }}>Speiseplan</h1>
-          <p className="text-sm mt-0.5" style={{ color: 'rgba(235,235,245,0.4)' }}>
-            {dishes.length} {dishes.length === 1 ? 'Gericht' : 'Gerichte'} im {activePlan === 'summer' ? 'Sommer' : 'Winter'}plan
-          </p>
-        </div>
-        <div className="flex items-center gap-2 flex-wrap">
-          <button
-            onClick={() => setShowImport(true)}
-            className="flex items-center gap-2 px-4 py-2 rounded-[12px] text-sm font-medium transition-all"
-            style={{ background: 'rgba(255,255,255,0.05)', color: 'rgba(235,235,245,0.6)', border: '1px solid rgba(255,255,255,0.08)' }}
-            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.09)'; }}
-            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.05)'; }}>
-            <Download size={15} />
-            Importieren
-          </button>
-          {confirmingReset ? (
-            <div className="flex items-center gap-1.5">
-              <button
-                onClick={handleReset}
-                disabled={resetting}
-                className="flex items-center gap-2 px-4 py-2 rounded-[12px] text-sm font-semibold transition-all"
-                style={{ background: 'rgba(255,69,58,0.18)', color: '#ff453a', border: '1px solid rgba(255,69,58,0.4)' }}
-              >
-                <RotateCcw size={15} />
-                {resetting ? 'Reset...' : `Sicher? ${activePlan === 'summer' ? 'Sommer' : 'Winter'} überschreiben`}
-              </button>
-              <button
-                onClick={() => setConfirmingReset(false)}
-                disabled={resetting}
-                className="px-3 py-2 rounded-[12px] text-sm transition-colors"
-                style={{ background: 'rgba(255,255,255,0.05)', color: 'rgba(235,235,245,0.6)' }}
-              >
-                Nein
-              </button>
-            </div>
-          ) : (
-            <button
-              onClick={() => setConfirmingReset(true)}
-              className="flex items-center gap-2 px-4 py-2 rounded-[12px] text-sm font-medium transition-all"
-              style={{ background: 'rgba(255,159,10,0.1)', color: '#ff9f0a', border: '1px solid rgba(255,159,10,0.25)' }}
-              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,159,10,0.18)'; }}
-              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,159,10,0.1)'; }}
-              title="Diesen Plan auf den Stand der JSON zurücksetzen"
-            >
-              <RotateCcw size={15} />
-              Reset auf JSON
-            </button>
-          )}
-          <button
-            onClick={expandedWeeks.size === 0 ? expandAll : collapseAll}
-            className="flex items-center gap-2 px-4 py-2 rounded-[12px] text-sm font-medium transition-all"
-            style={{ background: 'rgba(255,255,255,0.05)', color: 'rgba(235,235,245,0.6)', border: '1px solid rgba(255,255,255,0.08)' }}
-            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.09)'; }}
-            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.05)'; }}
-            title={expandedWeeks.size === 0 ? 'Alle ausklappen' : 'Alle einklappen'}
-          >
-            {expandedWeeks.size === 0 ? <ChevronDown size={15} /> : <ChevronUp size={15} />}
-            {expandedWeeks.size === 0 ? 'Ausklappen' : 'Einklappen'}
-          </button>
-          <button
-            onClick={addNewWeek}
-            className="flex items-center gap-2 px-4 py-2 rounded-[12px] text-sm font-medium transition-all"
-            style={{ background: 'rgba(10,132,255,0.1)', color: '#0a84ff', border: '1px solid rgba(10,132,255,0.2)' }}
-            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(10,132,255,0.18)'; }}
-            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(10,132,255,0.1)'; }}>
-            <CalendarPlus size={15} />
-            Neue Woche
-          </button>
-          <button
-            onClick={() => { setNewDishInitialDate(undefined); setEditDish('new'); }}
-            className="flex items-center gap-2 px-4 py-2 rounded-[12px] text-sm font-semibold transition-all"
-            style={{
-              background: 'linear-gradient(135deg,#0a84ff,#0a84ff)',
-              color: '#fff',
-              boxShadow: '0 4px 16px rgba(10,132,255,0.3)',
-            }}>
-            <Plus size={15} />
-            Neues Gericht
-          </button>
-        </div>
-      </div>
-
-      {/* Season tabs */}
-      <div
-        className="inline-flex items-center gap-1 mb-4 p-1 rounded-[14px]"
-        style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.07)' }}
+    <div className="">
+      <PageHeader
+        title="Speiseplan"
+        subtitle={`${dishes.length} ${dishes.length === 1 ? 'Gericht' : 'Gerichte'} im ${activePlan === 'summer' ? 'Sommer' : 'Winter'}plan.`}
       >
-        {(['summer', 'winter'] as const).map((p) => {
-          const isActive = p === activePlan;
-          const isCurrent = p === currentSeason();
-          const icon = p === 'summer' ? <Sun size={14} /> : <Snowflake size={14} />;
-          const bg = isActive
-            ? p === 'summer'
-              ? 'linear-gradient(135deg, rgba(255,159,10,0.22), rgba(255,159,10,0.14))'
-              : 'linear-gradient(135deg, rgba(64,156,255,0.22), rgba(64,156,255,0.14))'
-            : 'transparent';
-          const fg = isActive
-            ? p === 'summer' ? '#ff9f0a' : '#409cff'
-            : 'rgba(235,235,245,0.55)';
-          const border = isActive
-            ? p === 'summer' ? '1px solid rgba(255,159,10,0.4)' : '1px solid rgba(64,156,255,0.4)'
-            : '1px solid transparent';
-          return (
-            <button
-              key={p}
-              onClick={() => setActivePlan(p)}
-              className="flex items-center gap-2 px-4 py-2 rounded-[10px] text-sm font-semibold transition-all"
-              style={{ background: bg, color: fg, border }}
-            >
-              {icon}
-              {p === 'summer' ? 'Sommer' : 'Winter'}
-              <span className="text-[10px] font-medium opacity-70">
-                {p === 'summer' ? 'Apr–Okt' : 'Nov–Mär'}
-              </span>
-              {isCurrent && (
-                <span
-                  className="text-[9px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded-full"
-                  style={{
-                    background: isActive ? 'rgba(255,255,255,0.15)' : 'rgba(48,209,88,0.18)',
-                    color: isActive ? fg : '#30d158',
-                  }}
-                >
-                  aktiv
-                </span>
-              )}
+        <button type="button" onClick={() => setShowImport(true)} className="btn btn-quiet">
+          <Download size={16} strokeWidth={1.7} />
+          Importieren
+        </button>
+        {confirmingReset ? (
+          <>
+            <button type="button" onClick={handleReset} disabled={resetting} className="btn btn-danger">
+              <RotateCcw size={16} strokeWidth={1.7} />
+              {resetting ? 'Reset…' : `Sicher? ${activePlan === 'summer' ? 'Sommer' : 'Winter'} überschreiben`}
             </button>
-          );
-        })}
-      </div>
+            <button type="button" onClick={() => setConfirmingReset(false)} disabled={resetting} className="btn btn-quiet">Nein</button>
+          </>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setConfirmingReset(true)}
+            className="btn btn-quiet"
+            title="Diesen Plan auf den Stand der JSON zurücksetzen"
+          >
+            <RotateCcw size={16} strokeWidth={1.7} />
+            Reset auf JSON
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={expandedWeeks.size === 0 ? expandAll : collapseAll}
+          className="btn btn-quiet"
+          title={expandedWeeks.size === 0 ? 'Alle ausklappen' : 'Alle einklappen'}
+        >
+          {expandedWeeks.size === 0 ? <ChevronDown size={16} strokeWidth={1.7} /> : <ChevronUp size={16} strokeWidth={1.7} />}
+          {expandedWeeks.size === 0 ? 'Ausklappen' : 'Einklappen'}
+        </button>
+        <button type="button" onClick={addNewWeek} className="btn btn-quiet">
+          <CalendarPlus size={16} strokeWidth={1.7} />
+          Neue Woche
+        </button>
+        <button type="button" onClick={() => { setNewDishInitialDate(undefined); setEditDish('new'); }} className="btn btn-primary">
+          <Plus size={16} strokeWidth={1.8} />
+          Neues Gericht
+        </button>
+      </PageHeader>
 
-      {/* Search */}
-      <input
-        type="text"
-        value={search}
-        onChange={(e) => setSearch(e.target.value)}
-        placeholder="Suche nach Name, Kategorie, Datum..."
-        className="w-full px-4 py-2.5 rounded-[12px] text-sm mb-5 outline-none transition-all"
-        style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', color: 'rgba(235,235,245,0.8)' }}
-        onFocus={(e) => { (e.target as HTMLInputElement).style.borderColor = 'rgba(10,132,255,0.4)'; (e.target as HTMLInputElement).style.boxShadow = '0 0 0 3px rgba(10,132,255,0.08)'; }}
-        onBlur={(e) => { (e.target as HTMLInputElement).style.borderColor = 'rgba(255,255,255,0.08)'; (e.target as HTMLInputElement).style.boxShadow = ''; }}
+      <Figures
+        className="mt-10"
+        items={[
+          { label: 'Gerichte', value: dishes.length, icon: UtensilsCrossed },
+          { label: 'Vegetarisch', value: dishes.filter((d) => d.isVegetarian).length, icon: Leaf },
+          {
+            label: 'Aktuelle Saison',
+            value: currentSeason() === 'summer' ? 'Sommer' : 'Winter',
+            icon: currentSeason() === 'summer' ? Sun : Snowflake,
+            note: <Delta tone={activePlan === currentSeason() ? 'mint' : 'amber'}>{activePlan === currentSeason() ? 'wird angezeigt' : 'anderer Plan geöffnet'}</Delta>,
+          },
+        ]}
       />
+
+      {/* Season tabs and search */}
+      <div className="mb-7 mt-10 flex flex-wrap items-center gap-3">
+        <Segmented
+          label="Plan"
+          value={activePlan}
+          onChange={setActivePlan}
+          options={[
+            { value: 'summer', label: <><Sun size={14} /> Sommer <span className="text-[11.5px] opacity-60">Apr–Okt</span></> },
+            { value: 'winter', label: <><Snowflake size={14} /> Winter <span className="text-[11.5px] opacity-60">Nov–Mär</span></> },
+          ]}
+        />
+        <SearchField value={search} onChange={setSearch} placeholder="Suche nach Name, Kategorie, Datum" className="min-w-[240px] flex-1" />
+      </div>
 
       {/* Content */}
       {loading && dishes.length === 0 ? (
         <div className="flex justify-center py-20">
-          <div className="w-8 h-8 border-2 border-[#0a84ff] border-t-transparent rounded-full animate-spin" />
+          <div className="w-8 h-8 border-2 border-sky-deep border-t-transparent rounded-full animate-spin" />
         </div>
       ) : sortedWeeks.length === 0 ? (
-        <div className="rounded-[16px] p-12 text-center" style={{ background: '#1c1c1e', border: '1px solid rgba(255,255,255,0.06)' }}>
-          <UtensilsCrossed size={32} className="mx-auto mb-3" style={{ color: 'rgba(235,235,245,0.12)' }} />
-          <p className="text-sm mb-3" style={{ color: 'rgba(235,235,245,0.3)' }}>
+        <div className="flex flex-col items-center gap-4 py-16 text-center">
+          <span className="orb h-14 w-14 text-ink-3"><UtensilsCrossed size={22} strokeWidth={1.5} /></span>
+          <p className="text-[14.5px] text-ink-3">
             {search
               ? 'Keine Gerichte gefunden'
               : `Noch keine Gerichte im ${activePlan === 'summer' ? 'Sommer' : 'Winter'}plan`}
           </p>
           {!search && (
-            <button onClick={() => setShowImport(true)}
-              className="flex items-center gap-2 px-4 py-2 rounded-[12px] text-sm font-medium mx-auto transition-all"
-              style={{ background: 'rgba(10,132,255,0.15)', color: '#0a84ff', border: '1px solid rgba(10,132,255,0.2)' }}>
-              <Download size={15} />
+            <button type="button" onClick={() => setShowImport(true)} className="btn btn-primary">
+              <Download size={16} strokeWidth={1.7} />
               Aus externer URL importieren
             </button>
           )}
@@ -1449,8 +1382,8 @@ export function DishesPage() {
                     opacity: isDraggingSelf ? 0.45 : 1,
                     borderRadius: '1rem',
                     outline: isDraggingSelf
-                      ? '2px solid rgba(10,132,255,0.6)'
-                      : isDragTarget ? '2px solid rgba(10,132,255,0.5)' : '2px solid transparent',
+                      ? '2px solid rgba(60,135,215,0.6)'
+                      : isDragTarget ? '2px solid rgba(60,135,215,0.5)' : '2px solid transparent',
                     outlineOffset: '3px',
                     transition: 'opacity 0.15s, outline 0.15s',
                   }}
@@ -1477,11 +1410,8 @@ export function DishesPage() {
                 >
                   {/* Week header */}
                   <div
-                    className="flex items-center gap-2 px-4 py-2.5 rounded-[12px] mb-2 transition-colors"
-                    style={{
-                      background: isDragTarget ? 'rgba(10,132,255,0.15)' : 'rgba(10,132,255,0.07)',
-                      border: isDragTarget ? '1px solid rgba(10,132,255,0.4)' : '1px solid rgba(10,132,255,0.1)',
-                    }}
+                    className="week-head flex items-center gap-3 rounded-[16px] px-3 py-3 transition-colors"
+                    style={{ background: isDragTarget ? 'var(--sky-wash)' : 'var(--well)' }}
                   >
                     {/* Week drag grip */}
                     <div
@@ -1493,10 +1423,10 @@ export function DishesPage() {
                       }}
                       onDragEnd={() => { setDraggingWeekKey(null); setDragOverInsertIdx(null); }}
                       className="flex-shrink-0 p-0.5 rounded transition-colors"
-                      style={{ color: 'rgba(235,235,245,0.2)', cursor: 'grab' }}
+                      style={{ color: 'rgb(var(--ink-rgb) / 0.42)', cursor: 'grab' }}
                       title="Ganze Woche verschieben"
-                      onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#0a84ff'; }}
-                      onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'rgba(235,235,245,0.2)'; }}
+                      onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--sky-deep)'; }}
+                      onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'rgb(var(--ink-rgb) / 0.42)'; }}
                     >
                       <GripVertical size={15} />
                     </div>
@@ -1506,27 +1436,22 @@ export function DishesPage() {
                       <div className="flex-1 flex items-center gap-1.5 min-w-0 flex-wrap">
                         <input
                           type="date"
-                          className="px-2 py-1 rounded-[8px] text-xs outline-none"
-                          style={{
-                            background: 'rgba(255,255,255,0.06)',
-                            border: '1px solid rgba(10,132,255,0.4)',
-                            color: 'rgba(235,235,245,0.9)',
-                          }}
+                          className="field h-11 px-4 text-[14px]"
                           value={editingWeekDraft}
                           onChange={(e) => setEditingWeekDraft(e.target.value)}
                           autoFocus
                         />
                         <button
                           onClick={() => setEditingWeekDraft(currentMondayIso())}
-                          className="px-2 py-1 rounded-[8px] text-[11px] font-semibold transition-colors"
-                          style={{ background: 'rgba(48,209,88,0.15)', color: '#30d158', border: '1px solid rgba(48,209,88,0.3)' }}
+                          className="px-2 py-1 rounded-full text-[11px] font-semibold transition-colors"
+                          style={{ background: 'rgba(40,170,125,0.15)', color: 'var(--mint-deep)', border: '1px solid transparent' }}
                         >
                           Diese Woche
                         </button>
                         <button
                           onClick={() => setEditingWeekDraft(nextWeekKey(currentMondayIso()))}
-                          className="px-2 py-1 rounded-[8px] text-[11px] font-semibold transition-colors"
-                          style={{ background: 'rgba(10,132,255,0.15)', color: '#0a84ff', border: '1px solid rgba(10,132,255,0.3)' }}
+                          className="px-2 py-1 rounded-full text-[11px] font-semibold transition-colors"
+                          style={{ background: 'rgba(60,135,215,0.15)', color: 'var(--sky-deep)', border: '1px solid transparent' }}
                         >
                           Nächste Woche
                         </button>
@@ -1541,15 +1466,15 @@ export function DishesPage() {
                             const mon = weekKey(draft);
                             handleWeekMove(wk, mon);
                           }}
-                          className="px-2.5 py-1 rounded-[8px] text-[11px] font-semibold transition-colors"
-                          style={{ background: 'linear-gradient(135deg,#0a84ff,#0a84ff)', color: '#fff' }}
+                          className="px-2.5 py-1 rounded-full text-[11px] font-semibold transition-colors"
+                          style={{ background: 'var(--sky)', color: 'var(--on-sky)' }}
                         >
                           Speichern
                         </button>
                         <button
                           onClick={() => setEditingWeekKey(null)}
-                          className="px-2 py-1 rounded-[8px] text-[11px] transition-colors"
-                          style={{ background: 'rgba(255,255,255,0.05)', color: 'rgba(235,235,245,0.6)' }}
+                          className="px-2 py-1 rounded-full text-[11px] transition-colors"
+                          style={{ background: 'rgb(var(--ink-rgb) / calc(0.04 * var(--veil)))', color: 'rgb(var(--ink-rgb) / 0.74)' }}
                         >
                           Abbrechen
                         </button>
@@ -1559,8 +1484,12 @@ export function DishesPage() {
                         className="flex-1 text-left min-w-0"
                         onClick={() => toggleWeek(wk)}
                       >
-                        <span className="text-xs font-bold uppercase tracking-widest" style={{ color: '#0a84ff' }}>
-                          Woche {wDishes[0]?.weekOrdinal || (wi + 1)}&nbsp;&middot;&nbsp;{formatWeekRange(wk)}&nbsp;&middot;&nbsp;{wDishes.length} {wDishes.length === 1 ? 'Gericht' : 'Gerichte'}
+                        <span className="flex flex-wrap items-baseline gap-x-4 gap-y-0.5 text-left">
+                          <span className="flex items-center gap-3 text-[17px] font-semibold text-ink">
+                            Woche {wDishes[0]?.weekOrdinal || (wi + 1)}
+                            {wk === currentMondayIso() && <Tag tone="sky">Diese Woche</Tag>}
+                          </span>
+                          <span className="text-[13.5px] text-ink-3">{formatWeekRange(wk)}&nbsp;&middot;&nbsp;{wDishes.length} {wDishes.length === 1 ? 'Gericht' : 'Gerichte'}</span>
                         </span>
                       </button>
                     )}
@@ -1570,11 +1499,11 @@ export function DishesPage() {
                         plan for it. */}
                     {editingWeekKey !== wk && seasonOfIsoDate(wk) !== activePlan && (
                       <span
-                        className="flex-shrink-0 flex items-center gap-1 px-2 py-1 rounded-[8px] text-[10px] font-bold uppercase tracking-wider"
+                        className="flex-shrink-0 flex items-center gap-1 px-2 py-1 rounded-[10px] text-[10px] font-bold uppercase tracking-wider"
                         style={{
-                          background: seasonOfIsoDate(wk) === 'winter' ? 'rgba(64,156,255,0.18)' : 'rgba(255,159,10,0.18)',
-                          color: seasonOfIsoDate(wk) === 'winter' ? '#409cff' : '#ff9f0a',
-                          border: seasonOfIsoDate(wk) === 'winter' ? '1px solid rgba(64,156,255,0.35)' : '1px solid rgba(255,159,10,0.35)',
+                          background: seasonOfIsoDate(wk) === 'winter' ? 'rgba(60,135,215,0.18)' : 'rgba(236,140,40,0.18)',
+                          color: seasonOfIsoDate(wk) === 'winter' ? 'var(--sky-deep)' : 'var(--amber-deep)',
+                          border: seasonOfIsoDate(wk) === 'winter' ? '1px solid transparent' : '1px solid transparent',
                         }}
                         title={`Am ${formatWeekRange(wk).split('–')[0].trim()} übernimmt der ${seasonOfIsoDate(wk) === 'winter' ? 'Winter' : 'Sommer'}plan diesen Zeitraum`}
                       >
@@ -1587,11 +1516,11 @@ export function DishesPage() {
                     {editingWeekKey !== wk && (
                       <button
                         onClick={() => { setEditingWeekKey(wk); setEditingWeekDraft(wk); }}
-                        className="flex-shrink-0 p-1.5 rounded-[8px] transition-colors"
-                        style={{ color: 'rgba(235,235,245,0.3)' }}
+                        className="flex-shrink-0 p-1.5 rounded-full transition-colors"
+                        style={{ color: 'rgb(var(--ink-rgb) / 0.5)' }}
                         title="Wochendatum ändern"
-                        onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#0a84ff'; }}
-                        onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'rgba(235,235,245,0.3)'; }}
+                        onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--sky-deep)'; }}
+                        onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'rgb(var(--ink-rgb) / 0.5)'; }}
                       >
                         <Pencil size={13} />
                       </button>
@@ -1600,11 +1529,11 @@ export function DishesPage() {
                     {/* Add dish to this week */}
                     <button
                       onClick={() => { setNewDishInitialDate(wk); setEditDish('new'); }}
-                      className="flex-shrink-0 p-1.5 rounded-[8px] transition-colors"
-                      style={{ color: 'rgba(235,235,245,0.3)' }}
+                      className="flex-shrink-0 p-1.5 rounded-full transition-colors"
+                      style={{ color: 'rgb(var(--ink-rgb) / 0.5)' }}
                       title="Gericht zu dieser Woche hinzufügen"
-                      onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#0a84ff'; }}
-                      onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'rgba(235,235,245,0.3)'; }}
+                      onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--sky-deep)'; }}
+                      onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'rgb(var(--ink-rgb) / 0.5)'; }}
                     >
                       <Plus size={14} />
                     </button>
@@ -1613,7 +1542,7 @@ export function DishesPage() {
                     <button
                       onClick={() => toggleWeek(wk)}
                       className="flex-shrink-0"
-                      style={{ color: '#0a84ff' }}
+                      style={{ color: 'var(--sky-deep)' }}
                     >
                       {collapsed ? <ChevronDown size={15} /> : <ChevronUp size={15} />}
                     </button>
@@ -1622,11 +1551,11 @@ export function DishesPage() {
                     {wDishes.length === 0 && planEmptyWeeks.has(wk) && (
                       <button
                         onClick={() => removeEmptyWeek(wk)}
-                        className="flex-shrink-0 p-1.5 rounded-[8px] transition-colors"
-                        style={{ color: 'rgba(235,235,245,0.3)' }}
+                        className="flex-shrink-0 p-1.5 rounded-full transition-colors"
+                        style={{ color: 'rgb(var(--ink-rgb) / 0.5)' }}
                         title="Leere Woche entfernen"
-                        onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#ff453a'; }}
-                        onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'rgba(235,235,245,0.3)'; }}
+                        onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--rose-deep)'; }}
+                        onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'rgb(var(--ink-rgb) / 0.5)'; }}
                       >
                         <X size={14} />
                       </button>
@@ -1634,45 +1563,55 @@ export function DishesPage() {
                   </div>
 
                   {/* Week body */}
-                  {!collapsed && (
-                    <div className="flex flex-col gap-2">
+                  <Collapse open={!collapsed}>
+                    <div className="week-body">
                       {wDishes.length === 0 ? (
                         <div
-                          className="py-10 rounded-[12px] flex flex-col items-center gap-2"
+                          className="py-10 rounded-[14px] flex flex-col items-center gap-2"
                           style={{
-                            border: `2px dashed ${isDragTarget ? 'rgba(10,132,255,0.55)' : 'rgba(10,132,255,0.15)'}`,
-                            background: isDragTarget ? 'rgba(10,132,255,0.06)' : 'transparent',
+                            border: `2px dashed ${isDragTarget ? 'rgba(60,135,215,0.55)' : 'rgba(60,135,215,0.15)'}`,
+                            background: isDragTarget ? 'rgba(60,135,215,0.06)' : 'transparent',
                             transition: 'all 0.15s',
                           }}
                         >
-                          <UtensilsCrossed size={22} style={{ color: isDragTarget ? '#0a84ff' : 'rgba(235,235,245,0.12)' }} />
-                          <p className="text-sm select-none" style={{ color: isDragTarget ? '#0a84ff' : 'rgba(235,235,245,0.12)' }}>
+                          <UtensilsCrossed size={22} style={{ color: isDragTarget ? 'var(--sky-deep)' : 'rgb(var(--ink-rgb) / 0.42)' }} />
+                          <p className="text-sm select-none" style={{ color: isDragTarget ? 'var(--sky-deep)' : 'rgb(var(--ink-rgb) / 0.42)' }}>
                             {isDragTarget ? 'Hier loslassen' : 'Gerichte hier reinziehen'}
                           </p>
                         </div>
                       ) : (
-                        wDishes.map((dish) => (
-                          <div key={dish.id}>
-                            <div className="flex items-center gap-2 mb-1 mt-2 first:mt-0">
-                              <span className="text-xs font-medium" style={{ color: 'rgba(235,235,245,0.3)' }}>
-                                {formatDate(dish.date)}
-                              </span>
-                              <div style={{ flex: 1, height: '1px', background: 'rgba(255,255,255,0.04)' }} />
+                        groupByDay(wDishes).map(([date, dayDishes]) => {
+                          const day = dayParts(date);
+                          const isToday = date === toLocalIso(new Date());
+                          return (
+                            <div key={date} className="day-group" title={formatDate(date)}>
+                              <div className="day-label">
+                                <span className="flex items-center gap-2.5 text-[14.5px] font-medium">
+                                  {day.weekday}
+                                  {isToday && <Tag tone="mint">Heute</Tag>}
+                                </span>
+                                <span className="tabular text-[12.5px] text-ink-3">{day.short}</span>
+                              </div>
+                              <div className="min-w-0">
+                                {dayDishes.map((dish) => (
+                                  <DishCard
+                                    key={dish.id}
+                                    dish={dish}
+                                    ratingData={ratingsMap.get(dishKeyOf(dish))}
+                                    onEdit={setEditDish}
+                                    onDelete={handleDeleted}
+                                    onDragStart={() => setDraggingDishId(dish.id)}
+                                    onDragEnd={() => setDraggingDishId(null)}
+                                    isDragging={draggingDishId === dish.id}
+                                  />
+                                ))}
+                              </div>
                             </div>
-                            <DishCard
-                              dish={dish}
-                              ratingData={ratingsMap.get(dishKeyOf(dish))}
-                              onEdit={setEditDish}
-                              onDelete={handleDeleted}
-                              onDragStart={() => setDraggingDishId(dish.id)}
-                              onDragEnd={() => setDraggingDishId(null)}
-                              isDragging={draggingDishId === dish.id}
-                            />
-                          </div>
-                        ))
+                          );
+                        })
                       )}
                     </div>
-                  )}
+                  </Collapse>
                 </div>
 
                 {/* Dropzone AFTER this week */}

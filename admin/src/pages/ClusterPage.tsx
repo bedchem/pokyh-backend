@@ -1,45 +1,26 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Activity, Copy, KeyRound, Network, Plus, Power, RefreshCw, Save, Server, Trash2 } from 'lucide-react';
+import { AlertTriangle, Copy, Crown, Hourglass, KeyRound, Network, Plus, Power, RefreshCw, Save, Server, Trash2, Wifi } from 'lucide-react';
 import { adminApi } from '../api';
 import { useToast } from '../components/Toast';
 import { useAutoRefresh } from '../hooks/useAutoRefresh';
+import { Delta, Empty, FieldLabel, Figures, FormSection, IconButton, Notice, PageHeader, Section, Spinner, Status, Tag, type Tone } from '../components/kit';
+import { RankBars, SplitBar } from '../components/charts';
 import type { ClusterPeer, ClusterStatus } from '../types';
 
-function Card({ children, title, icon }: { children: React.ReactNode; title: string; icon: React.ReactNode }) {
-  return (
-    <div className="rounded-[16px] p-5" style={{ background: '#0d0d0d', border: '1px solid rgba(255,255,255,0.07)' }}>
-      <div className="flex items-center gap-2.5 mb-4">
-        <span style={{ color: '#0a84ff' }}>{icon}</span>
-        <h2 className="text-[15px] font-semibold text-white tracking-[-0.01em]">{title}</h2>
-      </div>
-      {children}
-    </div>
-  );
-}
-
-const inputStyle: React.CSSProperties = { background: '#1c1c1e', border: '1px solid rgba(255,255,255,0.08)', color: 'rgba(235,235,245,0.85)' };
-const dimText = { color: 'rgba(235,235,245,0.45)' };
-const buttonStyle: React.CSSProperties = { background: 'rgba(10,132,255,0.15)', color: '#0a84ff', border: '1px solid rgba(10,132,255,0.25)' };
-
-const GREEN = '#30d158';
-const ORANGE = '#ff9f0a';
-const RED = '#ff453a';
-const GREY = 'rgba(235,235,245,0.45)';
-
-function badgeFor(peer: ClusterPeer): { label: string; color: string } {
+function badgeFor(peer: ClusterPeer): { label: string; tone: Tone } {
   switch (peer.status) {
-    case 'PENDING': return { label: 'Kopplung läuft', color: ORANGE };
-    case 'LOCKED': return { label: 'Gesperrt (falscher Schlüssel)', color: RED };
-    case 'EXPIRED': return { label: 'Kopplung abgelaufen', color: RED };
-    case 'DISABLED': return { label: 'Deaktiviert', color: GREY };
-    case 'REMOVED': return { label: 'Von der Gegenseite entfernt', color: GREY };
+    case 'PENDING': return { label: 'Kopplung läuft', tone: 'amber' };
+    case 'LOCKED': return { label: 'Gesperrt (falscher Schlüssel)', tone: 'rose' };
+    case 'EXPIRED': return { label: 'Kopplung abgelaufen', tone: 'rose' };
+    case 'DISABLED': return { label: 'Deaktiviert', tone: 'ink' };
+    case 'REMOVED': return { label: 'Von der Gegenseite entfernt', tone: 'ink' };
     default: break;
   }
   switch (peer.health) {
-    case 'ONLINE': return { label: 'Online', color: GREEN };
-    case 'SUSPECT': return { label: 'Antwortet nicht', color: ORANGE };
-    case 'OFFLINE': return { label: 'Offline', color: RED };
-    default: return { label: 'Verbinde…', color: GREY };
+    case 'ONLINE': return { label: 'Online', tone: 'mint' };
+    case 'SUSPECT': return { label: 'Antwortet nicht', tone: 'amber' };
+    case 'OFFLINE': return { label: 'Offline', tone: 'rose' };
+    default: return { label: 'Verbinde…', tone: 'ink' };
   }
 }
 
@@ -51,6 +32,8 @@ function ago(iso: string | null): string {
   if (seconds < 5400) return `vor ${Math.round(seconds / 60)} min`;
   return new Date(iso).toLocaleString('de-DE');
 }
+
+const EVENT_TONE: Record<'info' | 'warn' | 'error', Tone> = { info: 'sky', warn: 'amber', error: 'rose' };
 
 export function ClusterPage() {
   const { showToast } = useToast();
@@ -176,190 +159,222 @@ export function ClusterPage() {
 
   const peers = data?.peers ?? [];
   const canAdd = address.trim().length > 0 && pairingKey.trim().length >= 16 && !adding;
+  const active = peers.filter((p) => p.status === 'ACTIVE');
+  const online = active.filter((p) => p.health === 'ONLINE').length;
+  const suspect = active.filter((p) => p.health === 'SUSPECT').length;
+  const offline = active.filter((p) => p.health === 'OFFLINE').length;
+  const other = peers.length - online - suspect - offline;
+  const queued = peers.reduce((sum, p) => sum + p.queuedRows, 0);
+  const withLatency = active.filter((p) => p.latencyMs !== null);
 
   return (
     <div>
-      <div className="mb-6">
-        <h1 className="text-[22px] font-bold text-white tracking-[-0.02em]">Cluster</h1>
-        <p className="text-[13px] mt-1" style={dimText}>
-          Mehrere Nodes halten dieselben Daten vor und gleichen Änderungen laufend verschlüsselt miteinander ab.
-        </p>
-      </div>
+      <PageHeader title="Cluster" subtitle="Mehrere Nodes halten dieselben Daten vor und gleichen Änderungen laufend verschlüsselt miteinander ab." />
 
-      <div className="grid gap-4 max-w-[900px]">
-        <Card title="Diese Node" icon={<Server size={17} />}>
+      <Figures
+        className="mt-10"
+        items={[
+          { label: 'Nodes', value: peers.length + 1, icon: Network, note: <Delta>inkl. dieser</Delta> },
+          { label: 'Online', value: online, icon: Wifi, note: peers.length > 0 ? <Delta tone={online === active.length ? 'mint' : 'amber'}>von {active.length}</Delta> : undefined },
+          { label: 'Wartende Zeilen', value: queued, icon: Hourglass, note: queued > 0 ? <Delta tone="amber">werden übertragen</Delta> : <Delta tone="mint">im Gleichstand</Delta> },
+          { label: 'Hintergrundjobs', value: data ? (data.node.isLeader ? 'Diese Node' : 'Andere Node') : '–', icon: Crown },
+        ]}
+      />
+
+      {peers.length > 0 && (
+        <div className="mt-[46px] grid gap-x-16 gap-y-12 xl:grid-cols-2">
+          <Section title="Antwortzeit" meta="je Node">
+            <div className="mt-8">
+              <RankBars
+                unit=" ms"
+                items={withLatency.map((p) => ({ label: p.name || p.address, value: p.latencyMs ?? 0 }))}
+                empty="Noch keine Messwerte."
+              />
+            </div>
+          </Section>
+          <Section title="Erreichbarkeit">
+            <div className="mt-9">
+              <SplitBar
+                ariaLabel="Nodes nach Erreichbarkeit"
+                parts={[
+                  { label: 'Online',          value: online,  color: 'var(--mint)' },
+                  { label: 'Antwortet nicht', value: suspect, color: 'var(--amber)' },
+                  { label: 'Offline',         value: offline, color: 'var(--rose)' },
+                  { label: 'Nicht aktiv',     value: other,   color: 'var(--ink-4)' },
+                ]}
+              />
+            </div>
+          </Section>
+        </div>
+      )}
+
+      <Section className="mt-[52px]" title="Nodes" meta={`${peers.length} gekoppelt`}>
+        {loading ? (
+          <div className="mt-7 flex flex-col gap-5">
+            {Array.from({ length: 2 }).map((_, i) => (
+              <div key={i} className="flex items-center gap-4"><div className="shimmer h-12 w-12 rounded-full" /><div className="shimmer h-4 flex-1 rounded-full" /></div>
+            ))}
+          </div>
+        ) : peers.length === 0 ? (
+          <Empty icon={Network}>Noch keine weitere Node gekoppelt — diese Node läuft eigenständig.</Empty>
+        ) : (
+          <ul className="stack mt-3">
+            {peers.map((peer) => {
+              const badge = badgeFor(peer);
+              const busy = busyPeer === peer.id;
+              return (
+                <li key={peer.id} className="spot flex flex-wrap items-start gap-x-4 gap-y-3 py-5">
+                  <span className="orb h-12 w-12"><Server size={19} strokeWidth={1.6} /></span>
+                  <div className="min-w-[220px] flex-1">
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+                      <span className="text-[14.5px] font-medium">{peer.name || peer.address}</span>
+                      {peer.isLeader && <Tag tone="sky"><Crown size={11} /> Leader</Tag>}
+                    </div>
+                    <div className="mt-1 font-mono text-[12.5px] text-ink-3">{peer.address}</div>
+                    {peer.status === 'ACTIVE' && (
+                      <div className="mt-2 flex flex-wrap gap-x-5 gap-y-1 text-[13px] text-ink-3">
+                        <span>Zuletzt gesehen: {ago(peer.lastSeenAt)}</span>
+                        {peer.latencyMs !== null && <span>Antwortzeit: {peer.latencyMs} ms</span>}
+                        <span style={peer.queuedRows > 0 ? { color: 'var(--amber-deep)' } : undefined}>Wartend: {peer.queuedRows}</span>
+                        {peer.fullTransfer && <span style={{ color: 'var(--amber-deep)' }}>Vollständiger Abgleich läuft…</span>}
+                        <span>Gesendet: {peer.rowsSent.toLocaleString('de-AT')} · Empfangen: {peer.rowsReceived.toLocaleString('de-AT')}</span>
+                      </div>
+                    )}
+                    {peer.pairing && (
+                      <div className="mt-2 text-[13px] text-ink-3">
+                        {peer.pairing.message}
+                        {peer.pairing.expiresAt && ` · gültig bis ${new Date(peer.pairing.expiresAt).toLocaleTimeString('de-DE')}`}
+                        {peer.pairing.failures > 0 && ` · Fehlversuche: ${peer.pairing.failures}`}
+                      </div>
+                    )}
+                    {peer.status === 'ACTIVE' && peer.lastError && peer.health !== 'ONLINE' && (
+                      <div className="mt-2 text-[13px] text-amber-deep">{peer.lastError}</div>
+                    )}
+                    {peer.warnings.map((warning) => (
+                      <div key={warning} className="mt-2 flex items-start gap-2 text-[13px] text-amber-deep">
+                        <AlertTriangle size={14} strokeWidth={1.7} className="mt-0.5 flex-shrink-0" /> {warning}
+                      </div>
+                    ))}
+                  </div>
+                  <span className="w-[170px] pt-3"><Status tone={badge.tone}>{badge.label}</Status></span>
+                  <div className="flex flex-shrink-0 gap-1.5 pt-1">
+                    {peer.status === 'ACTIVE' && (
+                      <IconButton icon={RefreshCw} label="Vollständig abgleichen" disabled={busy} onClick={() => resync(peer)} />
+                    )}
+                    {(peer.status === 'ACTIVE' || peer.status === 'DISABLED') && (
+                      <IconButton
+                        icon={Power}
+                        tone={peer.status === 'ACTIVE' ? 'amber' : 'mint'}
+                        label={peer.status === 'ACTIVE' ? 'Deaktivieren' : 'Aktivieren'}
+                        disabled={busy}
+                        onClick={() => void withPeer(peer, () => adminApi.updateClusterPeer(peer.id, { enabled: peer.status !== 'ACTIVE' }), peer.status === 'ACTIVE' ? 'Abgleich deaktiviert' : 'Abgleich aktiviert')}
+                      />
+                    )}
+                    <IconButton icon={KeyRound} label="Neu koppeln" disabled={busy} onClick={() => repair(peer)} />
+                    <IconButton icon={Trash2} tone="rose" label="Entfernen" disabled={busy} onClick={() => remove(peer)} />
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </Section>
+
+      <div className="mt-6">
+        <FormSection icon={Server} title="Diese Node" hint="Der Name, unter dem diese Node bei den anderen erscheint.">
           {loading || !data ? (
-            <div className="h-16 rounded-[10px] shimmer" />
+            <div className="shimmer h-16 max-w-[620px] rounded-[18px]" />
           ) : (
-            <>
-              <div className="flex items-end gap-3 flex-wrap">
-                <div className="flex-1 min-w-[220px]">
-                  <label className="text-[12px] block mb-1" style={dimText}>Name</label>
+            <div className="flex max-w-[620px] flex-col gap-5">
+              <div className="flex flex-wrap items-end gap-3">
+                <FieldLabel label="Name" className="min-w-[220px] flex-1">
                   <input value={nodeName} onChange={(e) => { setNodeName(e.target.value); setNodeNameDirty(true); }}
-                    className="apple-input px-3 py-2 text-[13px] w-full" style={inputStyle} maxLength={120} />
-                </div>
-                <button onClick={() => void saveNodeName()} disabled={!nodeNameDirty || !nodeName.trim()}
-                  className="flex items-center gap-2 px-4 py-2.5 rounded-[10px] text-[13px] font-medium transition-all disabled:opacity-40" style={buttonStyle}>
-                  <Save size={14} /> Speichern
+                    className="field h-12 w-full px-4 text-[14.5px]" maxLength={120} />
+                </FieldLabel>
+                <button type="button" onClick={() => void saveNodeName()} disabled={!nodeNameDirty || !nodeName.trim()} className="btn btn-quiet h-12">
+                  <Save size={16} strokeWidth={1.7} /> Speichern
                 </button>
               </div>
-              <div className="text-[12px] mt-3 flex flex-wrap gap-x-5 gap-y-1" style={dimText}>
+              <div className="flex flex-wrap gap-x-6 gap-y-1.5 text-[13px] text-ink-3">
                 <span>ID: <span className="font-mono">{data.node.id || '—'}</span></span>
                 <span>{data.node.isLeader ? 'Führt die einmaligen Hintergrundjobs aus' : 'Hintergrundjobs laufen auf einer anderen Node'}</span>
                 {peers.length > 0 && <span>{data.node.replicatedTables} Tabellen im Abgleich</span>}
-                {data.node.deferredChanges > 0 && <span style={{ color: ORANGE }}>{data.node.deferredChanges} Änderung(en) zurückgestellt</span>}
+                {data.node.deferredChanges > 0 && <span className="text-amber-deep">{data.node.deferredChanges} Änderung(en) zurückgestellt</span>}
               </div>
               {!data.running && (
-                <p className="text-[12px] mt-3" style={{ color: ORANGE }}>
+                <Notice tone="amber" icon={AlertTriangle}>
                   Der Cluster-Dienst läuft auf dieser Node nicht (CLUSTER_ENABLED=false oder Datenbank noch nicht bereit).
-                </p>
+                </Notice>
               )}
-              {data.paused && <p className="text-[12px] mt-3" style={{ color: ORANGE }}>Abgleich pausiert (Wiederherstellung läuft).</p>}
+              {data.paused && <Notice tone="amber" icon={AlertTriangle}>Abgleich pausiert (Wiederherstellung läuft).</Notice>}
               {data.node.captureGap && (
-                <div className="text-[12px] mt-3" style={{ color: RED }}>
+                <Notice tone="rose" icon={AlertTriangle}>
                   Die Änderungserfassung fehlte zeitweise (z. B. nach einem manuellen Restore). In dieser Zeit gemachte Änderungen
                   wurden nicht übertragen.{' '}
-                  <button onClick={() => void rebuild()} className="underline" style={{ color: RED }}>
+                  <button type="button" onClick={() => void rebuild()} className="underline">
                     Datenstand dieser Node an alle übertragen
                   </button>
-                </div>
+                </Notice>
               )}
               {data.node.captureError && (
-                <p className="text-[12px] mt-3" style={{ color: RED }}>
+                <Notice tone="rose" icon={AlertTriangle}>
                   Änderungserfassung konnte nicht eingerichtet werden: {data.node.captureError}
-                </p>
+                </Notice>
               )}
-            </>
-          )}
-        </Card>
-
-        <Card title="Node hinzufügen" icon={<Plus size={17} />}>
-          <p className="text-[12px] mb-4" style={dimText}>
-            Auf <strong>beiden</strong> Nodes die Adresse der jeweils anderen und <strong>denselben</strong> Pairing-Schlüssel eintragen.
-            Der Schlüssel wird nur für die einmalige Kopplung gebraucht und danach verworfen; ab dann verwenden die Nodes einen eigenen,
-            daraus ausgehandelten Schlüssel.
-          </p>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <div>
-              <label className="text-[12px] block mb-1" style={dimText}>Adresse der anderen Node (IP oder Host, optional mit Port)</label>
-              <input value={address} onChange={(e) => setAddress(e.target.value)} placeholder="z. B. 203.0.113.10:4000"
-                className="apple-input px-3 py-2 text-[13px] w-full font-mono" style={inputStyle} />
-            </div>
-            <div>
-              <label className="text-[12px] block mb-1" style={dimText}>Anzeigename (optional)</label>
-              <input value={name} onChange={(e) => setName(e.target.value)} placeholder="z. B. Server 2" maxLength={120}
-                className="apple-input px-3 py-2 text-[13px] w-full" style={inputStyle} />
-            </div>
-          </div>
-          <div className="mt-3">
-            <label className="text-[12px] block mb-1" style={dimText}>Pairing-Schlüssel (mindestens 16 Zeichen)</label>
-            <div className="flex gap-2 flex-wrap">
-              <input value={pairingKey} onChange={(e) => setPairingKey(e.target.value)} autoComplete="off" spellCheck={false}
-                className="apple-input px-3 py-2 text-[13px] flex-1 min-w-[240px] font-mono" style={inputStyle} />
-              <button onClick={() => void generateKey()} type="button"
-                className="flex items-center gap-2 px-3 py-2 rounded-[10px] text-[13px] font-medium" style={buttonStyle}>
-                <KeyRound size={14} /> Erzeugen
-              </button>
-              <button onClick={() => void copyKey()} type="button" disabled={!pairingKey}
-                className="flex items-center gap-2 px-3 py-2 rounded-[10px] text-[13px] font-medium disabled:opacity-40" style={buttonStyle}>
-                <Copy size={14} /> Kopieren
-              </button>
-            </div>
-          </div>
-          <button onClick={() => void addPeer()} disabled={!canAdd}
-            className="mt-4 flex items-center gap-2 px-4 py-2.5 rounded-[10px] text-[13px] font-medium transition-all disabled:opacity-40" style={buttonStyle}>
-            <Network size={14} /> {adding ? 'Starte Kopplung…' : 'Koppeln'}
-          </button>
-        </Card>
-
-        <Card title={`Nodes (${peers.length})`} icon={<Network size={17} />}>
-          {loading ? (
-            <div className="flex flex-col gap-2">{Array.from({ length: 2 }).map((_, i) => <div key={i} className="h-16 rounded-[10px] shimmer" />)}</div>
-          ) : peers.length === 0 ? (
-            <p className="text-[13px] text-center py-6" style={dimText}>Noch keine weitere Node gekoppelt — diese Node läuft eigenständig.</p>
-          ) : (
-            <div className="flex flex-col divide-y" style={{ borderColor: 'rgba(255,255,255,0.06)' }}>
-              {peers.map((peer) => {
-                const badge = badgeFor(peer);
-                const busy = busyPeer === peer.id;
-                return (
-                  <div key={peer.id} className="py-3.5">
-                    <div className="flex items-start justify-between gap-3 flex-wrap">
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: badge.color }} />
-                          <span className="text-[14px] font-medium text-white">{peer.name || peer.address}</span>
-                          <span className="text-[11px] px-2 py-0.5 rounded-full" style={{ color: badge.color, border: `1px solid ${badge.color}55` }}>{badge.label}</span>
-                          {peer.isLeader && <span className="text-[11px] px-2 py-0.5 rounded-full" style={{ color: '#0a84ff', border: '1px solid rgba(10,132,255,0.35)' }}>Leader</span>}
-                        </div>
-                        <div className="text-[12px] mt-1 font-mono" style={dimText}>{peer.address}</div>
-                        {peer.status === 'ACTIVE' && (
-                          <div className="text-[12px] mt-1 flex flex-wrap gap-x-4 gap-y-0.5" style={dimText}>
-                            <span>Zuletzt gesehen: {ago(peer.lastSeenAt)}</span>
-                            {peer.latencyMs !== null && <span>Antwortzeit: {peer.latencyMs} ms</span>}
-                            <span style={peer.queuedRows > 0 ? { color: ORANGE } : undefined}>Wartend: {peer.queuedRows}</span>
-                            {peer.fullTransfer && <span style={{ color: ORANGE }}>Vollständiger Abgleich läuft…</span>}
-                            <span>Gesendet: {peer.rowsSent} · Empfangen: {peer.rowsReceived}</span>
-                          </div>
-                        )}
-                        {peer.pairing && (
-                          <div className="text-[12px] mt-1" style={dimText}>
-                            {peer.pairing.message}
-                            {peer.pairing.expiresAt && ` · gültig bis ${new Date(peer.pairing.expiresAt).toLocaleTimeString('de-DE')}`}
-                            {peer.pairing.failures > 0 && ` · Fehlversuche: ${peer.pairing.failures}`}
-                          </div>
-                        )}
-                        {peer.status === 'ACTIVE' && peer.lastError && peer.health !== 'ONLINE' && (
-                          <div className="text-[12px] mt-1" style={{ color: ORANGE }}>{peer.lastError}</div>
-                        )}
-                        {peer.warnings.map((warning) => (
-                          <div key={warning} className="text-[12px] mt-1" style={{ color: ORANGE }}>⚠ {warning}</div>
-                        ))}
-                      </div>
-                      <div className="flex-shrink-0 flex items-center gap-1.5">
-                        {peer.status === 'ACTIVE' && (
-                          <button onClick={() => resync(peer)} disabled={busy} aria-label="Vollständig abgleichen" title="Vollständig abgleichen"
-                            className="p-2 rounded-[8px] transition-colors disabled:opacity-40" style={{ color: 'rgba(235,235,245,0.6)' }}>
-                            <RefreshCw size={15} />
-                          </button>
-                        )}
-                        {(peer.status === 'ACTIVE' || peer.status === 'DISABLED') && (
-                          <button onClick={() => void withPeer(peer, () => adminApi.updateClusterPeer(peer.id, { enabled: peer.status !== 'ACTIVE' }), peer.status === 'ACTIVE' ? 'Abgleich deaktiviert' : 'Abgleich aktiviert')}
-                            disabled={busy} aria-label={peer.status === 'ACTIVE' ? 'Deaktivieren' : 'Aktivieren'} title={peer.status === 'ACTIVE' ? 'Deaktivieren' : 'Aktivieren'}
-                            className="p-2 rounded-[8px] transition-colors disabled:opacity-40" style={{ color: peer.status === 'ACTIVE' ? ORANGE : GREEN }}>
-                            <Power size={15} />
-                          </button>
-                        )}
-                        <button onClick={() => repair(peer)} disabled={busy} aria-label="Neu koppeln" title="Neu koppeln"
-                          className="p-2 rounded-[8px] transition-colors disabled:opacity-40" style={{ color: 'rgba(235,235,245,0.6)' }}>
-                          <KeyRound size={15} />
-                        </button>
-                        <button onClick={() => remove(peer)} disabled={busy} aria-label="Entfernen" title="Entfernen"
-                          className="p-2 rounded-[8px] transition-colors disabled:opacity-40" style={{ color: RED }}>
-                          <Trash2 size={15} />
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
             </div>
           )}
-        </Card>
+        </FormSection>
 
-        {data && data.events.length > 0 && (
-          <Card title="Ereignisse" icon={<Activity size={17} />}>
-            <div className="flex flex-col gap-1.5">
-              {data.events.slice(0, 25).map((event, index) => (
-                <div key={`${event.at}-${index}`} className="text-[12px] flex gap-3">
-                  <span className="font-mono flex-shrink-0" style={dimText}>{new Date(event.at).toLocaleTimeString('de-DE')}</span>
-                  <span style={{ color: event.level === 'error' ? RED : event.level === 'warn' ? ORANGE : 'rgba(235,235,245,0.75)' }}>{event.message}</span>
-                </div>
-              ))}
+        <FormSection
+          icon={Plus}
+          title="Node hinzufügen"
+          hint={<>Auf <strong className="font-medium text-ink-2">beiden</strong> Nodes die Adresse der jeweils anderen und <strong className="font-medium text-ink-2">denselben</strong> Pairing-Schlüssel eintragen. Der Schlüssel wird nur für die einmalige Kopplung gebraucht und danach verworfen; ab dann verwenden die Nodes einen eigenen, daraus ausgehandelten Schlüssel.</>}
+        >
+          <div className="flex max-w-[620px] flex-col gap-5">
+            <div className="grid gap-4 sm:grid-cols-2">
+              <FieldLabel label="Adresse der anderen Node" hint="IP oder Host, optional mit Port.">
+                <input value={address} onChange={(e) => setAddress(e.target.value)} placeholder="z. B. 203.0.113.10:4000"
+                  className="field h-12 w-full px-4 font-mono text-[13.5px]" />
+              </FieldLabel>
+              <FieldLabel label="Anzeigename" hint="Optional.">
+                <input value={name} onChange={(e) => setName(e.target.value)} placeholder="z. B. Server 2" maxLength={120}
+                  className="field h-12 w-full px-4 text-[14.5px]" />
+              </FieldLabel>
             </div>
-          </Card>
-        )}
+            <div className="flex flex-col gap-2">
+              <span className="text-[13px] text-ink-2">Pairing-Schlüssel (mindestens 16 Zeichen)</span>
+              <div className="flex flex-wrap gap-2.5">
+                <input value={pairingKey} onChange={(e) => setPairingKey(e.target.value)} autoComplete="off" spellCheck={false}
+                  aria-label="Pairing-Schlüssel"
+                  className="field h-12 min-w-[240px] flex-1 px-4 font-mono text-[13.5px]" />
+                <button type="button" onClick={() => void generateKey()} className="btn btn-quiet h-12">
+                  <KeyRound size={16} strokeWidth={1.7} /> Erzeugen
+                </button>
+                <IconButton icon={Copy} label="Schlüssel kopieren" size={48} disabled={!pairingKey} onClick={() => void copyKey()} />
+              </div>
+            </div>
+            <div>
+              <button type="button" onClick={() => void addPeer()} disabled={!canAdd} className="btn btn-primary">
+                {adding ? <Spinner /> : <Network size={16} strokeWidth={1.7} />}
+                {adding ? 'Starte Kopplung…' : 'Koppeln'}
+              </button>
+            </div>
+          </div>
+        </FormSection>
       </div>
+
+      {data && data.events.length > 0 && (
+        <Section className="border-t border-line pt-[38px]" title="Ereignisse" meta={`Letzte ${Math.min(data.events.length, 25)}`}>
+          <ul className="mt-6 flex flex-col gap-3.5">
+            {data.events.slice(0, 25).map((event, index) => (
+              <li key={`${event.at}-${index}`} className="flex items-baseline gap-4 text-[13.5px]">
+                <time className="tabular w-[70px] flex-shrink-0 font-mono text-[12.5px] text-ink-3">{new Date(event.at).toLocaleTimeString('de-DE')}</time>
+                <Status tone={EVENT_TONE[event.level]}><span className="whitespace-normal">{event.message}</span></Status>
+              </li>
+            ))}
+          </ul>
+        </Section>
+      )}
     </div>
   );
 }

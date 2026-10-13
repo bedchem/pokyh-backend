@@ -22,7 +22,7 @@ import { adminApi } from '../api';
 import { useToast } from './Toast';
 import type { AdminUserDetail, AdminTodo, AdminUserClass } from '../types';
 
-const AVATAR_COLORS = ['#0a84ff', '#bf5af2', '#40c8e0', '#30d158', '#ff9f0a', '#ff453a'];
+const AVATAR_COLORS = ['#2a78cc', '#8a3fc4', '#0f7f96', '#16845f', '#b3610d', '#d93a40'];
 
 function avatarColor(s: string) {
   let h = 0;
@@ -130,10 +130,10 @@ function TodoRow({
 
   return (
     <div
-      className="rounded-[12px] transition-all"
+      className="rounded-[14px] transition-all"
       style={{
-        background: todo.done ? 'rgba(255,255,255,0.02)' : '#2c2c2e',
-        border: `1px solid ${editing ? 'rgba(10,132,255,0.3)' : isOverdue ? 'rgba(255,69,58,0.22)' : 'rgba(255,255,255,0.07)'}`,
+        background: todo.done ? 'rgb(var(--ink-rgb) / calc(0.016 * var(--veil)))' : 'var(--well-2)',
+        border: `1px solid ${editing ? 'rgba(60,135,215,0.3)' : isOverdue ? 'rgba(225,70,75,0.22)' : 'rgb(var(--ink-rgb) / calc(0.087 * var(--veil)))'}`,
       }}
     >
       <div className="flex items-start gap-3 p-3">
@@ -141,7 +141,7 @@ function TodoRow({
           onClick={() => void toggleDone()}
           disabled={saving || editing}
           className="mt-0.5 flex-shrink-0 transition-opacity"
-          style={{ color: todo.done ? '#30d158' : 'rgba(235,235,245,0.28)', opacity: (saving && !editing) ? 0.5 : 1 }}
+          style={{ color: todo.done ? 'var(--mint-deep)' : 'rgb(var(--ink-rgb) / 0.484)', opacity: (saving && !editing) ? 0.5 : 1 }}
         >
           {(saving && !editing)
             ? <Loader2 size={16} className="animate-spin" />
@@ -157,33 +157,28 @@ function TodoRow({
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
                 onKeyDown={(e) => { if (e.key === 'Escape') resetEdit(); }}
-                className="text-[14px] bg-transparent outline-none border-b w-full text-white"
-                style={{ borderColor: 'rgba(10,132,255,0.5)', paddingBottom: '4px' }}
+                className="field h-11 px-4 text-[14px] w-full"
+                style={{ borderColor: 'rgba(60,135,215,0.5)', paddingBottom: '4px' }}
                 placeholder="Titel"
               />
               <textarea
                 value={details}
                 onChange={(e) => setDetails(e.target.value)}
                 rows={3}
-                className="text-[12px] outline-none resize-none rounded-[8px] p-2 w-full"
-                style={{
-                  color: 'rgba(235,235,245,0.55)',
-                  background: 'rgba(255,255,255,0.03)',
-                  border: '1px solid rgba(255,255,255,0.07)',
-                }}
+                className="field px-4 py-3 text-[14px] resize-none w-full"
                 placeholder="Details (optional)"
               />
               <div className="flex items-center gap-2">
-                <Clock size={11} style={{ color: 'rgba(235,235,245,0.3)' }} />
+                <Clock size={11} style={{ color: 'rgb(var(--ink-rgb) / 0.5)' }} />
                 <input
                   type="datetime-local"
                   value={dueAtLocal}
                   onChange={(e) => setDueAtLocal(e.target.value)}
-                  className="text-[11px] bg-transparent outline-none flex-1"
-                  style={{ color: 'rgba(235,235,245,0.5)', colorScheme: 'dark' }}
+                  className="field h-11 px-4 text-[14px] flex-1"
+                  style={{ color: 'rgb(var(--ink-rgb) / 0.66)' }}
                 />
                 {dueAtLocal && (
-                  <button onClick={() => setDueAtLocal('')} style={{ color: 'rgba(235,235,245,0.3)' }}>
+                  <button onClick={() => setDueAtLocal('')} style={{ color: 'rgb(var(--ink-rgb) / 0.5)' }}>
                     <X size={11} />
                   </button>
                 )}
@@ -192,14 +187,14 @@ function TodoRow({
                 <button
                   onClick={() => void saveEdit()}
                   disabled={saving || !title.trim()}
-                  className="flex items-center gap-1 text-[12px] px-2.5 py-1.5 rounded-[8px] font-medium apple-btn disabled:opacity-50"
+                  className="btn btn-sm btn-primary"
                 >
                   {saving ? <Loader2 size={11} className="animate-spin" /> : <Check size={11} />}
                   Speichern
                 </button>
                 <button
                   onClick={resetEdit}
-                  className="text-[12px] px-2.5 py-1.5 rounded-[8px] apple-btn-ghost"
+                  className="btn btn-sm btn-quiet"
                 >
                   Abbrechen
                 </button>
@@ -210,7 +205,7 @@ function TodoRow({
               <span
                 className="text-[14px] leading-snug"
                 style={{
-                  color: todo.done ? 'rgba(235,235,245,0.28)' : '#ffffff',
+                  color: todo.done ? 'rgb(var(--ink-rgb) / 0.484)' : 'var(--ink)',
                   textDecoration: todo.done ? 'line-through' : 'none',
                 }}
               >
@@ -218,13 +213,13 @@ function TodoRow({
               </span>
               <div className="flex items-center gap-3 mt-1 flex-wrap">
                 {todo.dueAt && (
-                  <span className="text-[11px] flex items-center gap-1" style={{ color: isOverdue ? '#ff453a' : 'rgba(235,235,245,0.3)' }}>
+                  <span className="text-[11px] flex items-center gap-1" style={{ color: isOverdue ? 'var(--rose-deep)' : 'rgb(var(--ink-rgb) / 0.5)' }}>
                     {isOverdue && <AlertTriangle size={10} />}
                     <Clock size={10} />
                     {fmtDate(todo.dueAt)}
                   </span>
                 )}
-                <span className="text-[11px]" style={{ color: 'rgba(235,235,245,0.3)' }}>
+                <span className="text-[11px]" style={{ color: 'rgb(var(--ink-rgb) / 0.5)' }}>
                   {relativeDate(todo.createdAt)}
                 </span>
               </div>
@@ -232,14 +227,14 @@ function TodoRow({
                 <button
                   onClick={() => setExpanded(!expanded)}
                   className="flex items-center gap-1 text-[12px] mt-1 transition-opacity hover:opacity-75"
-                  style={{ color: '#0a84ff' }}
+                  style={{ color: 'var(--sky-deep)' }}
                 >
                   {expanded ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
                   {expanded ? 'Weniger' : 'Details'}
                 </button>
               )}
               {expanded && todo.details && (
-                <p className="text-[12px] mt-2 whitespace-pre-wrap leading-relaxed" style={{ color: 'rgba(235,235,245,0.5)' }}>
+                <p className="text-[12px] mt-2 whitespace-pre-wrap leading-relaxed" style={{ color: 'rgb(var(--ink-rgb) / 0.66)' }}>
                   {todo.details}
                 </p>
               )}
@@ -251,10 +246,10 @@ function TodoRow({
           <div className="flex items-center gap-1 flex-shrink-0">
             <button
               onClick={() => setEditing(true)}
-              className="p-1 rounded-[6px] transition-colors"
-              style={{ color: 'rgba(235,235,245,0.28)' }}
-              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#0a84ff'; }}
-              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'rgba(235,235,245,0.28)'; }}
+              className="p-1 rounded-full transition-colors"
+              style={{ color: 'rgb(var(--ink-rgb) / 0.484)' }}
+              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--sky-deep)'; }}
+              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'rgb(var(--ink-rgb) / 0.484)'; }}
               title="Bearbeiten"
             >
               <Edit3 size={13} />
@@ -262,10 +257,10 @@ function TodoRow({
             <button
               onClick={() => void handleDelete()}
               disabled={deleting}
-              className="p-1 rounded-[6px] transition-colors"
-              style={{ color: 'rgba(235,235,245,0.28)', opacity: deleting ? 0.5 : 1 }}
-              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#ff453a'; }}
-              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'rgba(235,235,245,0.28)'; }}
+              className="p-1 rounded-full transition-colors"
+              style={{ color: 'rgb(var(--ink-rgb) / 0.484)', opacity: deleting ? 0.5 : 1 }}
+              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--rose-deep)'; }}
+              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'rgb(var(--ink-rgb) / 0.484)'; }}
               title="Löschen"
             >
               {deleting ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}
@@ -317,36 +312,35 @@ function CreateTodoForm({
   return (
     <form
       onSubmit={(e) => void handleSubmit(e)}
-      className="rounded-[12px] p-3 flex flex-col gap-2"
-      style={{ background: '#2c2c2e', border: '1px solid rgba(10,132,255,0.25)' }}
+      className="rounded-[14px] p-3 flex flex-col gap-2"
+      style={{ background: 'var(--well-2)', border: '1px solid transparent' }}
     >
       <input
         ref={inputRef}
         value={title}
         onChange={(e) => setTitle(e.target.value)}
         placeholder="Todo-Titel *"
-        className="text-[14px] bg-transparent outline-none border-b w-full text-white"
-        style={{ borderColor: 'rgba(10,132,255,0.4)', paddingBottom: '4px' }}
+        className="field h-11 px-4 text-[14px] w-full"
+        style={{ borderColor: 'rgba(60,135,215,0.4)', paddingBottom: '4px' }}
       />
       <textarea
         value={details}
         onChange={(e) => setDetails(e.target.value)}
         rows={2}
-        className="text-[12px] outline-none resize-none rounded-[8px] p-2 w-full"
-        style={{ color: 'rgba(235,235,245,0.55)', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)' }}
+        className="field px-4 py-3 text-[14px] resize-none w-full"
         placeholder="Details (optional)"
       />
       <div className="flex items-center gap-2">
-        <Clock size={11} style={{ color: 'rgba(235,235,245,0.3)' }} />
+        <Clock size={11} style={{ color: 'rgb(var(--ink-rgb) / 0.5)' }} />
         <input
           type="datetime-local"
           value={dueAtLocal}
           onChange={(e) => setDueAtLocal(e.target.value)}
-          className="text-[11px] bg-transparent outline-none flex-1"
-          style={{ color: 'rgba(235,235,245,0.5)', colorScheme: 'dark' }}
+          className="field h-11 px-4 text-[14px] flex-1"
+          style={{ color: 'rgb(var(--ink-rgb) / 0.66)' }}
         />
         {dueAtLocal && (
-          <button type="button" onClick={() => setDueAtLocal('')} style={{ color: 'rgba(235,235,245,0.3)' }}>
+          <button type="button" onClick={() => setDueAtLocal('')} style={{ color: 'rgb(var(--ink-rgb) / 0.5)' }}>
             <X size={11} />
           </button>
         )}
@@ -355,7 +349,7 @@ function CreateTodoForm({
         <button
           type="submit"
           disabled={creating || !title.trim()}
-          className="apple-btn flex items-center gap-1.5 text-[12px] px-2.5 py-1.5 disabled:opacity-50"
+          className="btn btn-sm btn-primary"
         >
           {creating ? <Loader2 size={11} className="animate-spin" /> : <Plus size={11} />}
           Hinzufügen
@@ -363,7 +357,7 @@ function CreateTodoForm({
         <button
           type="button"
           onClick={onCancel}
-          className="apple-btn-ghost text-[12px] px-2.5 py-1.5"
+          className="btn btn-sm btn-quiet"
         >
           Abbrechen
         </button>
@@ -397,27 +391,27 @@ function ClassRow({
 
   return (
     <div
-      className="flex items-center gap-3 p-3 rounded-[12px]"
-      style={{ background: '#2c2c2e', border: '1px solid rgba(255,255,255,0.06)' }}
+      className="flex items-center gap-3 p-3 rounded-[14px]"
+      style={{ background: 'var(--well-2)', border: '1px solid transparent' }}
     >
       <div
-        className="w-8 h-8 rounded-[10px] flex items-center justify-center flex-shrink-0"
-        style={{ background: 'rgba(64,200,224,0.12)', color: '#40c8e0' }}
+        className="w-8 h-8 rounded-[12px] flex items-center justify-center flex-shrink-0"
+        style={{ background: 'rgba(20,150,175,0.12)', color: 'var(--teal-deep)' }}
       >
         <Building2 size={14} />
       </div>
       <div className="flex-1 min-w-0">
-        <div className="text-[14px] font-medium truncate text-white">{cls.className}</div>
-        <div className="text-[11px] font-mono mt-0.5" style={{ color: '#40c8e0' }}>{cls.classCode}</div>
+        <div className="text-[14px] font-medium truncate text-ink">{cls.className}</div>
+        <div className="text-[11px] font-mono mt-0.5" style={{ color: 'var(--teal-deep)' }}>{cls.classCode}</div>
       </div>
       <div className="flex items-center gap-2 flex-shrink-0">
-        <span className="text-[11px]" style={{ color: 'rgba(235,235,245,0.3)' }}>{relativeDate(cls.joinedAt)}</span>
+        <span className="text-[11px]" style={{ color: 'rgb(var(--ink-rgb) / 0.5)' }}>{relativeDate(cls.joinedAt)}</span>
         <button
           onClick={() => void handleRemove()}
           disabled={removing}
-          className="flex items-center gap-1 text-[12px] px-2.5 py-1.5 rounded-[8px] transition-all font-medium"
-          style={{ color: '#ff453a', border: '1px solid rgba(255,69,58,0.22)', background: 'transparent' }}
-          onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,69,58,0.08)'; }}
+          className="flex items-center gap-1 text-[12px] px-2.5 py-1.5 rounded-full transition-all font-medium"
+          style={{ color: 'var(--rose-deep)', border: '1px solid rgba(225,70,75,0.22)', background: 'transparent' }}
+          onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(225,70,75,0.08)'; }}
           onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
         >
           {removing ? <Loader2 size={11} className="animate-spin" /> : <LogOut size={11} />}
@@ -540,27 +534,27 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
       {showPasswordModal && user && (
         <div
           className="fixed inset-0 z-[60] flex items-start justify-center p-4 pt-20 overflow-y-auto"
-          style={{ background: 'rgba(0,0,0,0.75)', backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)' }}
+          style={{ background: 'var(--scrim)' }}
           onClick={() => { if (!settingPassword) { setShowPasswordModal(false); setNewPassword(''); } }}
         >
           <div
-            className="w-full max-w-md rounded-[20px] p-6 flex flex-col gap-5 animate-scaleIn"
-            style={{ background: '#1c1c1e', border: '1px solid rgba(255,255,255,0.1)', boxShadow: '0 32px 80px rgba(0,0,0,0.65)' }}
+            className="w-full max-w-md rounded-[26px] p-6 flex flex-col gap-5 animate-scaleIn"
+            style={{ background: 'var(--raise)', border: '1px solid transparent', boxShadow: '0 44px 70px -40px rgb(0 0 0 / 0.4)' }}
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between">
               <div>
-                <h2 className="text-[18px] font-bold text-white" style={{ letterSpacing: '-0.02em' }}>
+                <h2 className="text-[18px] font-bold text-ink" style={{ letterSpacing: '-0.02em' }}>
                   Passwort setzen
                 </h2>
-                <p className="text-[13px] mt-0.5" style={{ color: 'rgba(235,235,245,0.4)' }}>
+                <p className="text-[13px] mt-0.5" style={{ color: 'rgb(var(--ink-rgb) / 0.58)' }}>
                   Für {user.username}
                 </p>
               </div>
               <button
                 onClick={() => { setShowPasswordModal(false); setNewPassword(''); }}
-                style={{ color: 'rgba(235,235,245,0.35)' }}
-                className="p-1.5 rounded-[8px] transition-colors hover:bg-white/5"
+                style={{ color: 'rgb(var(--ink-rgb) / 0.54)' }}
+                className="p-1.5 rounded-full transition-colors hover:bg-ink/[0.07]"
               >
                 <X size={16} />
               </button>
@@ -568,8 +562,8 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
             <form onSubmit={(e) => void handleSetPassword(e)} className="flex flex-col gap-4">
               <div className="flex flex-col gap-1.5">
                 <label
-                  className="text-[11px] font-semibold uppercase tracking-[0.05em]"
-                  style={{ color: 'rgba(235,235,245,0.4)' }}
+                  className="text-[13px]"
+                  style={{ color: 'rgb(var(--ink-rgb) / 0.58)' }}
                 >
                   Neues Passwort *
                 </label>
@@ -581,21 +575,21 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
                   autoComplete="new-password"
                   value={newPassword}
                   onChange={(e) => setNewPassword(e.target.value)}
-                  className="apple-input w-full px-3 py-2.5 text-[14px]"
+                  className="field h-11 px-4 text-[14px] w-full"
                 />
               </div>
               <div className="flex gap-3 pt-1">
                 <button
                   type="button"
                   onClick={() => { setShowPasswordModal(false); setNewPassword(''); }}
-                  className="apple-btn-ghost flex-1 py-2.5 rounded-[10px] text-[14px]"
+                  className="btn btn-sm btn-quiet flex-1"
                 >
                   Abbrechen
                 </button>
                 <button
                   type="submit"
                   disabled={settingPassword || newPassword.length < 8}
-                  className="apple-btn flex-1 py-2.5 text-[14px] flex items-center justify-center gap-2"
+                  className="btn btn-sm btn-primary flex-1"
                 >
                   {settingPassword
                     ? <Loader2 size={14} className="animate-spin" />
@@ -613,9 +607,7 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
       <div
         className="fixed inset-0 z-40"
         style={{
-          background: 'rgba(0,0,0,0.7)',
-          backdropFilter: 'blur(8px)',
-          WebkitBackdropFilter: 'blur(8px)',
+          background: 'var(--scrim)',
           transition: 'opacity 0.25s ease',
           opacity: mounted ? 1 : 0,
         }}
@@ -628,10 +620,10 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
         style={isMobile ? {
           bottom: 0, left: 0, right: 0,
           height: '88vh',
-          background: '#1c1c1e',
-          borderTop: '1px solid rgba(255,255,255,0.1)',
+          background: 'var(--raise)',
+          borderTop: '1px solid rgb(var(--ink-rgb) / calc(0.12 * var(--veil)))',
           borderRadius: '20px 20px 0 0',
-          boxShadow: '0 -32px 80px rgba(0,0,0,0.7)',
+          boxShadow: 'none',
           transform: mounted ? 'translateY(0)' : 'translateY(100%)',
           transition: 'transform 0.35s cubic-bezier(0.4,0,0.2,1)',
         } : {
@@ -639,9 +631,9 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
           height: '100%',
           width: '480px',
           maxWidth: '100vw',
-          background: '#1c1c1e',
-          borderLeft: '1px solid rgba(255,255,255,0.08)',
-          boxShadow: '-32px 0 80px rgba(0,0,0,0.65)',
+          background: 'var(--well)',
+          borderLeft: '1px solid rgb(var(--ink-rgb) / calc(0.098 * var(--veil)))',
+          boxShadow: 'none',
           transform: mounted ? 'translateX(0)' : 'translateX(100%)',
           transition: 'transform 0.32s cubic-bezier(0.4,0,0.2,1)',
         }}
@@ -649,24 +641,24 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
         {/* Mobile handle */}
         {isMobile && (
           <div className="flex justify-center pt-3 pb-1 flex-shrink-0">
-            <div className="w-9 h-1 rounded-full" style={{ background: 'rgba(255,255,255,0.15)' }} />
+            <div className="w-9 h-1 rounded-full" style={{ background: 'rgb(var(--ink-rgb) / calc(0.12 * var(--veil)))' }} />
           </div>
         )}
 
         {/* Header */}
         <div
           className="flex items-center justify-between px-5 py-4 flex-shrink-0"
-          style={{ borderBottom: '1px solid rgba(255,255,255,0.07)' }}
+          style={{ borderBottom: '1px solid rgb(var(--ink-rgb) / calc(0.087 * var(--veil)))' }}
         >
-          <span className="text-[14px] font-semibold text-white" style={{ letterSpacing: '-0.01em' }}>
+          <span className="text-[14px] font-semibold text-ink" style={{ letterSpacing: '-0.01em' }}>
             Benutzerdetails
           </span>
           <button
             onClick={onClose}
-            className="p-2 rounded-[10px] transition-colors"
-            style={{ color: 'rgba(235,235,245,0.4)', background: 'rgba(255,255,255,0.05)' }}
-            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#fff'; (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.09)'; }}
-            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'rgba(235,235,245,0.4)'; (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.05)'; }}
+            className="p-2 rounded-full transition-colors"
+            style={{ color: 'rgb(var(--ink-rgb) / 0.58)', background: 'rgb(var(--ink-rgb) / calc(0.04 * var(--veil)))' }}
+            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--ink)'; (e.currentTarget as HTMLElement).style.background = 'rgb(var(--ink-rgb) / calc(0.072 * var(--veil)))'; }}
+            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'rgb(var(--ink-rgb) / 0.58)'; (e.currentTarget as HTMLElement).style.background = 'rgb(var(--ink-rgb) / calc(0.04 * var(--veil)))'; }}
           >
             <X size={15} />
           </button>
@@ -676,39 +668,39 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
         <div className="flex-1 overflow-y-auto scroll-touch scrollbar-thin p-5 flex flex-col gap-5">
           {loading ? (
             <div className="flex items-center justify-center py-16">
-              <Loader2 size={22} className="animate-spin" style={{ color: 'rgba(235,235,245,0.3)' }} />
+              <Loader2 size={22} className="animate-spin" style={{ color: 'rgb(var(--ink-rgb) / 0.5)' }} />
             </div>
           ) : !user ? (
-            <div className="text-center py-16 text-[14px]" style={{ color: 'rgba(235,235,245,0.3)' }}>
+            <div className="text-center py-16 text-[14px]" style={{ color: 'rgb(var(--ink-rgb) / 0.5)' }}>
               Benutzer nicht gefunden
             </div>
           ) : (
             <>
               {/* User card */}
               <div
-                className="rounded-[16px] p-5"
-                style={{ background: '#2c2c2e', border: '1px solid rgba(255,255,255,0.07)' }}
+                className="rounded-[22px] p-5"
+                style={{ background: 'var(--well-2)', border: '1px solid transparent' }}
               >
                 <div className="flex items-center gap-4">
                   <div
-                    className="w-14 h-14 rounded-[16px] flex items-center justify-center text-[20px] font-bold text-white flex-shrink-0"
+                    className="w-14 h-14 rounded-full flex items-center justify-center text-[20px] font-semibold text-white flex-shrink-0"
                     style={{ background: avatarColor(user.username) }}
                   >
                     {user.username[0]?.toUpperCase() ?? '?'}
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
-                      <span className="text-[18px] font-bold text-white truncate" style={{ letterSpacing: '-0.02em' }}>
+                      <span className="text-[18px] font-bold text-ink truncate" style={{ letterSpacing: '-0.02em' }}>
                         {user.username}
                       </span>
                       {user.isAdmin && (
                         <span className="badge-blue text-[11px] px-2 py-0.5 font-medium">Admin</span>
                       )}
                     </div>
-                    <div className="text-[11px] font-mono mt-1" style={{ color: 'rgba(235,235,245,0.28)' }}>
+                    <div className="text-[11px] font-mono mt-1" style={{ color: 'rgb(var(--ink-rgb) / 0.484)' }}>
                       {user.stableUid}
                     </div>
-                    <div className="flex items-center gap-3 mt-1.5 text-[12px] flex-wrap" style={{ color: 'rgba(235,235,245,0.4)' }}>
+                    <div className="flex items-center gap-3 mt-1.5 text-[12px] flex-wrap" style={{ color: 'rgb(var(--ink-rgb) / 0.58)' }}>
                       {user.webuntisKlasseName && <span>{user.webuntisKlasseName}</span>}
                       <span>Beigetreten {relativeDate(user.createdAt)}</span>
                     </div>
@@ -717,17 +709,17 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
 
                 <div
                   className="flex items-center gap-2 mt-4 pt-4"
-                  style={{ borderTop: '1px solid rgba(255,255,255,0.06)' }}
+                  style={{ borderTop: '1px solid rgb(var(--ink-rgb) / calc(0.076 * var(--veil)))' }}
                 >
                   <button
                     onClick={() => void handleToggleAdmin()}
                     disabled={togglingAdmin}
-                    className="flex items-center gap-1.5 text-[12px] px-3 py-2 rounded-[10px] transition-all font-medium"
+                    className="flex items-center gap-1.5 text-[12px] px-3 py-2 rounded-full transition-all font-medium"
                     style={user.isAdmin
-                      ? { color: '#ff453a', border: '1px solid rgba(255,69,58,0.25)', background: 'transparent' }
-                      : { color: '#0a84ff', border: '1px solid rgba(10,132,255,0.25)', background: 'transparent' }
+                      ? { color: 'var(--rose-deep)', border: '1px solid rgba(225,70,75,0.25)', background: 'transparent' }
+                      : { color: 'var(--sky-deep)', border: '1px solid rgba(60,135,215,0.25)', background: 'transparent' }
                     }
-                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = user.isAdmin ? 'rgba(255,69,58,0.08)' : 'rgba(10,132,255,0.1)'; }}
+                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = user.isAdmin ? 'rgba(225,70,75,0.08)' : 'rgba(60,135,215,0.1)'; }}
                     onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
                   >
                     {togglingAdmin ? <Loader2 size={12} className="animate-spin" /> : user.isAdmin ? <ShieldOff size={12} /> : <Shield size={12} />}
@@ -735,9 +727,9 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
                   </button>
                   <button
                     onClick={() => setShowPasswordModal(true)}
-                    className="flex items-center gap-1.5 text-[12px] px-3 py-2 rounded-[10px] transition-all font-medium"
-                    style={{ color: '#bf5af2', border: '1px solid rgba(191,90,242,0.25)', background: 'transparent' }}
-                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(191,90,242,0.08)'; }}
+                    className="flex items-center gap-1.5 text-[12px] px-3 py-2 rounded-full transition-all font-medium"
+                    style={{ color: 'var(--violet-deep)', border: '1px solid rgba(150,80,205,0.25)', background: 'transparent' }}
+                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(150,80,205,0.08)'; }}
                     onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
                   >
                     <Key size={12} />
@@ -750,16 +742,16 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
               <section>
                 <div className="flex items-center justify-between mb-3">
                   <h3
-                    className="text-[11px] font-semibold uppercase tracking-[0.05em]"
-                    style={{ color: 'rgba(235,235,245,0.3)' }}
+                    className="text-[13px]"
+                    style={{ color: 'rgb(var(--ink-rgb) / 0.5)' }}
                   >
                     Klassen ({user.classes.length})
                   </h3>
                 </div>
                 {user.classes.length === 0 ? (
                   <div
-                    className="rounded-[12px] p-4 text-center text-[13px]"
-                    style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)', color: 'rgba(235,235,245,0.3)' }}
+                    className="rounded-[14px] p-4 text-center text-[13px]"
+                    style={{ background: 'rgb(var(--ink-rgb) / calc(0.016 * var(--veil)))', border: '1px solid transparent', color: 'rgb(var(--ink-rgb) / 0.5)' }}
                   >
                     In keiner Klasse
                   </div>
@@ -776,17 +768,17 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
               <section>
                 <div className="flex items-center justify-between mb-3">
                   <h3
-                    className="text-[11px] font-semibold uppercase tracking-[0.05em]"
-                    style={{ color: 'rgba(235,235,245,0.3)' }}
+                    className="text-[13px]"
+                    style={{ color: 'rgb(var(--ink-rgb) / 0.5)' }}
                   >
                     Todos &mdash; {pendingTodos.length} offen, {doneTodos.length} erledigt
                   </h3>
                   {!showCreateTodo && (
                     <button
                       onClick={() => setShowCreateTodo(true)}
-                      className="flex items-center gap-1 text-[12px] px-2 py-1 rounded-[8px] transition-all font-medium"
-                      style={{ color: '#0a84ff', border: '1px solid rgba(10,132,255,0.25)', background: 'transparent' }}
-                      onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(10,132,255,0.1)'; }}
+                      className="flex items-center gap-1 text-[12px] px-2 py-1 rounded-full transition-all font-medium"
+                      style={{ color: 'var(--sky-deep)', border: '1px solid rgba(60,135,215,0.25)', background: 'transparent' }}
+                      onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(60,135,215,0.1)'; }}
                       onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
                     >
                       <Plus size={11} /> Hinzufügen
@@ -806,8 +798,8 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
 
                 {user.todos.length === 0 && !showCreateTodo ? (
                   <div
-                    className="rounded-[12px] p-4 text-center text-[13px]"
-                    style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)', color: 'rgba(235,235,245,0.3)' }}
+                    className="rounded-[14px] p-4 text-center text-[13px]"
+                    style={{ background: 'rgb(var(--ink-rgb) / calc(0.016 * var(--veil)))', border: '1px solid transparent', color: 'rgb(var(--ink-rgb) / 0.5)' }}
                   >
                     Keine Todos
                   </div>
@@ -818,9 +810,9 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
                     ))}
                     {doneTodos.length > 0 && pendingTodos.length > 0 && (
                       <div className="flex items-center gap-3 my-1">
-                        <div className="flex-1 h-px" style={{ background: 'rgba(255,255,255,0.05)' }} />
-                        <span className="text-[11px]" style={{ color: 'rgba(235,235,245,0.3)' }}>Erledigt</span>
-                        <div className="flex-1 h-px" style={{ background: 'rgba(255,255,255,0.05)' }} />
+                        <div className="flex-1 h-px" style={{ background: 'rgb(var(--ink-rgb) / calc(0.04 * var(--veil)))' }} />
+                        <span className="text-[11px]" style={{ color: 'rgb(var(--ink-rgb) / 0.5)' }}>Erledigt</span>
+                        <div className="flex-1 h-px" style={{ background: 'rgb(var(--ink-rgb) / calc(0.04 * var(--veil)))' }} />
                       </div>
                     )}
                     {doneTodos.map((t) => (
@@ -833,20 +825,20 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
               {/* Danger zone */}
               <section
                 className="rounded-[14px] p-4"
-                style={{ background: 'rgba(255,69,58,0.05)', border: '1px solid rgba(255,69,58,0.15)' }}
+                style={{ background: 'rgba(225,70,75,0.05)', border: '1px solid transparent' }}
               >
                 <h3
-                  className="text-[11px] font-semibold uppercase tracking-[0.05em] mb-3"
-                  style={{ color: '#ff453a' }}
+                  className="text-[13px] mb-3"
+                  style={{ color: 'var(--rose-deep)' }}
                 >
                   Gefahrenzone
                 </h3>
                 {!confirmDelete ? (
                   <button
                     onClick={() => setConfirmDelete(true)}
-                    className="flex items-center gap-2 text-[13px] px-3 py-2 rounded-[10px] transition-all font-medium"
-                    style={{ color: '#ff453a', border: '1px solid rgba(255,69,58,0.3)', background: 'transparent' }}
-                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,69,58,0.08)'; }}
+                    className="flex items-center gap-2 text-[13px] px-3 py-2 rounded-full transition-all font-medium"
+                    style={{ color: 'var(--rose-deep)', border: '1px solid rgba(225,70,75,0.3)', background: 'transparent' }}
+                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(225,70,75,0.08)'; }}
                     onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
                   >
                     <Trash2 size={13} />
@@ -854,22 +846,22 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
                   </button>
                 ) : (
                   <div className="flex flex-col gap-2">
-                    <p className="text-[12px] leading-relaxed" style={{ color: '#ff453a' }}>
+                    <p className="text-[12px] leading-relaxed" style={{ color: 'var(--rose-deep)' }}>
                       <strong>{user.username}</strong> und alle zugehörigen Daten werden dauerhaft gelöscht. Diese Aktion kann nicht rückgängig gemacht werden.
                     </p>
                     <div className="flex items-center gap-2">
                       <button
                         onClick={() => void handleDeleteUser()}
                         disabled={deletingUser}
-                        className="flex items-center gap-2 text-[13px] px-3 py-2 rounded-[10px] font-medium transition-all"
-                        style={{ background: '#ff453a', color: '#fff', opacity: deletingUser ? 0.6 : 1 }}
+                        className="flex items-center gap-2 text-[13px] px-3 py-2 rounded-full font-medium transition-all"
+                        style={{ background: 'var(--rose-solid)', color: '#fff', opacity: deletingUser ? 0.6 : 1 }}
                       >
                         {deletingUser ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
                         Bestätigen
                       </button>
                       <button
                         onClick={() => setConfirmDelete(false)}
-                        className="apple-btn-ghost text-[13px] px-3 py-2"
+                        className="btn btn-sm btn-quiet"
                       >
                         Abbrechen
                       </button>

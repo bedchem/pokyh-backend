@@ -2,6 +2,7 @@ import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { useAuth } from './hooks/useAuth';
 import { ToastProvider } from './components/Toast';
 import { Layout } from './components/Layout';
+import { MarkLoader } from './components/kit';
 import { LoginPage } from './pages/LoginPage';
 import { SetupPage } from './pages/SetupPage';
 import { DashboardPage } from './pages/DashboardPage';
@@ -28,10 +29,10 @@ import { ReactNode, Suspense, useState, useEffect } from 'react';
 import { setupApi } from './api';
 import type { SetupStatus } from './types';
 
-function ProtectedRoute({ children }: { children: ReactNode }) {
+function ProtectedRoute({ children, bleed }: { children: ReactNode; bleed?: boolean }) {
   const { isAuthenticated } = useAuth();
   if (!isAuthenticated) return <Navigate to="/login" replace />;
-  return <Layout>{children}</Layout>;
+  return <Layout bleed={bleed}>{children}</Layout>;
 }
 
 function RootRedirect() {
@@ -41,26 +42,8 @@ function RootRedirect() {
 
 function Spinner() {
   return (
-    <div
-      style={{
-        minHeight: '100vh',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        background: '#000000',
-      }}
-    >
-      <div
-        style={{
-          width: '28px',
-          height: '28px',
-          borderRadius: '50%',
-          border: '2px solid rgba(255,255,255,0.1)',
-          borderTopColor: '#0a84ff',
-          animation: 'spin 0.8s linear infinite',
-        }}
-      />
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+    <div className="flex min-h-screen items-center justify-center bg-canvas">
+      <MarkLoader size={40} />
     </div>
   );
 }
@@ -96,7 +79,7 @@ export default function App() {
           <Routes>
             <Route path="/"               element={<RootRedirect />} />
             <Route path="/login"          element={<LoginPage />} />
-            <Route path="/dashboard"      element={<ProtectedRoute><DashboardPage /></ProtectedRoute>} />
+            <Route path="/dashboard"      element={<ProtectedRoute bleed><DashboardPage /></ProtectedRoute>} />
             <Route path="/users"          element={<ProtectedRoute><UsersPage /></ProtectedRoute>} />
             <Route path="/classes"        element={<ProtectedRoute><ClassesPage /></ProtectedRoute>} />
             <Route path="/sessions"       element={<ProtectedRoute><SessionsPage /></ProtectedRoute>} />

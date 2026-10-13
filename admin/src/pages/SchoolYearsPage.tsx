@@ -2,8 +2,9 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Archive, Users, Building2, CheckSquare, Bell, Search,
   ChevronLeft, ChevronRight, RefreshCw, AlertTriangle, CheckCircle2,
-  Clock, RotateCcw, Undo2,
+  Clock, RotateCcw, Undo2, CalendarRange, History,
 } from 'lucide-react';
+import { Delta, Empty, Figures, Notice, PageHeader, Section, Segmented, Spinner } from '../components/kit';
 import { adminApi } from '../api';
 import type {
   SchoolYearMeta, ArchivedUser, ArchivedClass, ArchivedTodo, ArchivedReminder,
@@ -12,7 +13,7 @@ import type {
 type DataTab = 'users' | 'classes' | 'todos' | 'reminders';
 const PAGE_SIZE = 50;
 
-const dimText = { color: 'rgba(235,235,245,0.4)' };
+const dimText = { color: 'rgb(var(--ink-rgb) / 0.58)' };
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -22,12 +23,12 @@ function Pagination({ page, total, limit, onPage }: { page: number; total: numbe
   return (
     <div className="flex items-center gap-2 text-sm" style={dimText}>
       <button disabled={page <= 1} onClick={() => onPage(page - 1)}
-        className="p-1.5 rounded-[8px] disabled:opacity-30" style={{ background: 'rgba(255,255,255,0.06)' }}>
+        className="p-1.5 rounded-full disabled:opacity-30" style={{ background: 'rgb(var(--ink-rgb) / calc(0.048 * var(--veil)))' }}>
         <ChevronLeft size={14} />
       </button>
       <span className="text-[13px]">{page} / {pages}</span>
       <button disabled={page >= pages} onClick={() => onPage(page + 1)}
-        className="p-1.5 rounded-[8px] disabled:opacity-30" style={{ background: 'rgba(255,255,255,0.06)' }}>
+        className="p-1.5 rounded-full disabled:opacity-30" style={{ background: 'rgb(var(--ink-rgb) / calc(0.048 * var(--veil)))' }}>
         <ChevronRight size={14} />
       </button>
       <span className="text-[12px] ml-1">{total} gesamt</span>
@@ -38,19 +39,19 @@ function Pagination({ page, total, limit, onPage }: { page: number; total: numbe
 function Badge({ label, color }: { label: string; color: string }) {
   return (
     <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium"
-      style={{ background: `${color}22`, color }}>{label}</span>
+      style={{ background: `color-mix(in srgb, ${color} 13%, transparent)`, color }}>{label}</span>
   );
 }
 
 function TableHead({ children }: { children: React.ReactNode }) {
   return (
-    <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.06)', color: 'rgba(235,235,245,0.35)' }}>
+    <tr style={{ borderBottom: '1px solid rgb(var(--ink-rgb) / calc(0.076 * var(--veil)))', color: 'rgb(var(--ink-rgb) / 0.54)' }}>
       {children}
     </tr>
   );
 }
 
-const th = 'px-4 py-2.5 text-left text-[11px] font-semibold uppercase tracking-[0.05em]';
+const th = 'px-4 py-2.5 text-left text-[13px]';
 const td = 'px-4 py-3 text-[13px]';
 
 // ─── sub-views ────────────────────────────────────────────────────────────────
@@ -86,16 +87,15 @@ function UsersTab({ yearId }: { yearId: string }) {
           <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2" style={dimText} />
           <input type="text" value={search} onChange={(e) => handleSearch(e.target.value)}
             placeholder="Nutzer suchen…"
-            className="w-full pl-9 pr-3 py-2 rounded-[10px] text-[13px] text-white placeholder-[rgba(235,235,245,0.3)] outline-none"
-            style={{ background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.08)' }} />
+            className="field h-11 pl-11 pr-4 text-[14px] w-full" />
         </div>
-        <button onClick={() => void load(page, search)} className="p-2 rounded-[10px]"
-          style={{ background: 'rgba(255,255,255,0.07)', color: 'rgba(235,235,245,0.5)' }}>
+        <button onClick={() => void load(page, search)} className="p-2 rounded-full"
+          style={{ background: 'rgb(var(--ink-rgb) / calc(0.056 * var(--veil)))', color: 'rgb(var(--ink-rgb) / 0.66)' }}>
           <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
         </button>
       </div>
-      <div className="rounded-[14px] overflow-hidden" style={{ border: '1px solid rgba(255,255,255,0.07)', background: '#0d0d0d' }}>
-        <table className="w-full border-collapse">
+      <div className="tbl-scroll">
+        <table className="tbl">
           <thead><TableHead>
             <th className={th}>Benutzername</th>
             <th className={th}>Rolle</th>
@@ -108,12 +108,12 @@ function UsersTab({ yearId }: { yearId: string }) {
               <tr><td colSpan={5} className="px-4 py-8 text-center text-[13px]" style={dimText}>Keine Nutzer</td></tr>
             )}
             {users.map((u) => (
-              <tr key={u.id} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }} className="hover:bg-white/[0.02]">
-                <td className={`${td} font-medium text-white`}>{u.username}</td>
+              <tr key={u.id} style={{ borderBottom: '1px solid rgb(var(--ink-rgb) / calc(0.054 * var(--veil)))' }} className="hover:bg-ink/[0.05]">
+                <td className={`${td} font-medium text-ink`}>{u.username}</td>
                 <td className={td}>
                   {u.role === 'parent'
-                    ? <Badge label="Elternteil" color="#bf5af2" />
-                    : <Badge label="Schüler:in" color="#30d158" />}
+                    ? <Badge label="Elternteil" color="var(--violet-deep)" />
+                    : <Badge label="Schüler:in" color="var(--mint-deep)" />}
                 </td>
                 <td className={td} style={dimText}>{u.className ?? '—'}{u.classCode ? ` (${u.classCode})` : ''}</td>
                 <td className={td} style={dimText}>{u.webuntisKlasseId || '—'}</td>
@@ -146,22 +146,22 @@ function ClassesTab({ yearId }: { yearId: string }) {
   return (
     <div className="flex flex-col gap-3">
       {classes.map((c) => (
-        <div key={c.id} className="rounded-[14px] overflow-hidden" style={{ border: '1px solid rgba(255,255,255,0.07)', background: '#0d0d0d' }}>
+        <div key={c.id} className="rounded-[14px] overflow-hidden" style={{ border: '1px solid transparent', background: 'rgb(var(--ink-rgb) / calc(0.05 * var(--veil)))' }}>
           <button onClick={() => setExpanded(expanded === c.id ? null : c.id)}
-            className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-white/[0.02] transition-colors">
+            className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-ink/[0.05] transition-colors">
             <div className="flex items-center gap-3">
-              <Building2 size={15} style={{ color: '#0a84ff' }} />
-              <span className="font-medium text-white text-[14px]">{c.name}</span>
-              <span className="text-[12px] px-2 py-0.5 rounded-[6px]" style={{ background: 'rgba(255,255,255,0.08)', color: 'rgba(235,235,245,0.5)' }}>{c.code}</span>
+              <Building2 size={15} style={{ color: 'var(--sky-deep)' }} />
+              <span className="font-medium text-ink text-[14px]">{c.name}</span>
+              <span className="text-[12px] px-2 py-0.5 rounded-[8px]" style={{ background: 'rgb(var(--ink-rgb) / calc(0.064 * var(--veil)))', color: 'rgb(var(--ink-rgb) / 0.66)' }}>{c.code}</span>
             </div>
             <span className="text-[12px]" style={dimText}>{c.memberCount} Mitglieder</span>
           </button>
           {expanded === c.id && c.members.length > 0 && (
-            <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+            <div style={{ borderTop: '1px solid rgb(var(--ink-rgb) / calc(0.076 * var(--veil)))' }}>
               {c.members.map((m) => (
-                <div key={m.stableUid} className="flex items-center gap-3 px-4 py-2" style={{ borderBottom: '1px solid rgba(255,255,255,0.03)' }}>
-                  <span className="text-[13px] text-white flex-1">{m.username}</span>
-                  {m.role === 'parent' ? <Badge label="Elternteil" color="#bf5af2" /> : <Badge label="Schüler:in" color="#30d158" />}
+                <div key={m.stableUid} className="flex items-center gap-3 px-4 py-2" style={{ borderBottom: '1px solid rgb(var(--ink-rgb) / calc(0.043 * var(--veil)))' }}>
+                  <span className="text-[13px] text-ink flex-1">{m.username}</span>
+                  {m.role === 'parent' ? <Badge label="Elternteil" color="var(--violet-deep)" /> : <Badge label="Schüler:in" color="var(--mint-deep)" />}
                   <span className="text-[12px]" style={dimText}>{new Date(m.joinedAt).toLocaleDateString('de-AT', { day: '2-digit', month: '2-digit', year: '2-digit' })}</span>
                 </div>
               ))}
@@ -205,21 +205,20 @@ function TodosTab({ yearId }: { yearId: string }) {
           <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2" style={dimText} />
           <input type="text" value={search} onChange={(e) => handleSearch(e.target.value)}
             placeholder="Todos suchen…"
-            className="w-full pl-9 pr-3 py-2 rounded-[10px] text-[13px] text-white placeholder-[rgba(235,235,245,0.3)] outline-none"
-            style={{ background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.08)' }} />
+            className="field h-11 pl-11 pr-4 text-[14px] w-full" />
         </div>
-        <div className="flex gap-1 p-0.5 rounded-[10px]" style={{ background: 'rgba(255,255,255,0.06)' }}>
+        <div className="flex gap-1 p-0.5 rounded-[12px]" style={{ background: 'rgb(var(--ink-rgb) / calc(0.048 * var(--veil)))' }}>
           {(['all', 'active', 'done', 'archived'] as const).map((s) => (
             <button key={s} onClick={() => { setStatus(s); setPage(1); void load(1, search, s); }}
-              className="px-3 py-1.5 rounded-[8px] text-[12px] font-medium"
-              style={status === s ? { background: 'rgba(255,255,255,0.12)', color: '#fff' } : { color: 'rgba(235,235,245,0.45)' }}>
+              className="px-3 py-1.5 rounded-full text-[12px] font-medium"
+              style={status === s ? { background: 'rgb(var(--ink-rgb) / calc(0.096 * var(--veil)))', color: 'var(--ink)' } : { color: 'rgb(var(--ink-rgb) / 0.62)' }}>
               {{ all: 'Alle', active: 'Aktiv', done: 'Erledigt', archived: 'Archiviert' }[s]}
             </button>
           ))}
         </div>
       </div>
-      <div className="rounded-[14px] overflow-hidden" style={{ border: '1px solid rgba(255,255,255,0.07)', background: '#0d0d0d' }}>
-        <table className="w-full border-collapse">
+      <div className="tbl-scroll">
+        <table className="tbl">
           <thead><TableHead>
             <th className={th}>Titel</th>
             <th className={th}>Nutzer</th>
@@ -231,9 +230,9 @@ function TodosTab({ yearId }: { yearId: string }) {
               <tr><td colSpan={4} className="px-4 py-8 text-center text-[13px]" style={dimText}>Keine Todos</td></tr>
             )}
             {todos.map((t) => (
-              <tr key={t.id} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }} className="hover:bg-white/[0.02]">
+              <tr key={t.id} style={{ borderBottom: '1px solid rgb(var(--ink-rgb) / calc(0.054 * var(--veil)))' }} className="hover:bg-ink/[0.05]">
                 <td className={td}>
-                  <span className="font-medium text-white">{t.title}</span>
+                  <span className="font-medium text-ink">{t.title}</span>
                   {t.details && <p className="text-[12px] truncate max-w-[260px]" style={dimText}>{t.details}</p>}
                 </td>
                 <td className={td} style={dimText}>{t.username}</td>
@@ -243,9 +242,9 @@ function TodosTab({ yearId }: { yearId: string }) {
                     : <span style={dimText}>—</span>}
                 </td>
                 <td className={td}>
-                  {t.archivedAt ? <Badge label="Archiviert" color="#8e8e93" />
-                    : t.done ? <Badge label="Erledigt" color="#30d158" />
-                    : <Badge label="Aktiv" color="#0a84ff" />}
+                  {t.archivedAt ? <Badge label="Archiviert" color="var(--ink-3)" />
+                    : t.done ? <Badge label="Erledigt" color="var(--mint-deep)" />
+                    : <Badge label="Aktiv" color="var(--sky-deep)" />}
                 </td>
               </tr>
             ))}
@@ -291,14 +290,13 @@ function RemindersTab({ yearId }: { yearId: string }) {
           <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2" style={dimText} />
           <input type="text" value={search} onChange={(e) => handleSearch(e.target.value)}
             placeholder="Erinnerungen suchen…"
-            className="w-full pl-9 pr-3 py-2 rounded-[10px] text-[13px] text-white placeholder-[rgba(235,235,245,0.3)] outline-none"
-            style={{ background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.08)' }} />
+            className="field h-11 pl-11 pr-4 text-[14px] w-full" />
         </div>
-        <div className="flex gap-1 p-0.5 rounded-[10px]" style={{ background: 'rgba(255,255,255,0.06)' }}>
+        <div className="flex gap-1 p-0.5 rounded-[12px]" style={{ background: 'rgb(var(--ink-rgb) / calc(0.048 * var(--veil)))' }}>
           {(['all', 'active', 'archived'] as const).map((s) => (
             <button key={s} onClick={() => { setStatus(s); setPage(1); void load(1, search, s); }}
-              className="px-3 py-1.5 rounded-[8px] text-[12px] font-medium"
-              style={status === s ? { background: 'rgba(255,255,255,0.12)', color: '#fff' } : { color: 'rgba(235,235,245,0.45)' }}>
+              className="px-3 py-1.5 rounded-full text-[12px] font-medium"
+              style={status === s ? { background: 'rgb(var(--ink-rgb) / calc(0.096 * var(--veil)))', color: 'var(--ink)' } : { color: 'rgb(var(--ink-rgb) / 0.62)' }}>
               {{ all: 'Alle', active: 'Aktiv', archived: 'Archiviert' }[s]}
             </button>
           ))}
@@ -309,13 +307,13 @@ function RemindersTab({ yearId }: { yearId: string }) {
           <p className="py-8 text-center text-[13px]" style={dimText}>Keine Erinnerungen</p>
         )}
         {reminders.map((r) => (
-          <div key={r.id} className="rounded-[14px] p-4" style={{ border: '1px solid rgba(255,255,255,0.07)', background: '#0d0d0d' }}>
+          <div key={r.id} className="rounded-[14px] p-4" style={{ border: '1px solid transparent', background: 'rgb(var(--ink-rgb) / calc(0.05 * var(--veil)))' }}>
             <div className="flex items-start justify-between gap-3 mb-1">
               <div>
-                <span className="font-medium text-white text-[14px]">{r.title}</span>
+                <span className="font-medium text-ink text-[14px]">{r.title}</span>
                 {r.body && <p className="text-[13px] mt-0.5" style={dimText}>{r.body}</p>}
               </div>
-              {r.archivedAt ? <Badge label="Archiviert" color="#8e8e93" /> : <Badge label="Aktiv" color="#0a84ff" />}
+              {r.archivedAt ? <Badge label="Archiviert" color="var(--ink-3)" /> : <Badge label="Aktiv" color="var(--sky-deep)" />}
             </div>
             <div className="flex flex-wrap gap-4 mt-2 text-[12px]" style={dimText}>
               <span className="flex items-center gap-1"><Building2 size={11} />{r.className}</span>
@@ -323,10 +321,10 @@ function RemindersTab({ yearId }: { yearId: string }) {
               {r.createdByUsername && <span>von {r.createdByUsername}</span>}
             </div>
             {r.comments.length > 0 && (
-              <div className="mt-3 pt-3 flex flex-col gap-2" style={{ borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+              <div className="mt-3 pt-3 flex flex-col gap-2" style={{ borderTop: '1px solid rgb(var(--ink-rgb) / calc(0.065 * var(--veil)))' }}>
                 {r.comments.map((c) => (
                   <div key={c.id} className="flex gap-2 text-[12px]">
-                    <span style={{ color: '#0a84ff' }}>{c.username}</span>
+                    <span style={{ color: 'var(--sky-deep)' }}>{c.username}</span>
                     <span style={dimText}>{c.body}</span>
                   </div>
                 ))}
@@ -362,6 +360,8 @@ export function SchoolYearsPage() {
       const r = await adminApi.schoolYears();
       setCurrentLabel(r.current.label);
       setArchived(r.archived);
+    } catch (err) {
+      setRolloverError(err instanceof Error ? err.message : 'Schuljahre konnten nicht geladen werden');
     } finally { setLoading(false); }
   }, []);
 
@@ -411,133 +411,104 @@ export function SchoolYearsPage() {
     { key: 'reminders', label: 'Erinnerungen',   icon: <Bell size={14} /> },
   ];
 
+  const latestYear = archived.find((y) => y.id === latestYearId);
+
   return (
     <div>
-      {/* Header */}
-      <div className="flex items-start justify-between gap-4 mb-6">
-        <div>
-          <h1 className="text-[22px] font-bold text-white tracking-[-0.02em]">Schuljahre</h1>
-          <p className="text-[13px] mt-1" style={dimText}>Archivierte Schuljahre anzeigen und neues Schuljahr starten</p>
-        </div>
-        <button
-          onClick={() => void handleRollover()}
-          disabled={rolling}
-          className="flex items-center gap-2 px-4 py-2.5 rounded-[10px] text-[13px] font-medium transition-all disabled:opacity-50 flex-shrink-0"
-          style={{ background: 'rgba(255,69,58,0.12)', color: '#ff453a', border: '1px solid rgba(255,69,58,0.22)' }}
-        >
-          <RotateCcw size={14} />
+      <PageHeader title="Schuljahre" subtitle="Archivierte Schuljahre anzeigen und ein neues Schuljahr starten.">
+        <button type="button" onClick={() => void handleRollover()} disabled={rolling} className="btn btn-danger">
+          {rolling ? <Spinner /> : <RotateCcw size={16} strokeWidth={1.7} />}
           {rolling ? 'Läuft…' : 'Schuljahreswechsel'}
         </button>
-      </div>
+      </PageHeader>
 
-      {/* Feedback */}
-      {rolloverError && (
-        <div className="flex items-center gap-2 mb-4 px-3 py-2.5 rounded-[10px] text-[13px]"
-          style={{ background: 'rgba(255,69,58,0.1)', color: '#ff453a', border: '1px solid rgba(255,69,58,0.2)' }}>
-          <AlertTriangle size={14} />{rolloverError}
-        </div>
-      )}
-      {rolloverSuccess && (
-        <div className="flex items-center gap-2 mb-4 px-3 py-2.5 rounded-[10px] text-[13px]"
-          style={{ background: 'rgba(48,209,88,0.1)', color: '#30d158', border: '1px solid rgba(48,209,88,0.2)' }}>
-          <CheckCircle2 size={14} />{rolloverSuccess}
+      {(rolloverError || rolloverSuccess) && (
+        <div className="mt-8 flex max-w-[820px] flex-col gap-3">
+          {rolloverError && <Notice tone="rose" icon={AlertTriangle}>{rolloverError}</Notice>}
+          {rolloverSuccess && <Notice tone="mint" icon={CheckCircle2}>{rolloverSuccess}</Notice>}
         </div>
       )}
 
-      {/* Current year card */}
-      <div className="mb-5 p-4 rounded-[14px] flex items-center gap-3"
-        style={{ background: 'rgba(10,132,255,0.08)', border: '1px solid rgba(10,132,255,0.18)' }}>
-        <div className="w-9 h-9 rounded-[10px] flex items-center justify-center flex-shrink-0"
-          style={{ background: 'rgba(10,132,255,0.15)', border: '1px solid rgba(10,132,255,0.25)' }}>
-          <Archive size={16} style={{ color: '#0a84ff' }} />
-        </div>
-        <div>
-          <div className="text-[15px] font-semibold text-white">Aktuelles Schuljahr: {currentLabel}</div>
-          <div className="text-[12px] mt-0.5" style={dimText}>Live-Daten — wechsle zu einem archivierten Jahr um vergangene Daten einzusehen</div>
-        </div>
-      </div>
+      <Figures
+        className="mt-10"
+        items={[
+          { label: 'Aktuelles Schuljahr', value: currentLabel || '–', icon: CalendarRange, note: <Delta tone="mint">Live-Daten</Delta> },
+          { label: 'Archivierte Jahre', value: archived.length, icon: Archive },
+          {
+            label: 'Letzter Wechsel',
+            value: latestYear ? new Date(latestYear.rolledAt).toLocaleDateString('de-AT', { day: 'numeric', month: 'short', year: 'numeric' }) : 'noch nie',
+            icon: History,
+          },
+        ]}
+      />
 
-      {loading && <p className="text-[13px] py-8 text-center" style={dimText}>Laden…</p>}
+      {loading && (
+        <div className="mt-10 flex gap-3">{Array.from({ length: 3 }).map((_, i) => <div key={i} className="shimmer h-[58px] w-[132px] rounded-[18px]" />)}</div>
+      )}
 
       {!loading && archived.length === 0 && (
-        <div className="rounded-[14px] p-8 text-center" style={{ border: '1px solid rgba(255,255,255,0.07)', background: '#0d0d0d' }}>
-          <Archive size={28} className="mx-auto mb-3" style={{ color: 'rgba(235,235,245,0.2)' }} />
-          <p className="text-[14px] text-white font-medium mb-1">Noch keine archivierten Schuljahre</p>
-          <p className="text-[13px]" style={dimText}>Am 1. August wird automatisch ein Archiv des aktuellen Schuljahres erstellt.<br />Mit dem Button oben rechts kann der Wechsel auch manuell ausgelöst werden.</p>
-        </div>
+        <Empty icon={Archive}>
+          Noch keine archivierten Schuljahre. Am 1. August wird automatisch ein Archiv des aktuellen Schuljahres erstellt;
+          mit dem Button oben rechts lässt sich der Wechsel auch manuell auslösen.
+        </Empty>
       )}
 
       {!loading && archived.length > 0 && (
-        <div className="flex gap-4">
-          {/* Year list */}
-          <div className="w-48 flex-shrink-0 flex flex-col gap-1.5">
-            {archived.map((y) => (
-              <button key={y.id}
-                onClick={() => { setSelectedId(y.id); setDataTab('users'); }}
-                className="flex items-center gap-2.5 px-3 py-2.5 rounded-[10px] text-left transition-all text-[13px]"
-                style={selectedId === y.id
-                  ? { background: 'rgba(10,132,255,0.14)', color: '#0a84ff' }
-                  : { color: 'rgba(235,235,245,0.5)', background: 'rgba(255,255,255,0.04)' }}>
-                <Archive size={14} />
-                <div>
-                  <div className="font-medium">{y.label}</div>
-                  <div className="text-[11px] opacity-60">{new Date(y.rolledAt).toLocaleDateString('de-AT', { day: '2-digit', month: '2-digit', year: '2-digit' })}</div>
-                </div>
-              </button>
-            ))}
-          </div>
+        <>
+          <Section className="mt-[46px]" title="Archiv" meta="Jahr wählen, um die archivierten Daten einzusehen">
+            <div className="day-strip mt-6" role="group" aria-label="Archivierte Schuljahre">
+              {archived.map((y) => (
+                <button
+                  key={y.id}
+                  type="button"
+                  className="day-chip"
+                  aria-pressed={selectedId === y.id}
+                  onClick={() => { setSelectedId(y.id); setDataTab('users'); }}
+                >
+                  <span className="text-[14px] font-medium">{y.label}</span>
+                  <span className="tabular text-[12px]">{new Date(y.rolledAt).toLocaleDateString('de-AT', { day: '2-digit', month: '2-digit', year: '2-digit' })}</span>
+                </button>
+              ))}
+            </div>
+          </Section>
 
-          {/* Year content */}
-          <div className="flex-1 min-w-0">
-            {!selectedId && (
-              <div className="rounded-[14px] p-8 text-center" style={{ border: '1px solid rgba(255,255,255,0.07)', background: '#0d0d0d' }}>
-                <p className="text-[13px]" style={dimText}>Schuljahr auswählen um die archivierten Daten anzuzeigen</p>
-              </div>
-            )}
-            {selectedId && selectedYear && (
-              <div>
-                {/* Year meta */}
-                <div className="mb-4 flex items-center justify-between gap-4">
-                  <div>
-                    <h2 className="text-[17px] font-bold text-white">Schuljahr {selectedYear.label}</h2>
-                    <p className="text-[12px] mt-0.5" style={dimText}>
-                      Archiviert am {new Date(selectedYear.rolledAt).toLocaleDateString('de-AT', { day: '2-digit', month: 'long', year: 'numeric' })}
-                      {selectedYear.note ? ` · ${selectedYear.note}` : ''}
-                    </p>
-                  </div>
+          {selectedId && selectedYear && (
+            <Section
+              className="mt-[44px]"
+              title={`Schuljahr ${selectedYear.label}`}
+              meta={`Archiviert am ${new Date(selectedYear.rolledAt).toLocaleDateString('de-AT', { day: '2-digit', month: 'long', year: 'numeric' })}${selectedYear.note ? ` · ${selectedYear.note}` : ''}`}
+              action={(
+                <>
                   {selectedYear.id === latestYearId && (
                     <button
+                      type="button"
                       onClick={() => void handleRollback(selectedYear)}
                       disabled={rollingBack || rolling}
                       title="Diesen Schuljahreswechsel rückgängig machen"
-                      className="flex items-center gap-2 px-3.5 py-2 rounded-[10px] text-[12px] font-medium transition-all disabled:opacity-50 flex-shrink-0"
-                      style={{ background: 'rgba(255,159,10,0.12)', color: '#ff9f0a', border: '1px solid rgba(255,159,10,0.22)' }}
+                      className="btn btn-sm btn-line"
                     >
-                      <Undo2 size={13} />
+                      {rollingBack ? <Spinner size={13} /> : <Undo2 size={14} strokeWidth={1.8} />}
                       {rollingBack ? 'Läuft…' : 'Rückgängig machen'}
                     </button>
                   )}
-                </div>
-
-                {/* Data tabs */}
-                <div className="flex gap-1 mb-4 p-1 rounded-[12px] w-fit" style={{ background: 'rgba(255,255,255,0.06)' }}>
-                  {dataTabs.map(({ key, label, icon }) => (
-                    <button key={key} onClick={() => setDataTab(key)}
-                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-[9px] text-[12px] font-medium transition-all"
-                      style={dataTab === key ? { background: '#0a84ff', color: '#fff' } : { color: 'rgba(235,235,245,0.5)' }}>
-                      {icon}{label}
-                    </button>
-                  ))}
-                </div>
-
+                  <Segmented
+                    label="Archivierte Daten"
+                    value={dataTab}
+                    onChange={setDataTab}
+                    options={dataTabs.map(({ key, label, icon }) => ({ value: key, label: <>{icon}{label}</> }))}
+                  />
+                </>
+              )}
+            >
+              <div className="mt-7">
                 {dataTab === 'users'     && <UsersTab     yearId={selectedId} />}
                 {dataTab === 'classes'   && <ClassesTab   yearId={selectedId} />}
                 {dataTab === 'todos'     && <TodosTab     yearId={selectedId} />}
                 {dataTab === 'reminders' && <RemindersTab yearId={selectedId} />}
               </div>
-            )}
-          </div>
-        </div>
+            </Section>
+          )}
+        </>
       )}
     </div>
   );

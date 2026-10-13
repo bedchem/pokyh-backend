@@ -1,53 +1,37 @@
+// Every colour resolves to a CSS variable defined in src/index.css, so the
+// same class follows the light and the dark theme.
+const tone = (name) => `rgb(var(--${name}-rgb) / <alpha-value>)`;
+
 export default {
   content: ['./index.html', './src/**/*.{js,ts,jsx,tsx}'],
   theme: {
     extend: {
       colors: {
-        apple: {
-          bg:        '#000000',
-          bg2:       '#1c1c1e',
-          bg3:       '#2c2c2e',
-          bg4:       '#3a3a3c',
-          blue:      '#0a84ff',
-          green:     '#30d158',
-          red:       '#ff453a',
-          orange:    '#ff9f0a',
-          yellow:    '#ffd60a',
-          teal:      '#40c8e0',
-          purple:    '#bf5af2',
-          indigo:    '#5e5ce6',
-          label:     '#ffffff',
-          label2:    'rgba(235,235,245,0.6)',
-          label3:    'rgba(235,235,245,0.3)',
-          sep:       'rgba(84,84,88,0.65)',
-        },
+        canvas: tone('canvas'),
+        sheet:  tone('sheet'),
+        raise:  tone('raise'),
+        well:   { DEFAULT: tone('well'), deep: tone('well-2') },
+        line:   tone('line'),
+        ink:    { DEFAULT: tone('ink'), 2: tone('ink-2'), 3: tone('ink-3'), 4: tone('ink-4') },
+        sky:    { DEFAULT: tone('sky'),   deep: tone('sky-deep'),   wash: tone('sky-wash') },
+        amber:  { DEFAULT: tone('amber'), deep: tone('amber-deep'), wash: tone('amber-wash') },
+        mint:   { DEFAULT: tone('mint'),  deep: tone('mint-deep'),  wash: tone('mint-wash') },
+        rose:   { DEFAULT: tone('rose'),  deep: tone('rose-deep'),  wash: tone('rose-wash') },
+        // The inverted surface of tooltips, toasts and menus.
+        tip:    { DEFAULT: 'var(--tip)', ink: 'var(--tip-ink)', dim: 'var(--tip-dim)' },
       },
       fontFamily: {
-        sans: [
-          '-apple-system',
-          'BlinkMacSystemFont',
-          '"SF Pro Display"',
-          '"SF Pro Text"',
-          '"Helvetica Neue"',
-          'Arial',
-          'system-ui',
-          'sans-serif',
-        ],
+        sans: ['Poppins', 'ui-sans-serif', 'system-ui', '-apple-system', '"Segoe UI"', 'Arial', 'sans-serif'],
+        mono: ['ui-monospace', '"SF Mono"', '"Cascadia Mono"', 'Menlo', 'Consolas', 'monospace'],
       },
       borderRadius: {
-        apple: '16px',
-        'apple-sm': '10px',
-        'apple-xs': '8px',
+        sheet: '34px',
+        well:  '22px',
       },
-      boxShadow: {
-        apple:    '0 4px 20px rgba(0,0,0,0.45), 0 1px 0 rgba(255,255,255,0.06) inset',
-        'apple-lg': '0 14px 44px rgba(0,0,0,0.55)',
-        blue:     '0 2px 16px rgba(10,132,255,0.38)',
+      transitionTimingFunction: {
+        glide: 'cubic-bezier(0.22, 1, 0.36, 1)',
       },
-      backdropBlur: {
-        apple: '24px',
-      },
-    }
+    },
   },
   plugins: [],
 }

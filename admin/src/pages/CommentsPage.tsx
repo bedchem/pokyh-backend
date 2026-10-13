@@ -1,23 +1,21 @@
-import { useState, useEffect, useCallback } from 'react';
-import { MessageCircle, Trash2, RefreshCw, Bell, UtensilsCrossed, Search, ChevronLeft, ChevronRight } from 'lucide-react';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { MessageCircle, Trash2, RefreshCw, Bell, UtensilsCrossed } from 'lucide-react';
 import { adminApi } from '../api';
 import type { AdminComment } from '../types';
 import { useToast } from '../components/Toast';
+import { useLive } from '../live';
+import { Avatar, Empty, Figures, IconButton, PageHeader, Pager, SearchField, Section, Segmented, Tag } from '../components/kit';
+import { SplitBar } from '../components/charts';
 
 function timeAgo(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime();
   const min = Math.floor(diff / 60000);
-  if (min < 1) return 'just now';
-  if (min < 60) return `${min}m ago`;
+  if (min < 1) return 'gerade eben';
+  if (min < 60) return `vor ${min} Min.`;
   const h = Math.floor(min / 60);
-  if (h < 24) return `${h}h ago`;
-  return `${Math.floor(h / 24)}d ago`;
-}
-
-function avatarColor(name: string): string {
-  let h = 0;
-  for (let i = 0; i < name.length; i++) h = (h << 5) - h + name.charCodeAt(i);
-  return `hsl(${Math.abs(h) % 360}, 50%, 45%)`;
+  if (h < 24) return `vor ${h} Std.`;
+  const d = Math.floor(h / 24);
+  return d === 1 ? 'Gestern' : `vor ${d} Tagen`;
 }
 
 function CommentRow({ comment, onDeleted }: { comment: AdminComment; onDeleted: (id: string) => void }) {
@@ -40,66 +38,42 @@ function CommentRow({ comment, onDeleted }: { comment: AdminComment; onDeleted: 
   }
 
   return (
-    <div
-      className="flex items-start gap-3 px-4 py-3.5 rounded-[14px] transition-colors"
-      style={{ background: '#1c1c1e', border: '1px solid rgba(255,255,255,0.07)' }}
-    >
-      <div
-        className="w-8 h-8 rounded-full flex items-center justify-center text-[12px] font-bold text-white flex-shrink-0 mt-0.5"
-        style={{ background: avatarColor(comment.username) }}
-      >
-        {comment.username.slice(0, 2).toUpperCase()}
+    <article className="spot flex items-start gap-4 py-6">
+      <Avatar name={comment.username} size={44} />
+
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+          <span className="text-[15px] font-medium">{comment.username}</span>
+          <time className="text-[12.5px] text-ink-3" dateTime={comment.createdAt}>{timeAgo(comment.createdAt)}</time>
+        </div>
+        <div className="mt-1 flex flex-wrap items-center gap-2 text-[13.5px] text-ink-3">
+          <span className="min-w-0 truncate">Kommentierte <span className="text-sky-deep">{comment.contextTitle || 'einen Beitrag'}</span></span>
+          <Tag tone={comment.type === 'reminder' ? 'amber' : 'mint'}>
+            {comment.type === 'reminder' ? <><Bell size={11} /> Erinnerung</> : <><UtensilsCrossed size={11} /> Mensa</>}
+          </Tag>
+        </div>
+        <p className="comment-bubble">{comment.body}</p>
       </div>
 
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2 flex-wrap mb-1">
-          <span className="text-[14px] font-semibold text-white">{comment.username}</span>
-          <span
-            className="flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full flex-shrink-0"
-            style={
-              comment.type === 'reminder'
-                ? { background: 'rgba(255,159,10,0.12)', color: '#ff9f0a' }
-                : { background: 'rgba(48,209,88,0.12)', color: '#30d158' }
-            }
-          >
-            {comment.type === 'reminder' ? <><Bell size={10} /> Erinnerung</> : <><UtensilsCrossed size={10} /> Mensa</>}
-          </span>
-          <span className="text-[12px]" style={{ color: 'rgba(235,235,245,0.3)' }}>{timeAgo(comment.createdAt)}</span>
-        </div>
-
-        <div className="text-[12px] mb-1.5 truncate" style={{ color: 'rgba(235,235,245,0.3)' }}>
-          zu: <span style={{ color: 'rgba(235,235,245,0.5)' }}>{comment.contextTitle}</span>
-        </div>
-
-        <p className="text-[13px] leading-relaxed whitespace-pre-wrap break-words" style={{ color: 'rgba(235,235,245,0.7)' }}>
-          {comment.body}
-        </p>
-      </div>
-
-      <div className="flex-shrink-0 flex items-center gap-1.5">
+      <div className="flex flex-shrink-0 items-center gap-2">
         {confirm ? (
           <>
-            <button onClick={handleDelete} disabled={deleting} className="px-2.5 py-1 rounded-[8px] text-[12px] font-semibold transition-colors" style={{ background: 'rgba(255,69,58,0.14)', color: '#ff453a' }}>
-              {deleting ? '…' : 'Löschen?'}
+            <button type="button" onClick={() => void handleDelete()} disabled={deleting} className="btn btn-sm btn-danger">
+              {deleting ? 'Lösche…' : 'Wirklich löschen?'}
             </button>
-            <button onClick={() => setConfirm(false)} className="px-2.5 py-1 rounded-[8px] text-[12px] transition-colors" style={{ background: 'rgba(255,255,255,0.06)', color: 'rgba(235,235,245,0.5)' }}>
-              Nein
-            </button>
+            <button type="button" onClick={() => setConfirm(false)} disabled={deleting} className="btn btn-sm btn-quiet">Nein</button>
           </>
         ) : (
-          <button onClick={() => setConfirm(true)} className="p-1.5 rounded-[8px] transition-colors" style={{ color: 'rgba(235,235,245,0.25)' }}
-            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#ff453a'; (e.currentTarget as HTMLElement).style.background = 'rgba(255,69,58,0.1)'; }}
-            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'rgba(235,235,245,0.25)'; (e.currentTarget as HTMLElement).style.background = ''; }}>
-            <Trash2 size={14} />
-          </button>
+          <IconButton icon={Trash2} tone="rose" label="Kommentar löschen" onClick={() => setConfirm(true)} />
         )}
       </div>
-    </div>
+    </article>
   );
 }
 
 const PAGE_SIZE = 25;
 
+type CommentType = 'all' | 'reminder' | 'dish';
 type SortOption = 'createdAt_desc' | 'createdAt_asc' | 'username_asc' | 'username_desc' | 'body_asc' | 'body_desc';
 
 const SORT_OPTIONS: { value: SortOption; label: string }[] = [
@@ -118,16 +92,19 @@ export function CommentsPage() {
   const { showToast } = useToast();
   const [comments, setComments] = useState<AdminComment[]>([]);
   const [total, setTotal] = useState(0);
+  // Totals per kind for the figures; fetched on their own so the list never waits on them.
+  const [split, setSplit] = useState<{ dish: number; reminder: number } | null>(null);
   const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(1);
-  const [type, setType] = useState<'all' | 'reminder' | 'dish'>('all');
+  const [type, setType] = useState<CommentType>('all');
   const [search, setSearch] = useState('');
   const [searchInput, setSearchInput] = useState('');
   const [sortOption, setSortOption] = useState<SortOption>('createdAt_desc');
+  const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const { sortBy, sortOrder } = parseSortOption(sortOption);
 
-  const load = useCallback(async (p: number, t: typeof type, s: string, sb: 'createdAt' | 'username' | 'body', so: 'asc' | 'desc') => {
+  const load = useCallback(async (p: number, t: CommentType, s: string, sb: 'createdAt' | 'username' | 'body', so: 'asc' | 'desc') => {
     setLoading(true);
     try {
       const data = await adminApi.comments({ page: p, limit: PAGE_SIZE, type: t, search: s || undefined, sortBy: sb, sortOrder: so });
@@ -140,101 +117,119 @@ export function CommentsPage() {
     }
   }, [showToast]);
 
-  useEffect(() => { load(page, type, search, sortBy, sortOrder); }, [load, page, type, search, sortBy, sortOrder]);
+  const loadSplit = useCallback(() => {
+    Promise.all([
+      adminApi.comments({ limit: 1, type: 'dish' }),
+      adminApi.comments({ limit: 1, type: 'reminder' }),
+    ]).then(([dish, reminder]) => setSplit({ dish: dish.total, reminder: reminder.total }))
+      .catch(() => { /* the figures stay empty; the list is unaffected */ });
+  }, []);
 
-  function handleSearch(e: React.FormEvent) { e.preventDefault(); setPage(1); setSearch(searchInput); }
-  function handleTypeChange(t: typeof type) { setType(t); setPage(1); }
+  useEffect(() => { void load(page, type, search, sortBy, sortOrder); }, [load, page, type, search, sortBy, sortOrder]);
+  useEffect(() => { loadSplit(); }, [loadSplit]);
+  useLive(['comments'], () => { loadSplit(); void load(page, type, search, sortBy, sortOrder); });
+
+  // Search as you type, a moment after the last keystroke.
+  useEffect(() => {
+    if (searchTimer.current) clearTimeout(searchTimer.current);
+    searchTimer.current = setTimeout(() => { setPage(1); setSearch(searchInput.trim()); }, 300);
+    return () => { if (searchTimer.current) clearTimeout(searchTimer.current); };
+  }, [searchInput]);
+
+  function handleTypeChange(t: CommentType) { setType(t); setPage(1); }
   function handleSortChange(opt: SortOption) { setSortOption(opt); setPage(1); }
-  function handleDeleted(id: string) { setComments((prev) => prev.filter((c) => c.id !== id)); setTotal((prev) => prev - 1); }
+  function handleDeleted(id: string) {
+    setComments((prev) => prev.filter((c) => c.id !== id));
+    setTotal((prev) => prev - 1);
+    loadSplit();
+  }
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const allComments = split ? split.dish + split.reminder : null;
 
   return (
-    <div className="flex flex-col gap-6">
-      {/* Header */}
-      <div className="flex items-center justify-between flex-wrap gap-3">
-        <div>
-          <h1 className="text-[28px] font-bold text-white" style={{ letterSpacing: '-0.03em' }}>Kommentare</h1>
-          <p className="text-[13px] mt-0.5" style={{ color: 'rgba(235,235,245,0.4)' }}>
-            {total} Kommentar{total !== 1 ? 'e' : ''} insgesamt
-          </p>
+    <div>
+      <PageHeader title="Kommentare" subtitle="Was Nutzer:innen zu Gerichten und Erinnerungen schreiben — hier moderieren.">
+        <IconButton
+          icon={RefreshCw}
+          label="Aktualisieren"
+          size={42}
+          busy={loading}
+          onClick={() => { loadSplit(); void load(page, type, search, sortBy, sortOrder); }}
+        />
+      </PageHeader>
+
+      <Figures
+        className="mt-10"
+        items={[
+          { label: 'Kommentare',   value: allComments ?? '–',     icon: MessageCircle },
+          { label: 'Mensa',        value: split?.dish ?? '–',     icon: UtensilsCrossed },
+          { label: 'Erinnerungen', value: split?.reminder ?? '–', icon: Bell },
+        ]}
+      />
+
+      <Section className="mt-[46px]" title="Verteilung">
+        <div className="mt-8 max-w-[720px]">
+          <SplitBar
+            ariaLabel="Kommentare nach Art"
+            parts={[
+              { label: 'Mensa',        value: split?.dish ?? 0,     color: 'var(--mint)' },
+              { label: 'Erinnerungen', value: split?.reminder ?? 0, color: 'var(--amber)' },
+            ]}
+          />
         </div>
-        <button onClick={() => load(page, type, search, sortBy, sortOrder)} disabled={loading} className="apple-btn-ghost flex items-center gap-2 px-3 py-2 rounded-[10px] text-[13px]">
-          <RefreshCw size={14} className={loading ? 'animate-spin' : ''} /> Aktualisieren
-        </button>
-      </div>
+      </Section>
 
-      {/* Filters */}
-      <div className="flex flex-wrap gap-2 items-center p-3 rounded-[14px]" style={{ background: '#1c1c1e', border: '1px solid rgba(255,255,255,0.07)' }}>
-        {/* Type tabs */}
-        <div className="flex rounded-[10px] overflow-hidden" style={{ border: '1px solid rgba(255,255,255,0.08)' }}>
-          {(['all', 'reminder', 'dish'] as const).map((t, idx) => (
-            <button key={t} onClick={() => handleTypeChange(t)}
-              className="px-3.5 py-1.5 text-[13px] font-medium transition-all flex items-center gap-1.5"
-              style={{ background: type === t ? 'rgba(10,132,255,0.18)' : 'transparent', color: type === t ? '#0a84ff' : 'rgba(235,235,245,0.5)', borderRight: idx < 2 ? '1px solid rgba(255,255,255,0.06)' : 'none' }}>
-              {t === 'all' && <MessageCircle size={12} />}
-              {t === 'reminder' && <Bell size={12} />}
-              {t === 'dish' && <UtensilsCrossed size={12} />}
-              {t === 'all' ? 'Alle' : t === 'reminder' ? 'Erinnerungen' : 'Mensa'}
-            </button>
-          ))}
-        </div>
-
-        {/* Sort */}
-        <select
-          value={sortOption}
-          onChange={(e) => handleSortChange(e.target.value as SortOption)}
-          className="px-3 py-1.5 rounded-[10px] text-[13px] outline-none"
-          style={{ background: '#2c2c2e', border: '1px solid rgba(255,255,255,0.08)', color: 'rgba(235,235,245,0.7)' }}
-        >
-          {SORT_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-        </select>
-
-        {/* Search */}
-        <form onSubmit={handleSearch} className="flex gap-2 flex-1 min-w-[200px]">
-          <div className="relative flex-1">
-            <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: 'rgba(235,235,245,0.3)' }} />
-            <input type="text" value={searchInput} onChange={(e) => setSearchInput(e.target.value)} placeholder="Benutzer oder Text suchen…"
-              className="apple-input w-full pl-8 py-2 text-[13px]" />
+      <Section
+        className="mt-[52px]"
+        title="Alle Kommentare"
+        meta={`${total.toLocaleString('de-AT')} ${search ? 'Treffer' : 'gesamt'}`}
+        action={(
+          <>
+            <SearchField value={searchInput} onChange={setSearchInput} placeholder="Benutzer oder Text suchen" className="w-full sm:w-[250px]" />
+            <select
+              value={sortOption}
+              onChange={(e) => handleSortChange(e.target.value as SortOption)}
+              aria-label="Sortierung"
+              className="field h-11 px-4 text-[14px]"
+            >
+              {SORT_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+            <Segmented
+              label="Art der Kommentare"
+              value={type}
+              onChange={handleTypeChange}
+              options={[
+                { value: 'all', label: 'Alle' },
+                { value: 'dish', label: <><UtensilsCrossed size={13} /> Mensa</> },
+                { value: 'reminder', label: <><Bell size={13} /> Erinnerungen</> },
+              ]}
+            />
+          </>
+        )}
+      >
+        {loading && comments.length === 0 ? (
+          <div className="mt-7 flex flex-col gap-7">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <div key={i} className="flex items-start gap-4">
+                <div className="shimmer h-11 w-11 flex-shrink-0 rounded-full" />
+                <div className="flex-1">
+                  <div className="shimmer h-4 w-40 rounded-full" />
+                  <div className="shimmer mt-4 h-14 w-full max-w-[520px] rounded-[18px]" />
+                </div>
+              </div>
+            ))}
           </div>
-          <button type="submit" className="apple-btn px-4 py-2 text-[13px]">Suchen</button>
-        </form>
-      </div>
-
-      {/* List */}
-      {loading && comments.length === 0 ? (
-        <div className="flex justify-center py-20">
-          <div className="w-6 h-6 border-2 rounded-full animate-spin" style={{ borderColor: 'rgba(255,255,255,0.1)', borderTopColor: '#0a84ff' }} />
-        </div>
-      ) : comments.length === 0 ? (
-        <div className="apple-card p-12 text-center">
-          <MessageCircle size={32} className="mx-auto mb-3" style={{ color: 'rgba(235,235,245,0.15)' }} />
-          <p className="text-[13px]" style={{ color: 'rgba(235,235,245,0.3)' }}>{search ? 'Keine Kommentare gefunden' : 'Noch keine Kommentare'}</p>
-        </div>
-      ) : (
-        <div className="flex flex-col gap-2">
-          {comments.map((c, i) => (
-            <div key={c.id} className="animate-fadeInUp" style={{ animationDelay: `${i * 20}ms` }}>
-              <CommentRow comment={c} onDeleted={handleDeleted} />
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Pagination */}
-      {totalPages > 1 && (
-        <div className="flex items-center justify-between">
-          <p className="text-[12px]" style={{ color: 'rgba(235,235,245,0.3)' }}>Seite {page} von {totalPages}</p>
-          <div className="flex items-center gap-2">
-            <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1 || loading} className="p-2 rounded-[10px] transition-all disabled:opacity-30" style={{ background: 'rgba(255,255,255,0.06)', color: 'rgba(235,235,245,0.6)' }}>
-              <ChevronLeft size={15} />
-            </button>
-            <button onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page === totalPages || loading} className="p-2 rounded-[10px] transition-all disabled:opacity-30" style={{ background: 'rgba(255,255,255,0.06)', color: 'rgba(235,235,245,0.6)' }}>
-              <ChevronRight size={15} />
-            </button>
+        ) : comments.length === 0 ? (
+          <Empty icon={MessageCircle}>{search ? 'Keine Kommentare gefunden.' : 'Noch keine Kommentare.'}</Empty>
+        ) : (
+          <div className="stack mt-2">
+            {comments.map((c) => <CommentRow key={c.id} comment={c} onDeleted={handleDeleted} />)}
           </div>
-        </div>
-      )}
+        )}
+
+        <Pager page={page} pages={totalPages} onChange={setPage} />
+      </Section>
     </div>
   );
 }

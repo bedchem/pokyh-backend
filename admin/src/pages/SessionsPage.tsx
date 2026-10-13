@@ -1,8 +1,11 @@
 import { useEffect, useState, useCallback } from 'react';
-import { Activity, RefreshCw, XCircle, Loader2, Trash2 } from 'lucide-react';
+import { Activity, RefreshCw, LogOut, Trash2, MonitorSmartphone, TimerReset, ShieldX } from 'lucide-react';
 import { adminApi } from '../api';
 import { useToast } from '../components/Toast';
 import { useAutoRefresh } from '../hooks/useAutoRefresh';
+import { useLive } from '../live';
+import { Avatar, Delta, Dialog, Empty, Figures, IconButton, PageHeader, Section, Spinner, Status, type Tone } from '../components/kit';
+import { Bars, SplitBar } from '../components/charts';
 import type { AdminSession } from '../types';
 
 function formatDate(dateStr: string): string {
@@ -33,11 +36,13 @@ function getStatus(session: AdminSession): SessionStatus {
   return 'active';
 }
 
-const STATUS_STYLE: Record<SessionStatus, { bg: string; color: string; border: string; label: string }> = {
-  active:  { bg: 'rgba(48,209,88,0.15)',  color: '#30d158', border: 'rgba(48,209,88,0.25)',  label: 'Active'  },
-  expired: { bg: 'rgba(255,214,10,0.12)', color: '#ffd60a', border: 'rgba(255,214,10,0.2)',  label: 'Expired' },
-  revoked: { bg: 'rgba(255,69,58,0.12)',  color: '#ff453a', border: 'rgba(255,69,58,0.2)',   label: 'Revoked' },
+const STATUS: Record<SessionStatus, { tone: Tone; label: string }> = {
+  active:  { tone: 'mint',  label: 'Active' },
+  expired: { tone: 'amber', label: 'Expired' },
+  revoked: { tone: 'rose',  label: 'Revoked' },
 };
+
+const WEEK = 7 * 86400000;
 
 export function SessionsPage() {
   const { showToast } = useToast();
@@ -45,6 +50,7 @@ export function SessionsPage() {
   const [loading, setLoading] = useState(true);
   const [revoking, setRevoking] = useState<string | null>(null);
   const [clearingAll, setClearingAll] = useState(false);
+  const [confirmClearAll, setConfirmClearAll] = useState(false);
   const [deletingInactive, setDeletingInactive] = useState(false);
   // IDs currently fading out (just revoked)
   const [fadingOut, setFadingOut] = useState<Set<string>>(new Set());
@@ -71,6 +77,7 @@ export function SessionsPage() {
   useEffect(() => { void fetchSessions(); }, [fetchSessions]);
 
   const { refresh, refreshing } = useAutoRefresh(fetchSessions, 10000);
+  useLive(['sessions', 'users'], () => { void fetchSessions(); });
 
   async function handleDeleteInactive() {
     setDeletingInactive(true);
@@ -90,6 +97,7 @@ export function SessionsPage() {
     try {
       await adminApi.revokeAllSessions();
       showToast('All sessions cleared', 'success');
+      setConfirmClearAll(false);
       await fetchSessions();
     } catch (err) {
       showToast(err instanceof Error ? err.message : 'Failed to clear sessions', 'error');
@@ -126,225 +134,159 @@ export function SessionsPage() {
     }
   }
 
-  // Only show active sessions + non-active ones that aren't fading (fetched from DB)
-  const visibleSessions = sessions.filter((s) => s.isActive || !fadingOut.has(s.id) || fadingOut.has(s.id));
+  const counts = { active: 0, expired: 0, revoked: 0 };
+  for (const s of sessions) counts[getStatus(s)] += 1;
   const activeSessions = sessions.filter((s) => s.isActive).length;
+  const expiringSoon = sessions.filter((s) => s.isActive && new Date(s.expiresAt).getTime() - Date.now() < WEEK).length;
+  const signedInUsers = new Set(sessions.filter((s) => s.isActive).map((s) => s.stableUid)).size;
+
+  // Sign-ins per day over the last two weeks, from the sessions' creation dates.
+  const days = Array.from({ length: 14 }, (_, i) => {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    d.setDate(d.getDate() - (13 - i));
+    return d;
+  });
+  const perDay = days.map((day) => sessions.filter((s) => new Date(s.createdAt).toDateString() === day.toDateString()).length);
 
   return (
-    <div className="flex flex-col gap-6">
-      {/* Header */}
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold" style={{ color: '#ffffff' }}>Sessions</h1>
-          <p className="text-sm mt-1" style={{ color: 'rgba(235,235,245,0.6)' }}>
-            Active refresh token sessions — revoke to force logout immediately
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => void handleDeleteInactive()}
-            disabled={deletingInactive}
-            className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-all"
-            style={{
-              background: '#1c1c1e',
-              color: deletingInactive ? '#0a84ff' : 'rgba(235,235,245,0.4)',
-              border: '1px solid rgba(255,255,255,0.08)',
-            }}
-            onMouseEnter={(e) => { if (!deletingInactive) (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.05)'; }}
-            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = '#1c1c1e'; }}
-            title="Delete all revoked/expired sessions"
-          >
-            {deletingInactive ? <Loader2 size={15} className="animate-spin" /> : <Trash2 size={15} />}
-            {deletingInactive ? 'Deleting…' : 'Delete old'}
-          </button>
-          <button
-            onClick={() => void handleClearAll()}
-            disabled={clearingAll || activeSessions === 0}
-            className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-all font-medium"
-            style={{
-              background: 'transparent',
-              color: clearingAll || activeSessions === 0 ? 'rgba(235,235,245,0.3)' : '#ff453a',
-              border: `1px solid ${clearingAll || activeSessions === 0 ? 'rgba(255,255,255,0.06)' : 'rgba(255,69,58,0.25)'}`,
-              cursor: clearingAll || activeSessions === 0 ? 'not-allowed' : 'pointer',
-            }}
-            onMouseEnter={(e) => { if (activeSessions > 0 && !clearingAll) (e.currentTarget as HTMLElement).style.background = 'rgba(255,69,58,0.08)'; }}
-            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
-          >
-            {clearingAll ? <Loader2 size={15} className="animate-spin" /> : <XCircle size={15} />}
-            {clearingAll ? 'Clearing…' : 'Clear all'}
-          </button>
-          <button
-            onClick={() => void refresh()}
-            disabled={refreshing}
-            className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-all"
-            style={{
-              background: '#1c1c1e',
-              color: refreshing ? '#0a84ff' : 'rgba(235,235,245,0.4)',
-              border: '1px solid rgba(255,255,255,0.08)',
-            }}
-            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.05)'; }}
-            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = '#1c1c1e'; }}
-          >
-            <RefreshCw size={15} className={refreshing ? 'animate-spin' : ''} />
-            {refreshing ? 'Refreshing...' : 'Refresh'}
-          </button>
-        </div>
-      </div>
-
-      {/* Stats */}
-      <div className="flex items-center gap-4 flex-wrap">
-        <div
-          className="flex items-center gap-3 px-4 py-3 rounded-xl"
-          style={{ background: '#1c1c1e', border: '1px solid rgba(255,255,255,0.07)' }}
+    <div>
+      {confirmClearAll && (
+        <Dialog
+          title="Sign everyone out?"
+          subtitle={`This revokes all ${activeSessions} active session${activeSessions !== 1 ? 's' : ''}. Every user has to log in again.`}
+          onClose={() => { if (!clearingAll) setConfirmClearAll(false); }}
         >
-          <Activity size={16} style={{ color: '#30d158' }} />
-          <span className="text-sm" style={{ color: 'rgba(235,235,245,0.6)' }}>
-            <span className="font-semibold" style={{ color: '#ffffff' }}>{activeSessions}</span>
-            {' '}active session{activeSessions !== 1 ? 's' : ''}
-          </span>
-        </div>
-        <div className="text-xs" style={{ color: 'rgba(235,235,245,0.3)' }}>
-          Auto-refreshes every 10s · Revoked sessions disappear automatically
-        </div>
+          <div className="flex gap-3">
+            <button type="button" className="btn btn-quiet flex-1" disabled={clearingAll} onClick={() => setConfirmClearAll(false)}>Cancel</button>
+            <button type="button" className="btn btn-danger flex-1" disabled={clearingAll} onClick={() => void handleClearAll()}>
+              {clearingAll ? <Spinner /> : <ShieldX size={16} strokeWidth={1.7} />}
+              Revoke all
+            </button>
+          </div>
+        </Dialog>
+      )}
+
+      <PageHeader title="Sessions" subtitle="Active refresh token sessions — revoke one to force a logout immediately.">
+        <IconButton icon={RefreshCw} label="Refresh" size={42} busy={refreshing} onClick={() => void refresh()} />
+        <button type="button" className="btn btn-quiet" disabled={deletingInactive} onClick={() => void handleDeleteInactive()}>
+          {deletingInactive ? <Spinner /> : <Trash2 size={16} strokeWidth={1.7} />}
+          Delete old
+        </button>
+        <button type="button" className="btn btn-danger" disabled={clearingAll || activeSessions === 0} onClick={() => setConfirmClearAll(true)}>
+          <ShieldX size={16} strokeWidth={1.7} />
+          Clear all
+        </button>
+      </PageHeader>
+
+      <Figures
+        className="mt-10"
+        items={[
+          { label: 'Active sessions', value: activeSessions, icon: Activity, note: <Delta>live</Delta> },
+          { label: 'Signed-in users', value: signedInUsers, icon: MonitorSmartphone },
+          {
+            label: 'Expiring in 7 days',
+            value: expiringSoon,
+            icon: TimerReset,
+            note: expiringSoon > 0 ? <Delta tone="amber">renew on next use</Delta> : undefined,
+          },
+        ]}
+      />
+
+      <div className="mt-[46px] grid gap-x-16 gap-y-12 xl:grid-cols-[minmax(0,1.55fr)_minmax(0,1fr)]">
+        <Section title="Sign-ins" meta="Last 14 days">
+          <div className="mt-8">
+            <Bars
+              values={perDay}
+              labels={days.map((d) => String(d.getDate()).padStart(2, '0'))}
+              titles={days.map((d) => d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }))}
+              unit="sessions"
+              tickEvery={2}
+              ariaLabel="Sessions created per day over the last 14 days"
+            />
+          </div>
+        </Section>
+        <Section title="Status">
+          <div className="mt-9">
+            <SplitBar
+              ariaLabel="Sessions by status"
+              parts={[
+                { label: 'Active',  value: counts.active,  color: 'var(--mint)' },
+                { label: 'Expired', value: counts.expired, color: 'var(--amber)' },
+                { label: 'Revoked', value: counts.revoked, color: 'var(--rose)' },
+              ]}
+            />
+          </div>
+        </Section>
       </div>
 
-      {/* Table */}
-      <div
-        className="rounded-2xl overflow-hidden"
-        style={{
-          background: '#1c1c1e',
-          border: '1px solid rgba(255,255,255,0.07)',
-          boxShadow: '0 1px 3px rgba(0,0,0,0.4), 0 8px 24px rgba(0,0,0,0.2)',
-        }}
-      >
-        <div className="overflow-x-auto">
-          <table className="w-full">
-            <thead>
-              <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
-                {[
-                  { label: 'User', cls: '' },
-                  { label: 'Created', cls: 'hidden md:table-cell' },
-                  { label: 'Expires', cls: 'hidden md:table-cell' },
-                  { label: 'Status', cls: '' },
-                  { label: 'Action', cls: '' },
-                ].map(({ label, cls }) => (
-                  <th
-                    key={label}
-                    className={`px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider ${cls}`}
-                    style={{ color: 'rgba(235,235,245,0.3)' }}
-                  >
-                    {label}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {loading ? (
-                Array.from({ length: 5 }).map((_, i) => (
-                  <tr key={i} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
-                    {[
-                      { cls: '' },
-                      { cls: 'hidden md:table-cell' },
-                      { cls: 'hidden md:table-cell' },
-                      { cls: '' },
-                      { cls: '' },
-                    ].map((col, j) => (
-                      <td key={j} className={`px-4 py-4 ${col.cls}`}>
-                        <div className="h-4 rounded animate-pulse" style={{ background: 'rgba(255,255,255,0.05)', width: '90px' }} />
-                      </td>
-                    ))}
-                  </tr>
-                ))
-              ) : visibleSessions.length === 0 ? (
+      <Section className="mt-[52px]" title="All sessions" meta="Refreshes every 10 s">
+        {loading ? (
+          <div className="mt-7 flex flex-col gap-5">
+            {Array.from({ length: 5 }).map((_, i) => (
+              <div key={i} className="flex items-center gap-4">
+                <div className="shimmer h-11 w-11 rounded-full" />
+                <div className="shimmer h-4 flex-1 rounded-full" />
+                <div className="shimmer h-4 w-24 rounded-full" />
+              </div>
+            ))}
+          </div>
+        ) : sessions.length === 0 ? (
+          <Empty icon={MonitorSmartphone}>No sessions yet.</Empty>
+        ) : (
+          <div className="tbl-scroll mt-7">
+            <table className="tbl">
+              <thead>
                 <tr>
-                  <td colSpan={5} className="px-4 py-12 text-center text-sm" style={{ color: 'rgba(235,235,245,0.3)' }}>
-                    No sessions found
-                  </td>
+                  <th>User</th>
+                  <th className="hidden sm:table-cell">Created</th>
+                  <th className="hidden md:table-cell">Expires</th>
+                  <th>Status</th>
+                  <th><span className="sr-only">Action</span></th>
                 </tr>
-              ) : (
-                visibleSessions.map((session) => {
-                  const status = getStatus(session);
-                  const style = STATUS_STYLE[status];
+              </thead>
+              <tbody>
+                {sessions.map((session) => {
+                  const status = STATUS[getStatus(session)];
                   const isFading = fadingOut.has(session.id);
-
                   return (
-                    <tr
-                      key={session.id}
-                      style={{
-                        borderBottom: '1px solid rgba(255,255,255,0.04)',
-                        background: session.isActive ? 'rgba(48,209,88,0.02)' : undefined,
-                        opacity: isFading ? 0 : 1,
-                        transform: isFading ? 'translateX(20px)' : 'translateX(0)',
-                        transition: isFading ? 'opacity 0.6s ease, transform 0.6s ease' : 'background 0.15s',
-                        pointerEvents: isFading ? 'none' : undefined,
-                      }}
-                      onMouseEnter={(e) => { if (!isFading) (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.02)'; }}
-                      onMouseLeave={(e) => { if (!isFading) (e.currentTarget as HTMLElement).style.background = session.isActive ? 'rgba(48,209,88,0.02)' : ''; }}
-                    >
-                      {/* User */}
-                      <td className="px-4 py-3.5">
-                        <div className="text-sm font-medium" style={{ color: '#ffffff' }}>{session.username}</div>
-                        <div className="text-xs font-mono mt-0.5" style={{ color: 'rgba(235,235,245,0.3)' }}>{session.stableUid.slice(0, 10)}…</div>
+                    <tr key={session.id} style={{ opacity: isFading ? 0 : 1, transition: 'opacity 0.6s ease' }}>
+                      <td>
+                        <div className="flex items-center gap-4">
+                          <Avatar name={session.username} size={44} />
+                          <div className="min-w-0">
+                            <div className="truncate font-medium">{session.username}</div>
+                            <div className="truncate font-mono text-[11.5px] text-ink-3">{session.stableUid.slice(0, 10)}…</div>
+                          </div>
+                        </div>
                       </td>
-
-                      {/* Created */}
-                      <td className="px-4 py-3.5 hidden md:table-cell">
-                        <div className="text-sm" style={{ color: 'rgba(235,235,245,0.6)' }}>{formatDate(session.createdAt)}</div>
-                        <div className="text-xs mt-0.5" style={{ color: 'rgba(235,235,245,0.3)' }}>{relativeTime(session.createdAt)}</div>
+                      <td className="hidden sm:table-cell">
+                        <div className="whitespace-nowrap text-ink-2">{formatDate(session.createdAt)}</div>
+                        <div className="mt-0.5 text-[12.5px] text-ink-3">{relativeTime(session.createdAt)}</div>
                       </td>
-
-                      {/* Expires */}
-                      <td className="px-4 py-3.5 hidden md:table-cell">
-                        <span className="text-sm" style={{ color: 'rgba(235,235,245,0.6)' }}>{formatDate(session.expiresAt)}</span>
-                      </td>
-
-                      {/* Status */}
-                      <td className="px-4 py-3.5">
-                        <span
-                          className="text-xs px-2 py-1 rounded-full font-medium"
-                          style={{
-                            background: style.bg,
-                            color: style.color,
-                            border: `1px solid ${style.border}`,
-                          }}
-                        >
-                          {isFading ? 'Logging out…' : style.label}
-                        </span>
-                      </td>
-
-                      {/* Action */}
-                      <td className="px-4 py-3.5">
-                        {session.isActive && !isFading ? (
-                          <button
-                            onClick={() => void handleRevoke(session)}
-                            disabled={revoking === session.id}
-                            className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg transition-all font-medium"
-                            style={{
-                              background: 'transparent',
-                              color: '#ff453a',
-                              border: '1px solid rgba(255,69,58,0.25)',
-                            }}
-                            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,69,58,0.08)'; }}
-                            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
-                          >
-                            {revoking === session.id
-                              ? <Loader2 size={12} className="animate-spin" />
-                              : <XCircle size={12} />
-                            }
-                            {revoking === session.id ? 'Revoking…' : 'Revoke'}
-                          </button>
-                        ) : (
-                          <span className="text-xs" style={{ color: 'rgba(235,235,245,0.3)' }}>—</span>
-                        )}
+                      <td className="hidden whitespace-nowrap text-ink-2 md:table-cell">{formatDate(session.expiresAt)}</td>
+                      <td><Status tone={status.tone}>{status.label}</Status></td>
+                      <td>
+                        <div className="row-actions">
+                          {session.isActive && !isFading && (
+                            <IconButton
+                              icon={LogOut}
+                              tone="rose"
+                              label={`Revoke session of ${session.username}`}
+                              busy={revoking === session.id}
+                              onClick={() => void handleRevoke(session)}
+                            />
+                          )}
+                        </div>
                       </td>
                     </tr>
                   );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Section>
     </div>
   );
 }

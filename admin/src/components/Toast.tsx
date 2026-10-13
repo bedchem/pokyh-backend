@@ -35,35 +35,30 @@ export function ToastProvider({ children }: { children: ReactNode }) {
         {toasts.map((toast) => (
           <div
             key={toast.id}
-            className="toast-item pointer-events-auto flex items-center gap-3 px-4 py-3 rounded-[14px]"
+            role="status"
+            className="toast-item pointer-events-auto flex items-center gap-3 rounded-[16px] bg-tip py-3 pl-4 pr-3"
             style={{
-              background: 'rgba(28,28,30,0.9)',
-              backdropFilter: 'blur(24px) saturate(180%)',
-              WebkitBackdropFilter: 'blur(24px) saturate(180%)',
-              border: '1px solid rgba(255,255,255,0.1)',
-              boxShadow: '0 8px 32px rgba(0,0,0,0.5), 0 1px 0 rgba(255,255,255,0.06) inset',
+              boxShadow: '0 18px 30px -18px rgb(0 0 0 / 0.55)',
               minWidth: '260px',
-              maxWidth: '340px',
+              maxWidth: '360px',
             }}
           >
             <span
               className="flex-shrink-0"
-              style={{ color: toast.type === 'success' ? '#30d158' : '#ff453a' }}
+              style={{ color: toast.type === 'success' ? 'var(--mint)' : 'var(--rose)' }}
             >
               {toast.type === 'success'
                 ? <CheckCircle2 size={16} />
                 : <XCircle size={16} />
               }
             </span>
-            <span className="text-[13px] flex-1 leading-snug" style={{ color: 'rgba(235,235,245,0.85)' }}>
+            <span className="flex-1 text-[13.5px] leading-snug text-tip-ink">
               {toast.message}
             </span>
             <button
               onClick={() => setToasts((prev) => prev.filter((t) => t.id !== toast.id))}
-              className="flex-shrink-0 p-0.5 rounded-[6px] transition-colors"
-              style={{ color: 'rgba(235,235,245,0.3)' }}
-              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = 'rgba(235,235,245,0.75)'; }}
-              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'rgba(235,235,245,0.3)'; }}
+              aria-label="Schließen"
+              className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full text-tip-dim transition-colors hover:text-tip-ink"
             >
               <X size={12} />
             </button>

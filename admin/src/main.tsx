@@ -1,7 +1,12 @@
 import { StrictMode, Component, ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
+import '@fontsource/poppins/latin-400.css'
+import '@fontsource/poppins/latin-500.css'
+import '@fontsource/poppins/latin-600.css'
 import './index.css'
 import App from './App.tsx'
+import { startFavicon } from './favicon'
+import { startThemeSync } from './theme'
 
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
   state = { error: null }
@@ -9,17 +14,16 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | 
   render() {
     if (this.state.error) {
       return (
-        <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#080810', color: '#e2e8f0', fontFamily: 'sans-serif', padding: '20px' }}>
-          <div style={{ maxWidth: '600px', textAlign: 'center' }}>
-            <div style={{ color: '#ef4444', fontSize: '48px', marginBottom: '16px' }}>⚠</div>
-            <h1 style={{ fontSize: '20px', marginBottom: '8px' }}>Admin Panel Error</h1>
-            <p style={{ color: '#64748b', fontSize: '14px', marginBottom: '16px' }}>
+        <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--canvas)', color: 'var(--ink)', padding: '20px' }}>
+          <div style={{ width: '100%', maxWidth: '600px', background: 'var(--sheet)', borderRadius: '34px', padding: '44px 40px', textAlign: 'center' }}>
+            <h1 style={{ fontSize: '24px', fontWeight: 600, marginBottom: '8px' }}>Admin Panel Error</h1>
+            <p style={{ color: 'var(--rose-deep)', fontSize: '14px', marginBottom: '20px' }}>
               {(this.state.error as Error).message}
             </p>
-            <pre style={{ background: '#0e0f1c', padding: '12px', borderRadius: '8px', fontSize: '11px', textAlign: 'left', overflow: 'auto', color: '#94a3b8', maxHeight: '200px' }}>
+            <pre style={{ background: 'var(--well)', padding: '14px 16px', borderRadius: '16px', fontSize: '11px', textAlign: 'left', overflow: 'auto', color: 'var(--ink-2)', maxHeight: '200px' }}>
               {(this.state.error as Error).stack}
             </pre>
-            <button onClick={() => window.location.reload()} style={{ marginTop: '16px', padding: '8px 20px', background: '#6366f1', color: '#fff', border: 'none', borderRadius: '8px', cursor: 'pointer' }}>
+            <button onClick={() => window.location.reload()} style={{ marginTop: '22px', padding: '10px 26px', background: 'var(--sky)', color: 'var(--on-sky)', border: 'none', borderRadius: '999px', fontWeight: 500, cursor: 'pointer' }}>
               Reload
             </button>
           </div>
@@ -31,6 +35,8 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | 
 }
 
 const rootEl = document.getElementById('root')!
+startThemeSync()
+startFavicon()
 createRoot(rootEl).render(
   <StrictMode>
     <ErrorBoundary>

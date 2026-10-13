@@ -48,6 +48,8 @@ import { slugifyDishName } from '../utils/dishKey';
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from '../utils/errors';
 import { intQueryParam } from '../utils/duration';
 import { clientIp } from '../middleware/requestLogger';
+import { sseManager } from '../services/sse';
+import { ADMIN_LIVE_KEY } from '../services/adminLive';
 
 function safeParseTags(raw: string): string[] {
   try { return JSON.parse(raw) as string[]; } catch { return []; }
@@ -1078,6 +1080,21 @@ router.get('/stats/requests-chart', requireAdmin, async (_req: Request, res: Res
   }
 
   res.json(result);
+});
+
+// ─── GET /api/admin/live ─────────────────────────────────────────────────────
+// A server-sent stream that says only *that* something changed and in which
+// area of the panel — never the data itself. The panel answers by refetching
+// through its normal, authorised endpoints (see services/adminLive.ts).
+
+router.get('/live', requireAdmin, (_req: Request, res: Response): void => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no'); // Disable nginx buffering
+  res.flushHeaders();
+  sseManager.addClient(ADMIN_LIVE_KEY, res);
+  res.write('event: ready\ndata: {}\n\n');
 });
 
 // ─── GET /api/admin/stats/top-endpoints ──────────────────────────────────────

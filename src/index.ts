@@ -14,6 +14,7 @@ import { AppError } from './utils/errors';
 import { appRouter } from './routes/index';
 import { setupRouter } from './routes/setup';
 import { requestLogger } from './middleware/requestLogger';
+import { adminLive, adminAppSync } from './services/adminLive';
 import { requestId } from './middleware/requestId';
 import { prisma } from './db';
 import { startPushPoller } from './services/pushPoller';
@@ -58,6 +59,18 @@ if (config.debug) {
 // crossorigin requests are never blocked by CORS middleware. No hardcoded URLs.
 
 const adminDist = path.join(__dirname, '..', 'admin', 'dist');
+// The panel is mounted ahead of helmet() below and so would otherwise be the
+// one response without any security headers. It must not be framed by another
+// site (clickjacking of destructive admin actions), must not be MIME-sniffed,
+// and must not hand its URL to other sites as a referrer. Same framing policy
+// (same origin only) that helmet applies to every other route.
+app.use('/admin', (_req: Request, res: Response, next: NextFunction) => {
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  res.setHeader('Content-Security-Policy', "frame-ancestors 'self'");
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  next();
+});
 app.use('/admin', express.static(adminDist, { index: false }));
 app.use('/admin', (_req: Request, res: Response) => {
   res.sendFile(path.join(adminDist, 'index.html'), (err) => {
@@ -135,6 +148,10 @@ app.use(cookieParser());
 // never records bodies or credentials.
 app.use(requestId);
 app.use(requestLogger);
+// Live updates: announce changes to open admin panels, and push an
+// administrator's edits to the app streams. Both act after the response.
+app.use(adminLive);
+app.use('/api/admin', adminAppSync);
 app.use(globalLimiter);
 
 // ─── Health checks ───────────────────────────────────────────────────────────

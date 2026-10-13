@@ -1,29 +1,16 @@
 import { useEffect, useState, useCallback } from 'react';
-import { DatabaseBackup, Download, PlayCircle, RotateCcw, Save, Trash2 } from 'lucide-react';
+import { CalendarClock, DatabaseBackup, Download, HardDrive, History, PlayCircle, RotateCcw, Save, Trash2 } from 'lucide-react';
 import { adminApi } from '../api';
 import { useToast } from '../components/Toast';
+import { Delta, Empty, FieldLabel, Figures, FormSection, IconButton, PageHeader, Section, Spinner, Toggle } from '../components/kit';
+import { Bars } from '../components/charts';
 import type { BackupFile, BackupsResponse } from '../types';
-
-function Card({ children, title, icon }: { children: React.ReactNode; title: string; icon: React.ReactNode }) {
-  return (
-    <div className="rounded-[16px] p-5" style={{ background: '#0d0d0d', border: '1px solid rgba(255,255,255,0.07)' }}>
-      <div className="flex items-center gap-2.5 mb-4">
-        <span style={{ color: '#0a84ff' }}>{icon}</span>
-        <h2 className="text-[15px] font-semibold text-white tracking-[-0.01em]">{title}</h2>
-      </div>
-      {children}
-    </div>
-  );
-}
 
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
-
-const inputStyle: React.CSSProperties = { background: '#1c1c1e', border: '1px solid rgba(255,255,255,0.08)', color: 'rgba(235,235,245,0.85)' };
-const dimText = { color: 'rgba(235,235,245,0.45)' };
 
 export function BackupsPage() {
   const { showToast } = useToast();
@@ -124,87 +111,122 @@ export function BackupsPage() {
   }
 
   const files = data?.files ?? [];
+  const totalBytes = files.reduce((sum, f) => sum + f.sizeBytes, 0);
+  const lastRun = data?.config.lastRunAt ? new Date(data.config.lastRunAt) : null;
+  const lastOk = data?.config.lastRunStatus === 'ok';
+  // Oldest first, so the bars read left to right like a timeline.
+  const timeline = [...files].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()).slice(-14);
 
   return (
     <div>
-      <div className="mb-6 flex items-start justify-between gap-4 flex-wrap">
-        <div>
-          <h1 className="text-[22px] font-bold text-white tracking-[-0.02em]">Backups</h1>
-          <p className="text-[13px] mt-1" style={dimText}>
-            Vollständige Datenbanksicherungen (mysqldump, komprimiert) — geplant und manuell.
-          </p>
-        </div>
-        <button onClick={() => void runNow()} disabled={running}
-          className="flex items-center gap-2 px-4 py-2.5 rounded-[10px] text-[13px] font-medium transition-all disabled:opacity-50"
-          style={{ background: 'rgba(10,132,255,0.15)', color: '#0a84ff', border: '1px solid rgba(10,132,255,0.25)' }}>
-          <PlayCircle size={14} /> {running ? 'Erstelle Backup…' : 'Jetzt sichern'}
+      <PageHeader title="Backups" subtitle="Vollständige Datenbanksicherungen (mysqldump, komprimiert) — geplant und manuell.">
+        <button type="button" onClick={() => void runNow()} disabled={running} className="btn btn-primary">
+          {running ? <Spinner /> : <PlayCircle size={16} strokeWidth={1.7} />}
+          {running ? 'Erstelle Backup…' : 'Jetzt sichern'}
         </button>
-      </div>
+      </PageHeader>
 
-      <div className="grid gap-4 max-w-[820px]">
-        <Card title="Zeitplan" icon={<DatabaseBackup size={17} />}>
-          {data && (
-            <p className="text-[12px] mb-4" style={dimText}>
-              Letzter Lauf: {data.config.lastRunAt ? new Date(data.config.lastRunAt).toLocaleString('de-DE') : 'noch nie'}
-              {data.config.lastRunStatus && ` · Status: ${data.config.lastRunStatus === 'ok' ? 'erfolgreich' : 'fehlgeschlagen'}`}
-            </p>
-          )}
-          <div className="grid grid-cols-3 gap-3 items-end">
-            <label className="flex items-center gap-2 text-[13px]" style={{ color: 'rgba(235,235,245,0.7)' }}>
-              <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
-              Aktiviert
-            </label>
-            <div>
-              <label className="text-[12px] block mb-1" style={dimText}>Uhrzeit (UTC)</label>
-              <input type="number" min={0} max={23} value={scheduleHour} onChange={(e) => setScheduleHour(Number(e.target.value))}
-                className="apple-input px-3 py-2 text-[13px] w-full" style={inputStyle} />
+      <Figures
+        className="mt-10"
+        items={[
+          { label: 'Backups', value: files.length, icon: DatabaseBackup },
+          { label: 'Speicher', value: data ? formatSize(totalBytes) : '–', icon: HardDrive },
+          {
+            label: 'Letzter Lauf',
+            value: lastRun ? lastRun.toLocaleDateString('de-AT', { day: 'numeric', month: 'short' }) : 'noch nie',
+            icon: History,
+            note: data?.config.lastRunStatus
+              ? <Delta tone={lastOk ? 'mint' : 'rose'}>{lastOk ? 'erfolgreich' : 'fehlgeschlagen'}</Delta>
+              : undefined,
+          },
+          {
+            label: 'Zeitplan',
+            value: data ? (data.config.enabled ? `${String(data.config.scheduleHour).padStart(2, '0')}:00 UTC` : 'aus') : '–',
+            icon: CalendarClock,
+            note: data?.config.enabled ? <Delta>{data.config.retentionDays} Tage</Delta> : undefined,
+          },
+        ]}
+      />
+
+      {timeline.length > 1 && (
+        <Section className="mt-[46px]" title="Größe der Sicherungen" meta={`Letzte ${timeline.length}`}>
+          <div className="mt-8 max-w-[860px]">
+            <Bars
+              values={timeline.map((f) => f.sizeBytes)}
+              labels={timeline.map((f) => new Date(f.createdAt).toLocaleDateString('de-AT', { day: '2-digit', month: '2-digit' }))}
+              titles={timeline.map((f) => new Date(f.createdAt).toLocaleString('de-AT', { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' }))}
+              unit=""
+              format={formatSize}
+              tickEvery={timeline.length > 8 ? 2 : 1}
+              ariaLabel="Größe der letzten Sicherungen"
+            />
+          </div>
+        </Section>
+      )}
+
+      <div className="mt-[46px]">
+        <FormSection
+          icon={CalendarClock}
+          title="Zeitplan"
+          hint="Wann die automatische Sicherung läuft und wie lange Dateien aufbewahrt werden."
+        >
+          <div className="flex max-w-[620px] flex-col gap-6">
+            <div className="flex items-center justify-between gap-6">
+              <div>
+                <div className="text-[14.5px]">Automatische Sicherung</div>
+                <div className="mt-0.5 text-[13px] text-ink-3">Täglich zur gewählten Stunde.</div>
+              </div>
+              <Toggle checked={enabled} onChange={setEnabled} label="Automatische Sicherung" />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <FieldLabel label="Uhrzeit (UTC)">
+                <input type="number" min={0} max={23} value={scheduleHour} onChange={(e) => setScheduleHour(Number(e.target.value))}
+                  className="field h-12 w-full px-4 text-[14.5px]" />
+              </FieldLabel>
+              <FieldLabel label="Aufbewahrung (Tage)">
+                <input type="number" min={1} max={365} value={retentionDays} onChange={(e) => setRetentionDays(Number(e.target.value))}
+                  className="field h-12 w-full px-4 text-[14.5px]" />
+              </FieldLabel>
             </div>
             <div>
-              <label className="text-[12px] block mb-1" style={dimText}>Aufbewahrung (Tage)</label>
-              <input type="number" min={1} max={365} value={retentionDays} onChange={(e) => setRetentionDays(Number(e.target.value))}
-                className="apple-input px-3 py-2 text-[13px] w-full" style={inputStyle} />
+              <button type="button" onClick={() => void saveConfig()} disabled={saving} className="btn btn-quiet">
+                {saving ? <Spinner /> : <Save size={16} strokeWidth={1.7} />}
+                {saving ? 'Speichert…' : 'Zeitplan speichern'}
+              </button>
             </div>
           </div>
-          <button onClick={() => void saveConfig()} disabled={saving}
-            className="mt-4 flex items-center gap-2 px-4 py-2.5 rounded-[10px] text-[13px] font-medium transition-all disabled:opacity-50"
-            style={{ background: 'rgba(10,132,255,0.15)', color: '#0a84ff', border: '1px solid rgba(10,132,255,0.25)' }}>
-            <Save size={14} /> {saving ? 'Speichert…' : 'Zeitplan speichern'}
-          </button>
-        </Card>
-
-        <Card title={`Vorhandene Backups (${files.length})`} icon={<DatabaseBackup size={17} />}>
-          {loading ? (
-            <div className="flex flex-col gap-2">{Array.from({ length: 3 }).map((_, i) => <div key={i} className="h-12 rounded-[10px] shimmer" />)}</div>
-          ) : files.length === 0 ? (
-            <p className="text-[13px] text-center py-6" style={dimText}>Noch keine Backups vorhanden.</p>
-          ) : (
-            <div className="flex flex-col divide-y" style={{ borderColor: 'rgba(255,255,255,0.06)' }}>
-              {files.map((file) => (
-                <div key={file.filename} className="flex items-center justify-between gap-3 py-3">
-                  <div className="min-w-0">
-                    <div className="text-[13px] font-mono text-white truncate">{file.filename}</div>
-                    <div className="text-[12px] mt-0.5" style={dimText}>{new Date(file.createdAt).toLocaleString('de-DE')} · {formatSize(file.sizeBytes)}</div>
-                  </div>
-                  <div className="flex-shrink-0 flex items-center gap-1.5">
-                    <button onClick={() => void download(file)} disabled={busyFile === file.filename} aria-label={`${file.filename} herunterladen`}
-                      className="p-2 rounded-[8px] transition-colors disabled:opacity-40" style={{ color: 'rgba(235,235,245,0.6)' }}>
-                      <Download size={15} />
-                    </button>
-                    <button onClick={() => void restore(file)} disabled={busyFile === file.filename} aria-label={`${file.filename} wiederherstellen`}
-                      className="p-2 rounded-[8px] transition-colors disabled:opacity-40" style={{ color: '#ff9f0a' }}>
-                      <RotateCcw size={15} />
-                    </button>
-                    <button onClick={() => void remove(file)} disabled={busyFile === file.filename} aria-label={`${file.filename} löschen`}
-                      className="p-2 rounded-[8px] transition-colors disabled:opacity-40" style={{ color: '#ff453a' }}>
-                      <Trash2 size={15} />
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </Card>
+        </FormSection>
       </div>
+
+      <Section className="mt-4 border-t border-line pt-[38px]" title="Vorhandene Backups" meta={`${files.length} Dateien`}>
+        {loading && files.length === 0 ? (
+          <div className="mt-7 flex flex-col gap-5">
+            {Array.from({ length: 3 }).map((_, i) => (
+              <div key={i} className="flex items-center gap-4"><div className="shimmer h-12 w-12 rounded-full" /><div className="shimmer h-4 flex-1 rounded-full" /></div>
+            ))}
+          </div>
+        ) : files.length === 0 ? (
+          <Empty icon={DatabaseBackup}>Noch keine Backups vorhanden.</Empty>
+        ) : (
+          <ul className="stack mt-3">
+            {files.map((file) => (
+              <li key={file.filename} className="spot flex items-center gap-4 py-4">
+                <span className="orb h-12 w-12"><DatabaseBackup size={19} strokeWidth={1.6} /></span>
+                <div className="min-w-0 flex-1">
+                  <div className="truncate font-mono text-[13.5px]">{file.filename}</div>
+                  <div className="mt-1 text-[13px] text-ink-3">{new Date(file.createdAt).toLocaleString('de-DE')}</div>
+                </div>
+                <span className="tabular hidden whitespace-nowrap text-[14.5px] font-medium sm:block">{formatSize(file.sizeBytes)}</span>
+                <div className="flex flex-shrink-0 gap-1.5">
+                  <IconButton icon={Download} label={`${file.filename} herunterladen`} busy={busyFile === file.filename} onClick={() => void download(file)} />
+                  <IconButton icon={RotateCcw} tone="amber" label={`${file.filename} wiederherstellen`} disabled={busyFile === file.filename} onClick={() => void restore(file)} />
+                  <IconButton icon={Trash2} tone="rose" label={`${file.filename} löschen`} disabled={busyFile === file.filename} onClick={() => void remove(file)} />
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Section>
     </div>
   );
 }

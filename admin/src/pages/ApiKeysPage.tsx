@@ -1,7 +1,9 @@
 import { useEffect, useState, useCallback } from 'react';
-import { KeyRound, Plus, Copy, Ban, Check, AlertTriangle } from 'lucide-react';
+import { KeyRound, Plus, Copy, Ban, Check, AlertTriangle, CircleCheck, CircleSlash, TimerOff } from 'lucide-react';
 import { adminApi } from '../api';
 import { useToast } from '../components/Toast';
+import { useLive } from '../live';
+import { Empty, FieldLabel, Figures, FormSection, IconButton, Notice, PageHeader, Section, Spinner, Status, Tag, type Tone } from '../components/kit';
 import type { AdminApiKey } from '../types';
 
 const availableScopes = [
@@ -13,23 +15,19 @@ const availableScopes = [
   { value: 'learn:write', label: 'Learn schreiben' },
 ] as const;
 
-function Card({ children, title, icon }: { children: React.ReactNode; title: string; icon: React.ReactNode }) {
-  return (
-    <div className="rounded-[16px] p-5" style={{ background: '#0d0d0d', border: '1px solid rgba(255,255,255,0.07)' }}>
-      <div className="flex items-center gap-2.5 mb-4">
-        <span style={{ color: '#0a84ff' }}>{icon}</span>
-        <h2 className="text-[15px] font-semibold text-white tracking-[-0.01em]">{title}</h2>
-      </div>
-      {children}
-    </div>
-  );
+type KeyState = 'active' | 'expired' | 'revoked';
+
+function keyState(key: AdminApiKey): KeyState {
+  if (key.revokedAt) return 'revoked';
+  if (key.expiresAt && new Date(key.expiresAt).getTime() <= Date.now()) return 'expired';
+  return 'active';
 }
 
-function keyStatus(key: AdminApiKey): { label: string; color: string } {
-  if (key.revokedAt) return { label: 'Widerrufen', color: '#ff453a' };
-  if (key.expiresAt && new Date(key.expiresAt).getTime() <= Date.now()) return { label: 'Abgelaufen', color: '#ff9f0a' };
-  return { label: 'Aktiv', color: '#30d158' };
-}
+const STATE: Record<KeyState, { label: string; tone: Tone }> = {
+  active:  { label: 'Aktiv',      tone: 'mint' },
+  expired: { label: 'Abgelaufen', tone: 'amber' },
+  revoked: { label: 'Widerrufen', tone: 'rose' },
+};
 
 export function ApiKeysPage() {
   const { showToast } = useToast();
@@ -44,8 +42,6 @@ export function ApiKeysPage() {
   const [createdKey, setCreatedKey] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
-  const dimText = { color: 'rgba(235,235,245,0.45)' };
-
   const load = useCallback(async () => {
     setLoading(true);
     try {
@@ -59,6 +55,7 @@ export function ApiKeysPage() {
   }, [showToast]);
 
   useEffect(() => { void load(); }, [load]);
+  useLive(['api-keys'], () => { void load(); });
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
@@ -73,6 +70,7 @@ export function ApiKeysPage() {
         expiresAt: expiresAt ? new Date(expiresAt).toISOString() : undefined,
       });
       setCreatedKey(result.key);
+      setCopied(false);
       setName('');
       setPurpose('');
       setPlatform('');
@@ -100,9 +98,14 @@ export function ApiKeysPage() {
 
   async function copyKey() {
     if (!createdKey) return;
-    await navigator.clipboard.writeText(createdKey);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    try {
+      await navigator.clipboard.writeText(createdKey);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // The clipboard is unavailable on plain http: the key stays selectable on screen.
+      showToast('Kopieren nicht möglich — bitte den Schlüssel markieren und manuell kopieren', 'error');
+    }
   }
 
   function toggleScope(scope: string) {
@@ -111,113 +114,135 @@ export function ApiKeysPage() {
       : [...current, scope]);
   }
 
+  const counts = { active: 0, expired: 0, revoked: 0 };
+  for (const key of keys) counts[keyState(key)] += 1;
+
   return (
     <div>
-      <div className="mb-6">
-        <h1 className="text-[22px] font-bold text-white tracking-[-0.02em]">API-Keys</h1>
-        <p className="text-[13px] mt-1" style={dimText}>
-          Zusätzliche Schlüssel für externe Integrationen — mit Ablaufdatum, Plattform und Zweck. Der statische
-          Master-Key (Umgebungsvariable) bleibt davon unberührt und funktioniert unverändert weiter.
-        </p>
-      </div>
+      <PageHeader
+        title="API-Keys"
+        subtitle="Zusätzliche Schlüssel für externe Integrationen — mit Ablaufdatum, Plattform und Zweck. Der statische Master-Key (Umgebungsvariable) bleibt davon unberührt und funktioniert unverändert weiter."
+      />
 
-      <div className="grid gap-4 max-w-[720px]">
-        {createdKey && (
-          <Card title="Neuer Schlüssel erstellt" icon={<Check size={17} />}>
-            <div className="flex items-start gap-2.5 mb-3 px-3 py-2.5 rounded-[10px]" style={{ background: 'rgba(255,159,10,0.08)', border: '1px solid rgba(255,159,10,0.2)' }}>
-              <AlertTriangle size={14} style={{ color: '#ff9f0a', marginTop: '1px', flexShrink: 0 }} />
-              <p className="text-[12px]" style={{ color: '#ff9f0a' }}>
-                Dieser Schlüssel wird nur jetzt angezeigt und kann danach nicht erneut abgerufen werden. Jetzt sicher speichern!
-              </p>
+      <Figures
+        className="mt-10"
+        items={[
+          { label: 'Aktiv',      value: counts.active,  icon: CircleCheck },
+          { label: 'Abgelaufen', value: counts.expired, icon: TimerOff },
+          { label: 'Widerrufen', value: counts.revoked, icon: CircleSlash },
+        ]}
+      />
+
+      {createdKey && (
+        <div className="animate-fadeInUp mt-10 rounded-[26px] bg-well p-6 sm:p-8">
+          <div className="flex items-center gap-3.5">
+            <span className="orb h-11 w-11" style={{ background: 'var(--mint-wash)', color: 'var(--mint-deep)' }}><Check size={18} strokeWidth={1.8} /></span>
+            <h2 className="text-[17px] font-semibold">Neuer Schlüssel erstellt</h2>
+          </div>
+          <div className="mt-5">
+            <Notice tone="amber" icon={AlertTriangle}>
+              Dieser Schlüssel wird nur jetzt angezeigt und kann danach nicht erneut abgerufen werden. Jetzt sicher speichern!
+            </Notice>
+          </div>
+          <div className="mt-4 flex items-center gap-3">
+            <code className="min-w-0 flex-1 select-all break-all rounded-[16px] bg-sheet px-[18px] py-3.5 font-mono text-[13px] text-mint-deep">
+              {createdKey}
+            </code>
+            <IconButton icon={copied ? Check : Copy} tone="sky" active={copied} size={44} label={copied ? 'Kopiert' : 'Schlüssel kopieren'} onClick={() => void copyKey()} />
+          </div>
+          <button type="button" onClick={() => setCreatedKey(null)} className="btn btn-sm btn-quiet mt-5">Ausblenden</button>
+        </div>
+      )}
+
+      <Section className="mt-[46px]" title="Bestehende Schlüssel" meta={`${keys.length} gesamt`}>
+        {loading && keys.length === 0 ? (
+          <div className="mt-7 flex flex-col gap-5">
+            {Array.from({ length: 3 }).map((_, i) => (
+              <div key={i} className="flex items-center gap-4"><div className="shimmer h-12 w-12 rounded-full" /><div className="shimmer h-4 flex-1 rounded-full" /></div>
+            ))}
+          </div>
+        ) : keys.length === 0 ? (
+          <Empty icon={KeyRound}>Noch keine zusätzlichen Schlüssel erstellt.</Empty>
+        ) : (
+          <ul className="stack mt-3">
+            {keys.map((key) => {
+              const state = STATE[keyState(key)];
+              return (
+                <li key={key.id} className="spot flex flex-wrap items-center gap-x-4 gap-y-3 py-[18px]" style={{ opacity: key.revokedAt ? 0.62 : 1 }}>
+                  <span className="orb h-12 w-12"><KeyRound size={19} strokeWidth={1.6} /></span>
+                  <div className="min-w-[200px] flex-1">
+                    <div className="text-[14.5px] font-medium">{key.name}</div>
+                    <div className="mt-1 flex flex-wrap gap-x-4 gap-y-0.5 text-[13px] text-ink-3">
+                      {key.purpose && <span>{key.purpose}</span>}
+                      {key.platform && <span>{key.platform}</span>}
+                      {key.expiresAt && <span>läuft ab {new Date(key.expiresAt).toLocaleDateString('de-DE')}</span>}
+                      <span>{key.lastUsedAt ? `zuletzt genutzt ${new Date(key.lastUsedAt).toLocaleDateString('de-DE')}` : 'noch nie genutzt'}</span>
+                    </div>
+                    <div className="mt-2.5 flex flex-wrap gap-1.5">
+                      {key.scopes.map((scope) => <Tag key={scope} mono>{scope}</Tag>)}
+                    </div>
+                  </div>
+                  <span className="w-[112px]"><Status tone={state.tone}>{state.label}</Status></span>
+                  <span className="flex w-[38px] justify-end">
+                    {!key.revokedAt && (
+                      <IconButton icon={Ban} tone="rose" label={`${key.name} widerrufen`} onClick={() => void handleRevoke(key)} />
+                    )}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </Section>
+
+      <div className="mt-6">
+        <FormSection
+          icon={Plus}
+          title="Neuen Schlüssel erstellen"
+          hint="Wähle nur die Zugriffe, die diese Integration wirklich benötigt. Der statische Master-Key bleibt unverändert."
+        >
+          <form onSubmit={(e) => void handleCreate(e)} className="flex max-w-[640px] flex-col gap-5">
+            <FieldLabel label="Name *">
+              <input value={name} onChange={(e) => setName(e.target.value)} placeholder="z.B. „Mobile CI“" required maxLength={191}
+                className="field h-12 w-full px-4 text-[14.5px]" />
+            </FieldLabel>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <FieldLabel label="Zweck">
+                <input value={purpose} onChange={(e) => setPurpose(e.target.value)} placeholder="optional" maxLength={255}
+                  className="field h-12 w-full px-4 text-[14.5px]" />
+              </FieldLabel>
+              <FieldLabel label="Plattform / OS">
+                <input value={platform} onChange={(e) => setPlatform(e.target.value)} placeholder="optional" maxLength={80}
+                  className="field h-12 w-full px-4 text-[14.5px]" />
+              </FieldLabel>
             </div>
-            <div className="flex items-center gap-2">
-              <code className="flex-1 px-3 py-2.5 rounded-[10px] text-[12px] font-mono break-all" style={{ background: '#1c1c1e', color: '#30d158', border: '1px solid rgba(255,255,255,0.08)' }}>
-                {createdKey}
-              </code>
-              <button onClick={() => void copyKey()} className="flex-shrink-0 p-2.5 rounded-[10px] transition-colors" style={{ background: 'rgba(10,132,255,0.15)', color: '#0a84ff', border: '1px solid rgba(10,132,255,0.25)' }}>
-                {copied ? <Check size={14} /> : <Copy size={14} />}
+            <FieldLabel label="Ablaufdatum" hint="Leer lassen für einen Schlüssel ohne Ablauf." className="sm:max-w-[240px]">
+              <input type="date" value={expiresAt} onChange={(e) => setExpiresAt(e.target.value)}
+                className="field h-12 w-full px-4 text-[14.5px]" />
+            </FieldLabel>
+            <fieldset>
+              <legend className="mb-3 text-[13px] text-ink-2">Berechtigungen</legend>
+              <div className="flex flex-wrap gap-2">
+                {availableScopes.map((scope) => {
+                  const on = scopes.includes(scope.value);
+                  return (
+                    <label key={scope.value} className="scope-chip" data-on={on}>
+                      <input type="checkbox" className="sr-only" checked={on} onChange={() => toggleScope(scope.value)} />
+                      {on && <Check size={14} strokeWidth={2} />}
+                      {scope.label}
+                    </label>
+                  );
+                })}
+              </div>
+            </fieldset>
+            <div>
+              <button type="submit" disabled={creating || !name.trim() || scopes.length === 0} className="btn btn-primary">
+                {creating ? <Spinner /> : <Plus size={16} strokeWidth={1.8} />}
+                {creating ? 'Erstelle…' : 'Schlüssel erstellen'}
               </button>
             </div>
-            <button onClick={() => setCreatedKey(null)} className="mt-3 text-[12px] transition-colors" style={{ color: 'rgba(235,235,245,0.4)' }}>
-              Ausblenden
-            </button>
-          </Card>
-        )}
-
-        <Card title="Neuen Schlüssel erstellen" icon={<Plus size={17} />}>
-          <form onSubmit={(e) => void handleCreate(e)} className="flex flex-col gap-3">
-            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Name (z.B. „Mobile CI“)" required maxLength={191}
-              className="apple-input px-3 py-2 text-[13px]" />
-            <div className="grid grid-cols-2 gap-3">
-              <input value={purpose} onChange={(e) => setPurpose(e.target.value)} placeholder="Zweck (optional)" maxLength={255}
-                className="apple-input px-3 py-2 text-[13px]" />
-              <input value={platform} onChange={(e) => setPlatform(e.target.value)} placeholder="Plattform/OS (optional)" maxLength={80}
-                className="apple-input px-3 py-2 text-[13px]" />
-            </div>
-            <div>
-              <label className="text-[12px] block mb-1" style={dimText}>Ablaufdatum (optional)</label>
-              <input type="date" value={expiresAt} onChange={(e) => setExpiresAt(e.target.value)}
-                className="px-3 py-2 rounded-[10px] text-[13px] outline-none" style={{ background: '#1c1c1e', border: '1px solid rgba(255,255,255,0.08)', color: 'rgba(235,235,245,0.7)' }} />
-            </div>
-            <fieldset>
-              <legend className="text-[12px] block mb-1" style={dimText}>Berechtigungen</legend>
-              <div className="grid grid-cols-2 gap-2">
-                {availableScopes.map((scope) => <label key={scope.value} className="flex items-center gap-2 px-2.5 py-2 rounded-[10px] cursor-pointer" style={{ background: '#1c1c1e', border: '1px solid rgba(255,255,255,0.08)' }}>
-                  <input type="checkbox" checked={scopes.includes(scope.value)} onChange={() => toggleScope(scope.value)} />
-                  <span className="text-[12px]" style={{ color: 'rgba(235,235,245,0.78)' }}>{scope.label}</span>
-                </label>)}
-              </div>
-              <p className="text-[11px] mt-2" style={dimText}>Wähle nur die Zugriffe, die diese Integration wirklich benötigt. Der statische Master-Key bleibt unverändert.</p>
-            </fieldset>
-            <button type="submit" disabled={creating || !name.trim() || scopes.length === 0}
-              className="self-start flex items-center gap-2 px-4 py-2.5 rounded-[10px] text-[13px] font-medium transition-all disabled:opacity-50"
-              style={{ background: 'rgba(10,132,255,0.15)', color: '#0a84ff', border: '1px solid rgba(10,132,255,0.25)' }}>
-              <Plus size={14} /> {creating ? 'Erstelle…' : 'Schlüssel erstellen'}
-            </button>
           </form>
-        </Card>
-
-        <Card title={`Bestehende Schlüssel (${keys.length})`} icon={<KeyRound size={17} />}>
-          {loading ? (
-            <div className="flex flex-col gap-2">
-              {Array.from({ length: 3 }).map((_, i) => <div key={i} className="h-12 rounded-[10px] shimmer" />)}
-            </div>
-          ) : keys.length === 0 ? (
-            <p className="text-[13px] text-center py-6" style={dimText}>Noch keine zusätzlichen Schlüssel erstellt.</p>
-          ) : (
-            <div className="flex flex-col divide-y" style={{ borderColor: 'rgba(255,255,255,0.06)' }}>
-              {keys.map((key) => {
-                const status = keyStatus(key);
-                return (
-                  <div key={key.id} className="flex items-center justify-between gap-3 py-3">
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="text-[13px] font-semibold text-white">{key.name}</span>
-                        <span className="text-[11px] px-2 py-0.5 rounded-[6px] font-medium" style={{ background: `${status.color}22`, color: status.color, border: `1px solid ${status.color}44` }}>
-                          {status.label}
-                        </span>
-                      </div>
-                      <div className="text-[12px] mt-0.5 flex flex-wrap gap-x-3" style={dimText}>
-                        {key.purpose && <span>{key.purpose}</span>}
-                        {key.platform && <span>{key.platform}</span>}
-                        <span>{key.scopes.join(', ')}</span>
-                        {key.expiresAt && <span>läuft ab {new Date(key.expiresAt).toLocaleDateString('de-DE')}</span>}
-                        {key.lastUsedAt && <span>zuletzt genutzt {new Date(key.lastUsedAt).toLocaleDateString('de-DE')}</span>}
-                      </div>
-                    </div>
-                    {!key.revokedAt && (
-                      <button onClick={() => void handleRevoke(key)}
-                        className="flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-[8px] text-[12px] font-medium transition-colors"
-                        style={{ background: 'rgba(255,69,58,0.1)', color: '#ff453a', border: '1px solid rgba(255,69,58,0.2)' }}>
-                        <Ban size={12} /> Widerrufen
-                      </button>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </Card>
+        </FormSection>
       </div>
     </div>
   );

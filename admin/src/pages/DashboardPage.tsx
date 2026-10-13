@@ -1,47 +1,39 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import {
-  Users,
-  Shield,
-  Building2,
-  MonitorSmartphone,
   Activity,
-  CheckSquare,
-  Bell,
-  Zap,
-  RefreshCw,
   AlertTriangle,
-  TrendingUp,
+  ArrowUpDown,
+  CheckSquare,
   Clock,
+  DatabaseBackup,
+  GraduationCap,
+  KeyRound,
+  MessageCircle,
+  MonitorSmartphone,
+  RefreshCw,
+  ScrollText,
+  ShieldCheck,
+  UserPlus,
+  Users,
+  UtensilsCrossed,
+  Waypoints,
+  type LucideIcon,
 } from 'lucide-react';
-import {
-  AreaChart,
-  Area,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  ResponsiveContainer,
-} from 'recharts';
+import gsap from 'gsap';
 import { adminApi } from '../api';
+import { useAuth } from '../hooks/useAuth';
 import { useAutoRefresh } from '../hooks/useAutoRefresh';
-import type { AdminStats, AdminUser, RequestsChartPoint, TopEndpoint } from '../types';
+import { useLive } from '../live';
+import { prefersReducedMotion } from '../motion';
+import { TrendChart, type TrendSeries } from '../components/TrendChart';
+import { RankBars, Ring, SplitBar } from '../components/charts';
+import { Avatar, Count, Delta, Figures, Section, Segmented, TONES, toneFor } from '../components/kit';
+import type { AdminComment, AdminStats, AdminUser, FrontendActivityStats, RequestsChartPoint, TopEndpoint } from '../types';
 
-const AVATAR_COLORS = ['#0a84ff', '#bf5af2', '#40c8e0', '#30d158', '#ff9f0a', '#ff453a'];
-
-function avatarColor(username: string): string {
-  let hash = 0;
-  for (let i = 0; i < username.length; i++) hash = username.charCodeAt(i) + ((hash << 5) - hash);
-  return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length]!;
-}
-
-function relativeDate(dateStr: string): string {
-  const diff = Date.now() - new Date(dateStr).getTime();
-  const days = Math.floor(diff / 86400000);
-  if (days === 0) return 'Heute';
-  if (days === 1) return 'Gestern';
-  if (days < 30) return `vor ${days} Tagen`;
-  return `vor ${Math.floor(days / 30)} Monat(en)`;
-}
+const LINE_SKY = '#4f96dc';
+const LINE_AMBER = '#f2a55c';
+const EVENT_COLORS = [LINE_SKY, 'var(--amber)', 'var(--mint)', '#a98be0', 'var(--ink-4)'];
 
 function greeting(): string {
   const h = new Date().getHours();
@@ -52,91 +44,82 @@ function greeting(): string {
 }
 
 function formatUptime(seconds: number): string {
-  if (seconds < 60) return `${seconds}s`;
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
-  return `${Math.floor(seconds / 86400)}d ${Math.floor((seconds % 86400) / 3600)}h`;
+  if (seconds < 60) return `${seconds} s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)} min`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)} h ${Math.floor((seconds % 3600) / 60)} min`;
+  return `${Math.floor(seconds / 86400)} d ${Math.floor((seconds % 86400) / 3600)} h`;
 }
 
-function formatDate(): string {
-  return new Date().toLocaleDateString('de-AT', { weekday: 'long', month: 'long', day: 'numeric' });
+function relativeTime(dateStr: string): string {
+  const then = new Date(dateStr);
+  const minutes = Math.floor((Date.now() - then.getTime()) / 60000);
+  if (minutes < 1) return 'gerade eben';
+  if (minutes < 60) return `vor ${minutes} Min.`;
+  if (then.toDateString() === new Date().toDateString()) {
+    return then.toLocaleTimeString('de-AT', { hour: '2-digit', minute: '2-digit' });
+  }
+  const days = Math.floor(minutes / 1440);
+  if (days <= 1) return 'Gestern';
+  if (days < 30) return `vor ${days} Tagen`;
+  return then.toLocaleDateString('de-AT', { day: 'numeric', month: 'short' });
 }
 
-interface StatCardProps {
-  label: string;
-  value: number;
-  icon: React.ReactNode;
-  accentColor: string;
-  delay?: number;
+function endpointIcon(path: string): LucideIcon {
+  if (/auth|login|session|token/.test(path)) return KeyRound;
+  if (/learn|course|vocab/.test(path)) return GraduationCap;
+  if (/comment/.test(path)) return MessageCircle;
+  if (/dish|menu|rating/.test(path)) return UtensilsCrossed;
+  if (/todo|reminder/.test(path)) return CheckSquare;
+  if (/user|class|member/.test(path)) return Users;
+  return Waypoints;
 }
 
-function StatCard({ label, value, icon, accentColor, delay = 0 }: StatCardProps) {
+function endpointTone(avgMs: number) {
+  if (avgMs < 100) return { label: 'Schnell', dot: 'var(--mint)',  well: 'var(--well)' };
+  if (avgMs < 500) return { label: 'Normal',  dot: '#6ba6e0',      well: 'var(--sky-wash)' };
+  return { label: 'Langsam', dot: 'var(--amber)', well: 'var(--amber-wash)' };
+}
+
+type Range = 'day' | 'fortnight';
+
+type FeedItem =
+  | { kind: 'comment'; id: string; at: string; name: string; comment: AdminComment }
+  | { kind: 'signup'; id: string; at: string; name: string; user: AdminUser };
+
+function Skeleton() {
   return (
-    <div
-      className="apple-card p-5 flex items-center gap-4 min-w-0 animate-fadeInUp cursor-default"
-      style={{ animationDelay: `${delay}ms` }}
-    >
-      <div
-        className="w-10 h-10 rounded-[12px] flex items-center justify-center flex-shrink-0"
-        style={{ background: `${accentColor}1a`, color: accentColor }}
-      >
-        {icon}
+    <div className="dash" aria-busy="true" aria-label="Laden">
+      <div className="dash-main">
+        <div className="shimmer h-9 w-64 rounded-full" />
+        <div className="shimmer mt-4 h-4 w-80 max-w-full rounded-full" />
+        <div className="mt-10 h-px bg-line" />
+        <div className="flex gap-10 py-8">
+          {[0, 1, 2].map((i) => <div key={i} className="shimmer h-12 flex-1 rounded-full" />)}
+        </div>
+        <div className="h-px bg-line" />
+        <div className="shimmer mt-14 h-6 w-40 rounded-full" />
+        <div className="shimmer mt-8 h-[200px] rounded-[22px]" />
       </div>
-      <div className="min-w-0">
-        <div
-          className="text-[26px] font-bold leading-none"
-          style={{ color: '#ffffff', letterSpacing: '-0.03em' }}
-        >
-          {value.toLocaleString('de-AT')}
-        </div>
-        <div className="text-[13px] mt-1 truncate" style={{ color: 'rgba(235,235,245,0.45)' }}>
-          {label}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-interface ChartTooltipProps {
-  active?: boolean;
-  payload?: Array<{ value: number; name: string; color: string }>;
-  label?: string;
-}
-
-function ChartTooltip({ active, payload, label }: ChartTooltipProps) {
-  if (!active || !payload?.length) return null;
-  return (
-    <div
-      className="px-3 py-2.5 rounded-[10px] text-[12px]"
-      style={{
-        background: 'rgba(44,44,46,0.95)',
-        border: '1px solid rgba(255,255,255,0.1)',
-        boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
-        color: '#ffffff',
-        backdropFilter: 'blur(16px)',
-      }}
-    >
-      <div className="mb-1.5 font-medium" style={{ color: 'rgba(235,235,245,0.5)' }}>{label}</div>
-      {payload.map((p) => (
-        <div key={p.name} className="flex items-center gap-2">
-          <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: p.color }} />
-          <span style={{ color: 'rgba(235,235,245,0.55)' }}>
-            {p.name === 'count' ? 'Anfragen' : 'Fehler'}:
-          </span>
-          <span className="font-semibold ml-0.5">{p.value}</span>
-        </div>
-      ))}
+      <aside className="dash-rail">
+        <div className="shimmer m-[14px] h-[300px] rounded-[26px]" />
+      </aside>
     </div>
   );
 }
 
 export function DashboardPage() {
+  const { username } = useAuth();
   const [stats, setStats] = useState<AdminStats | null>(null);
   const [recentUsers, setRecentUsers] = useState<AdminUser[]>([]);
+  const [comments, setComments] = useState<AdminComment[]>([]);
   const [chartData, setChartData] = useState<RequestsChartPoint[]>([]);
   const [topEndpoints, setTopEndpoints] = useState<TopEndpoint[]>([]);
+  const [usage, setUsage] = useState<FrontendActivityStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [chartLoading, setChartLoading] = useState(true);
+  const [range, setRange] = useState<Range>('day');
+  const [sortBy, setSortBy] = useState<'count' | 'avgMs'>('count');
+  const rootRef = useRef<HTMLDivElement>(null);
 
   const fetchAll = useCallback(() => {
     Promise.all([
@@ -150,318 +133,381 @@ export function DashboardPage() {
     Promise.all([
       adminApi.requestsChart().catch(() => [] as RequestsChartPoint[]),
       adminApi.topEndpoints().catch(() => [] as TopEndpoint[]),
-    ]).then(([chart, endpoints]) => {
+      adminApi.comments({ limit: 4, sortBy: 'createdAt', sortOrder: 'desc' }).then((r) => r.comments).catch(() => [] as AdminComment[]),
+      adminApi.activityStats().catch(() => null),
+    ]).then(([chart, endpoints, latestComments, activity]) => {
       setChartData(chart);
       setTopEndpoints(endpoints);
+      setComments(latestComments);
+      setUsage(activity);
     }).finally(() => setChartLoading(false));
   }, []);
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
 
   const { refresh, refreshing } = useAutoRefresh(fetchAll, 15000);
+  // Anything the dashboard shows refreshes the moment it changes on the server.
+  useLive(['users', 'sessions', 'comments', 'todos', 'reminders', 'classes', 'requests', 'activity'], fetchAll, 3000);
 
-  if (loading) {
+  // One entrance for the page, played when the first figures arrive.
+  useLayoutEffect(() => {
+    if (loading || !stats || prefersReducedMotion()) return;
+    const ctx = gsap.context(() => {
+      const settle = { autoAlpha: 0, duration: 0.5, ease: 'power2.out', clearProps: 'transform,opacity,visibility' };
+      gsap.timeline()
+        .from('[data-rise]', { ...settle, y: 8, stagger: 0.045 })
+        .from('[data-rule]', { scaleX: 0, transformOrigin: '0% 50%', duration: 0.7, ease: 'power2.out', stagger: 0.08, clearProps: 'transform' }, 0.05)
+        .from('[data-cell]', { ...settle, y: 8, stagger: 0.045 }, 0.1)
+        .from('[data-rail]', { ...settle, y: 8, stagger: 0.06 }, 0.12);
+    }, rootRef);
+    return () => ctx.revert();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading]);
+
+  const chart = useMemo(() => {
+    if (range === 'day') {
+      const series: TrendSeries[] = [
+        { key: 'count',  label: 'Anfragen', color: LINE_SKY,   area: true, values: chartData.map((p) => p.count) },
+        { key: 'errors', label: 'Fehler',   color: LINE_AMBER, values: chartData.map((p) => p.errors) },
+      ];
+      return {
+        labels: chartData.map((p) => p.hour),
+        titles: chartData.map((p) => `${p.hour} Uhr`),
+        series,
+        tickEvery: 4,
+      };
+    }
+    const byDay = new Map((stats?.usersByDay ?? []).map((d) => [d.date, d.count]));
+    const days = Array.from({ length: 14 }, (_, i) => {
+      const d = new Date();
+      d.setDate(d.getDate() - (13 - i));
+      return d;
+    });
+    const series: TrendSeries[] = [
+      { key: 'signups', label: 'Registrierungen', color: LINE_SKY, area: true, values: days.map((d) => byDay.get(d.toISOString().slice(0, 10)) ?? 0) },
+    ];
+    return {
+      labels: days.map((d) => String(d.getDate()).padStart(2, '0')),
+      titles: days.map((d) => d.toLocaleDateString('de-AT', { day: 'numeric', month: 'long', year: 'numeric' })),
+      series,
+      tickEvery: 2,
+    };
+  }, [range, chartData, stats]);
+
+  const endpoints = useMemo(
+    () => [...topEndpoints].sort((a, b) => b[sortBy] - a[sortBy]),
+    [topEndpoints, sortBy],
+  );
+
+  const feed = useMemo<FeedItem[]>(() => {
+    const items: FeedItem[] = [
+      ...comments.map((c): FeedItem => ({ kind: 'comment', id: `c-${c.id}`, at: c.createdAt, name: c.username, comment: c })),
+      ...recentUsers.map((u): FeedItem => ({ kind: 'signup', id: `u-${u.stableUid}`, at: u.createdAt, name: u.username, user: u })),
+    ];
+    return items.sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime()).slice(0, 6);
+  }, [comments, recentUsers]);
+
+  if (loading) return <Skeleton />;
+
+  if (!stats) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <div className="flex flex-col items-center gap-3">
-          <div
-            className="w-6 h-6 rounded-full border-2 animate-spin"
-            style={{ borderColor: 'rgba(255,255,255,0.1)', borderTopColor: '#0a84ff' }}
-          />
-          <span className="text-[13px]" style={{ color: 'rgba(235,235,245,0.3)' }}>Laden…</span>
-        </div>
+      <div className="flex h-full min-h-[320px] flex-col items-center justify-center gap-5 px-6 text-center">
+        <span className="orb h-14 w-14"><AlertTriangle size={22} strokeWidth={1.6} /></span>
+        <p className="text-[15px] text-ink-2">Die Statistiken konnten nicht geladen werden.</p>
+        <button type="button" onClick={() => void refresh()} className="btn btn-primary">
+          Erneut versuchen
+        </button>
       </div>
     );
   }
 
-  if (!stats) return null;
+  const requestsToday = stats.requestsToday ?? 0;
+  const errorsToday = stats.errorsToday ?? 0;
+  const newThisWeek = stats.newUsersThisWeek ?? 0;
+  const errorRate = requestsToday > 0 ? (errorsToday / requestsToday) * 100 : 0;
+  const today = new Date().toLocaleDateString('de-AT', { day: 'numeric', month: 'short', year: 'numeric' });
+  const activeShare = usage && stats.totalUsers > 0 ? usage.uniqueUsersToday / stats.totalUsers : 0;
 
-  const statCards = [
-    { label: 'Benutzer gesamt',    value: stats.totalUsers,          icon: <Users size={18} />,            accentColor: '#0a84ff' },
-    { label: 'Administratoren',    value: stats.totalAdmins,         icon: <Shield size={18} />,           accentColor: '#bf5af2' },
-    { label: 'Aktive Sessions',    value: stats.totalActiveSessions, icon: <MonitorSmartphone size={18} />, accentColor: '#30d158' },
-    { label: 'Klassen gesamt',     value: stats.totalClasses,        icon: <Building2 size={18} />,        accentColor: '#40c8e0' },
+  const ledger = [
+    { label: 'Admins',       value: stats.totalAdmins },
+    { label: 'Klassen',      value: stats.totalClasses },
+    { label: 'Todos',        value: stats.totalTodos },
+    { label: 'Erinnerungen', value: stats.totalReminders },
   ];
 
-  const regChartData = (() => {
-    const map = new Map(stats.usersByDay.map((d) => [d.date, d.count]));
-    return Array.from({ length: 14 }, (_, i) => {
-      const d = new Date();
-      d.setDate(d.getDate() - (13 - i));
-      const key = d.toISOString().slice(0, 10);
-      return {
-        date: d.toLocaleDateString('de-AT', { month: 'short', day: 'numeric' }),
-        count: map.get(key) ?? 0,
-      };
-    });
-  })();
+  const quickLinks = [
+    { to: '/users',   label: 'Benutzer verwalten', icon: UserPlus },
+    { to: '/logs',    label: 'Logs öffnen',        icon: ScrollText },
+    { to: '/backups', label: 'Backups öffnen',     icon: DatabaseBackup },
+  ];
+
+  const profileTone = TONES[toneFor(username)];
 
   return (
-    <div className="flex flex-col gap-6 animate-page">
-      {/* Header */}
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1
-            className="text-[28px] font-bold text-white"
-            style={{ letterSpacing: '-0.03em' }}
-          >
-            Dashboard
-          </h1>
-          <p className="text-[14px] mt-1" style={{ color: 'rgba(235,235,245,0.4)' }}>
-            {greeting()} &mdash; {formatDate()}
-          </p>
-        </div>
-        <button
-          onClick={() => void refresh()}
-          disabled={refreshing}
-          className="apple-btn-ghost flex items-center gap-2 px-3 py-2 rounded-[10px] text-[13px]"
-        >
-          <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
-          {refreshing ? 'Aktualisiert…' : 'Aktualisieren'}
-        </button>
-      </div>
+    <div ref={rootRef} className="dash">
+      <div className="dash-main scrollbar-thin">
+        <header className="flex items-start justify-between gap-6">
+          <div className="min-w-0">
+            <h1 data-rise className="truncate text-[30px] font-semibold leading-[1.15] tracking-[-0.02em] sm:text-[36px]">
+              Hallo, {username}
+            </h1>
+            <p data-rise className="mt-2 text-[15px] text-ink-3">
+              {greeting()} — der Server läuft seit {formatUptime(stats.serverUptime ?? 0)}.
+            </p>
+          </div>
+          <div data-rise className="flex flex-shrink-0 items-center gap-3">
+            <span className="hidden whitespace-nowrap text-[14px] sm:block">{today}</span>
+            <button
+              type="button"
+              onClick={() => void refresh()}
+              disabled={refreshing}
+              className="orb h-11 w-11"
+              aria-label="Aktualisieren"
+              title="Aktualisieren"
+            >
+              <RefreshCw size={18} strokeWidth={1.6} className={refreshing ? 'animate-spin' : ''} />
+            </button>
+          </div>
+        </header>
 
-      {/* Stat grid — primary */}
-      <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
-        {statCards.map((c, i) => (
-          <StatCard key={c.label} {...c} delay={i * 55} />
-        ))}
-      </div>
+        <Figures
+          className="mt-10"
+          items={[
+            {
+              label: 'Benutzer',
+              value: stats.totalUsers,
+              icon: Users,
+              to: '/users',
+              note: newThisWeek > 0
+                ? <Delta trend="up" tone="mint"><span title="Neue Konten in dieser Woche">+{newThisWeek.toLocaleString('de-AT')} neu</span></Delta>
+                : <Delta>keine neuen</Delta>,
+            },
+            { label: 'Sessions', value: stats.totalActiveSessions, icon: MonitorSmartphone, to: '/sessions', note: <Delta>aktiv</Delta> },
+            { label: 'Anfragen', value: requestsToday, icon: Activity, to: '/logs', note: <Delta>⌀ {Math.round(stats.avgResponseTimeToday ?? 0)} ms</Delta> },
+            {
+              label: 'Fehler',
+              value: errorsToday,
+              icon: AlertTriangle,
+              to: '/logs',
+              note: errorsToday > 0
+                ? <Delta trend="up" tone="rose">{errorRate.toLocaleString('de-AT', { maximumFractionDigits: 1 })} %</Delta>
+                : <Delta tone="mint">keine heute</Delta>,
+            },
+          ]}
+        />
 
-      {/* Today stats row */}
-      <div
-        className="rounded-[16px] p-4 animate-fadeInUp"
-        style={{ background: '#1c1c1e', border: '1px solid rgba(255,255,255,0.07)', animationDelay: '220ms' }}
-      >
-        <div className="flex items-center gap-2 mb-3">
-          <TrendingUp size={13} style={{ color: '#0a84ff' }} />
-          <span className="text-[12px] font-semibold uppercase tracking-[0.05em]" style={{ color: 'rgba(235,235,245,0.35)' }}>
-            Heute
-          </span>
-        </div>
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          {[
-            { label: 'Anfragen',    value: stats.requestsToday?.toLocaleString('de-AT') ?? '—', icon: <TrendingUp size={15} />,    color: '#0a84ff' },
-            { label: 'Fehler',      value: stats.errorsToday?.toLocaleString('de-AT') ?? '—',   icon: <AlertTriangle size={15} />, color: stats.errorsToday > 0 ? '#ff453a' : '#30d158' },
-            { label: 'Neue Nutzer', value: String(stats.newUsersToday ?? '—'),                   icon: <Users size={15} />,         color: '#30d158' },
-            { label: 'Uptime',      value: formatUptime(stats.serverUptime ?? 0),               icon: <Clock size={15} />,         color: '#40c8e0' },
-          ].map((item) => (
-            <div key={item.label} className="flex items-center gap-3 min-w-0">
-              <div
-                className="w-9 h-9 rounded-[10px] flex items-center justify-center flex-shrink-0"
-                style={{ background: `${item.color}18`, color: item.color }}
-              >
-                {item.icon}
+        <section className="mt-[52px]" aria-labelledby="dash-trend">
+          <div data-rise className="flex items-center justify-between gap-4">
+            <h2 id="dash-trend" className="sec-title text-[20px] font-semibold">
+              {range === 'day' ? 'API-Anfragen' : 'Registrierungen'}
+            </h2>
+            <Segmented
+              label="Zeitraum"
+              value={range}
+              onChange={setRange}
+              options={[{ value: 'day', label: '24 Std.' }, { value: 'fortnight', label: '14 Tage' }]}
+            />
+          </div>
+          <div className="mt-8">
+            {range === 'day' && chartLoading ? (
+              <div className="shimmer h-[236px] rounded-[22px]" />
+            ) : (
+              <TrendChart
+                labels={chart.labels}
+                titles={chart.titles}
+                series={chart.series}
+                tickEvery={chart.tickEvery}
+                drawKey={range}
+                ariaLabel={range === 'day'
+                  ? 'API-Anfragen und Fehler je Stunde, letzte 24 Stunden'
+                  : 'Registrierungen je Tag, letzte 14 Tage'}
+              />
+            )}
+          </div>
+        </section>
+
+        {usage && (
+          <Section className="mt-[50px]" title="App-Nutzung" meta="Heute">
+            <div className="mt-8 grid gap-x-14 gap-y-10 md:grid-cols-[auto_minmax(0,1fr)]">
+              <div className="flex items-center gap-7">
+                <Ring share={activeShare} ariaLabel="Anteil der heute aktiven Konten">
+                  <span className="tabular text-[24px] font-semibold leading-none">
+                    {(activeShare * 100).toLocaleString('de-AT', { maximumFractionDigits: 0 })} %
+                  </span>
+                  <span className="mt-1.5 text-[12px] text-ink-3">aktiv</span>
+                </Ring>
+                <dl className="flex flex-col gap-5">
+                  <div>
+                    <dt className="text-[13.5px] text-ink-3">Aktive Nutzer</dt>
+                    <dd className="mt-0.5 text-[19px] font-semibold"><Count value={usage.uniqueUsersToday} /></dd>
+                  </div>
+                  <div>
+                    <dt className="text-[13.5px] text-ink-3">Ereignisse</dt>
+                    <dd className="mt-0.5 text-[19px] font-semibold"><Count value={usage.totalToday} /></dd>
+                  </div>
+                </dl>
               </div>
               <div className="min-w-0">
-                <div className="text-[20px] font-bold text-white leading-none" style={{ letterSpacing: '-0.025em' }}>
-                  {item.value}
-                </div>
-                <div className="text-[11px] mt-0.5 truncate" style={{ color: 'rgba(235,235,245,0.38)' }}>
-                  {item.label}
-                </div>
+                <h3 className="mb-5 text-[14.5px] text-ink-3">Meistbesuchte Seiten</h3>
+                <RankBars
+                  items={usage.topPages.slice(0, 4).map((p) => ({ label: p.page, value: p.count }))}
+                  empty="Heute noch keine Seitenaufrufe."
+                />
               </div>
             </div>
+            {usage.eventBreakdown.length > 0 && (
+              <div className="mt-10">
+                <SplitBar
+                  ariaLabel="Ereignisse von heute nach Art"
+                  parts={usage.eventBreakdown.slice(0, 5).map((e, i) => ({
+                    label: e.event.replace(/_/g, ' '),
+                    value: e.count,
+                    color: EVENT_COLORS[i % EVENT_COLORS.length]!,
+                  }))}
+                />
+              </div>
+            )}
+          </Section>
+        )}
+
+        <section className="mt-[50px]" aria-labelledby="dash-endpoints">
+          <div data-rise className="flex items-center justify-between gap-4">
+            <div className="flex min-w-0 items-center">
+              <h2 id="dash-endpoints" className="sec-title whitespace-nowrap text-[20px] font-semibold">Top-Endpunkte</h2>
+              <span className="ml-6 hidden whitespace-nowrap border-l border-line py-0.5 pl-6 text-[14px] sm:block">
+                Letzte 24 Std.
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setSortBy((s) => (s === 'count' ? 'avgMs' : 'count'))}
+              className="btn btn-sm btn-line flex-shrink-0"
+              title="Sortierung wechseln"
+            >
+              {sortBy === 'count' ? 'Aufrufe' : 'Latenz'}
+              <ArrowUpDown size={13} strokeWidth={1.8} />
+            </button>
+          </div>
+
+          <div className="rows mt-5">
+            {chartLoading ? (
+              Array.from({ length: 4 }).map((_, i) => (
+                <div key={i} className="flex items-center gap-4 py-[9px]">
+                  <div className="shimmer h-12 w-12 flex-shrink-0 rounded-full" />
+                  <div className="shimmer h-4 flex-1 rounded-full" />
+                  <div className="shimmer h-4 w-20 rounded-full" />
+                </div>
+              ))
+            ) : endpoints.length === 0 ? (
+              <p className="py-6 text-[14px] text-ink-3">Noch keine Daten.</p>
+            ) : (
+              <ul>
+                {endpoints.map((ep, i) => {
+                  const Icon = endpointIcon(ep.path);
+                  const tone = endpointTone(ep.avgMs);
+                  return (
+                    <li
+                      key={ep.path}
+                      className="row-line spot animate-fadeInUp flex items-center gap-4 py-[9px]"
+                      style={{ animationDelay: `${i * 55}ms` }}
+                    >
+                      <span className="orb h-12 w-12" style={{ background: tone.well }}>
+                        <Icon size={19} strokeWidth={1.6} />
+                      </span>
+                      <span className="min-w-0 flex-1 truncate text-[14.5px] font-medium" title={ep.path}>{ep.path}</span>
+                      <span className="row-status flex items-center gap-[10px] text-[14px]">
+                        <i className="h-[7px] w-[7px] flex-shrink-0 rounded-full" style={{ background: tone.dot }} />
+                        <span className="row-status-label">{tone.label}</span>
+                      </span>
+                      <span className="flex w-[104px] flex-shrink-0 items-center gap-[10px] text-[15px] font-medium">
+                        <span className="flex h-[18px] w-[18px] items-center justify-center rounded-full" style={{ background: 'var(--ink-4)' }}>
+                          <Clock size={11} strokeWidth={2.4} color="var(--sheet)" />
+                        </span>
+                        <span className="tabular">{ep.avgMs.toLocaleString('de-AT')} ms</span>
+                      </span>
+                      <span className="tabular w-[62px] flex-shrink-0 text-right text-[13.5px] text-ink-3">
+                        {ep.count.toLocaleString('de-AT')}×
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
+        </section>
+      </div>
+
+      <aside className="dash-rail scrollbar-thin" aria-label="Konto und Aktivität">
+        <div data-rail className="dash-profile">
+          <div className="relative mx-auto h-[92px] w-[92px]">
+            <span
+              className="flex h-full w-full items-center justify-center rounded-full text-[32px] font-semibold"
+              style={{ background: profileTone.wash, color: profileTone.deep, boxShadow: '0 0 0 4px var(--sheet)' }}
+            >
+              {username[0]?.toUpperCase() ?? 'A'}
+            </span>
+            <span
+              className="absolute bottom-[3px] right-[3px] h-[15px] w-[15px] rounded-full"
+              style={{ background: 'var(--mint)', boxShadow: '0 0 0 3px var(--sheet)' }}
+              title="Angemeldet"
+            />
+          </div>
+          <div className="mt-[18px] truncate text-[16px] font-medium">{username}</div>
+          <div className="mt-1 flex items-center justify-center gap-1.5 text-[13.5px] text-ink-3">
+            <ShieldCheck size={14} strokeWidth={1.7} />
+            Administrator
+          </div>
+          <div className="mt-[22px] flex justify-center gap-5">
+            {quickLinks.map(({ to, label, icon: Icon }) => (
+              <Link key={to} to={to} className="orb orb-white h-[42px] w-[42px]" aria-label={label} title={label}>
+                <Icon size={18} strokeWidth={1.6} />
+              </Link>
+            ))}
+          </div>
+          <dl className="mt-7 grid grid-cols-4 border-t pt-5" style={{ borderColor: 'rgb(var(--ink-rgb) / calc(0.07 * var(--veil)))' }}>
+            {ledger.map((item) => (
+              <div key={item.label} className="min-w-0">
+                <dd className="text-[16px] font-semibold"><Count value={item.value} /></dd>
+                <dt className="mt-0.5 truncate text-[11px] tracking-[-0.01em] text-ink-3" title={item.label}>{item.label}</dt>
+              </div>
+            ))}
+          </dl>
+        </div>
+
+        <div data-rail className="rule-label mt-[26px]">Aktivität</div>
+
+        <div className="dash-feed">
+          {feed.length === 0 && !chartLoading && (
+            <p className="py-4 text-center text-[14px] text-ink-3">Noch keine Aktivität.</p>
+          )}
+          {feed.map((item, i) => (
+            <article key={item.id} className="animate-fadeInUp" style={{ animationDelay: `${160 + i * 70}ms` }}>
+              <div className="flex items-start gap-[14px]">
+                <span className="mt-0.5"><Avatar name={item.name} size={38} /></span>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-baseline justify-between gap-3">
+                    <span className="truncate text-[15px] font-medium">{item.name}</span>
+                    <time className="flex-shrink-0 text-[12.5px] text-ink-3" dateTime={item.at}>{relativeTime(item.at)}</time>
+                  </div>
+                  <p className="mt-0.5 truncate text-[13.5px] text-ink-3">
+                    {item.kind === 'comment' ? (
+                      <>Kommentierte <Link to="/comments" className="text-sky-deep hover:underline">{item.comment.contextTitle || 'einen Beitrag'}</Link></>
+                    ) : (
+                      <>Registriert{item.user.webuntisKlasseName
+                        ? <> in <Link to="/users" state={{ search: item.user.username }} className="text-sky-deep hover:underline">{item.user.webuntisKlasseName}</Link></>
+                        : <> als <Link to="/users" state={{ search: item.user.username }} className="text-sky-deep hover:underline">{item.user.role === 'parent' ? 'Elternteil' : 'Schüler:in'}</Link></>}</>
+                    )}
+                  </p>
+                  {item.kind === 'comment' && item.comment.body && (
+                    <p className="dash-bubble">{item.comment.body}</p>
+                  )}
+                </div>
+              </div>
+            </article>
           ))}
         </div>
-      </div>
 
-      {/* API requests chart */}
-      <div className="apple-card p-5 md:p-6 animate-fadeInUp delay-200">
-        <div className="flex items-center justify-between mb-5">
-          <div>
-            <h2 className="text-[14px] font-semibold text-white" style={{ letterSpacing: '-0.01em' }}>
-              API-Anfragen — letzte 24 Std.
-            </h2>
-            <p className="text-[12px] mt-0.5" style={{ color: 'rgba(235,235,245,0.35)' }}>Stundenbasis</p>
-          </div>
-          <div className="flex items-center gap-4 text-[12px]" style={{ color: 'rgba(235,235,245,0.4)' }}>
-            <span className="flex items-center gap-1.5">
-              <span className="w-2 h-2 rounded-full inline-block" style={{ background: '#0a84ff' }} />
-              Anfragen
-            </span>
-            <span className="flex items-center gap-1.5">
-              <span className="w-2 h-2 rounded-full inline-block" style={{ background: '#ff453a' }} />
-              Fehler
-            </span>
-          </div>
-        </div>
-        {chartLoading ? (
-          <div className="flex items-end gap-1 px-2" style={{ height: '200px' }}>
-            {Array.from({ length: 24 }).map((_, i) => (
-              <div
-                key={i}
-                className="flex-1 rounded-t shimmer"
-                style={{ height: `${20 + (i * 11) % 55}%` }}
-              />
-            ))}
-          </div>
-        ) : (
-          <ResponsiveContainer width="100%" height={200}>
-            <AreaChart data={chartData} margin={{ top: 4, right: 0, left: -30, bottom: 0 }}>
-              <defs>
-                <linearGradient id="gradCount" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%"   stopColor="#0a84ff" stopOpacity={0.22} />
-                  <stop offset="100%" stopColor="#0a84ff" stopOpacity={0} />
-                </linearGradient>
-                <linearGradient id="gradErrors" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%"   stopColor="#ff453a" stopOpacity={0.18} />
-                  <stop offset="100%" stopColor="#ff453a" stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" vertical={false} />
-              <XAxis dataKey="hour" tick={{ fill: 'rgba(235,235,245,0.25)', fontSize: 10 }} axisLine={false} tickLine={false} interval={3} />
-              <YAxis tick={{ fill: 'rgba(235,235,245,0.25)', fontSize: 10 }} axisLine={false} tickLine={false} allowDecimals={false} />
-              <Tooltip content={<ChartTooltip />} />
-              <Area type="monotone" dataKey="count"  stroke="#0a84ff" strokeWidth={1.5} fill="url(#gradCount)" />
-              <Area type="monotone" dataKey="errors" stroke="#ff453a" strokeWidth={1.5} fill="url(#gradErrors)" />
-            </AreaChart>
-          </ResponsiveContainer>
-        )}
-      </div>
-
-      {/* Two-column cards */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 animate-fadeInUp delay-300">
-        {/* Recent users */}
-        <div className="apple-card p-5">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-[14px] font-semibold text-white" style={{ letterSpacing: '-0.01em' }}>
-              Neue Benutzer
-            </h2>
-            <div className="flex items-center gap-1.5 text-[12px]" style={{ color: 'rgba(235,235,245,0.3)' }}>
-              <Users size={12} />
-              <span>Letzte 5</span>
-            </div>
-          </div>
-          <div className="flex flex-col gap-3">
-            {recentUsers.length === 0 && (
-              <p className="text-[13px]" style={{ color: 'rgba(235,235,245,0.3)' }}>Noch keine Benutzer.</p>
-            )}
-            {recentUsers.map((u) => (
-              <div key={u.stableUid} className="flex items-center gap-3 min-w-0">
-                <div
-                  className="w-8 h-8 rounded-full flex items-center justify-center text-[12px] font-bold text-white flex-shrink-0"
-                  style={{ background: avatarColor(u.username) }}
-                >
-                  {u.username[0]?.toUpperCase() ?? '?'}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-[14px] font-medium truncate text-white">{u.username}</span>
-                    {u.isAdmin && (
-                      <span className="badge-blue text-[11px] px-1.5 py-0.5 font-medium flex-shrink-0">
-                        Admin
-                      </span>
-                    )}
-                  </div>
-                  <div className="text-[12px] truncate mt-0.5" style={{ color: 'rgba(235,235,245,0.3)' }}>
-                    {u.webuntisKlasseName ?? '—'} &middot; {relativeDate(u.createdAt)}
-                  </div>
-                </div>
-                <div className="flex items-center gap-1 flex-shrink-0">
-                  <CheckSquare size={12} style={{ color: 'rgba(235,235,245,0.25)' }} />
-                  <span className="text-[12px]" style={{ color: 'rgba(235,235,245,0.45)' }}>{u.todoCount}</span>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Top endpoints */}
-        <div className="apple-card p-5">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-[14px] font-semibold text-white" style={{ letterSpacing: '-0.01em' }}>
-              Top Endpunkte
-            </h2>
-            <div className="flex items-center gap-1.5 text-[12px]" style={{ color: 'rgba(235,235,245,0.3)' }}>
-              <Zap size={12} />
-              <span>Top 8</span>
-            </div>
-          </div>
-          {chartLoading ? (
-            <div className="flex flex-col gap-2">
-              {Array.from({ length: 5 }).map((_, i) => (
-                <div key={i} className="flex items-center gap-3">
-                  <div className="h-3 flex-1 rounded shimmer" />
-                  <div className="h-3 w-12 rounded shimmer" />
-                </div>
-              ))}
-            </div>
-          ) : topEndpoints.length === 0 ? (
-            <p className="text-[13px]" style={{ color: 'rgba(235,235,245,0.3)' }}>Noch keine Daten.</p>
-          ) : (
-            <div className="flex flex-col gap-2">
-              {topEndpoints.map((ep) => (
-                <div key={ep.path} className="flex items-center gap-3 min-w-0">
-                  <span className="text-[12px] font-mono truncate flex-1 min-w-0" style={{ color: 'rgba(235,235,245,0.5)' }}>
-                    {ep.path}
-                  </span>
-                  <span className="badge-blue text-[11px] px-2 py-0.5 font-medium flex-shrink-0">
-                    {ep.count.toLocaleString()}
-                  </span>
-                  <span className="text-[11px] flex-shrink-0 tabular-nums" style={{ color: 'rgba(235,235,245,0.3)', minWidth: '44px', textAlign: 'right' }}>
-                    {ep.avgMs}ms
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
-
-          <div
-            className="mt-5 pt-4 grid grid-cols-3 gap-3"
-            style={{ borderTop: '1px solid rgba(255,255,255,0.06)' }}
-          >
-            {[
-              { label: 'Todos',      value: stats.totalTodos,     icon: <CheckSquare size={14} />, color: '#30d158' },
-              { label: 'Erinnerungen', value: stats.totalReminders, icon: <Bell size={14} />,       color: '#ffd60a' },
-              { label: 'Klassen',    value: stats.totalClasses,   icon: <Building2 size={14} />,   color: '#40c8e0' },
-            ].map((item) => (
-              <div key={item.label} className="flex flex-col items-center gap-1 text-center">
-                <span style={{ color: item.color }}>{item.icon}</span>
-                <span className="text-[16px] font-bold text-white" style={{ letterSpacing: '-0.02em' }}>
-                  {item.value.toLocaleString()}
-                </span>
-                <span className="text-[11px]" style={{ color: 'rgba(235,235,245,0.35)' }}>{item.label}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      {/* Registrations chart */}
-      <div className="apple-card p-5 animate-fadeInUp delay-400">
-        <div className="flex items-center gap-2 mb-4">
-          <Activity size={14} style={{ color: '#0a84ff' }} />
-          <h2 className="text-[14px] font-semibold text-white" style={{ letterSpacing: '-0.01em' }}>
-            Registrierungen — letzte 14 Tage
-          </h2>
-        </div>
-        <ResponsiveContainer width="100%" height={160}>
-          <AreaChart data={regChartData} margin={{ top: 4, right: 0, left: -30, bottom: 0 }}>
-            <defs>
-              <linearGradient id="gradReg" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%"   stopColor="#0a84ff" stopOpacity={0.2} />
-                <stop offset="100%" stopColor="#0a84ff" stopOpacity={0} />
-              </linearGradient>
-            </defs>
-            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" vertical={false} />
-            <XAxis dataKey="date" tick={{ fill: 'rgba(235,235,245,0.25)', fontSize: 10 }} axisLine={false} tickLine={false} interval={2} />
-            <YAxis tick={{ fill: 'rgba(235,235,245,0.25)', fontSize: 10 }} axisLine={false} tickLine={false} allowDecimals={false} />
-            <Tooltip
-              contentStyle={{
-                background: 'rgba(44,44,46,0.95)',
-                border: '1px solid rgba(255,255,255,0.1)',
-                borderRadius: '10px',
-                fontSize: '12px',
-                color: '#ffffff',
-              }}
-              labelStyle={{ color: 'rgba(235,235,245,0.5)' }}
-              itemStyle={{ color: '#0a84ff' }}
-            />
-            <Area type="monotone" dataKey="count" stroke="#0a84ff" strokeWidth={1.5} fill="url(#gradReg)" />
-          </AreaChart>
-        </ResponsiveContainer>
-      </div>
+      </aside>
     </div>
   );
 }

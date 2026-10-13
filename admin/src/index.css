@@ -4,31 +4,171 @@
 
 @layer base {
   :root {
-    --blue:   #0a84ff;
-    --green:  #30d158;
-    --red:    #ff453a;
-    --orange: #ff9f0a;
-    --yellow: #ffd60a;
-    --teal:   #40c8e0;
-    --purple: #bf5af2;
-    --indigo: #5e5ce6;
+    color-scheme: light;
 
-    --bg:          #000000;
-    --bg2:         #1c1c1e;
-    --bg3:         #2c2c2e;
-    --bg4:         #3a3a3c;
+    /* Surfaces, ink and accents as bare RGB channels, so Tailwind classes
+       and inline styles can both apply their own alpha. Greys are neutral:
+       no colour cast in either theme. */
+    --canvas-rgb:      233 233 236;
+    --sheet-rgb:       255 255 255;
+    --raise-rgb:       255 255 255;
+    --well-rgb:        243 243 245;
+    --well-2-rgb:      232 232 236;
+    --well-3-rgb:      218 218 224;
+    --line-rgb:        228 228 233;
+    --ink-rgb:         17 17 19;
+    --ink-2-rgb:       78 78 86;
+    --ink-3-rgb:       118 118 128;
+    --ink-4-rgb:       166 166 175;
+    --sky-rgb:         169 207 243;
+    --sky-deep-rgb:    37 111 196;
+    --sky-wash-rgb:    229 240 252;
+    --amber-rgb:       242 165 92;
+    --amber-deep-rgb:  173 92 10;
+    --amber-wash-rgb:  253 236 219;
+    --mint-rgb:        88 199 160;
+    --mint-deep-rgb:   20 128 92;
+    --mint-wash-rgb:   221 245 235;
+    --rose-rgb:        238 106 110;
+    --rose-deep-rgb:   212 52 59;
+    --rose-wash-rgb:   253 231 232;
 
-    --label:       #ffffff;
-    --label2:      rgba(235,235,245,0.6);
-    --label3:      rgba(235,235,245,0.3);
-    --label4:      rgba(235,235,245,0.18);
+    --canvas:          rgb(var(--canvas-rgb));
+    --sheet:           rgb(var(--sheet-rgb));
+    --raise:           rgb(var(--raise-rgb));
+    --well:            rgb(var(--well-rgb));
+    --well-2:          rgb(var(--well-2-rgb));
+    --well-3:          rgb(var(--well-3-rgb));
+    --line:            rgb(var(--line-rgb));
+    --ink:             rgb(var(--ink-rgb));
+    --ink-2:           rgb(var(--ink-2-rgb));
+    --ink-3:           rgb(var(--ink-3-rgb));
+    --ink-4:           rgb(var(--ink-4-rgb));
+    --sky:             rgb(var(--sky-rgb));
+    --sky-deep:        rgb(var(--sky-deep-rgb));
+    --sky-wash:        rgb(var(--sky-wash-rgb));
+    --amber:           rgb(var(--amber-rgb));
+    --amber-deep:      rgb(var(--amber-deep-rgb));
+    --amber-wash:      rgb(var(--amber-wash-rgb));
+    --mint:            rgb(var(--mint-rgb));
+    --mint-deep:       rgb(var(--mint-deep-rgb));
+    --mint-wash:       rgb(var(--mint-wash-rgb));
+    --rose:            rgb(var(--rose-rgb));
+    --rose-deep:       rgb(var(--rose-deep-rgb));
+    --rose-wash:       rgb(var(--rose-wash-rgb));
 
-    --sep:         rgba(84,84,88,0.65);
-    --sep-opaque:  #38383a;
+    /* Accent text tones, inverted surfaces and the tints for hover and fields. */
+    --violet-deep:     #7f3dbd;
+    --violet-wash:     #efe9fb;
+    --gold-deep:       #8a6500;
+    --teal-deep:       #0e7890;
+    --indigo-deep:     #4543c2;
+    --scrim:           rgb(17 17 19 / 0.38);
+    --tip:             #111113;
+    --tip-ink:         #ffffff;
+    --tip-dim:         #9a9aa3;
+    --tip-hover:       rgb(255 255 255 / 0.1);
+    --thumb:           #ffffff;
+    --sheet-shadow:    0 44px 70px -52px rgb(17 17 19 / 0.35);
+    --veil:            1.7;
+    --hover:           rgb(17 17 19 / 0.065);
+    --field:           rgb(17 17 19 / 0.06);
+    --field-hover:     rgb(17 17 19 / 0.095);
 
-    --fill:        rgba(120,120,128,0.36);
-    --fill2:       rgba(120,120,128,0.24);
-    --fill3:       rgba(120,120,128,0.18);
+    /* Full-strength fills that carry white lettering; identical in both themes. */
+    --sky-solid:       #2a78cc;
+    --rose-solid:      #d93a40;
+    --mint-solid:      #16845f;
+    --amber-solid:     #b3610d;
+    --violet-solid:    #8a3fc4;
+    --gold-solid:      #946d00;
+    --teal-solid:      #0f7f96;
+    --indigo-solid:    #4b49c9;
+    --on-sky:          #111113;
+
+    --glide: cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  /* Dark theme: the system's preference unless the admin picked a theme
+     (public/theme.js puts that choice on <html> before first paint). The two
+     blocks below must stay identical. */
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --canvas-rgb:      10 10 10;
+      --sheet-rgb:       22 22 22;
+      --raise-rgb:       27 27 27;
+      --well-rgb:        34 34 34;
+      --well-2-rgb:      45 45 45;
+      --well-3-rgb:      60 60 60;
+      --line-rgb:        41 41 41;
+      --ink-rgb:         242 242 242;
+      --ink-2-rgb:       186 186 186;
+      --ink-3-rgb:       140 140 140;
+      --ink-4-rgb:       94 94 94;
+      --sky-deep-rgb:    125 184 242;
+      --sky-wash-rgb:    30 44 60;
+      --amber-deep-rgb:  240 176 119;
+      --amber-wash-rgb:  58 43 27;
+      --mint-deep-rgb:   95 211 171;
+      --mint-wash-rgb:   24 48 41;
+      --rose-deep-rgb:   255 133 137;
+      --rose-wash-rgb:   60 32 35;
+      --violet-deep:     #c59bf0;
+      --violet-wash:     #2e2740;
+      --gold-deep:       #e0b84a;
+      --teal-deep:       #58c4d8;
+      --indigo-deep:     #a3a1f5;
+      --scrim:           rgb(0 0 0 / 0.64);
+      --tip:             #f2f2f2;
+      --tip-ink:         #141414;
+      --tip-dim:         #6e6e6e;
+      --tip-hover:       rgb(0 0 0 / 0.08);
+      --thumb:           #414141;
+      --sheet-shadow:    none;
+      --veil:            1.25;
+      --hover:           rgb(255 255 255 / 0.06);
+      --field:           rgb(255 255 255 / 0.07);
+      --field-hover:     rgb(255 255 255 / 0.105);
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --canvas-rgb:      10 10 10;
+    --sheet-rgb:       22 22 22;
+    --raise-rgb:       27 27 27;
+    --well-rgb:        34 34 34;
+    --well-2-rgb:      45 45 45;
+    --well-3-rgb:      60 60 60;
+    --line-rgb:        41 41 41;
+    --ink-rgb:         242 242 242;
+    --ink-2-rgb:       186 186 186;
+    --ink-3-rgb:       140 140 140;
+    --ink-4-rgb:       94 94 94;
+    --sky-deep-rgb:    125 184 242;
+    --sky-wash-rgb:    30 44 60;
+    --amber-deep-rgb:  240 176 119;
+    --amber-wash-rgb:  58 43 27;
+    --mint-deep-rgb:   95 211 171;
+    --mint-wash-rgb:   24 48 41;
+    --rose-deep-rgb:   255 133 137;
+    --rose-wash-rgb:   60 32 35;
+    --violet-deep:     #c59bf0;
+    --violet-wash:     #2e2740;
+    --gold-deep:       #e0b84a;
+    --teal-deep:       #58c4d8;
+    --indigo-deep:     #a3a1f5;
+    --scrim:           rgb(0 0 0 / 0.64);
+    --tip:             #f2f2f2;
+    --tip-ink:         #141414;
+    --tip-dim:         #6e6e6e;
+    --tip-hover:       rgb(0 0 0 / 0.08);
+    --thumb:           #414141;
+    --sheet-shadow:    none;
+    --veil:            1.25;
+    --hover:           rgb(255 255 255 / 0.06);
+    --field:           rgb(255 255 255 / 0.07);
+    --field-hover:     rgb(255 255 255 / 0.105);
   }
 
   * { box-sizing: border-box; }
@@ -40,14 +180,14 @@
   }
 
   body {
-    background: var(--bg);
-    color: var(--label);
-    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display",
-                 "SF Pro Text", "Helvetica Neue", Arial, system-ui, sans-serif;
+    background: var(--canvas);
+    color: var(--ink);
+    font-family: Poppins, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Arial, sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
-    letter-spacing: -0.01em;
   }
+
+  h1, h2, h3 { letter-spacing: -0.012em; }
 
   input[type="datetime-local"],
   input[type="date"],
@@ -56,85 +196,133 @@
     appearance: none;
   }
 
+  select option { background: var(--sheet); color: var(--ink); }
+
   ::selection {
-    background: rgba(10,132,255,0.3);
-    color: #fff;
+    background: var(--sky-wash);
+    color: var(--ink);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--ink);
+    outline-offset: 2px;
+    border-radius: 8px;
   }
 }
 
-/* ─── Keyframes ──────────────────────────────────────────────── */
+/* ─── Shell ──────────────────────────────────────────────────── */
 
-@keyframes appleSlideUp {
-  from { opacity: 0; transform: translateY(18px) scale(0.985); }
-  to   { opacity: 1; transform: translateY(0)    scale(1); }
-}
-
-@keyframes appleSpring {
-  0%   { opacity: 0; transform: scale(0.88) translateY(10px); }
-  55%  { opacity: 1; transform: scale(1.03) translateY(-2px); }
-  80%  { transform: scale(0.99) translateY(0.5px); }
-  100% { opacity: 1; transform: scale(1)    translateY(0); }
+.shell {
+  height: 100vh;
+  height: 100dvh;
+  background: var(--canvas);
+  overflow: hidden;
 }
 
-@keyframes appleFadeIn {
-  from { opacity: 0; }
-  to   { opacity: 1; }
+.sheet {
+  display: flex;
+  height: 100%;
+  background: var(--sheet);
+  overflow: hidden;
 }
 
-@keyframes appleNotify {
-  from { opacity: 0; transform: translateX(20px) scale(0.92); }
-  to   { opacity: 1; transform: translateX(0)    scale(1); }
+/* Every scrolling area paints its own opaque ground. Without one the browser
+   cannot scroll it on the compositor on ordinary-density screens and repaints
+   the whole area on each frame, which is what makes scrolling stutter. */
+.sheet main, .dash-main, .dash-rail, .side-scroll { background: var(--sheet); }
+
+/* Sidebar navigation: plain rows, no pills. The active row is carried by
+   weight and ink alone, plus one marker that travels along the edge. */
+.side-link {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 15px;
+  height: 40px;
+  padding: 0 14px 0 30px;
+  font-size: 14.5px;
+  color: var(--ink-2);
+  transition: color 0.25s var(--glide);
+}
+.side-link svg {
+  flex-shrink: 0;
+  color: var(--ink-3);
+  transition: color 0.25s var(--glide);
+}
+.side-link:hover { color: var(--ink); }
+.side-link:hover svg { color: var(--ink); }
+.side-link[aria-current="page"] { color: var(--ink); font-weight: 500; }
+.side-link[aria-current="page"] svg { color: var(--ink); }
+.side-link:focus-visible { outline-offset: -4px; border-radius: 12px; }
+.side-link[data-static] { cursor: default; }
+.side-link[data-static]:hover { color: var(--ink-2); }
+
+.side-marker {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 3px;
+  height: 20px;
+  border-radius: 0 3px 3px 0;
+  background: var(--ink);
+  pointer-events: none;
+  transition: transform 0.5s var(--glide);
 }
 
-@keyframes appleNotifyMobile {
-  from { opacity: 0; transform: translateY(14px) scale(0.94); }
-  to   { opacity: 1; transform: translateY(0)    scale(1); }
+.side-scroll { scrollbar-width: none; }
+/* The list fades out at both ends: two strips that stay at the edges while the
+   list scrolls underneath (a mask would re-composite the whole list). */
+.side-scroll::before, .side-scroll::after {
+  content: '';
+  position: sticky;
+  z-index: 2;
+  display: block;
+  pointer-events: none;
 }
+.side-scroll::before { top: 0; height: 14px; margin-bottom: -14px; background: linear-gradient(to bottom, var(--sheet), rgb(var(--sheet-rgb) / 0)); }
+.side-scroll::after { bottom: 0; height: 22px; margin-top: -22px; background: linear-gradient(to top, var(--sheet), rgb(var(--sheet-rgb) / 0)); }
+.side-scroll::-webkit-scrollbar { display: none; }
 
-@keyframes shimmer {
-  0%   { background-position: -300% 0; }
-  100% { background-position: 300% 0; }
-}
+/* ─── Shared pieces ──────────────────────────────────────────── */
 
-@keyframes orbit1 {
-  0%,100% { transform: translate(0,0) scale(1); }
-  33%     { transform: translate(40px,-40px) scale(1.08); }
-  66%     { transform: translate(-25px,25px) scale(0.94); }
+/* Round icon well — the reference's recurring circle. */
+.orb {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: var(--well);
+  color: var(--ink);
+  transition: background 0.25s var(--glide), color 0.25s;
 }
-@keyframes orbit2 {
-  0%,100% { transform: translate(0,0) scale(1); }
-  33%     { transform: translate(-50px,25px) scale(1.1); }
-  66%     { transform: translate(25px,-40px) scale(0.92); }
-}
-@keyframes orbit3 {
-  0%,100% { transform: translateX(0) scale(1); }
-  50%     { transform: translateX(-24px) scale(1.12); }
-}
+.orb-white { background: var(--sheet); }
 
-@keyframes sidebarItemIn {
-  from { opacity: 0; transform: translateX(-8px); }
-  to   { opacity: 1; transform: translateX(0); }
+/* Centered caption between two hairlines. */
+.rule-label {
+  display: flex;
+  align-items: center;
+  gap: 26px;
+  font-size: 14.5px;
+  color: var(--ink);
 }
-
-/* ─── Utility classes ────────────────────────────────────────── */
+.rule-label::before, .rule-label::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
 
 @layer utilities {
 
-  /* Page entrance */
-  .animate-page {
-    animation: appleSlideUp 0.5s cubic-bezier(0.25,0.46,0.45,0.94) both;
-  }
-  .animate-fadeInUp {
-    animation: appleSlideUp 0.4s cubic-bezier(0.25,0.46,0.45,0.94) both;
-  }
-  .animate-fadeIn {
-    animation: appleFadeIn 0.25s ease both;
-  }
-  .animate-scaleIn {
-    animation: appleSpring 0.5s cubic-bezier(0.175,0.885,0.32,1.275) both;
-  }
+  /* Entrances. They fill backwards only: a transform left behind by a
+     forwards fill would turn the element into the containing block of every
+     position:fixed dialog and scrim rendered inside it. */
+  .animate-page     { animation: rise 0.5s var(--glide) backwards; }
+  .animate-fadeInUp { animation: rise 0.45s var(--glide) backwards; }
+  .animate-fadeIn   { animation: fade 0.25s ease backwards; }
+  .animate-scaleIn  { animation: settle 0.38s var(--glide) backwards; }
 
-  /* Stagger delays */
   .delay-50  { animation-delay:  50ms; }
   .delay-100 { animation-delay: 100ms; }
   .delay-150 { animation-delay: 150ms; }
@@ -143,146 +331,779 @@
   .delay-300 { animation-delay: 300ms; }
   .delay-400 { animation-delay: 400ms; }
 
-  /* Scrollbars — macOS-style (ultra-minimal) */
-  .scrollbar-thin {
-    scrollbar-width: thin;
-    scrollbar-color: rgba(255,255,255,0.1) transparent;
+  /* Scrollbars */
+  @supports not selector(::-webkit-scrollbar) {
+    .scrollbar-thin {
+      scrollbar-width: thin;
+      scrollbar-color: rgb(var(--ink-rgb) / 0.2) transparent;
+    }
   }
-  .scrollbar-thin::-webkit-scrollbar       { width: 4px; height: 4px; }
+  .scrollbar-thin::-webkit-scrollbar       { width: 6px; height: 6px; }
   .scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
   .scrollbar-thin::-webkit-scrollbar-thumb {
-    background: rgba(255,255,255,0.13);
-    border-radius: 2px;
+    background: rgb(var(--ink-rgb) / 0.2);
+    border-radius: 3px;
   }
-  .scrollbar-thin::-webkit-scrollbar-thumb:hover {
-    background: rgba(255,255,255,0.22);
-  }
+  .scrollbar-thin::-webkit-scrollbar-thumb:hover { background: rgb(var(--ink-rgb) / 0.34); }
 
   .scroll-touch { -webkit-overflow-scrolling: touch; }
 
-  /* Apple card */
-  .apple-card {
-    background: var(--bg2);
-    border: 1px solid rgba(255,255,255,0.08);
-    border-radius: 16px;
-    box-shadow:
-      0 1px 0 rgba(255,255,255,0.06) inset,
-      0 4px 20px rgba(0,0,0,0.45);
-    transition:
-      transform       0.2s cubic-bezier(0.4,0,0.2,1),
-      box-shadow      0.2s cubic-bezier(0.4,0,0.2,1),
-      border-color    0.2s;
-  }
-  .apple-card:hover {
-    transform:    translateY(-2px);
-    box-shadow:
-      0 1px 0 rgba(255,255,255,0.08) inset,
-      0 14px 44px rgba(0,0,0,0.55);
-    border-color: rgba(255,255,255,0.13);
+  /* Filled well: the only container treatment. No border, no shadow. */
+  .panel {
+    background: var(--well);
+    border-radius: 22px;
   }
 
-  /* Glassmorphism */
-  .glass {
-    background: rgba(28,28,30,0.72);
-    backdrop-filter: blur(24px) saturate(180%);
-    -webkit-backdrop-filter: blur(24px) saturate(180%);
-  }
-  .glass-dark {
-    background: rgba(0,0,0,0.72);
-    backdrop-filter: blur(24px) saturate(180%);
-    -webkit-backdrop-filter: blur(24px) saturate(180%);
-  }
-
-  /* Apple-style inputs */
-  .apple-input {
-    background: rgba(255,255,255,0.05);
-    border: 1px solid rgba(255,255,255,0.1);
-    border-radius: 10px;
-    color: #fff;
+  /* Inputs: a quiet well that turns to paper with an ink edge on focus. */
+  .field {
+    background: var(--field);
+    border: 1px solid transparent;
+    border-radius: 14px;
+    color: var(--ink);
     outline: none;
-    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    transition: background 0.2s ease, box-shadow 0.2s ease;
   }
-  .apple-input::placeholder { color: rgba(235,235,245,0.3); }
-  .apple-input:focus {
-    border-color: var(--blue);
-    box-shadow: 0 0 0 3px rgba(10,132,255,0.22);
+  .field::placeholder { color: var(--ink-3); }
+  .field:hover:not(:disabled):not(:focus) { background: var(--field-hover); }
+  .field:focus {
+    background: var(--sheet);
+    box-shadow: 0 0 0 1.5px var(--ink);
   }
+  .field:disabled { opacity: 0.6; cursor: not-allowed; }
 
-  /* Primary button */
-  .apple-btn {
-    background: var(--blue);
-    color: #fff;
-    border-radius: 10px;
-    font-weight: 600;
-    letter-spacing: -0.01em;
-    transition: background 0.15s, transform 0.12s, box-shadow 0.15s;
-    box-shadow: 0 2px 16px rgba(10,132,255,0.38);
-  }
-  .apple-btn:hover:not(:disabled) {
-    background: #0071e3;
-    transform: translateY(-1px);
-    box-shadow: 0 4px 22px rgba(10,132,255,0.48);
-  }
-  .apple-btn:active:not(:disabled) { transform: translateY(0); }
-  .apple-btn:disabled { opacity: 0.55; cursor: not-allowed; }
-
-  /* Ghost button */
-  .apple-btn-ghost {
-    background: rgba(255,255,255,0.07);
-    color: rgba(235,235,245,0.75);
-    border: 1px solid rgba(255,255,255,0.1);
-    border-radius: 10px;
+  /* Primary action: the reference's soft sky pill with ink lettering. */
+  .btn-primary.btn-primary {
+    background-color: var(--sky);
+    color: var(--on-sky);
+    border-radius: 999px;
     font-weight: 500;
-    transition: background 0.15s, border-color 0.15s, color 0.15s;
   }
-  .apple-btn-ghost:hover:not(:disabled) {
-    background: rgba(255,255,255,0.11);
-    border-color: rgba(255,255,255,0.15);
-    color: #fff;
-  }
+  .btn-primary.btn-primary:disabled { opacity: 0.55; cursor: not-allowed; }
 
-  /* Shimmer skeleton */
+  /* Secondary action */
+  .btn-quiet.btn-quiet {
+    background-color: var(--field);
+    color: var(--ink-2);
+    border-radius: 999px;
+    font-weight: 500;
+  }
+  .btn-quiet.btn-quiet:disabled { opacity: 0.55; cursor: not-allowed; }
+
+  /* Skeleton */
   .shimmer {
     background: linear-gradient(
       90deg,
-      rgba(255,255,255,0.03) 0%,
-      rgba(255,255,255,0.07) 50%,
-      rgba(255,255,255,0.03) 100%
+      var(--field) 0%,
+      var(--field-hover) 50%,
+      var(--field) 100%
     );
     background-size: 300% 100%;
     animation: shimmer 2s infinite;
   }
 
-  /* Pill badges */
-  .badge-blue   { background: rgba(10,132,255,0.16); color: #0a84ff; border: 1px solid rgba(10,132,255,0.25); border-radius: 6px; }
-  .badge-green  { background: rgba(48,209,88,0.15);  color: #30d158; border: 1px solid rgba(48,209,88,0.22);  border-radius: 6px; }
-  .badge-red    { background: rgba(255,69,58,0.15);  color: #ff453a; border: 1px solid rgba(255,69,58,0.22);  border-radius: 6px; }
-  .badge-orange { background: rgba(255,159,10,0.15); color: #ff9f0a; border: 1px solid rgba(255,159,10,0.22); border-radius: 6px; }
-  .badge-gray   { background: rgba(255,255,255,0.07);color: rgba(235,235,245,0.55); border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; }
+  /* Status chips */
+  .badge-blue   { background: var(--sky-wash);   color: var(--sky-deep);   border-radius: 999px; }
+  .badge-green  { background: var(--mint-wash);  color: var(--mint-deep);  border-radius: 999px; }
+  .badge-red    { background: var(--rose-wash);  color: var(--rose-deep);  border-radius: 999px; }
+  .badge-orange { background: var(--amber-wash); color: var(--amber-deep); border-radius: 999px; }
+  .badge-gray   { background: var(--field); color: var(--ink-2); border-radius: 999px; }
+
+  .tabular { font-variant-numeric: tabular-nums; }
 }
 
-/* ─── Toast / Notification ───────────────────────────────────── */
+/* ─── Keyframes ──────────────────────────────────────────────── */
 
-.toast-item {
-  animation: appleNotify 0.38s cubic-bezier(0.175,0.885,0.32,1.275) both;
+@keyframes rise {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes settle {
+  from { opacity: 0; transform: translateY(10px) scale(0.975); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes shimmer {
+  0%   { background-position: -300% 0; }
+  100% { background-position: 300% 0; }
+}
+@keyframes toastIn {
+  from { opacity: 0; transform: translateY(-10px) scale(0.96); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes toastInMobile {
+  from { opacity: 0; transform: translateY(12px) scale(0.96); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes pulseRing {
+  0%   { transform: scale(1);   opacity: 0.55; }
+  100% { transform: scale(2.6); opacity: 0; }
 }
 
+.toast-item { animation: toastIn 0.42s var(--glide) backwards; }
 @media (max-width: 640px) {
-  .toast-item {
-    animation: appleNotifyMobile 0.38s cubic-bezier(0.175,0.885,0.32,1.275) both;
+  .toast-item { animation-name: toastInMobile; }
+}
+
+/* ─── Dashboard ──────────────────────────────────────────────── */
+
+/* Two columns from xl up: the working column and the activity rail, each
+   scrolling on its own so the hairline between them runs the full height. */
+.dash-main { padding: 32px 20px 48px; }
+.dash-rail { border-top: 1px solid var(--line); padding-bottom: 20px; }
+.dash-profile {
+  margin: 14px;
+  padding: 36px 16px 24px;
+  border-radius: 26px;
+  background: var(--well);
+  text-align: center;
+}
+.dash-feed { display: flex; flex-direction: column; gap: 30px; padding: 28px 30px 30px; }
+.dash-bubble {
+  position: relative;
+  margin-top: 14px;
+  padding: 14px 16px;
+  border-radius: 4px 18px 18px 18px;
+  background: var(--sky-wash);
+  font-size: 14.5px;
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+@media (min-width: 640px) {
+  .dash-main { padding: 40px 32px 56px; }
+}
+@media (min-width: 768px) and (max-width: 1279.98px) {
+  .dash-rail {
+    display: grid;
+    grid-template-columns: 360px minmax(0, 1fr);
+    grid-template-areas: 'profile label' 'profile feed';
+    align-items: start;
+    column-gap: 8px;
   }
+  .dash-profile { grid-area: profile; }
+  .dash-rail > .rule-label { grid-area: label; margin-top: 30px; padding-right: 30px; }
+  .dash-feed { grid-area: feed; }
+}
+@media (min-width: 1280px) {
+  .dash {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) clamp(340px, 26.5vw, 384px);
+    height: 100%;
+  }
+  .dash-main { overflow-y: auto; padding: 50px 56px 56px; }
+  .dash-rail {
+    display: flex;
+    flex-direction: column;
+    overflow-x: hidden;
+    overflow-y: auto;
+    border-top: 0;
+    border-left: 1px solid var(--line);
+    padding-bottom: 0;
+  }
+  .dash-feed { flex: 1; }
 }
 
-/* ─── Sidebar nav item entrance ─────────────────────────────── */
-
-.sidebar-item-enter {
-  animation: sidebarItemIn 0.28s cubic-bezier(0.25,0.46,0.45,0.94) both;
+.rows { container-type: inline-size; }
+.row-status { width: 118px; flex-shrink: 0; }
+@container (max-width: 560px) {
+  .row-status { width: auto; }
+  .row-status-label { display: none; }
+}
+@container (max-width: 400px) {
+  .rows .orb { width: 40px; height: 40px; }
 }
 
-/* ─── Focus ring override ────────────────────────────────────── */
+/* The figure strip sits between two hairlines and reflows by its own width,
+   not the viewport's, because the activity rail takes space beside it. */
+.strip { container-type: inline-size; }
+.strip-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  row-gap: 26px;
+}
+.strip-cell { display: flex; align-items: center; gap: 16px; min-width: 0; padding-right: 12px; }
+.strip-cell:nth-child(even) { padding-left: 22px; border-left: 1px solid var(--line); }
+/* Figure and delta share a line only where all four cells have room for it;
+   below that every cell stacks them, so the row never mixes both. */
+.strip-figure { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; margin-top: 3px; white-space: nowrap; }
+@container (min-width: 600px) {
+  .strip-grid { grid-template-columns: repeat(var(--n, 4), minmax(0, 1fr)); }
+  .strip-cell + .strip-cell { padding-left: 22px; border-left: 1px solid var(--line); }
+}
+/* Hover only ever changes colour: icons never grow, tilt or move. */
+.strip-link:focus-visible { outline-offset: 6px; border-radius: 16px; }
+@container (min-width: 880px) {
+  .strip-figure { flex-direction: row; align-items: baseline; gap: 12px; }
+}
+@container (max-width: 400px) {
+  .strip-cell { gap: 12px; }
+  .strip-cell .orb { width: 40px; height: 40px; }
+  .strip-cell:nth-child(even) { padding-left: 14px; }
+}
 
-:focus-visible {
-  outline: 2px solid var(--blue);
-  outline-offset: 2px;
-  border-radius: 6px;
+/* Chart */
+.chart { position: relative; touch-action: pan-y; outline: none; }
+.chart svg { display: block; overflow: visible; }
+.chart-tip-anchor {
+  position: absolute;
+  left: 0;
+  top: 0;
+  pointer-events: none;
+  will-change: transform;
+}
+.chart-tip {
+  padding: 13px 15px 14px;
+  border-radius: 10px;
+  background: var(--tip);
+  color: var(--tip-ink);
+  box-shadow: 0 18px 30px -18px rgb(0 0 0 / 0.55);
+}
+.chart-x {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 30px;
+  height: 26px;
+  padding: 0 7px;
+  border-radius: 999px;
+  font-size: 12.5px;
+  color: var(--ink-3);
+  transition: background 0.25s var(--glide), color 0.25s var(--glide);
+}
+.chart-x[data-on="true"] { background: var(--well); color: var(--ink); }
+
+/* Two-way switch with a travelling thumb */
+.switch {
+  position: relative;
+  display: inline-grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  padding: 4px;
+  border-radius: 999px;
+  background: var(--well);
+}
+.switch button {
+  position: relative;
+  z-index: 1;
+  height: 30px;
+  padding: 0 16px;
+  border-radius: 999px;
+  font-size: 13px;
+  color: var(--ink-3);
+  white-space: nowrap;
+  transition: color 0.3s var(--glide);
+}
+.switch button[aria-pressed="true"] { color: var(--ink); }
+.switch-thumb {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  left: 4px;
+  border-radius: 999px;
+  background: var(--thumb);
+  box-shadow: 0 4px 10px -6px rgb(0 0 0 / 0.35);
+  transition: transform 0.5s var(--glide), width 0.5s var(--glide);
+}
+
+/* Endpoint rows */
+.row-line > span:nth-child(2) { transition: color 0.2s ease; }
+.row-line:hover > span:nth-child(2) { color: var(--sky-deep); }
+
+.live-dot { position: relative; display: inline-block; width: 8px; height: 8px; border-radius: 999px; background: var(--mint); }
+.live-dot::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: inherit;
+  animation: pulseRing 2.4s ease-out infinite;
+}
+.live-dot[data-state="down"] { background: var(--rose); }
+.live-dot[data-state="idle"] { background: var(--ink-4); }
+.live-dot[data-state="idle"]::after { animation: none; opacity: 0; }
+
+/* ─── Motion ─────────────────────────────────────────────────── */
+
+/* A page opens as a short cascade: header, figures, then each section, each
+   a beat after the one above. Fixed overlays inside the page are left alone. */
+.page-in > * > :not(.fixed) { animation: rise 0.5s var(--glide) backwards; }
+.page-in > * > :not(.fixed):nth-child(2) { animation-delay: 45ms; }
+.page-in > * > :not(.fixed):nth-child(3) { animation-delay: 90ms; }
+.page-in > * > :not(.fixed):nth-child(4) { animation-delay: 135ms; }
+.page-in > * > :not(.fixed):nth-child(5) { animation-delay: 180ms; }
+.page-in > * > :not(.fixed):nth-child(n+6) { animation-delay: 225ms; }
+
+/* Anything that expands grows to its own height and fades in; closing runs
+   the same way back. The row height is animated through the grid track. */
+.collapse-grid {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition: grid-template-rows 0.42s var(--glide), opacity 0.28s ease;
+}
+.collapse-grid[data-open="true"] { grid-template-rows: 1fr; opacity: 1; }
+.collapse-inner { min-height: 0; overflow: hidden; }
+.collapse-grid[data-settled="true"] > .collapse-inner { overflow: visible; }
+
+/* ─── Page kit ───────────────────────────────────────────────── */
+
+/* Buttons: one height, one radius. */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 42px;
+  padding: 0 20px;
+  border-radius: 999px;
+  font-size: 14px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.btn-sm { height: 34px; padding: 0 15px; font-size: 13px; }
+.btn-line {
+  border: 1px solid var(--line);
+  color: var(--ink);
+  transition: border-color 0.2s ease, background 0.2s ease, transform 0.3s var(--glide);
+}
+.btn-danger {
+  background-color: var(--rose-wash);
+  color: var(--rose-deep);
+  transition: background 0.2s ease, color 0.2s ease, transform 0.3s var(--glide);
+}
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* Round icon actions take their colour from a tone when hovered or switched on. */
+.icon-btn { color: var(--ink-2); }
+.icon-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.icon-btn[data-tone="sky"]    { --tone-wash: var(--sky-wash);    --tone-deep: var(--sky-deep); }
+.icon-btn[data-tone="mint"]   { --tone-wash: var(--mint-wash);   --tone-deep: var(--mint-deep); }
+.icon-btn[data-tone="amber"]  { --tone-wash: var(--amber-wash);  --tone-deep: var(--amber-deep); }
+.icon-btn[data-tone="rose"]   { --tone-wash: var(--rose-wash);   --tone-deep: var(--rose-deep); }
+.icon-btn[data-tone="violet"] { --tone-wash: var(--violet-wash); --tone-deep: var(--violet-deep); }
+.icon-btn[data-tone="ink"]    { --tone-wash: var(--well-2);      --tone-deep: var(--ink); }
+.icon-btn[data-active="true"] { background: var(--tone-wash); color: var(--tone-deep); }
+
+/* Option switch with a travelling thumb. */
+.seg {
+  position: relative;
+  display: inline-flex;
+  padding: 4px;
+  border-radius: 999px;
+  background: var(--well);
+  max-width: 100%;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.seg::-webkit-scrollbar { display: none; }
+.seg button {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 34px;
+  padding: 0 16px;
+  border-radius: 999px;
+  font-size: 13.5px;
+  color: var(--ink-3);
+  white-space: nowrap;
+  transition: color 0.3s var(--glide);
+}
+.seg button:hover { color: var(--ink-2); }
+.seg button[aria-pressed="true"] { color: var(--ink); }
+.seg-thumb {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  left: 0;
+  border-radius: 999px;
+  background: var(--thumb);
+  box-shadow: 0 4px 10px -6px rgb(0 0 0 / 0.35);
+  transition: transform 0.5s var(--glide), width 0.5s var(--glide);
+}
+
+.toggle {
+  position: relative;
+  flex-shrink: 0;
+  width: 46px;
+  height: 28px;
+  border-radius: 999px;
+  background: var(--well-3);
+  transition: background 0.3s var(--glide);
+}
+.toggle span {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  background: #ffffff;
+  box-shadow: 0 2px 6px -2px rgb(0 0 0 / 0.4);
+  transition: transform 0.45s var(--glide);
+}
+.toggle[aria-checked="true"] { background: var(--sky-solid); }
+.toggle[aria-checked="true"] span { transform: translateX(18px); }
+.toggle:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* A choice that is either on or off, as a pill. */
+.scope-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 38px;
+  padding: 0 16px;
+  border-radius: 999px;
+  background: var(--field);
+  color: var(--ink-2);
+  font-size: 13.5px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.2s ease, color 0.2s ease;
+}
+.scope-chip[data-on="true"] { background: var(--sky-wash); color: var(--sky-deep); }
+.scope-chip:focus-within { outline: 2px solid var(--ink); outline-offset: 2px; }
+
+/* A horizontal run of selectable days. */
+.day-strip { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 6px; scrollbar-width: thin; }
+.day-chip {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  gap: 3px;
+  padding: 11px 18px 12px;
+  border-radius: 18px;
+  background: var(--well);
+  color: var(--ink-3);
+  text-align: left;
+  transition: background 0.2s ease, color 0.2s ease;
+}
+.day-chip > :first-child { color: var(--ink); }
+.day-chip[aria-pressed="true"] { background: var(--ink); color: rgb(var(--sheet-rgb) / 0.62); }
+.day-chip[aria-pressed="true"] > :first-child { color: var(--sheet); }
+
+/* Rows straight on the sheet: no box around the table, a quiet header line,
+   a hairline between rows. */
+.tbl { width: 100%; border-collapse: collapse; }
+.tbl th {
+  padding: 0 18px 13px 0;
+  text-align: left;
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--ink-3);
+  white-space: nowrap;
+  text-transform: none;
+  letter-spacing: 0;
+  border-bottom: 1px solid var(--line);
+}
+.tbl td {
+  padding: 13px 18px 13px 0;
+  font-size: 14.5px;
+  vertical-align: middle;
+  border-bottom: 1px solid var(--line);
+}
+.tbl th:last-child, .tbl td:last-child { padding-right: 0; }
+.tbl tbody tr:last-child td { border-bottom: 0; }
+.tbl tbody tr[data-clickable] { cursor: pointer; }
+.tbl tbody tr[data-clickable] td:first-child { transition: color 0.2s ease; }
+.tbl tbody tr[data-clickable]:hover td:first-child { color: var(--sky-deep); }
+.tbl .row-actions { display: flex; justify-content: flex-end; gap: 6px; }
+/* Room on both sides for the hover shape, which is wider than the table. */
+.tbl-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; margin-left: -12px; margin-right: -12px; padding-left: 12px; padding-right: 12px; }
+
+/* A quoted message, as in the activity feed. */
+.comment-bubble {
+  display: inline-block;
+  max-width: min(100%, 640px);
+  margin-top: 12px;
+  padding: 13px 16px;
+  border-radius: 4px 18px 18px 18px;
+  background: var(--sky-wash);
+  font-size: 14.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* A short run of plain figures, divided by hairlines. */
+.stat-chips { display: flex; flex-wrap: wrap; gap: 20px 0; padding: 4px 0 26px; }
+.stat-chip { display: flex; flex-direction: column; min-width: 150px; flex: 1; padding: 0 26px; border-left: 1px solid var(--line); }
+.stat-chip:first-child { padding-left: 0; border-left: 0; }
+
+/* A titled block that is separated by a hairline instead of a box. */
+.plain-section { padding: 30px 0; border-top: 1px solid var(--line); }
+.plain-section:first-child { padding-top: 0; border-top: 0; }
+
+/* Meal plan: a week is a labelled bar; beneath it each day is named on the
+   left with that day's dishes beside it. */
+.week-head { margin-top: 14px; padding: 12px 16px 12px 12px; border-radius: 18px; background: var(--well); }
+.week-body { padding: 4px 4px 18px 12px; }
+.day-group { display: grid; grid-template-columns: minmax(0, 1fr); column-gap: 28px; padding: 6px 0; border-top: 1px solid var(--line); }
+.day-group:first-child { border-top: 0; }
+.day-label { display: flex; align-items: baseline; gap: 10px; padding-top: 14px; }
+@media (min-width: 768px) {
+  .day-group { grid-template-columns: 148px minmax(0, 1fr); }
+  .day-label { flex-direction: column; align-items: flex-start; gap: 2px; padding-top: 22px; }
+}
+.dish-row + .dish-row { border-top: 1px solid var(--line); }
+
+/* Stacked rows for lists that are not tabular. */
+.class-row-name { transition: color 0.2s ease; }
+.class-row:hover .class-row-name { color: var(--sky-deep); }
+.class-row:focus-visible { outline-offset: 4px; border-radius: 16px; }
+.stack > * + * { border-top: 1px solid var(--line); }
+
+/* Settings block: what it is on the left, its controls on the right. */
+.form-section { display: grid; gap: 22px; padding: 34px 0; border-top: 1px solid var(--line); }
+@media (min-width: 1024px) {
+  .form-section { grid-template-columns: 300px minmax(0, 1fr); column-gap: 56px; }
+}
+
+/* Diagrams */
+.bars { position: relative; }
+.bars-plot, .bars-axis { display: flex; gap: clamp(3px, 1.2%, 12px); }
+.bars-plot { align-items: flex-end; }
+.bars-slot { position: relative; flex: 1 1 0; min-width: 0; display: flex; justify-content: center; }
+.bars-plot .bars-slot { height: 100%; align-items: flex-end; }
+.bars-bar {
+  width: 100%;
+  max-width: 34px;
+  border-radius: 7px 7px 3px 3px;
+  transform-origin: 50% 100%;
+  animation: growY 0.9s var(--glide) backwards;
+  transition: opacity 0.25s ease, height 0.6s var(--glide);
+}
+.bars-axis { margin-top: 10px; height: 26px; }
+.bars-axis .chart-x { position: absolute; top: 0; left: 50%; transform: translateX(-50%); white-space: nowrap; }
+.bars-tip {
+  position: absolute;
+  bottom: calc(100% - 4px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2;
+  padding: 10px 13px 11px;
+  pointer-events: none;
+  animation: fade 0.18s ease backwards;
+}
+.bars-slot:first-child .bars-tip { left: 0; transform: none; }
+.bars-slot:last-child .bars-tip { left: auto; right: 0; transform: none; }
+
+.split { display: flex; gap: 3px; height: 12px; }
+.split-part {
+  min-width: 6px;
+  border-radius: 999px;
+  transform-origin: 0 50%;
+  animation: growX 1s var(--glide) backwards;
+}
+
+.rank-track { height: 6px; border-radius: 999px; background: var(--well); overflow: hidden; }
+.rank-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  transform-origin: 0 50%;
+  animation: growX 1s var(--glide) backwards;
+  transition: width 0.6s var(--glide);
+}
+
+@keyframes growY { from { transform: scaleY(0); } to { transform: scaleY(1); } }
+@keyframes growX { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+
+/* ─── Hover character ────────────────────────────────────────── */
+
+/* Buttons fill on hover: pills from the bottom edge up, round buttons fade to
+   their fill. The fill is the control's own background (a gradient layer whose
+   height grows), so no button needs an extra element, a clip or its own
+   stacking context — a table can hold dozens of them and still scroll freely. */
+.btn {
+  background-image: linear-gradient(var(--fx-fill, var(--ink)), var(--fx-fill, var(--ink)));
+  background-repeat: no-repeat;
+  background-position: 50% 100%;
+  background-size: 100% 0%;
+  transition: background-size 0.45s var(--glide), color 0.3s ease, border-color 0.3s ease;
+}
+.btn:hover:not(:disabled) { background-size: 100% 100%; }
+
+.btn-quiet.btn-quiet:hover:not(:disabled), .btn-line:hover:not(:disabled) { color: var(--sheet); }
+.btn-line:hover:not(:disabled) { border-color: var(--ink); }
+.btn-primary.btn-primary { --fx-fill: var(--sky-solid); }
+.btn-primary.btn-primary:hover:not(:disabled) { color: #ffffff; }
+.btn-danger { --fx-fill: var(--rose-solid); }
+.btn-danger:hover:not(:disabled) { color: #ffffff; }
+
+.orb, .scope-chip, .day-chip { transition: background-color 0.25s ease, color 0.25s ease; }
+/* The repeated class outranks the "orbs turn to paper on a hovered row" rules further down. */
+button.orb.orb.orb:hover:not(:disabled), a.orb.orb.orb:hover, .strip-link:hover .orb { background-color: var(--fx-fill, var(--ink)); color: var(--sheet); }
+.icon-btn[data-tone="sky"]    { --fx-fill: var(--sky-solid); }
+.icon-btn[data-tone="mint"]   { --fx-fill: var(--mint-solid); }
+.icon-btn[data-tone="amber"]  { --fx-fill: var(--amber-solid); }
+.icon-btn[data-tone="rose"]   { --fx-fill: var(--rose-solid); }
+.icon-btn[data-tone="violet"] { --fx-fill: var(--violet-solid); }
+button.icon-btn.icon-btn:not([data-tone="ink"]):hover:not(:disabled) { color: #ffffff; }
+
+.scope-chip:hover:not([data-on="true"]), .day-chip:hover:not([aria-pressed="true"]) { background-color: var(--field-hover); }
+
+/* A figure that leads somewhere says so: its label underlines itself and an
+   arrow appears beside it. */
+.strip-link > span:last-child > span:first-child {
+  background: linear-gradient(currentColor, currentColor) 0 100% / 0 1px no-repeat;
+  transition: background-size 0.45s var(--glide);
+  padding-bottom: 1px;
+  width: fit-content;
+  max-width: 100%;
+}
+.strip-link:hover > span:last-child > span:first-child { background-size: 100% 1px; }
+.strip-link > span:last-child > span:first-child::after {
+  content: '↗';
+  display: inline-block;
+  margin-left: 7px;
+  color: var(--ink-3);
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+.strip-link:hover > span:last-child > span:first-child::after { opacity: 1; }
+
+/* Text links draw their underline from the left. */
+a.text-sky-deep {
+  background: linear-gradient(currentColor, currentColor) 0 100% / 0 1px no-repeat;
+  transition: background-size 0.4s var(--glide);
+  padding-bottom: 1px;
+}
+a.text-sky-deep:hover { background-size: 100% 1px; text-decoration: none; }
+
+/* The label of a round action appears above it. The label slides in; the
+   button stays where it is. */
+.icon-btn[data-tip]::after {
+  content: attr(data-tip);
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 9px);
+  z-index: 40;
+  max-width: 260px;
+  padding: 7px 11px;
+  border-radius: 9px;
+  background: var(--tip);
+  color: var(--tip-ink);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.35;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(4px);
+  transition: opacity 0.2s ease, transform 0.35s var(--glide);
+}
+.icon-btn[data-tip]:hover:not(:disabled)::after,
+.icon-btn[data-tip]:focus-visible::after { opacity: 1; transform: translateY(0); transition-delay: 0.12s; }
+
+/* Rows answer a hover with an even tint. The tint is its own rounded shape
+   that reaches a little past the row on both sides, so it is never cut off at
+   the text edge — and the divider lines stay straight, because they belong to
+   the row and not to this shape. */
+.spot { position: relative; isolation: isolate; }
+.tbl { isolation: isolate; }
+.tbl tbody tr { position: relative; }
+.spot::before,
+.tbl tbody tr > td:first-child:not([colspan])::before {
+  content: '';
+  position: absolute;
+  inset: 4px -12px;
+  z-index: -1;
+  border-radius: 14px;
+  background: var(--hover);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.25s ease;
+}
+.spot:hover::before,
+.tbl tbody tr:hover > td:first-child:not([colspan])::before { opacity: 1; }
+/* On a tinted row the round actions and icon wells turn to paper, so they
+   still stand out from the tint. */
+.spot:hover .orb, .tbl tbody tr:hover .orb { background: var(--sheet); }
+.spot:hover .icon-btn[data-active="true"], .tbl tbody tr:hover .icon-btn[data-active="true"] { background: var(--tone-wash); }
+
+/* Sections count themselves: 01, 02, 03 … */
+.page-in > *, .dash-main { counter-reset: section; }
+.sec-title { display: flex; align-items: baseline; }
+.sec-title::before {
+  counter-increment: section;
+  content: counter(section, decimal-leading-zero);
+  margin-right: 14px;
+  font-size: 12px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+  color: var(--ink-4);
+  transition: color 0.3s ease;
+}
+section:hover > div > div > .sec-title::before, section:hover > div > .sec-title::before { color: var(--sky-deep); }
+
+/* Sidebar: a second, lighter marker travels to whatever is hovered. */
+.side-ghost {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 3px;
+  height: 20px;
+  border-radius: 0 3px 3px 0;
+  background: var(--ink-4);
+  pointer-events: none;
+  transition: transform 0.45s var(--glide), opacity 0.25s ease;
+}
+.side-link > span:nth-child(2) {
+  background: linear-gradient(currentColor, currentColor) 0 100% / 0 1px no-repeat;
+  transition: background-size 0.45s var(--glide);
+  padding-bottom: 2px;
+}
+.side-link:not([data-static]):not([aria-current="page"]):hover > span:nth-child(2) { background-size: 100% 1px; }
+
+/* Diagram parts answer each other: point at one and the rest step back. */
+.split-part, .rank-fill { transition: opacity 0.3s ease, width 0.6s var(--glide); }
+[data-dim="true"] { opacity: 0.28; }
+.legend-item { transition: opacity 0.3s ease; cursor: default; }
+.legend-item[data-dim="true"] { opacity: 0.45; }
+.rank-row { transition: opacity 0.3s ease; }
+
+/* The mark as a loader: its four pieces light up in turn. */
+.mark-loader > * { animation: markPulse 1.2s ease-in-out infinite; }
+.mark-loader > :nth-child(2) { animation-delay: 0.15s; }
+.mark-loader > :nth-child(4) { animation-delay: 0.3s; }
+.mark-loader > :nth-child(3) { animation-delay: 0.45s; }
+@keyframes markPulse { 0%, 100% { opacity: 0.18; } 40% { opacity: 1; } }
+
+/* ─── Theme switch ───────────────────────────────────────────── */
+
+/* theme.ts runs the switch as a view transition and animates the clip of the
+   incoming snapshot itself, so the default cross-fade is turned off. */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+::view-transition-old(root) { z-index: 1; }
+::view-transition-new(root) { z-index: 2; }
+
+.theme-icon { position: relative; display: block; width: 20px; height: 20px; flex-shrink: 0; }
+.theme-icon svg {
+  position: absolute;
+  inset: 0;
+  transition: opacity 0.3s ease, color 0.25s var(--glide);
+}
+.theme-icon svg[data-shown="false"] { opacity: 0; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
 }

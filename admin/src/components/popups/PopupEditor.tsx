@@ -131,12 +131,12 @@ export function PopupEditor({ value, onChange }: Props) {
     replace(start, end, md, md.length, md.length);
   }
 
-  const sep = <span className="w-px h-5 mx-1 flex-shrink-0" style={{ background: 'rgba(255,255,255,0.08)' }} />;
+  const sep = <span className="w-px h-5 mx-1 flex-shrink-0" style={{ background: 'rgb(var(--ink-rgb) / calc(0.064 * var(--veil)))' }} />;
 
   return (
-    <div className="rounded-[12px] overflow-hidden" style={{ background: '#1c1c1e', border: '1px solid rgba(255,255,255,0.08)' }}>
+    <div className="rounded-[14px] overflow-hidden" style={{ background: 'var(--well)', border: '1px solid transparent' }}>
       <div className="flex items-center flex-wrap gap-0.5 px-2 py-1.5 relative"
-        style={{ borderBottom: '1px solid rgba(255,255,255,0.07)', background: '#161618' }}>
+        style={{ borderBottom: '1px solid rgb(var(--ink-rgb) / calc(0.087 * var(--veil)))', background: 'rgb(var(--ink-rgb) / calc(0.05 * var(--veil)))' }}>
         <Tool title="Überschrift 1" onClick={() => prefixLines(() => '# ')}><Heading1 size={16} /></Tool>
         <Tool title="Überschrift 2" onClick={() => prefixLines(() => '## ')}><Heading2 size={16} /></Tool>
         <Tool title="Überschrift 3" onClick={() => prefixLines(() => '### ')}><Heading3 size={16} /></Tool>
@@ -180,7 +180,7 @@ export function PopupEditor({ value, onChange }: Props) {
         spellCheck
         placeholder={'Schreib hier… **fett**, # Überschrift, Bild-Links werden automatisch zu Bildern.\nMarkdown und HTML funktionieren.'}
         className="w-full block px-4 py-3 text-[13.5px] leading-[1.6] font-mono resize-y outline-none scrollbar-thin"
-        style={{ background: 'transparent', color: 'rgba(235,235,245,0.9)', minHeight: 280 }}
+        style={{ background: 'transparent', color: 'rgb(var(--ink-rgb) / 0.98)', minHeight: 280 }}
       />
     </div>
   );
@@ -195,8 +195,8 @@ function Tool({ title, onClick, children, active }: { title: string; onClick: ()
       // Keep the textarea selection while clicking the toolbar.
       onMouseDown={(e) => e.preventDefault()}
       onClick={onClick}
-      className="w-8 h-8 flex items-center justify-center rounded-[8px] transition-colors hover:bg-white/[0.08]"
-      style={{ color: active ? '#0a84ff' : 'rgba(235,235,245,0.7)', background: active ? 'rgba(10,132,255,0.14)' : undefined }}
+      className="w-8 h-8 flex items-center justify-center rounded-full transition-colors hover:bg-ink/[0.1]"
+      style={{ color: active ? 'var(--sky-deep)' : 'rgb(var(--ink-rgb) / 0.82)', background: active ? 'rgba(60,135,215,0.14)' : undefined }}
     >
       {children}
     </button>
@@ -207,22 +207,22 @@ function Swatches({ colors, onPick, custom }: { colors: string[]; onPick: (c: st
   // The native picker fires on every drag step, so a custom color is applied explicitly.
   const [customColor, setCustomColor] = useState('#6366f1');
   return (
-    <div className="absolute z-30 top-9 left-0 p-2 rounded-[12px] shadow-apple-lg"
-      style={{ background: '#2c2c2e', border: '1px solid rgba(255,255,255,0.1)', width: 188 }}>
+    <div className="absolute z-30 top-9 left-0 p-2 rounded-[14px]"
+      style={{ background: 'var(--well-2)', border: '1px solid transparent', width: 188 }}>
       <div className="grid grid-cols-5 gap-1.5">
         {colors.map((c) => (
           <button key={c} type="button" title={c} onMouseDown={(e) => e.preventDefault()} onClick={() => onPick(c)}
             className="w-7 h-7 rounded-full transition-transform hover:scale-110"
-            style={{ background: c, border: '2px solid rgba(255,255,255,0.15)' }} />
+            style={{ background: c, border: '2px solid rgb(var(--ink-rgb) / calc(0.16 * var(--veil)))' }} />
         ))}
       </div>
       {custom && (
-        <div className="mt-2 flex items-center gap-2 text-[12px]" style={{ color: 'rgba(235,235,245,0.6)' }}>
+        <div className="mt-2 flex items-center gap-2 text-[12px]" style={{ color: 'rgb(var(--ink-rgb) / 0.74)' }}>
           <input type="color" value={customColor} onChange={(e) => setCustomColor(e.target.value)}
             className="w-7 h-7 rounded bg-transparent border-0 cursor-pointer" aria-label="Eigene Farbe wählen" />
           <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => onPick(customColor)}
-            className="flex-1 py-1 rounded-[8px] text-[12px] font-medium"
-            style={{ background: 'rgba(10,132,255,0.15)', color: '#0a84ff' }}>
+            className="flex-1 py-1 rounded-full text-[12px] font-medium"
+            style={{ background: 'rgba(60,135,215,0.15)', color: 'var(--sky-deep)' }}>
             Eigene übernehmen
           </button>
         </div>

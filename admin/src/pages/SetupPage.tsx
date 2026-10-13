@@ -1,6 +1,7 @@
 import { FormEvent, type ReactNode, useState } from 'react';
 import { AlertCircle, CheckCircle, ChevronRight, Eye, EyeOff, Globe, Shield } from 'lucide-react';
 import { setupApi } from '../api';
+import { Wordmark } from '../components/Layout';
 
 type Step = 'welcome' | 'credentials' | 'done';
 
@@ -13,31 +14,33 @@ const STEPS: { id: Step; label: string }[] = [
 function StepBar({ current }: { current: Step }) {
   const index = STEPS.findIndex((step) => step.id === current);
   return (
-    <div className="mb-8 flex items-center justify-center gap-2">
+    <ol className="mb-10 mt-9 flex items-center gap-3">
       {STEPS.map((step, stepIndex) => (
-        <div key={step.id} className="flex items-center gap-2">
-          <div className="flex flex-col items-center gap-1">
-            <div
-              className="flex h-7 w-7 items-center justify-center rounded-full text-xs font-bold"
-              style={{
-                background: stepIndex < index ? '#10b981' : stepIndex === index ? '#0a84ff' : 'rgba(255,255,255,0.06)',
-                color: stepIndex <= index ? '#fff' : '#475569',
-              }}
-            >
-              {stepIndex < index ? '✓' : stepIndex + 1}
-            </div>
-            <span className="hidden text-xs sm:block" style={{ color: stepIndex === index ? '#a5b4fc' : '#475569' }}>{step.label}</span>
-          </div>
-          {stepIndex < STEPS.length - 1 && <div className="mb-4 h-px w-8" style={{ background: stepIndex < index ? '#10b981' : 'rgba(255,255,255,0.08)' }} />}
-        </div>
+        <li key={step.id} className={`flex items-center gap-3 ${stepIndex < STEPS.length - 1 ? 'flex-1' : ''}`} aria-current={stepIndex === index ? 'step' : undefined}>
+          <span
+            className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full text-[13px] font-medium transition-colors duration-500"
+            style={{
+              background: stepIndex < index ? 'var(--mint-wash)' : stepIndex === index ? 'var(--ink)' : 'var(--well)',
+              color: stepIndex < index ? 'var(--mint-deep)' : stepIndex === index ? 'var(--sheet)' : 'var(--ink-3)',
+            }}
+          >
+            {stepIndex < index ? '✓' : stepIndex + 1}
+          </span>
+          <span className="hidden whitespace-nowrap text-[13px] sm:block" style={{ color: stepIndex === index ? 'var(--ink)' : 'var(--ink-3)' }}>{step.label}</span>
+          {stepIndex < STEPS.length - 1 && <span className="h-px min-w-3 flex-1 bg-line" />}
+        </li>
       ))}
-    </div>
+    </ol>
   );
 }
 
 function Card({ children }: { children: ReactNode }) {
   return (
-    <div className="mx-auto w-full max-w-lg rounded-[20px] border p-10" style={{ background: '#0e0f1c', borderColor: 'rgba(10,132,255,0.2)' }}>
+    <div
+      className="animate-scaleIn mx-auto w-full max-w-[520px] rounded-sheet bg-sheet px-7 pb-10 pt-9 sm:px-11 sm:pb-12 sm:pt-11"
+      style={{ boxShadow: 'var(--sheet-shadow)' }}
+    >
+      <Wordmark />
       {children}
     </div>
   );
@@ -54,23 +57,16 @@ export function SetupPage({ onComplete }: { onComplete: () => void }) {
 
   if (step === 'welcome') {
     return (
-      <main className="flex min-h-screen items-center justify-center bg-black p-6">
+      <main className="flex min-h-screen items-center justify-center bg-canvas p-4">
         <Card>
           <StepBar current="welcome" />
-          <div className="flex flex-col items-center gap-6 text-center">
-            <div className="flex h-20 w-20 items-center justify-center rounded-3xl" style={{ background: 'rgba(10,132,255,0.12)', border: '1px solid rgba(10,132,255,0.25)' }}>
-              <Shield size={40} className="text-[#0a84ff]" />
-            </div>
-            <div>
-              <h1 className="mb-2 text-3xl font-bold text-white">Welcome to Pokyh</h1>
-              <p className="text-slate-400">Create the first administrator account to finish the backend setup.</p>
-            </div>
-            <div className="flex w-full flex-col gap-3 text-left">
-              <div className="flex items-center gap-3 rounded-xl border px-4 py-3" style={{ borderColor: 'rgba(255,255,255,0.05)', background: 'rgba(255,255,255,0.03)' }}><Shield size={16} className="text-[#0a84ff]" /><span className="text-sm text-slate-300">Create administrator credentials</span></div>
-              <div className="flex items-center gap-3 rounded-xl border px-4 py-3" style={{ borderColor: 'rgba(255,255,255,0.05)', background: 'rgba(255,255,255,0.03)' }}><Globe size={16} className="text-[#0a84ff]" /><span className="text-sm text-slate-300">Configure TLS and ingress outside this container</span></div>
-            </div>
-            <button onClick={() => setStep('credentials')} className="flex w-full items-center justify-center gap-2 rounded-xl bg-[#0a84ff] px-6 py-3 font-semibold text-white">Start setup <ChevronRight size={18} /></button>
-          </div>
+          <h1 className="text-[28px] font-semibold leading-tight">Welcome to Pokyh</h1>
+          <p className="mt-2 text-[15px] text-ink-3">Create the first administrator account to finish the backend setup.</p>
+          <ul className="mt-8 flex flex-col gap-4">
+            <li className="flex items-center gap-4"><span className="orb h-11 w-11"><Shield size={18} strokeWidth={1.6} /></span><span className="text-[14.5px]">Create administrator credentials</span></li>
+            <li className="flex items-center gap-4"><span className="orb h-11 w-11"><Globe size={18} strokeWidth={1.6} /></span><span className="text-[14.5px]">Configure TLS and ingress outside this container</span></li>
+          </ul>
+          <button onClick={() => setStep('credentials')} className="btn-primary mt-10 flex h-[52px] w-full items-center justify-center gap-2 text-[15px]">Start setup <ChevronRight size={18} /></button>
         </Card>
       </main>
     );
@@ -92,20 +88,20 @@ export function SetupPage({ onComplete }: { onComplete: () => void }) {
         setSaving(false);
       }
     };
-    const inputClass = 'w-full rounded-xl border bg-transparent px-4 py-3 text-slate-200 outline-none';
-    const inputStyle = { borderColor: 'rgba(255,255,255,0.08)' };
+    const inputClass = 'field h-[52px] w-full px-[18px] text-[15px]';
+    const labelClass = 'flex flex-col gap-2 text-[13px] text-ink-2';
     return (
-      <main className="flex min-h-screen items-center justify-center bg-black p-6">
+      <main className="flex min-h-screen items-center justify-center bg-canvas p-4">
         <Card>
           <StepBar current="credentials" />
-          <h2 className="mb-1 text-2xl font-bold text-white">Create admin account</h2>
-          <p className="mb-6 text-sm text-slate-500">Use this account for the administrator console.</p>
-          <form onSubmit={submit} className="flex flex-col gap-4">
-            <label className="flex flex-col gap-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">Username<input className={inputClass} style={inputStyle} value={username} onChange={(event) => setUsername(event.target.value)} minLength={3} required /></label>
-            <label className="flex flex-col gap-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">Password<div className="relative"><input className={`${inputClass} pr-12`} style={inputStyle} type={showPassword ? 'text' : 'password'} value={password} onChange={(event) => setPassword(event.target.value)} minLength={8} required /><button type="button" onClick={() => setShowPassword((value) => !value)} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500">{showPassword ? <EyeOff size={18} /> : <Eye size={18} />}</button></div></label>
-            <label className="flex flex-col gap-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">Confirm password<input className={inputClass} style={inputStyle} type={showPassword ? 'text' : 'password'} value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} required /></label>
-            {error && <p className="flex items-center gap-2 rounded-xl border px-4 py-3 text-sm text-red-400" style={{ borderColor: 'rgba(239,68,68,0.2)', background: 'rgba(239,68,68,0.08)' }}><AlertCircle size={16} />{error}</p>}
-            <button type="submit" disabled={saving} className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl bg-[#0a84ff] px-6 py-3 font-semibold text-white disabled:opacity-50">Continue <ChevronRight size={18} /></button>
+          <h2 className="text-[28px] font-semibold leading-tight">Create admin account</h2>
+          <p className="mt-2 text-[15px] text-ink-3">Use this account for the administrator console.</p>
+          <form onSubmit={submit} className="mt-8 flex flex-col gap-5">
+            <label className={labelClass}>Username<input className={inputClass} value={username} onChange={(event) => setUsername(event.target.value)} minLength={3} autoComplete="username" autoCapitalize="none" spellCheck={false} required /></label>
+            <label className={labelClass}>Password<div className="relative"><input className={`${inputClass} pr-14`} type={showPassword ? 'text' : 'password'} value={password} onChange={(event) => setPassword(event.target.value)} minLength={8} autoComplete="new-password" required /><button type="button" onClick={() => setShowPassword((value) => !value)} aria-label={showPassword ? 'Hide password' : 'Show password'} aria-pressed={showPassword} className="absolute right-2 top-1/2 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-full text-ink-3 transition-colors hover:text-ink">{showPassword ? <EyeOff size={17} strokeWidth={1.7} /> : <Eye size={17} strokeWidth={1.7} />}</button></div></label>
+            <label className={labelClass}>Confirm password<input className={inputClass} type={showPassword ? 'text' : 'password'} value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} autoComplete="new-password" required /></label>
+            {error && <p role="alert" className="flex items-center gap-2.5 rounded-[14px] bg-rose-wash px-[18px] py-3 text-[13.5px] text-rose-deep"><AlertCircle size={16} strokeWidth={1.7} />{error}</p>}
+            <button type="submit" disabled={saving} className="btn-primary mt-2 flex h-[52px] w-full items-center justify-center gap-2 text-[15px]">Continue <ChevronRight size={18} /></button>
           </form>
         </Card>
       </main>
@@ -113,14 +109,13 @@ export function SetupPage({ onComplete }: { onComplete: () => void }) {
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-black p-6">
+    <main className="flex min-h-screen items-center justify-center bg-canvas p-4">
       <Card>
         <StepBar current="done" />
-        <div className="flex flex-col items-center gap-6 text-center">
-          <div className="flex h-20 w-20 items-center justify-center rounded-3xl" style={{ background: 'rgba(16,185,129,0.12)', border: '1px solid rgba(16,185,129,0.25)' }}><CheckCircle size={40} className="text-emerald-400" /></div>
-          <div><h2 className="mb-2 text-3xl font-bold text-white">You’re all set</h2><p className="text-slate-400">Pokyh Backend is ready. Configure HTTPS and public ingress in your infrastructure.</p></div>
-          <button onClick={onComplete} className="w-full rounded-xl bg-[#0a84ff] px-6 py-3 font-semibold text-white">Open admin dashboard</button>
-        </div>
+        <span className="orb h-14 w-14" style={{ background: 'var(--mint-wash)', color: 'var(--mint-deep)' }}><CheckCircle size={24} strokeWidth={1.6} /></span>
+        <h2 className="mt-6 text-[28px] font-semibold leading-tight">You’re all set</h2>
+        <p className="mt-2 text-[15px] text-ink-3">Pokyh Backend is ready. Configure HTTPS and public ingress in your infrastructure.</p>
+        <button onClick={onComplete} className="btn-primary mt-10 flex h-[52px] w-full items-center justify-center text-[15px]">Open admin dashboard</button>
       </Card>
     </main>
   );

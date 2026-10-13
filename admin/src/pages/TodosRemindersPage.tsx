@@ -1,6 +1,10 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { CheckSquare, Bell, Search, ChevronLeft, ChevronRight, RefreshCw, User, Building2, Clock, CheckCircle2, Archive } from 'lucide-react';
+import { CheckSquare, Bell, RefreshCw, Clock, CheckCircle2, Archive, ListTodo } from 'lucide-react';
 import { adminApi } from '../api';
+import { useToast } from '../components/Toast';
+import { useLive } from '../live';
+import { Avatar, Empty, Figures, IconButton, PageHeader, Pager, SearchField, Section, Segmented, Status, type Tone } from '../components/kit';
+import { SplitBar } from '../components/charts';
 import type { AdminAllTodo, AdminAllReminder } from '../types';
 
 type Tab = 'todos' | 'reminders';
@@ -9,46 +13,52 @@ type ReminderStatus = 'all' | 'active' | 'archived';
 
 const PAGE_SIZE = 50;
 
-function StatusBadge({ label, color }: { label: string; color: string }) {
-  return (
-    <span
-      className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium"
-      style={{ background: `${color}22`, color }}
-    >
-      {label}
-    </span>
-  );
+// Totals per state for the figures and the two bars above the lists.
+interface Totals {
+  todosActive: number;
+  todosDone: number;
+  todosArchived: number;
+  remindersActive: number;
+  remindersArchived: number;
 }
 
-function Pagination({ page, total, limit, onPage }: { page: number; total: number; limit: number; onPage: (p: number) => void }) {
-  const pages = Math.max(1, Math.ceil(total / limit));
-  if (pages <= 1) return null;
+function shortDate(iso: string): string {
+  return new Date(iso).toLocaleDateString('de-AT', { day: '2-digit', month: '2-digit', year: '2-digit' });
+}
+
+function dateTime(iso: string): string {
+  return new Date(iso).toLocaleDateString('de-AT', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' });
+}
+
+function todoState(t: AdminAllTodo): { tone: Tone; label: string } {
+  if (t.archivedAt) return { tone: 'ink', label: 'Archiviert' };
+  if (t.done) return { tone: 'mint', label: 'Erledigt' };
+  if (t.dueAt && new Date(t.dueAt) < new Date()) return { tone: 'rose', label: 'Überfällig' };
+  return { tone: 'sky', label: 'Aktiv' };
+}
+
+function reminderState(r: AdminAllReminder): { tone: Tone; label: string } {
+  if (r.archivedAt) return { tone: 'ink', label: 'Archiviert' };
+  if (new Date(r.remindAt) < new Date()) return { tone: 'amber', label: 'Vergangen' };
+  return { tone: 'sky', label: 'Aktiv' };
+}
+
+function SkeletonRows({ columns }: { columns: number }) {
   return (
-    <div className="flex items-center gap-2 text-sm" style={{ color: 'rgba(235,235,245,0.5)' }}>
-      <button
-        disabled={page <= 1}
-        onClick={() => onPage(page - 1)}
-        className="p-1.5 rounded-[8px] disabled:opacity-30 transition-colors"
-        style={{ background: 'rgba(255,255,255,0.06)' }}
-      >
-        <ChevronLeft size={14} />
-      </button>
-      <span className="text-[13px]">{page} / {pages}</span>
-      <button
-        disabled={page >= pages}
-        onClick={() => onPage(page + 1)}
-        className="p-1.5 rounded-[8px] disabled:opacity-30 transition-colors"
-        style={{ background: 'rgba(255,255,255,0.06)' }}
-      >
-        <ChevronRight size={14} />
-      </button>
-      <span className="text-[12px] ml-1">{total} gesamt</span>
-    </div>
+    <>
+      {Array.from({ length: 6 }).map((_, i) => (
+        <tr key={i}>
+          <td colSpan={columns}><div className="shimmer h-4 rounded-full" style={{ width: `${70 - i * 6}%` }} /></td>
+        </tr>
+      ))}
+    </>
   );
 }
 
 export function TodosRemindersPage() {
+  const { showToast } = useToast();
   const [tab, setTab] = useState<Tab>('todos');
+  const [totals, setTotals] = useState<Totals | null>(null);
 
   // Todos state
   const [todos, setTodos] = useState<AdminAllTodo[]>([]);
@@ -69,18 +79,36 @@ export function TodosRemindersPage() {
   const todoSearchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reminderSearchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  const fetchTotals = useCallback(() => {
+    Promise.all([
+      adminApi.allTodos({ limit: 1, status: 'active' }),
+      adminApi.allTodos({ limit: 1, status: 'done' }),
+      adminApi.allTodos({ limit: 1, status: 'archived' }),
+      adminApi.allReminders({ limit: 1, status: 'active' }),
+      adminApi.allReminders({ limit: 1, status: 'archived' }),
+    ]).then(([active, done, archived, remActive, remArchived]) => {
+      setTotals({
+        todosActive: active.total,
+        todosDone: done.total,
+        todosArchived: archived.total,
+        remindersActive: remActive.total,
+        remindersArchived: remArchived.total,
+      });
+    }).catch(() => { /* the lists below do not depend on the totals */ });
+  }, []);
+
   const fetchTodos = useCallback(async (page: number, search: string, status: TodoStatus) => {
     setTodosLoading(true);
     try {
       const res = await adminApi.allTodos({ page, limit: PAGE_SIZE, search: search || undefined, status });
       setTodos(res.todos);
       setTodosTotal(res.total);
-    } catch {
-      // ignore
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Todos konnten nicht geladen werden', 'error');
     } finally {
       setTodosLoading(false);
     }
-  }, []);
+  }, [showToast]);
 
   const fetchReminders = useCallback(async (page: number, search: string, status: ReminderStatus) => {
     setRemindersLoading(true);
@@ -88,26 +116,35 @@ export function TodosRemindersPage() {
       const res = await adminApi.allReminders({ page, limit: PAGE_SIZE, search: search || undefined, status });
       setReminders(res.reminders);
       setRemindersTotal(res.total);
-    } catch {
-      // ignore
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Erinnerungen konnten nicht geladen werden', 'error');
     } finally {
       setRemindersLoading(false);
     }
-  }, []);
+  }, [showToast]);
 
-  useEffect(() => { fetchTodos(todosPage, todoSearch, todoStatus); }, [fetchTodos, todosPage, todoStatus]);
-  useEffect(() => { fetchReminders(remindersPage, reminderSearch, reminderStatus); }, [fetchReminders, remindersPage, reminderStatus]);
+  // The search term is deliberately not a dependency: typing is debounced below.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { void fetchTodos(todosPage, todoSearch, todoStatus); }, [fetchTodos, todosPage, todoStatus]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { void fetchReminders(remindersPage, reminderSearch, reminderStatus); }, [fetchReminders, remindersPage, reminderStatus]);
+  useEffect(() => { fetchTotals(); }, [fetchTotals]);
+
+  useEffect(() => () => {
+    if (todoSearchTimer.current) clearTimeout(todoSearchTimer.current);
+    if (reminderSearchTimer.current) clearTimeout(reminderSearchTimer.current);
+  }, []);
 
   function handleTodoSearch(val: string) {
     setTodoSearch(val);
     if (todoSearchTimer.current) clearTimeout(todoSearchTimer.current);
-    todoSearchTimer.current = setTimeout(() => { setTodosPage(1); fetchTodos(1, val, todoStatus); }, 350);
+    todoSearchTimer.current = setTimeout(() => { setTodosPage(1); void fetchTodos(1, val, todoStatus); }, 350);
   }
 
   function handleReminderSearch(val: string) {
     setReminderSearch(val);
     if (reminderSearchTimer.current) clearTimeout(reminderSearchTimer.current);
-    reminderSearchTimer.current = setTimeout(() => { setRemindersPage(1); fetchReminders(1, val, reminderStatus); }, 350);
+    reminderSearchTimer.current = setTimeout(() => { setRemindersPage(1); void fetchReminders(1, val, reminderStatus); }, 350);
   }
 
   function handleTodoStatusChange(s: TodoStatus) {
@@ -120,228 +157,209 @@ export function TodosRemindersPage() {
     setRemindersPage(1);
   }
 
-  function todoStatusBadge(t: AdminAllTodo) {
-    if (t.archivedAt) return <StatusBadge label="Archiviert" color="#8e8e93" />;
-    if (t.done) return <StatusBadge label="Erledigt" color="#30d158" />;
-    if (t.dueAt && new Date(t.dueAt) < new Date()) return <StatusBadge label="Überfällig" color="#ff453a" />;
-    return <StatusBadge label="Aktiv" color="#0a84ff" />;
+  function refreshCurrent() {
+    fetchTotals();
+    if (tab === 'todos') void fetchTodos(todosPage, todoSearch, todoStatus);
+    else void fetchReminders(remindersPage, reminderSearch, reminderStatus);
   }
 
-  function reminderStatusBadge(r: AdminAllReminder) {
-    if (r.archivedAt) return <StatusBadge label="Archiviert" color="#8e8e93" />;
-    if (new Date(r.remindAt) < new Date()) return <StatusBadge label="Vergangen" color="#ff9f0a" />;
-    return <StatusBadge label="Aktiv" color="#0a84ff" />;
-  }
-
-  const cell = 'px-4 py-3 text-[13px]';
-  const dimText = { color: 'rgba(235,235,245,0.4)' };
-  const tableHeader = 'px-4 py-2.5 text-left text-[11px] font-semibold uppercase tracking-[0.05em]';
+  const busy = tab === 'todos' ? todosLoading : remindersLoading;
+  useLive(['todos', 'reminders'], refreshCurrent);
 
   return (
     <div>
-      {/* Header */}
-      <div className="mb-6">
-        <h1 className="text-[22px] font-bold text-white tracking-[-0.02em]">Todos &amp; Erinnerungen</h1>
-        <p className="text-[13px] mt-1" style={dimText}>Alle Todos und Erinnerungen über alle Nutzer und Klassen</p>
+      <PageHeader title="Todos & Erinnerungen" subtitle="Alle Todos und Erinnerungen über alle Nutzer und Klassen.">
+        <IconButton icon={RefreshCw} label="Aktualisieren" size={42} busy={busy} onClick={refreshCurrent} />
+      </PageHeader>
+
+      <Figures
+        className="mt-10"
+        items={[
+          { label: 'Offene Todos',        value: totals?.todosActive ?? '–',     icon: ListTodo },
+          { label: 'Erledigt',            value: totals?.todosDone ?? '–',       icon: CheckCircle2 },
+          { label: 'Aktive Erinnerungen', value: totals?.remindersActive ?? '–', icon: Bell },
+          { label: 'Archiviert',          value: totals ? totals.todosArchived + totals.remindersArchived : '–', icon: Archive },
+        ]}
+      />
+
+      <div className="mt-[46px] grid gap-x-16 gap-y-12 lg:grid-cols-2">
+        <Section title="Todos" meta="nach Zustand">
+          <div className="mt-8">
+            <SplitBar
+              ariaLabel="Todos nach Zustand"
+              parts={[
+                { label: 'Offen',      value: totals?.todosActive ?? 0,   color: '#4f96dc' },
+                { label: 'Erledigt',   value: totals?.todosDone ?? 0,     color: 'var(--mint)' },
+                { label: 'Archiviert', value: totals?.todosArchived ?? 0, color: 'var(--ink-4)' },
+              ]}
+            />
+          </div>
+        </Section>
+        <Section title="Erinnerungen" meta="nach Zustand">
+          <div className="mt-8">
+            <SplitBar
+              ariaLabel="Erinnerungen nach Zustand"
+              parts={[
+                { label: 'Aktiv',      value: totals?.remindersActive ?? 0,   color: 'var(--amber)' },
+                { label: 'Archiviert', value: totals?.remindersArchived ?? 0, color: 'var(--ink-4)' },
+              ]}
+            />
+          </div>
+        </Section>
       </div>
 
-      {/* Tab switcher */}
-      <div className="flex gap-1 mb-5 p-1 rounded-[12px] w-fit" style={{ background: 'rgba(255,255,255,0.06)' }}>
-        {([['todos', 'Todos', <CheckSquare size={14} />], ['reminders', 'Erinnerungen', <Bell size={14} />]] as [Tab, string, React.ReactNode][]).map(([key, label, icon]) => (
-          <button
-            key={key}
-            onClick={() => setTab(key)}
-            className="flex items-center gap-2 px-4 py-2 rounded-[9px] text-[13px] font-medium transition-all"
-            style={tab === key
-              ? { background: '#0a84ff', color: '#fff' }
-              : { color: 'rgba(235,235,245,0.5)' }}
-          >
-            {icon}{label}
-            {key === 'todos' && <span className="text-[11px] opacity-70">({todosTotal})</span>}
-            {key === 'reminders' && <span className="text-[11px] opacity-70">({remindersTotal})</span>}
-          </button>
-        ))}
+      <div className="mt-[52px]">
+        <Segmented
+          label="Liste wählen"
+          value={tab}
+          onChange={setTab}
+          options={[
+            { value: 'todos', label: <><CheckSquare size={14} /> Todos</> },
+            { value: 'reminders', label: <><Bell size={14} /> Erinnerungen</> },
+          ]}
+        />
       </div>
 
       {tab === 'todos' && (
-        <div>
-          {/* Todos toolbar */}
-          <div className="flex flex-wrap items-center gap-3 mb-4">
-            <div className="relative flex-1 min-w-[200px] max-w-[320px]">
-              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2" style={dimText} />
-              <input
-                type="text"
-                value={todoSearch}
-                onChange={(e) => handleTodoSearch(e.target.value)}
-                placeholder="Todos durchsuchen…"
-                className="w-full pl-9 pr-3 py-2 rounded-[10px] text-[13px] text-white placeholder-[rgba(235,235,245,0.3)] outline-none"
-                style={{ background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.08)' }}
+        <Section
+          className="mt-8"
+          title="Todos"
+          meta={`${todosTotal.toLocaleString('de-AT')} Einträge`}
+          action={(
+            <>
+              <SearchField value={todoSearch} onChange={handleTodoSearch} placeholder="Todos durchsuchen" className="w-full sm:w-[250px]" />
+              <Segmented
+                label="Todos filtern"
+                value={todoStatus}
+                onChange={handleTodoStatusChange}
+                options={[
+                  { value: 'all', label: 'Alle' },
+                  { value: 'active', label: 'Aktiv' },
+                  { value: 'done', label: 'Erledigt' },
+                  { value: 'archived', label: 'Archiviert' },
+                ]}
               />
-            </div>
-            <div className="flex gap-1 p-0.5 rounded-[10px]" style={{ background: 'rgba(255,255,255,0.06)' }}>
-              {(['all', 'active', 'done', 'archived'] as TodoStatus[]).map((s) => (
-                <button
-                  key={s}
-                  onClick={() => handleTodoStatusChange(s)}
-                  className="px-3 py-1.5 rounded-[8px] text-[12px] font-medium transition-all"
-                  style={todoStatus === s
-                    ? { background: 'rgba(255,255,255,0.12)', color: '#fff' }
-                    : { color: 'rgba(235,235,245,0.45)' }}
-                >
-                  {{ all: 'Alle', active: 'Aktiv', done: 'Erledigt', archived: 'Archiviert' }[s]}
-                </button>
-              ))}
-            </div>
-            <button
-              onClick={() => fetchTodos(todosPage, todoSearch, todoStatus)}
-              className="p-2 rounded-[10px] transition-colors"
-              style={{ background: 'rgba(255,255,255,0.07)', color: 'rgba(235,235,245,0.5)' }}
-              title="Aktualisieren"
-            >
-              <RefreshCw size={14} className={todosLoading ? 'animate-spin' : ''} />
-            </button>
-          </div>
-
-          <div className="rounded-[14px] overflow-hidden" style={{ border: '1px solid rgba(255,255,255,0.07)', background: '#0d0d0d' }}>
-            <table className="w-full border-collapse">
+            </>
+          )}
+        >
+          <div className="tbl-scroll mt-7">
+            <table className="tbl">
               <thead>
-                <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.06)', color: 'rgba(235,235,245,0.35)' }}>
-                  <th className={tableHeader}>Titel</th>
-                  <th className={tableHeader}><span className="flex items-center gap-1"><User size={10} />Nutzer</span></th>
-                  <th className={tableHeader}>Fällig</th>
-                  <th className={tableHeader}>Status</th>
-                  <th className={tableHeader}>Erstellt</th>
+                <tr>
+                  <th>Titel</th>
+                  <th>Nutzer</th>
+                  <th className="hidden md:table-cell">Fällig</th>
+                  <th>Status</th>
+                  <th className="hidden sm:table-cell">Erstellt</th>
                 </tr>
               </thead>
               <tbody>
-                {todosLoading && todos.length === 0 && (
-                  <tr><td colSpan={5} className="px-4 py-8 text-center text-[13px]" style={dimText}>Laden…</td></tr>
-                )}
+                {todosLoading && todos.length === 0 && <SkeletonRows columns={5} />}
                 {!todosLoading && todos.length === 0 && (
-                  <tr><td colSpan={5} className="px-4 py-8 text-center text-[13px]" style={dimText}>Keine Todos gefunden</td></tr>
+                  <tr><td colSpan={5}><Empty icon={CheckSquare}>Keine Todos gefunden.</Empty></td></tr>
                 )}
-                {todos.map((t) => (
-                  <tr key={t.id} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }} className="hover:bg-white/[0.02] transition-colors">
-                    <td className={cell}>
-                      <div className="flex items-center gap-2">
-                        {t.done
-                          ? <CheckCircle2 size={14} style={{ color: '#30d158', flexShrink: 0 }} />
-                          : t.archivedAt
-                            ? <Archive size={14} style={{ color: '#8e8e93', flexShrink: 0 }} />
-                            : <CheckSquare size={14} style={{ color: '#0a84ff', flexShrink: 0 }} />
-                        }
-                        <span className="text-white font-medium truncate max-w-[280px]">{t.title}</span>
-                      </div>
-                      {t.details && <p className="text-[12px] mt-0.5 ml-[22px] truncate max-w-[280px]" style={dimText}>{t.details}</p>}
-                    </td>
-                    <td className={cell} style={dimText}>{t.username}</td>
-                    <td className={cell}>
-                      {t.dueAt
-                        ? <span className="flex items-center gap-1 text-[12px]" style={{ color: new Date(t.dueAt) < new Date() && !t.done ? '#ff453a' : 'rgba(235,235,245,0.5)' }}>
-                            <Clock size={12} />{new Date(t.dueAt).toLocaleDateString('de-AT', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' })}
+                {todos.map((t) => {
+                  const state = todoState(t);
+                  const overdue = !!t.dueAt && new Date(t.dueAt) < new Date() && !t.done && !t.archivedAt;
+                  return (
+                    <tr key={t.id}>
+                      <td>
+                        <div className="max-w-[380px]">
+                          <div className="truncate font-medium" style={{ textDecoration: t.done ? 'line-through' : undefined, color: t.done ? 'var(--ink-3)' : undefined }}>{t.title}</div>
+                          {t.details && <p className="mt-0.5 truncate text-[13px] text-ink-3">{t.details}</p>}
+                        </div>
+                      </td>
+                      <td>
+                        <div className="flex items-center gap-3">
+                          <Avatar name={t.username} size={30} />
+                          <span className="text-ink-2">{t.username}</span>
+                        </div>
+                      </td>
+                      <td className="hidden md:table-cell">
+                        {t.dueAt ? (
+                          <span className="flex items-center gap-2 whitespace-nowrap text-[13.5px]" style={{ color: overdue ? 'var(--rose-deep)' : 'var(--ink-2)' }}>
+                            <Clock size={13} strokeWidth={1.7} />{dateTime(t.dueAt)}
                           </span>
-                        : <span style={dimText}>—</span>}
-                    </td>
-                    <td className={cell}>{todoStatusBadge(t)}</td>
-                    <td className={`${cell} text-[12px]`} style={dimText}>{new Date(t.createdAt).toLocaleDateString('de-AT', { day: '2-digit', month: '2-digit', year: '2-digit' })}</td>
-                  </tr>
-                ))}
+                        ) : <span className="text-ink-4">—</span>}
+                      </td>
+                      <td><Status tone={state.tone}>{state.label}</Status></td>
+                      <td className="hidden whitespace-nowrap text-[13.5px] text-ink-3 sm:table-cell">{shortDate(t.createdAt)}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
-
-          <div className="flex justify-end mt-4">
-            <Pagination page={todosPage} total={todosTotal} limit={PAGE_SIZE} onPage={(p) => setTodosPage(p)} />
-          </div>
-        </div>
+          <Pager page={todosPage} pages={Math.max(1, Math.ceil(todosTotal / PAGE_SIZE))} onChange={setTodosPage} />
+        </Section>
       )}
 
       {tab === 'reminders' && (
-        <div>
-          {/* Reminders toolbar */}
-          <div className="flex flex-wrap items-center gap-3 mb-4">
-            <div className="relative flex-1 min-w-[200px] max-w-[320px]">
-              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2" style={dimText} />
-              <input
-                type="text"
-                value={reminderSearch}
-                onChange={(e) => handleReminderSearch(e.target.value)}
-                placeholder="Erinnerungen durchsuchen…"
-                className="w-full pl-9 pr-3 py-2 rounded-[10px] text-[13px] text-white placeholder-[rgba(235,235,245,0.3)] outline-none"
-                style={{ background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.08)' }}
+        <Section
+          className="mt-8"
+          title="Erinnerungen"
+          meta={`${remindersTotal.toLocaleString('de-AT')} Einträge`}
+          action={(
+            <>
+              <SearchField value={reminderSearch} onChange={handleReminderSearch} placeholder="Erinnerungen durchsuchen" className="w-full sm:w-[250px]" />
+              <Segmented
+                label="Erinnerungen filtern"
+                value={reminderStatus}
+                onChange={handleReminderStatusChange}
+                options={[
+                  { value: 'all', label: 'Alle' },
+                  { value: 'active', label: 'Aktiv' },
+                  { value: 'archived', label: 'Archiviert' },
+                ]}
               />
-            </div>
-            <div className="flex gap-1 p-0.5 rounded-[10px]" style={{ background: 'rgba(255,255,255,0.06)' }}>
-              {(['all', 'active', 'archived'] as ReminderStatus[]).map((s) => (
-                <button
-                  key={s}
-                  onClick={() => handleReminderStatusChange(s)}
-                  className="px-3 py-1.5 rounded-[8px] text-[12px] font-medium transition-all"
-                  style={reminderStatus === s
-                    ? { background: 'rgba(255,255,255,0.12)', color: '#fff' }
-                    : { color: 'rgba(235,235,245,0.45)' }}
-                >
-                  {{ all: 'Alle', active: 'Aktiv', archived: 'Archiviert' }[s]}
-                </button>
-              ))}
-            </div>
-            <button
-              onClick={() => fetchReminders(remindersPage, reminderSearch, reminderStatus)}
-              className="p-2 rounded-[10px] transition-colors"
-              style={{ background: 'rgba(255,255,255,0.07)', color: 'rgba(235,235,245,0.5)' }}
-              title="Aktualisieren"
-            >
-              <RefreshCw size={14} className={remindersLoading ? 'animate-spin' : ''} />
-            </button>
-          </div>
-
-          <div className="rounded-[14px] overflow-hidden" style={{ border: '1px solid rgba(255,255,255,0.07)', background: '#0d0d0d' }}>
-            <table className="w-full border-collapse">
+            </>
+          )}
+        >
+          <div className="tbl-scroll mt-7">
+            <table className="tbl">
               <thead>
-                <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.06)', color: 'rgba(235,235,245,0.35)' }}>
-                  <th className={tableHeader}>Titel</th>
-                  <th className={tableHeader}><span className="flex items-center gap-1"><Building2 size={10} />Klasse</span></th>
-                  <th className={tableHeader}>Erinnerung am</th>
-                  <th className={tableHeader}>Status</th>
-                  <th className={tableHeader}>Erstellt von</th>
-                  <th className={tableHeader}>Erstellt</th>
+                <tr>
+                  <th>Titel</th>
+                  <th>Klasse</th>
+                  <th className="hidden md:table-cell">Erinnerung am</th>
+                  <th>Status</th>
+                  <th className="hidden lg:table-cell">Erstellt von</th>
+                  <th className="hidden sm:table-cell">Erstellt</th>
                 </tr>
               </thead>
               <tbody>
-                {remindersLoading && reminders.length === 0 && (
-                  <tr><td colSpan={6} className="px-4 py-8 text-center text-[13px]" style={dimText}>Laden…</td></tr>
-                )}
+                {remindersLoading && reminders.length === 0 && <SkeletonRows columns={6} />}
                 {!remindersLoading && reminders.length === 0 && (
-                  <tr><td colSpan={6} className="px-4 py-8 text-center text-[13px]" style={dimText}>Keine Erinnerungen gefunden</td></tr>
+                  <tr><td colSpan={6}><Empty icon={Bell}>Keine Erinnerungen gefunden.</Empty></td></tr>
                 )}
-                {reminders.map((r) => (
-                  <tr key={r.id} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }} className="hover:bg-white/[0.02] transition-colors">
-                    <td className={cell}>
-                      <div className="flex items-center gap-2">
-                        <Bell size={14} style={{ color: r.archivedAt ? '#8e8e93' : '#ff9f0a', flexShrink: 0 }} />
-                        <span className="text-white font-medium truncate max-w-[240px]">{r.title}</span>
-                      </div>
-                      {r.body && <p className="text-[12px] mt-0.5 ml-[22px] truncate max-w-[240px]" style={dimText}>{r.body}</p>}
-                    </td>
-                    <td className={`${cell} text-[13px]`} style={dimText}>{r.className}</td>
-                    <td className={cell}>
-                      <span className="flex items-center gap-1 text-[12px]" style={{ color: new Date(r.remindAt) < new Date() && !r.archivedAt ? '#ff9f0a' : 'rgba(235,235,245,0.5)' }}>
-                        <Clock size={12} />{new Date(r.remindAt).toLocaleDateString('de-AT', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' })}
-                      </span>
-                    </td>
-                    <td className={cell}>{reminderStatusBadge(r)}</td>
-                    <td className={`${cell} text-[13px]`} style={dimText}>{r.createdByUsername || r.createdByName}</td>
-                    <td className={`${cell} text-[12px]`} style={dimText}>{new Date(r.createdAt).toLocaleDateString('de-AT', { day: '2-digit', month: '2-digit', year: '2-digit' })}</td>
-                  </tr>
-                ))}
+                {reminders.map((r) => {
+                  const state = reminderState(r);
+                  const past = new Date(r.remindAt) < new Date() && !r.archivedAt;
+                  return (
+                    <tr key={r.id}>
+                      <td>
+                        <div className="max-w-[340px]">
+                          <div className="truncate font-medium">{r.title}</div>
+                          {r.body && <p className="mt-0.5 truncate text-[13px] text-ink-3">{r.body}</p>}
+                        </div>
+                      </td>
+                      <td className="whitespace-nowrap text-ink-2">{r.className}</td>
+                      <td className="hidden md:table-cell">
+                        <span className="flex items-center gap-2 whitespace-nowrap text-[13.5px]" style={{ color: past ? 'var(--amber-deep)' : 'var(--ink-2)' }}>
+                          <Clock size={13} strokeWidth={1.7} />{dateTime(r.remindAt)}
+                        </span>
+                      </td>
+                      <td><Status tone={state.tone}>{state.label}</Status></td>
+                      <td className="hidden text-ink-2 lg:table-cell">{r.createdByUsername || r.createdByName}</td>
+                      <td className="hidden whitespace-nowrap text-[13.5px] text-ink-3 sm:table-cell">{shortDate(r.createdAt)}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
-
-          <div className="flex justify-end mt-4">
-            <Pagination page={remindersPage} total={remindersTotal} limit={PAGE_SIZE} onPage={(p) => setRemindersPage(p)} />
-          </div>
-        </div>
+          <Pager page={remindersPage} pages={Math.max(1, Math.ceil(remindersTotal / PAGE_SIZE))} onChange={setRemindersPage} />
+        </Section>
       )}
     </div>
   );
