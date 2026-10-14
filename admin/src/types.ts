@@ -1008,7 +1008,9 @@ export interface ClusterReach {
 
 // ─── Analytics (GET /api/admin/analytics) ───────────────────────────────────
 
-export type AnalyticsRange = 7 | 30 | 90;
+// The last 7, 30, 90 or 365 days ("7" …), everything ("all"), or a calendar
+// year ("2026").
+export type AnalyticsRange = 'all' | `${number}`;
 // The native apps on their own; everything in a browser (phone or computer,
 // tab or installed PWA) is "web". "other" is an app that names no platform.
 export type UsagePlatform = 'ios' | 'android' | 'web' | 'other';
@@ -1017,10 +1019,15 @@ export type PlatformCounts = Record<UsagePlatform, number>;
 export interface AdminAnalytics {
   generatedAt: string;
   timezone: string;
+  period: { key: string; label: string; fromKey: string; toKey: string };
+  availableYears: number[];
   days: number;
   axis: string[];
   live: { online: number; byPlatform: PlatformCounts };
   platforms: {
+    // "accounts": different accounts in the period; "dailyAverage": different
+    // people per day, averaged (periods longer than the server logs reach).
+    mode: 'accounts' | 'dailyAverage';
     total: number;
     byPlatform: PlatformCounts;
     multiPlatform: number;
@@ -1079,6 +1086,9 @@ export interface AdminAnalytics {
     oldestDays: number;
     // Accounts that consented to the usage statistics.
     usageConsents: number;
+    // Chose "Nur notwendige", and have not chosen yet.
+    usageRefusals: number;
+    usageUndecided: number;
   };
   features: {
     todos: number;
@@ -1102,7 +1112,7 @@ export interface AdminAnalytics {
     starBands: number[];
   };
   classes: Array<{ name: string; seconds: number; users: number; sessions: number }>;
-  appVersions: Array<{ platform: UsagePlatform; version: string; users: number }>;
+  appVersions: Array<{ platform: UsagePlatform; version: string; sessions: number }>;
   pages: Array<{ page: string; views: number; users: number }>;
 }
 
@@ -1115,7 +1125,7 @@ export interface PeopleFilters {
   // 0 = Monday … 6 = Sunday.
   weekdays?: number[];
   klasse?: string;
-  segment?: 'loyal' | 'multi' | 'new' | 'returning' | 'inactive';
+  segment?: 'loyal' | 'multi' | 'new' | 'returning' | 'inactive' | 'consented';
   // A website page as the page list shows it ("/timetable").
   page?: string;
   // Accounts created on this local day, YYYY-MM-DD.
@@ -1146,6 +1156,9 @@ export interface AnalyticsPeople {
   // Matching accounts without usage-statistics consent: counted, never named.
   hidden: number;
   people: AnalyticsPerson[];
+  // The days the list covers: visits name their account for a limited time
+  // only, so a long period is cut to it ("clamped").
+  window?: { fromKey: string; toKey: string; clamped: boolean };
 }
 
 // GET /api/admin/analytics/breakdown — what a "created" figure is made of.

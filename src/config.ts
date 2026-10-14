@@ -332,7 +332,8 @@ export const config = {
   usageAnalytics: {
     // Visits are counted per calendar day and hour in this IANA timezone.
     timezone: strEnv('ANALYTICS_TIMEZONE', 'Europe/Rome'),
-    // The Analytics page looks back 90 days at most, so nothing older is kept.
+    // How long a visit stays linked to its (consenting) account; afterwards it
+    // is anonymous and only feeds the aggregate figures.
     retentionDays: boundedIntEnv('USAGE_ANALYTICS_RETENTION_DAYS', 90, 30, 365),
   },
 

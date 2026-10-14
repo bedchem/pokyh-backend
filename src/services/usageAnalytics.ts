@@ -161,6 +161,19 @@ export function dayAxis(days: number, timezone: string, now = new Date()): strin
   return [...keys].sort().slice(-count);
 }
 
+/** The calendar day `n` days after (or before) a "YYYY-MM-DD" day. */
+export function addDays(dayKey: string, n: number): string {
+  const [y, m, d] = dayKey.split('-').map(Number);
+  return new Date(Date.UTC(y ?? 1970, (m ?? 1) - 1, (d ?? 1) + n)).toISOString().slice(0, 10);
+}
+
+/** Every calendar day from `fromKey` to `toKey`, both included (at most 10 years). */
+export function daysBetween(fromKey: string, toKey: string): string[] {
+  const days: string[] = [];
+  for (let key = fromKey; key <= toKey && days.length < 3660; key = addDays(key, 1)) days.push(key);
+  return days;
+}
+
 /** Monday = 0 … Sunday = 6 for a "YYYY-MM-DD" calendar day. */
 export function weekdayOf(dayKey: string): number {
   const [y, m, d] = dayKey.split('-').map(Number);

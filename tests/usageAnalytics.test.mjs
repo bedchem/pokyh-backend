@@ -5,7 +5,9 @@ import { loadTs } from './helpers/loadTs.mjs';
 const {
   classifyUserAgent,
   creditedSeconds,
+  addDays,
   dayAxis,
+  daysBetween,
   lengthBandOf,
   localDayAndHour,
   platformOf,
@@ -91,4 +93,16 @@ test('only the native apps count as iPhone or Android; every browser is web', ()
     assert.equal(platformOf(device, 'pwa'), 'web', device);
     assert.equal(platformOf(device, 'web'), 'web', device);
   }
+});
+
+test('day ranges count calendar days, across months, years and leap days', () => {
+  assert.equal(addDays('2026-10-14', 1), '2026-10-15');
+  assert.equal(addDays('2026-12-31', 1), '2027-01-01');
+  assert.equal(addDays('2028-02-28', 1), '2028-02-29');
+  assert.equal(addDays('2026-03-01', -1), '2026-02-28');
+  assert.deepEqual(daysBetween('2026-10-30', '2026-11-02'), ['2026-10-30', '2026-10-31', '2026-11-01', '2026-11-02']);
+  assert.equal(daysBetween('2025-01-01', '2025-12-31').length, 365);
+  assert.equal(daysBetween('2028-01-01', '2028-12-31').length, 366);
+  assert.deepEqual(daysBetween('2026-10-14', '2026-10-14'), ['2026-10-14']);
+  assert.deepEqual(daysBetween('2026-10-15', '2026-10-14'), []);
 });

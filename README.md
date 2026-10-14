@@ -150,7 +150,7 @@ npx web-push generate-vapid-keys   # VAPID key pair for Web Push
 | `MENSA_IMPORT_URL` | Menu source (`mensa.json`) for the dish import; empty = enter it in the import dialog. |
 | `VAPID_*` | Web Push key pair and contact address. |
 | `LEARN_*` | Pokyh Learn: allowed origins, legal activation gate, dictionary adapter, AI trainer, imports, review, analytics cache — see [Pokyh Learn](#pokyh-learn). |
-| `ANALYTICS_TIMEZONE` · `USAGE_ANALYTICS_RETENTION_DAYS` | Grouping and finite retention (30–365 days, default 90) of the usage statistics behind the admin Analytics page — stored only with the account's opt-in consent. |
+| `ANALYTICS_TIMEZONE` · `USAGE_ANALYTICS_RETENTION_DAYS` | Day/hour grouping of the usage statistics behind the admin Analytics page, and how long a visit stays linked to an account that opted in (30–365 days, default 90). Without consent, and afterwards, visits are anonymous aggregates. |
 | `REQUEST_LOG_RETENTION_DAYS` · `LOG_FILE_RETENTION_DAYS` | Finite retention of request logs and log files. |
 | `CLUSTER_*` · `POKYH_*` | The cluster — see [Cluster settings](#cluster-settings). |
 
@@ -169,7 +169,7 @@ Prisma is the schema's single source ([`prisma/schema.prisma`](prisma/schema.pri
 - **Cafeteria** — `Dish`, `DishImage`, `DishRating`
 - **Subjects** — `KnownSubject`, `SubjectImage`
 - **School-year archive** — `SchoolYear`, `ArchivedUser`, `ArchivedClass`, `ArchivedTodo`, `ArchivedReminder`
-- **Privacy & usage** — `PrivacyConsent`, `UsageSession` (consented usage statistics)
+- **Privacy & usage** — `PrivacyConsent`, `UsageSession` (usage statistics: anonymous day keys, named only with consent), `UsageDaySalt`
 - **Pokyh Learn** — every `Learn*` model (tables `learn_*`)
 - **Cluster** — `cluster_*` bookkeeping (node-local), replicated `relays` and `update_settings`
 - **Telemetry** — `RequestLog`, `FrontendActivityLog` (node-local)
@@ -221,7 +221,7 @@ bodies and secrets are never logged.
 | Subject images | `/subject-images` | Icon catalogue (read public, write admin) |
 | Popups | `/popups/active?platform=web\|android&audience=user\|guest` | Active announcement popups; popups meant for chosen users or classes only with a matching user session |
 | Push | `/push` | Web Push subscription |
-| Usage & privacy | `/usage/ping` · `/privacy` | Consented usage statistics; privacy notice acknowledgement and consent |
+| Usage & privacy | `/usage/ping` · `/privacy` | Usage statistics (anonymous, named only with consent); privacy notice record and consent |
 | Activity log | `/activity-log` | Frontend telemetry |
 | Learn | `/learn/*` · `/learn/ai/*` · `/auth/learn-login` | Pokyh Learn (own origins and gates) |
 | Admin | `/api/admin/*` | Administrator JWT only (no API key) |

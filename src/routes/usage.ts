@@ -7,6 +7,7 @@ import { config } from '../config';
 import { optionalAuth } from '../middleware/auth';
 import { logger } from '../utils/logger';
 import { hasUsageConsent } from '../services/privacyConsent';
+import { visitorKeyFor } from '../services/visitorKey';
 import {
   USAGE_CLIENTS,
   USAGE_DEVICES,
@@ -22,9 +23,12 @@ import {
 // about once a minute while Pokyh is in the foreground, and once more when it
 // goes to the background. Each call carries the foreground seconds and opened
 // screens since the previous one; the server adds them to that visit's single
-// row. Nothing else is kept: no IP address, user agent, path or content — and
-// nothing at all for an account that has not consented to the usage
-// statistics (or for no account), whatever the client sends.
+// row. Nothing else is kept: no IP address, user agent, path or content.
+//
+// Without the account's consent the row is anonymous — only a day-scoped
+// visitor key, so the aggregate figures still count everyone (anonymous,
+// aggregated, first-party measurement; Garante 2021). With consent the row
+// also names the account, which the admin lists show.
 
 const router = Router();
 
@@ -58,11 +62,12 @@ const FIRST_PING_WINDOW_MS = 115 * 1000;
 
 type Ping = z.infer<typeof pingSchema>;
 
-async function applyPing(ping: Ping, stableUid: string | null, device: UsageDevice, now: Date): Promise<void> {
+// `account` is who sent the ping; `named` whether the row may say so.
+async function applyPing(ping: Ping, account: string | null, named: boolean, device: UsageDevice, now: Date): Promise<void> {
   const screens = Math.min(ping.screens, MAX_PING_SCREENS);
   const existing = await prisma.usageSession.findUnique({
     where: { id: ping.sessionId },
-    select: { stableUid: true, activeSeconds: true, lastSeenAt: true },
+    select: { stableUid: true, visitorKey: true, dayKey: true, activeSeconds: true, lastSeenAt: true },
   });
 
   if (!existing) {
@@ -70,7 +75,8 @@ async function applyPing(ping: Ping, stableUid: string | null, device: UsageDevi
     await prisma.usageSession.create({
       data: {
         id: ping.sessionId,
-        stableUid,
+        stableUid: named ? account : null,
+        visitorKey: account ? await visitorKeyFor(account, dayKey) : null,
         device,
         client: ping.client,
         appVersion: ping.client === 'app' ? (ping.appVersion ?? '') : '',
@@ -87,7 +93,10 @@ async function applyPing(ping: Ping, stableUid: string | null, device: UsageDevi
 
   // A visit belongs to the account that started it. Another account's ping
   // with the same id is ignored rather than merged into someone else's row.
-  if (existing.stableUid && stableUid && existing.stableUid !== stableUid) return;
+  // The key is the visit's own day's, so a visit past midnight still matches.
+  const visitorKey = account ? await visitorKeyFor(account, existing.dayKey) : null;
+  if (existing.visitorKey && visitorKey && existing.visitorKey !== visitorKey) return;
+  if (existing.stableUid && account && existing.stableUid !== account) return;
 
   const add = creditedSeconds(ping.activeSeconds, now.getTime() - existing.lastSeenAt.getTime(), existing.activeSeconds);
   await prisma.usageSession.update({
@@ -96,8 +105,10 @@ async function applyPing(ping: Ping, stableUid: string | null, device: UsageDevi
       activeSeconds: { increment: add },
       screens: { increment: screens },
       lastSeenAt: now,
-      // A guest who signs in during the visit.
-      ...(stableUid && !existing.stableUid ? { stableUid } : {}),
+      // Signed in during the visit, or the consent changed meanwhile.
+      ...(visitorKey && !existing.visitorKey ? { visitorKey } : {}),
+      ...(named && account && !existing.stableUid ? { stableUid: account } : {}),
+      ...(!named && existing.stableUid ? { stableUid: null } : {}),
     },
   });
 }
@@ -110,22 +121,17 @@ router.post('/ping', optionalAuth, limiter, async (req: Request, res: Response):
   }
 
   const ping = parsed.data;
-  const stableUid = req.user?.stableUid ?? null;
-  // Measured only with consent. The answer is the same either way, so a
-  // client learns nothing from it and simply keeps going.
-  if (!stableUid || !(await hasUsageConsent(stableUid).catch(() => false))) {
-    res.status(204).send();
-    return;
-  }
+  const account = req.user?.stableUid ?? null;
+  const named = account ? await hasUsageConsent(account).catch(() => false) : false;
   const device: UsageDevice = ping.device ?? classifyUserAgent(req.headers['user-agent'])?.device ?? 'other';
   const now = new Date();
 
   try {
-    await applyPing(ping, stableUid, device, now);
+    await applyPing(ping, account, named, device, now);
   } catch (err) {
     // Two first pings of one visit can race; the loser simply updates.
     if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
-      await applyPing(ping, stableUid, device, now).catch(() => {});
+      await applyPing(ping, account, named, device, now).catch(() => {});
     } else {
       if (config.debug) logger.warn('[usage] ping not stored', { message: err instanceof Error ? err.message : String(err), requestId: req.id });
       res.status(503).json({ error: 'Usage analytics unavailable' });

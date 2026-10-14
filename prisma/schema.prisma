@@ -489,18 +489,25 @@ model FrontendActivityLog {
 
 // ─── Usage analytics ─────────────────────────────────────────────────────────
 // One row per visit to Pokyh, kept current by a foreground heartbeat from the
-// web app and the iOS and Android apps (POST /usage/ping) — only for accounts
-// that consented to the usage statistics (PrivacyConsent). It holds only what
+// web app and the iOS and Android apps (POST /usage/ping). It holds only what
 // the admin Analytics page aggregates: the kind of device and client, how long
-// Pokyh was in the foreground and how many screens were opened. No IP address, user
-// agent, page path or content is stored. A deleted account's rows lose their
-// link to it (SET NULL), and every row is removed after
-// USAGE_ANALYTICS_RETENTION_DAYS.
+// Pokyh was in the foreground and how many screens were opened. No IP address,
+// user agent, page path or content is stored.
+//
+// A visit names its account only if the account consented to the usage
+// statistics (PrivacyConsent), and only for USAGE_ANALYTICS_RETENTION_DAYS;
+// otherwise, and afterwards, the row is anonymous: a day-scoped visitor key
+// (services/visitorKey.ts) lets the page count different people per day
+// without knowing who. Anonymous rows feed the aggregate figures for as long
+// as the page shows them.
 model UsageSession {
   // Random per visit, chosen by the client and never reused.
   id            String   @id @db.VarChar(36)
-  // Null for visitors who are not signed in (the website's guest pages).
+  // The account, only with its consent (and never for guests).
   stableUid     String?  @map("stable_uid")
+  // sha256(day salt + account), 16 hex characters: the same within the day,
+  // unlinkable across days and to the account once the day's salt is gone.
+  visitorKey    String?  @map("visitor_key") @db.VarChar(16)
   // "ios" | "android" | "desktop" | "other"
   device        String   @db.VarChar(10)
   // "app" (native) | "pwa" (website installed to the home screen) | "browser"
@@ -522,6 +529,16 @@ model UsageSession {
   @@index([stableUid, dayKey])
   @@index([lastSeenAt])
   @@map("usage_sessions")
+}
+
+// The random salt of one day's visitor keys (UsageSession.visitorKey). Deleted
+// once the day is over, which makes that day's keys anonymous for good.
+model UsageDaySalt {
+  dayKey    String   @id @map("day_key") @db.VarChar(10)
+  salt      String   @db.VarChar(64)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("usage_day_salts")
 }
 
 // ─── Privacy notice and usage-statistics consent ─────────────────────────────

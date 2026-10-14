@@ -728,6 +728,39 @@
 }
 /* Hover only ever changes colour: icons never grow, tilt or move. */
 .strip-link:focus-visible { outline-offset: 6px; border-radius: 16px; }
+/* A figure's explanation fades in below it on hover or keyboard focus; the
+   figure itself stays put. The last one opens leftwards so it stays on the
+   page. */
+.strip-cell[data-hint] { position: relative; }
+.strip-cell[data-hint]:focus-visible { outline-offset: 6px; border-radius: 16px; }
+.strip-cell[data-hint]::after {
+  content: attr(data-hint);
+  position: absolute;
+  left: 0;
+  top: calc(100% + 12px);
+  z-index: 40;
+  width: max-content;
+  max-width: min(330px, 80vw);
+  padding: 10px 13px;
+  border-radius: 11px;
+  background: var(--tip);
+  color: var(--tip-ink);
+  font-size: 12.5px;
+  font-weight: 400;
+  line-height: 1.5;
+  text-align: left;
+  white-space: pre-line;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(4px);
+  transition: opacity 0.2s ease, transform 0.35s var(--glide);
+}
+.strip-cell[data-hint]:last-child::after { left: auto; right: 0; }
+.strip-cell[data-hint]:hover::after,
+.strip-cell[data-hint]:focus-visible::after { opacity: 1; transform: translateY(0); transition-delay: 0.15s; }
+@media (hover: none) {
+  .strip-cell[data-hint]::after { display: none; }
+}
 @container (min-width: 880px) {
   .strip-figure { flex-direction: row; align-items: baseline; gap: 12px; }
 }

@@ -640,11 +640,11 @@ export const adminApi = {
     request<{ command: string; sha256: string; expiresAt: string }>('POST', '/api/admin/cluster/relay-command', data),
 
   // `fresh` skips the server's short response cache (the refresh button).
-  analytics: (days: AnalyticsRange, fresh = false): Promise<AdminAnalytics> =>
-    request<AdminAnalytics>('GET', `/api/admin/analytics?days=${days}${fresh ? '&fresh=1' : ''}`),
+  analytics: (range: AnalyticsRange, fresh = false): Promise<AdminAnalytics> =>
+    request<AdminAnalytics>('GET', `/api/admin/analytics?range=${range}${fresh ? '&fresh=1' : ''}`),
 
-  analyticsPeople: (days: AnalyticsRange, filters: PeopleFilters): Promise<AnalyticsPeople> => {
-    const p = new URLSearchParams({ days: String(days) });
+  analyticsPeople: (range: AnalyticsRange, filters: PeopleFilters): Promise<AnalyticsPeople> => {
+    const p = new URLSearchParams({ range });
     if (filters.platform) p.set('platform', filters.platform);
     if (filters.day) p.set('day', filters.day);
     if (filters.hours?.length) p.set('hours', filters.hours.join(','));
@@ -657,8 +657,8 @@ export const adminApi = {
     return request<AnalyticsPeople>('GET', `/api/admin/analytics/people?${p.toString()}`);
   },
 
-  analyticsBreakdown: (kind: BreakdownKind, days: AnalyticsRange): Promise<AnalyticsBreakdown> =>
-    request<AnalyticsBreakdown>('GET', `/api/admin/analytics/breakdown?kind=${kind}&days=${days}`),
+  analyticsBreakdown: (kind: BreakdownKind, range: AnalyticsRange): Promise<AnalyticsBreakdown> =>
+    request<AnalyticsBreakdown>('GET', `/api/admin/analytics/breakdown?kind=${kind}&range=${range}`),
 
   analyticsDishes: (): Promise<AnalyticsDishes> =>
     request<AnalyticsDishes>('GET', '/api/admin/analytics/dishes'),

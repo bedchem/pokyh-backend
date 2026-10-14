@@ -30,6 +30,7 @@ import { getLearnConfig } from './services/learnConfig';
 import { ensureModelReady } from './services/learnAiOllama';
 import { learningDayKey } from './services/learnAnalytics';
 import { localDayAndHour } from './services/usageAnalytics';
+import { keyUnkeyedVisits } from './services/visitorKey';
 import { closeLearnCache } from './services/learnCache';
 import { withWwwOriginAlias } from './utils/cors';
 import { loadTokenRevocations } from './utils/revokedTokens';
@@ -331,19 +332,43 @@ async function cleanupExpiredUsageSessions() {
   // Replicated data: in a cluster one node cleaning up is enough.
   if (!ownsClusterWork('job:usage-analytics-cleanup')) return;
   const { timezone, retentionDays } = config.usageAnalytics;
-  const cutoffDayKey = localDayAndHour(new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000), timezone).dayKey;
-  const { count } = await prisma.usageSession.deleteMany({ where: { dayKey: { lt: cutoffDayKey } } });
-  // Visits only exist with consent: anything of an account without it (data
-  // from before consent was asked, a race with a withdrawal on another node)
-  // goes. Rows of deleted accounts carry no account any more and stay.
+  const now = Date.now();
+  const cutoffDayKey = localDayAndHour(new Date(now - retentionDays * 24 * 60 * 60 * 1000), timezone).dayKey;
+  // Nothing is deleted: a visit only loses its account, after which it is one
+  // of the anonymous counts the page is built from.
+  // 0. Visits without a visitor key get one first, so they keep counting.
+  const keyed = await keyUnkeyedVisits();
+  // 1. Named only for USAGE_ANALYTICS_RETENTION_DAYS.
+  const expired = await prisma.usageSession.updateMany({
+    where: { stableUid: { not: null }, dayKey: { lt: cutoffDayKey } },
+    data: { stableUid: null },
+  });
+  // 2. Named only with consent (rows from before it was asked, a race with a
+  //    withdrawal on another node).
   const withoutConsent = await prisma.$executeRaw`
-    DELETE FROM usage_sessions
+    UPDATE usage_sessions SET stable_uid = NULL
     WHERE stable_uid IS NOT NULL
       AND stable_uid NOT IN (SELECT stable_uid FROM privacy_consents WHERE usage_stats = 1)`;
-  if (count > 0 || withoutConsent > 0) logger.info('Usage analytics retention cleanup', {
+  // 3. Finished anonymous visits keep only the hour, so their times cannot be
+  //    matched against other records.
+  const dayAgo = new Date(now - 24 * 60 * 60 * 1000);
+  const coarsened = await prisma.$executeRaw`
+    UPDATE usage_sessions
+    SET started_at = DATE_FORMAT(started_at, '%Y-%m-%d %H:00:00'),
+        last_seen_at = DATE_FORMAT(last_seen_at, '%Y-%m-%d %H:00:00')
+    WHERE stable_uid IS NULL AND last_seen_at < ${dayAgo}
+      AND (MINUTE(started_at) <> 0 OR SECOND(started_at) <> 0 OR MINUTE(last_seen_at) <> 0 OR SECOND(last_seen_at) <> 0)`;
+  // 4. Visitor-key salts of finished days go; their keys can then never be
+  //    traced back. Yesterday's stays a day for visits past midnight.
+  const yesterdayKey = localDayAndHour(dayAgo, timezone).dayKey;
+  const salts = await prisma.usageDaySalt.deleteMany({ where: { dayKey: { lt: yesterdayKey } } });
+  if (keyed > 0 || expired.count > 0 || withoutConsent > 0 || coarsened > 0 || salts.count > 0) logger.info('Usage analytics retention cleanup', {
     action: 'usage_analytics_retention_cleanup',
-    deletedCount: count,
-    withoutConsentCount: withoutConsent,
+    keyed,
+    anonymisedExpired: expired.count,
+    anonymisedWithoutConsent: withoutConsent,
+    coarsened,
+    saltsDeleted: salts.count,
     retentionDays,
   });
 }

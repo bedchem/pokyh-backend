@@ -18,6 +18,10 @@ import {
   Moon,
   RefreshCw,
   Repeat,
+  ShieldCheck,
+  ShieldOff,
+  ShieldQuestion,
+  ShieldX,
   Smartphone,
   Sparkles,
   Star,
@@ -68,6 +72,34 @@ const TABS: Array<{ value: TabKey; label: string }> = [
 ];
 const TAB_KEY = 'pokyh_admin_analytics_tab';
 
+// The periods on offer; a calendar year is picked from its own list.
+type RangeChoice = '7' | '30' | '90' | '365' | 'all';
+const RANGES: Array<{ value: RangeChoice; label: string }> = [
+  { value: '7', label: '7 Tage' },
+  { value: '30', label: '30 Tage' },
+  { value: '90', label: '90 Tage' },
+  { value: '365', label: '12 Monate' },
+  { value: 'all', label: 'Alltime' },
+];
+const RANGE_KEY = 'pokyh_admin_analytics_range';
+
+function storedRange(): AnalyticsRange {
+  try {
+    const value = localStorage.getItem(RANGE_KEY);
+    if (value && /^(7|30|90|365|all|\d{4})$/.test(value)) return value as AnalyticsRange;
+  } catch { /* the default then */ }
+  return '30';
+}
+
+function periodText(range: AnalyticsRange): string {
+  if (range === 'all') return 'Alltime';
+  if (range === '365') return 'letzte 12 Monate';
+  if (/^\d{4}$/.test(range)) return `Jahr ${range}`;
+  return `letzte ${range} Tage`;
+}
+
+const capitalised = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
+
 function storedTab(): TabKey {
   try {
     const value = localStorage.getItem(TAB_KEY);
@@ -113,6 +145,52 @@ function longDay(dayKey: string): string {
 function shortDay(dayKey: string, days: number): string {
   const d = dayDate(dayKey);
   return days > 31 ? `${d.getDate()}.${d.getMonth() + 1}.` : String(d.getDate()).padStart(2, '0');
+}
+
+function shortDate(dayKey: string): string {
+  return dayDate(dayKey).toLocaleDateString('de-AT', { day: 'numeric', month: 'short', year: 'numeric' });
+}
+
+// Up to three months are drawn day by day; longer periods per week, more than
+// a year per month — a year of single days is only noise.
+type Day = AdminAnalytics['daily'][number];
+interface Bucket { label: string; title: string; days: Day[] }
+
+function bucketsOf(daily: Day[]): { unit: 'day' | 'week' | 'month'; buckets: Bucket[] } {
+  if (daily.length <= 92) {
+    return { unit: 'day', buckets: daily.map((d) => ({ label: shortDay(d.dayKey, daily.length), title: longDay(d.dayKey), days: [d] })) };
+  }
+  const unit = daily.length <= 400 ? 'week' : 'month';
+  const buckets: Bucket[] = [];
+  let currentKey = '';
+  for (const d of daily) {
+    const date = dayDate(d.dayKey);
+    const monday = new Date(date);
+    monday.setDate(date.getDate() - ((date.getDay() + 6) % 7));
+    const key = unit === 'week' ? monday.toDateString() : d.dayKey.slice(0, 7);
+    if (key !== currentKey) {
+      currentKey = key;
+      buckets.push(unit === 'week'
+        ? { label: `${date.getDate()}.${date.getMonth() + 1}.`, title: `Woche ab ${longDay(d.dayKey)}`, days: [] }
+        : {
+          label: date.toLocaleDateString('de-AT', { month: 'short', year: '2-digit' }),
+          title: date.toLocaleDateString('de-AT', { month: 'long', year: 'numeric' }),
+          days: [],
+        });
+    }
+    buckets[buckets.length - 1]!.days.push(d);
+  }
+  return { unit, buckets };
+}
+
+// A bucket's daily figure: the average over its days with use.
+function perUsedDay(days: Day[], pick: (d: Day) => number): number {
+  const used = days.filter((d) => d.sessions > 0);
+  return used.length > 0 ? Math.round((used.reduce((s, d) => s + pick(d), 0) / used.length) * 10) / 10 : 0;
+}
+
+function tickEveryFor(points: number): number {
+  return points <= 8 ? 1 : points <= 31 ? 3 : Math.ceil(points / 10);
 }
 
 function lastSeen(iso: string): string {
@@ -312,6 +390,7 @@ function usePopupData<T>(load: () => Promise<T>, key: string) {
 // rest of a figure is said in one line under the list.
 function peopleFooter(result: AnalyticsPeople): string | undefined {
   const parts: string[] = [];
+  if (result.window?.clamped) parts.push(`Namen gibt es nur ab ${shortDate(result.window.fromKey)}, ältere Besuche sind anonym.`);
   if (result.total > result.people.length) parts.push(`Gezeigt werden ${de(result.people.length)} von ${de(result.total)} Konten.`);
   if (result.hidden > 0) parts.push(`${de(result.hidden)} weitere ${result.hidden === 1 ? 'Konto' : 'Konten'} ohne Einwilligung zur Nutzungsstatistik ${result.hidden === 1 ? 'wird' : 'werden'} nicht einzeln gezeigt.`);
   return parts.length > 0 ? parts.join(' ') : undefined;
@@ -331,8 +410,8 @@ interface PeopleView {
   title: string;
   filters: PeopleFilters;
   sort: SortKey;
-  // A range of its own (e.g. "last 7 days" whatever the page shows).
-  days?: AnalyticsRange;
+  // A period of its own (e.g. "last 7 days" whatever the page shows).
+  range?: AnalyticsRange;
   search?: string;
 }
 
@@ -342,8 +421,8 @@ function compare(a: AnalyticsPerson, b: AnalyticsPerson, key: SortKey): number {
   return a[key] - b[key];
 }
 
-function PeopleDialog({ view, days, colors, onClose }: { view: PeopleView; days: AnalyticsRange; colors: Record<UsagePlatform, string>; onClose: () => void }) {
-  const range = view.days ?? days;
+function PeopleDialog({ view, range: pageRange, colors, onClose }: { view: PeopleView; range: AnalyticsRange; colors: Record<UsagePlatform, string>; onClose: () => void }) {
+  const range = view.range ?? pageRange;
   const [query, setQuery] = useState(view.search ?? '');
   const [sort, setSort] = useState<Sort<SortKey>>({ key: view.sort, desc: view.sort !== 'username' });
   const tableRef = useRef<HTMLDivElement>(null);
@@ -363,9 +442,10 @@ function PeopleDialog({ view, days, colors, onClose }: { view: PeopleView; days:
   }, [result, query, sort]);
   const totalSeconds = shown.reduce((sum, p) => sum + p.seconds, 0);
 
+  const shownPeriod = result?.window?.clamped ? `seit ${shortDate(result.window.fromKey)}` : periodText(range);
   const subtitle = result
-    ? [`${de(result.total)} ${result.total === 1 ? 'Konto' : 'Konten'}`, `letzte ${range} Tage`, totalSeconds > 0 ? `zusammen ${hours(totalSeconds)}` : null].filter(Boolean).join(' · ')
-    : `Letzte ${range} Tage`;
+    ? [`${de(result.total)} ${result.total === 1 ? 'Konto' : 'Konten'}`, shownPeriod, totalSeconds > 0 ? `zusammen ${hours(totalSeconds)}` : null].filter(Boolean).join(' · ')
+    : capitalised(periodText(range));
 
   return (
     <Dialog title={view.title} subtitle={subtitle} onClose={onClose} width={820}>
@@ -516,12 +596,12 @@ interface BreakdownView {
   valueHeader: string;
 }
 
-function BreakdownDialog({ view, days, onClose }: { view: BreakdownView; days: AnalyticsRange; onClose: () => void }) {
+function BreakdownDialog({ view, range, onClose }: { view: BreakdownView; range: AnalyticsRange; onClose: () => void }) {
   const [query, setQuery] = useState('');
   const [sort, setSort] = useState<Sort<'label' | 'value'>>({ key: 'value', desc: true });
   const tableRef = useRef<HTMLDivElement>(null);
   useTableLabels(tableRef);
-  const { data, error } = usePopupData<AnalyticsBreakdown>(() => adminApi.analyticsBreakdown(view.kind, days), `${view.kind}|${days}`);
+  const { data, error } = usePopupData<AnalyticsBreakdown>(() => adminApi.analyticsBreakdown(view.kind, range), `${view.kind}|${range}`);
   const peak = Math.max(1, ...(data?.items ?? []).map((item) => item.value));
 
   const shown = useMemo(() => {
@@ -541,7 +621,7 @@ function BreakdownDialog({ view, days, onClose }: { view: BreakdownView; days: A
   return (
     <Dialog
       title={view.title}
-      subtitle={data ? `${de(data.total)} ${view.valueHeader} · letzte ${days} Tage` : `Letzte ${days} Tage`}
+      subtitle={data ? `${de(data.total)} ${view.valueHeader} · ${periodText(range)}` : capitalised(periodText(range))}
       onClose={onClose}
       width={640}
     >
@@ -593,7 +673,7 @@ function Skeleton() {
 export function AnalyticsPage() {
   const theme = useTheme();
   const colors = PLATFORM_COLOR[theme];
-  const [days, setDays] = useState<AnalyticsRange>(30);
+  const [range, setRangeState] = useState<AnalyticsRange>(storedRange);
   const [tab, setTabState] = useState<TabKey>(storedTab);
   const [data, setData] = useState<AdminAnalytics | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -610,13 +690,18 @@ export function AnalyticsPage() {
   // While the admin stream is connected every change reaches the page at once.
   const streaming = useLiveStatus();
 
+  const setRange = (next: AnalyticsRange) => {
+    setRangeState(next);
+    try { localStorage.setItem(RANGE_KEY, next); } catch { /* remembered for this visit only */ }
+  };
+
   const setTab = (next: TabKey) => {
     setTabState(next);
     try { localStorage.setItem(TAB_KEY, next); } catch { /* remembered for this visit only */ }
   };
 
   // Opens what is behind a figure: who, which dishes, or what it is made of.
-  const show = (title: string, filters: PeopleFilters, sort: SortKey = 'seconds', extra: Pick<PeopleView, 'days' | 'search'> = {}) =>
+  const show = (title: string, filters: PeopleFilters, sort: SortKey = 'seconds', extra: Pick<PeopleView, 'range' | 'search'> = {}) =>
     setPopup({ type: 'people', view: { title, filters, sort, ...extra } });
   const showDishes = (title: string, sort: DishSort, stars?: number) => setPopup({ type: 'dishes', view: { title, sort, stars } });
   const showBreakdown = (title: string, kind: BreakdownKind, labelHeader: string, valueHeader: string) =>
@@ -626,7 +711,7 @@ export function AnalyticsPage() {
 
   const load = useCallback(async (fresh = false) => {
     try {
-      const next = await adminApi.analytics(days, fresh);
+      const next = await adminApi.analytics(range, fresh);
       setData(next);
       setError(null);
     } catch (err) {
@@ -634,7 +719,7 @@ export function AnalyticsPage() {
     } finally {
       setLoading(false);
     }
-  }, [days]);
+  }, [range]);
 
   useEffect(() => {
     setLoading(true);
@@ -653,29 +738,36 @@ export function AnalyticsPage() {
     try { await load(true); } finally { setManual(false); }
   };
 
+  const buckets = useMemo(() => (data ? bucketsOf(data.daily) : null), [data]);
+
   const trend = useMemo(() => {
-    if (!data) return null;
-    const labels = data.daily.map((d) => shortDay(d.dayKey, data.days));
-    const titles = data.daily.map((d) => longDay(d.dayKey));
-    const tickEvery = data.days <= 7 ? 1 : data.days <= 30 ? 3 : 10;
+    if (!data || !buckets) return null;
+    const { unit } = buckets;
+    const list = buckets.buckets;
+    const labels = list.map((b) => b.label);
+    const titles = list.map((b) => b.title);
     let series: TrendSeries[];
     if (metric === 'users') {
       series = PLATFORM_ORDER
         .filter((p) => data.daily.some((d) => d.byPlatform[p] > 0))
-        .map((p) => ({ key: p, label: PLATFORM_LABEL[p], color: colors[p], values: data.daily.map((d) => d.byPlatform[p]) }));
+        .map((p) => ({ key: p, label: PLATFORM_LABEL[p], color: colors[p], values: list.map((b) => perUsedDay(b.days, (d) => d.byPlatform[p])) }));
     } else if (metric === 'time') {
       series = [{
         key: 'time',
         label: 'Ø Minuten pro Nutzer',
         color: NEUTRAL,
         area: true,
-        values: data.daily.map((d) => (d.users > 0 ? Math.round((d.userSeconds / d.users / 60) * 10) / 10 : 0)),
+        values: list.map((b) => {
+          const users = b.days.reduce((s, d) => s + d.users, 0);
+          const seconds = b.days.reduce((s, d) => s + d.userSeconds, 0);
+          return users > 0 ? Math.round((seconds / users / 60) * 10) / 10 : 0;
+        }),
       }];
     } else {
-      series = [{ key: 'sessions', label: 'Sitzungen', color: NEUTRAL, area: true, values: data.daily.map((d) => d.sessions) }];
+      series = [{ key: 'sessions', label: 'Sitzungen', color: NEUTRAL, area: true, values: list.map((b) => b.days.reduce((s, d) => s + d.sessions, 0)) }];
     }
-    return { labels, titles, tickEvery, series };
-  }, [data, metric, colors]);
+    return { unit, labels, titles, tickEvery: tickEveryFor(list.length), series };
+  }, [data, buckets, metric, colors]);
 
   if (loading && !data) return <Skeleton />;
 
@@ -693,8 +785,15 @@ export function AnalyticsPage() {
 
   const { platforms, time, engagement, accounts, features, mensa, live } = data;
   const hasVisits = time.sessions > 0;
-  const rangeLabel = `letzte ${data.days} Tage`;
-  const todayKey = data.axis[data.axis.length - 1]!;
+  const rangeLabel = data.period.label;
+  // Periods longer than the server logs reach: people per day, on average.
+  const perDay = platforms.mode === 'dailyAverage';
+  const platformValue = (p: UsagePlatform) => (perDay ? de(platforms.byPlatform[p], 1) : platforms.byPlatform[p]);
+  const platformNote = (p: UsagePlatform) => (perDay ? <Delta>Ø pro Tag</Delta> : <Delta>{percent(platforms.byPlatform[p], platforms.total)} der Nutzer</Delta>);
+  const years = data.availableYears.length > 0 ? data.availableYears : [new Date().getFullYear()];
+  const isYear = /^\d{4}$/.test(range);
+  const unitWord = trend?.unit === 'week' ? 'Woche' : trend?.unit === 'month' ? 'Monat' : 'Tag';
+  const todayKey = new Date().toLocaleDateString('sv-SE', { timeZone: data.timezone });
   const loadedAt = new Date(data.generatedAt).toLocaleTimeString('de-AT', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
   const platformSum = PLATFORM_ORDER.reduce((s, p) => s + platforms.byPlatform[p], 0);
   const shownPlatforms = PLATFORM_ORDER.filter((p) => p !== 'other' || platforms.byPlatform.other > 0 || time.byPlatform.other.sessions > 0);
@@ -717,7 +816,7 @@ export function AnalyticsPage() {
   if (favouriteDay && favouriteDay.avgUsers > 0) highlights.push({ icon: CalendarDays, tone: 'mint', value: WEEKDAYS[favouriteDay.weekday]!, label: `Lieblingstag mit Ø ${de(favouriteDay.avgUsers, 1)} aktiven Nutzern`, open: () => show(`Aktiv an ${WEEKDAYS[favouriteDay.weekday]}en`, { weekdays: [favouriteDay.weekday] }, 'visits') });
   if (engagement.loyalUsers > 0) highlights.push({ icon: Repeat, tone: 'mint', value: `${de(engagement.loyalUsers)} Stammnutzer`, label: 'an mindestens jedem zweiten Tag aktiv', open: () => show('Stammnutzer', { segment: 'loyal' }, 'activeDays') });
   if (time.longestSessionSeconds > 0) highlights.push({ icon: Timer, tone: 'sky', value: duration(time.longestSessionSeconds), label: 'längste einzelne Sitzung' });
-  if (platforms.multiPlatform > 0) highlights.push({ icon: Layers, tone: 'violet', value: `${de(platforms.multiPlatform)} Nutzer`, label: `nutzen mehrere Plattformen (${percent(platforms.multiPlatform, platforms.total)})`, open: () => show('Auf mehreren Plattformen', { segment: 'multi' }) });
+  if (!perDay && platforms.multiPlatform > 0) highlights.push({ icon: Layers, tone: 'violet', value: `${de(platforms.multiPlatform)} Nutzer`, label: `nutzen mehrere Plattformen (${percent(platforms.multiPlatform, platforms.total)})`, open: () => show('Auf mehreren Plattformen', { segment: 'multi' }) });
   if (mensa.topRated) highlights.push({ icon: UtensilsCrossed, tone: 'amber', value: mensa.topRated.name, label: `Mensa-Liebling: Ø ${de(mensa.topRated.avg, 1)} ★`, open: () => showDishes('Gerichte nach Bewertung', 'avgStars') });
 
   const learnByCourse = () => showBreakdown('Pokyh Learn nach Kurs', 'learn', 'Kurs', 'Antworten');
@@ -737,12 +836,16 @@ export function AnalyticsPage() {
         title="Analytics"
         subtitle="Wie Pokyh genutzt wird — iPhone-App, Android-App und Web im Vergleich. Ein Klick auf eine Zahl zeigt, wer dahintersteht."
       >
-        <Segmented
-          label="Zeitraum"
-          value={String(days) as '7' | '30' | '90'}
-          onChange={(next) => setDays(Number(next) as AnalyticsRange)}
-          options={[{ value: '7', label: '7 Tage' }, { value: '30', label: '30 Tage' }, { value: '90', label: '90 Tage' }]}
-        />
+        <Segmented label="Zeitraum" value={range as RangeChoice} onChange={setRange} options={RANGES} />
+        <select
+          value={isYear ? range : ''}
+          onChange={(e) => { if (e.target.value) setRange(e.target.value as AnalyticsRange); }}
+          aria-label="Jahr"
+          className="field h-11 px-4 text-[14px]"
+        >
+          <option value="" disabled>Jahr</option>
+          {years.map((year) => <option key={year} value={String(year)}>{year}</option>)}
+        </select>
         <IconButton icon={RefreshCw} label="Aktualisieren" size={42} busy={manual || refreshing || loading} onClick={() => void refreshNow()} />
       </PageHeader>
 
@@ -758,7 +861,7 @@ export function AnalyticsPage() {
         <span className="text-ink-3" title={`Zuletzt geladen um ${loadedAt}`}>
           · {streaming ? 'Live-Stand' : `Stand ${loadedAt.slice(0, 5)}`}
         </span>
-        <span className="text-ink-3" title="Nutzungszeiten und Personenlisten gibt es nur von Konten, die der Nutzungsstatistik zugestimmt haben.">
+        <span className="text-ink-3" title="Gezählt wird jede Nutzung, ohne Namen. Namen in den Listen gibt es nur von Konten, die „Alle akzeptieren“ gewählt oder der Statistik im Profil zugestimmt haben.">
           · {de(accounts.usageConsents)} {accounts.usageConsents === 1 ? 'Konto' : 'Konten'} mit Einwilligung
         </span>
       </div>
@@ -769,23 +872,23 @@ export function AnalyticsPage() {
           items={[
             {
               label: 'iPhone-App',
-              value: platforms.byPlatform.ios,
+              value: platformValue('ios'),
               icon: Smartphone,
-              note: <Delta>{percent(platforms.byPlatform.ios, platforms.total)} der Nutzer</Delta>,
+              note: platformNote('ios'),
               onClick: () => showPlatform('ios'),
             },
             {
               label: 'Android-App',
-              value: platforms.byPlatform.android,
+              value: platformValue('android'),
               icon: Smartphone,
-              note: <Delta>{percent(platforms.byPlatform.android, platforms.total)} der Nutzer</Delta>,
+              note: platformNote('android'),
               onClick: () => showPlatform('android'),
             },
             {
               label: 'Web',
-              value: platforms.byPlatform.web,
+              value: platformValue('web'),
               icon: Globe,
-              note: <Delta>{percent(platforms.byPlatform.web, platforms.total)} der Nutzer</Delta>,
+              note: platformNote('web'),
               onClick: () => showPlatform('web'),
             },
             {
@@ -801,14 +904,49 @@ export function AnalyticsPage() {
           className="-mt-px"
           items={[
             { label: 'Aktiv heute', value: engagement.dau, icon: Users, note: <Delta>Nutzer</Delta>, onClick: () => show('Heute aktiv', { day: todayKey }, 'lastSeenAt') },
-            { label: 'Letzte 7 Tage', value: engagement.wau, icon: CalendarDays, note: <Delta>Nutzer</Delta>, onClick: () => show('Aktiv in den letzten 7 Tagen', {}, 'seconds', { days: 7 }) },
-            { label: 'Letzte 30 Tage', value: engagement.mau, icon: ChartNoAxesColumn, note: <Delta>Nutzer</Delta>, onClick: () => show('Aktiv in den letzten 30 Tagen', {}, 'seconds', { days: 30 }) },
+            { label: 'Letzte 7 Tage', value: engagement.wau, icon: CalendarDays, note: <Delta>Nutzer</Delta>, onClick: () => show('Aktiv in den letzten 7 Tagen', {}, 'seconds', { range: '7' }) },
+            { label: 'Letzte 30 Tage', value: engagement.mau, icon: ChartNoAxesColumn, note: <Delta>Nutzer</Delta>, onClick: () => show('Aktiv in den letzten 30 Tagen', {}, 'seconds', { range: '30' }) },
             {
               label: 'Ø Sitzung',
               value: hasVisits ? duration(time.avgSessionSeconds) : '–',
               icon: Timer,
               note: hasVisits ? <Delta>Median {duration(time.medianSessionSeconds)}</Delta> : undefined,
               onClick: hasVisits ? () => show('Sitzungen', {}, 'visits') : undefined,
+            },
+          ]}
+        />
+
+        <Figures
+          className="-mt-px"
+          items={[
+            {
+              label: 'Mit Einwilligung',
+              value: accounts.usageConsents,
+              icon: ShieldCheck,
+              note: <Delta>{percent(accounts.usageConsents, accounts.total)} der Konten</Delta>,
+              onClick: () => show('Konten mit Einwilligung', { segment: 'consented' }, 'lastSeenAt'),
+              hint: 'Haben „Alle akzeptieren“ gewählt oder die persönliche Statistik im Profil eingeschaltet.\n\nMit Namen (90 Tage, danach anonym): Zeit in Pokyh, Plattform und App-Version, aktive Tage, zuletzt aktiv, aufgerufene Seiten.\n\nNie gespeichert: IP-Adresse, Inhalte, Eingaben.\n\nKlick zeigt die Konten.',
+            },
+            {
+              label: 'Ohne Einwilligung',
+              value: Math.max(0, accounts.total - accounts.usageConsents),
+              icon: ShieldOff,
+              note: <Delta>nur anonym gezählt</Delta>,
+              hint: '„Nur notwendige“ gewählt oder noch keine Wahl.\n\nGezählt wird ohne Namen: Dauer, Plattform, App-Version und Uhrzeit eines Besuchs – mit einem Tagesschlüssel statt des Kontos, der nach dem Tag nicht mehr auflösbar ist.\n\nNicht möglich: Namen in Listen, Seitenaufrufe pro Person, Tage einer Person verknüpfen.',
+            },
+            {
+              label: 'Nur notwendige',
+              value: accounts.usageRefusals,
+              icon: ShieldX,
+              note: <Delta>abgelehnt</Delta>,
+              hint: 'Haben im Banner „Nur notwendige“ gewählt. Sie werden wie alle ohne Einwilligung nur anonym gezählt.\n\nDer Banner fragt frühestens nach 6 Monaten erneut.',
+            },
+            {
+              label: 'Noch keine Wahl',
+              value: accounts.usageUndecided,
+              icon: ShieldQuestion,
+              note: <Delta>Banner noch offen</Delta>,
+              hint: 'Haben im Cookie-Banner noch nichts gewählt, zum Beispiel weil sie nur die Apps nutzen.\n\nBis dahin werden sie nur anonym gezählt.',
             },
           ]}
         />
@@ -853,22 +991,22 @@ export function AnalyticsPage() {
                       titles={trend.titles}
                       series={trend.series}
                       tickEvery={trend.tickEvery}
-                      drawKey={`${metric}-${data.days}`}
-                      onSelect={(i) => {
+                      drawKey={`${metric}-${data.period.key}`}
+                      onSelect={trend.unit === 'day' ? (i) => {
                         const dayKey = data.daily[i]?.dayKey;
                         if (dayKey) show(`Aktiv am ${longDay(dayKey)}`, { day: dayKey }, metric === 'sessions' ? 'visits' : 'seconds');
-                      }}
+                      } : undefined}
                       ariaLabel={metric === 'users'
-                        ? `Aktive Nutzer je Tag und Plattform, letzte ${data.days} Tage`
+                        ? `Aktive Nutzer je ${unitWord} und Plattform, ${rangeLabel}`
                         : metric === 'time'
-                          ? `Durchschnittliche Minuten pro aktivem Nutzer je Tag, letzte ${data.days} Tage`
-                          : `Sitzungen je Tag, letzte ${data.days} Tage`}
+                          ? `Durchschnittliche Minuten pro aktivem Nutzer und Tag, je ${unitWord}, ${rangeLabel}`
+                          : `Sitzungen je ${unitWord}, ${rangeLabel}`}
                     />
                   </div>
                   <Explain>
-                    {metric === 'users' && 'Verschiedene Konten pro Tag. Klick auf einen Tag zeigt, wer aktiv war.'}
-                    {metric === 'time' && 'Ø Zeit pro aktivem Konto und Tag.'}
-                    {metric === 'sessions' && 'Wie oft Pokyh pro Tag geöffnet wurde.'}
+                    {metric === 'users' && (trend.unit === 'day' ? 'Verschiedene Personen pro Tag. Klick auf einen Tag zeigt, wer aktiv war.' : `Ø verschiedene Personen pro Tag, je ${unitWord}.`)}
+                    {metric === 'time' && 'Ø Zeit pro aktiver Person und Tag.'}
+                    {metric === 'sessions' && `Wie oft Pokyh pro ${unitWord} geöffnet wurde.`}
                   </Explain>
                 </Section>
               )}
@@ -882,7 +1020,7 @@ export function AnalyticsPage() {
           {tab === 'platforms' && (
             <div className="flex flex-col gap-[56px]">
               <Pair>
-                <Section title="Verteilung" meta={`${de(platforms.total)} aktive Konten`}>
+                <Section title="Verteilung" meta={perDay ? `Ø ${de(platforms.total, 1)} Personen pro Tag` : `${de(platforms.total)} aktive Konten`}>
                   <div className="mt-8">
                     <SplitBar
                       ariaLabel="Aktive Konten nach Plattform"
@@ -894,7 +1032,7 @@ export function AnalyticsPage() {
                       <thead>
                         <tr>
                           <th>Plattform</th>
-                          <th style={{ textAlign: 'right' }}>Nutzer</th>
+                          <th style={{ textAlign: 'right' }}>{perDay ? 'Ø pro Tag' : 'Nutzer'}</th>
                           <th style={{ textAlign: 'right' }}>Sitzungen</th>
                           <th style={{ textAlign: 'right' }}>Ø Sitzung</th>
                           <th style={{ textAlign: 'right' }}>Zeit gesamt</th>
@@ -924,7 +1062,7 @@ export function AnalyticsPage() {
                                   {PLATFORM_LABEL[p]}
                                 </span>
                               </td>
-                              <td className="tabular text-right">{de(platforms.byPlatform[p])}</td>
+                              <td className="tabular text-right">{de(platforms.byPlatform[p], perDay ? 1 : 0)}</td>
                               <td className="tabular text-right text-ink-2">{de(t.sessions)}</td>
                               <td className="tabular text-right text-ink-2">{t.sessions > 0 ? duration(t.seconds / t.sessions) : '–'}</td>
                               <td className="tabular text-right text-ink-2">{t.seconds > 0 ? hours(t.seconds) : '–'}</td>
@@ -935,14 +1073,14 @@ export function AnalyticsPage() {
                       </tbody>
                     </table>
                   </div>
-                  <Explain>Klick auf eine Plattform zeigt, wer sie nutzt.</Explain>
+                  <Explain>{perDay ? 'Über so lange Zeiträume werden Besuche nicht zu Konten verknüpft. Klick zeigt die benannten Konten.' : 'Klick auf eine Plattform zeigt, wer sie nutzt.'}</Explain>
                 </Section>
 
-                <Section title="Web im Detail" meta={`${de(platforms.byPlatform.web)} Nutzer`}>
+                <Section title="Web im Detail" meta={perDay ? `Ø ${de(platforms.byPlatform.web, 1)} pro Tag` : `${de(platforms.byPlatform.web)} Nutzer`}>
                   <div className="mt-8">
                     <RankBars
                       color={colors.web}
-                      unit=" Nutzer"
+                      unit={perDay ? ' pro Tag' : ' Nutzer'}
                       onSelect={(item) => showPlatform('web', WEB_SEARCH[item.label])}
                       items={[
                         { label: 'Am Computer', value: platforms.web.desktop },
@@ -961,11 +1099,11 @@ export function AnalyticsPage() {
                   {(['ios', 'android'] as const).map((p) => {
                     const versions = data.appVersions.filter((v) => v.platform === p);
                     return (
-                      <Section key={p} title={`${PLATFORM_LABEL[p]}-Versionen`} meta="Nutzer je Version">
+                      <Section key={p} title={`${PLATFORM_LABEL[p]}-Versionen`} meta="Sitzungen je Version">
                         <div className="mt-8">
                           <RankBars
                             color={colors[p]}
-                            items={versions.map((v) => ({ label: v.version, value: v.users }))}
+                            items={versions.map((v) => ({ label: v.version, value: v.sessions }))}
                             onSelect={(item) => showPlatform(p, item.label)}
                             empty="Noch keine Version gemeldet."
                           />
@@ -1146,8 +1284,10 @@ export function AnalyticsPage() {
                   <Ledger
                     items={[
                       { label: 'Konten gesamt', value: de(accounts.total) },
-                      { label: 'Aktiv im Zeitraum', value: percent(platforms.total, accounts.total), open: () => show('Aktiv im Zeitraum', {}, 'seconds') },
-                      { label: 'Ohne Aktivität', value: de(Math.max(0, accounts.total - platforms.total)), open: () => show('Ohne Aktivität im Zeitraum', { segment: 'inactive' }, 'username') },
+                      ...(perDay ? [] : [
+                        { label: 'Aktiv im Zeitraum', value: percent(platforms.total, accounts.total), open: () => show('Aktiv im Zeitraum', {}, 'seconds') },
+                        { label: 'Ohne Aktivität', value: de(Math.max(0, accounts.total - platforms.total)), open: () => show('Ohne Aktivität im Zeitraum', { segment: 'inactive' }, 'username') },
+                      ]),
                       { label: 'Schüler:innen', value: de(accounts.students) },
                       { label: 'Eltern', value: de(accounts.parents) },
                       { label: 'Mit WebUntis', value: de(accounts.untis) },
@@ -1157,23 +1297,23 @@ export function AnalyticsPage() {
                     ]}
                   />
                 </div>
-                <h3 className="mb-5 mt-10 text-[14.5px] text-ink-3">Neue Konten pro Tag</h3>
+                <h3 className="mb-5 mt-10 text-[14.5px] text-ink-3">Neue Konten pro {unitWord}</h3>
                 <Bars
-                  values={data.daily.map((d) => d.signups)}
-                  labels={data.daily.map((d) => shortDay(d.dayKey, data.days))}
-                  titles={data.daily.map((d) => longDay(d.dayKey))}
+                  values={(buckets?.buckets ?? []).map((b) => b.days.reduce((s, d) => s + d.signups, 0))}
+                  labels={(buckets?.buckets ?? []).map((b) => b.label)}
+                  titles={(buckets?.buckets ?? []).map((b) => b.title)}
                   unit="neue Konten"
-                  tickEvery={data.days <= 7 ? 1 : data.days <= 30 ? 3 : 10}
+                  tickEvery={tickEveryFor(buckets?.buckets.length ?? 0)}
                   height={96}
                   color={NEUTRAL}
-                  ariaLabel={`Neue Konten je Tag, letzte ${data.days} Tage`}
-                  onSelect={(i) => {
+                  ariaLabel={`Neue Konten je ${unitWord}, ${rangeLabel}`}
+                  onSelect={buckets?.unit === 'day' ? (i) => {
                     const dayKey = data.daily[i]?.dayKey;
                     if (dayKey) show(`Neu am ${longDay(dayKey)}`, { created: dayKey }, 'username');
-                  }}
+                  } : undefined}
                 />
               </Section>
-              <Section title="Aktivste Klassen" meta="nach Zeit in Pokyh">
+              <Section title="Aktivste Klassen" meta="Konten mit Einwilligung">
                 <div className="mt-8">
                   <RankBars
                     unit=" Std."
@@ -1192,9 +1332,9 @@ export function AnalyticsPage() {
         </div>
       </div>
 
-      {popup?.type === 'people' && <PeopleDialog view={popup.view} days={days} colors={colors} onClose={() => setPopup(null)} />}
+      {popup?.type === 'people' && <PeopleDialog view={popup.view} range={range} colors={colors} onClose={() => setPopup(null)} />}
       {popup?.type === 'dishes' && <DishesDialog view={popup.view} onClose={() => setPopup(null)} />}
-      {popup?.type === 'breakdown' && <BreakdownDialog view={popup.view} days={days} onClose={() => setPopup(null)} />}
+      {popup?.type === 'breakdown' && <BreakdownDialog view={popup.view} range={range} onClose={() => setPopup(null)} />}
     </div>
   );
 }
