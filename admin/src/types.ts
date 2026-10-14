@@ -1050,7 +1050,11 @@ export interface AdminAnalytics {
   };
   daily: Array<{
     dayKey: string;
+    // Measured by the visit heartbeat (time is per these)…
     users: number;
+    // …and active at all that day: visits, or the server logs where they
+    // saw more.
+    people: number;
     sessions: number;
     seconds: number;
     userSeconds: number;
@@ -1111,7 +1115,9 @@ export interface AdminAnalytics {
     mostCommented: { name: string; comments: number } | null;
     starBands: number[];
   };
-  classes: Array<{ name: string; seconds: number; users: number; sessions: number }>;
+  // Anonymous class totals: `people` are person-days, `avgPeople` people per
+  // day with use.
+  classes: Array<{ name: string; seconds: number; sessions: number; people: number; avgPeople: number }>;
   appVersions: Array<{ platform: UsagePlatform; version: string; sessions: number }>;
   pages: Array<{ page: string; views: number; users: number }>;
 }

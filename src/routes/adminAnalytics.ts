@@ -60,6 +60,41 @@ async function requestLogUserAgents(key: string, since: Date, until: Date, fresh
   return rows;
 }
 
+type LogDay = { all: Set<string>; byPlatform: Record<UsagePlatform, Set<string>> };
+const logDayCache = new TtlCache<Map<string, LogDay>>(60 * 1000);
+
+// Who was active on which local day according to the request logs, by
+// platform — for the days the visit heartbeat did not measure (before it
+// existed, older app versions). Grouped by hour to keep the result small; the
+// logs reach back REQUEST_LOG_RETENTION_DAYS. Stored times are UTC.
+async function requestLogDays(since: Date, until: Date, tz: string, fresh: boolean): Promise<Map<string, LogDay>> {
+  const key = `${since.getTime()}|${until.getTime()}`;
+  const cached = fresh ? undefined : logDayCache.get(key);
+  if (cached) return cached;
+  const rows = await prisma.$queryRaw<Array<{ uid: string; ua: string; h: string }>>`
+    SELECT stable_uid AS uid, user_agent AS ua, DATE_FORMAT(created_at, '%Y-%m-%d %H') AS h
+    FROM request_logs
+    WHERE created_at >= ${since} AND created_at < ${until} AND stable_uid IS NOT NULL AND user_agent IS NOT NULL
+    GROUP BY stable_uid, user_agent, h`;
+  const kinds = new Map<string, ReturnType<typeof classifyUserAgent>>();
+  const days = new Map<string, LogDay>();
+  for (const row of rows) {
+    if (!kinds.has(row.ua)) kinds.set(row.ua, classifyUserAgent(row.ua));
+    const kind = kinds.get(row.ua);
+    if (!kind) continue;
+    const { dayKey } = localDayAndHour(new Date(`${row.h.replace(' ', 'T')}:00:00Z`), tz);
+    let day = days.get(dayKey);
+    if (!day) {
+      day = { all: new Set(), byPlatform: { ios: new Set(), android: new Set(), web: new Set(), other: new Set() } };
+      days.set(dayKey, day);
+    }
+    day.all.add(row.uid);
+    day.byPlatform[platformOf(kind.device, kind.client)].add(row.uid);
+  }
+  logDayCache.set(key, days);
+  return days;
+}
+
 // ─── Periods ─────────────────────────────────────────────────────────────────
 // The page offers the last 7, 30, 90 and 365 days, everything since Pokyh
 // has data, and each calendar year. Every figure covers the local days
@@ -147,6 +182,9 @@ async function availableYears(tz: string): Promise<number[]> {
 // account where an older row has no key.
 const PERSON_SQL = Prisma.raw('COALESCE(visitor_key, stable_uid)');
 
+// "Aktivste Klassen" shows a class only from this many person-days up.
+const CLASS_MIN_PEOPLE = 5;
+
 type PlatformCounts = Record<UsagePlatform, number>;
 
 interface AnalyticsResponse {
@@ -187,7 +225,11 @@ interface AnalyticsResponse {
   };
   daily: Array<{
     dayKey: string;
+    // Different people measured by the visit heartbeat (time is per these)…
     users: number;
+    // …and different people active that day at all: visits, or the server
+    // logs where they saw more (days before the heartbeat, older apps).
+    people: number;
     sessions: number;
     seconds: number;
     userSeconds: number;
@@ -249,7 +291,9 @@ interface AnalyticsResponse {
     starBands: number[];
   };
   // The classes whose students spent the most time in Pokyh.
-  classes: Array<{ name: string; seconds: number; users: number; sessions: number }>;
+  // Anonymous class totals; `people` counts person-days, `avgPeople` people
+  // per day with use.
+  classes: Array<{ name: string; seconds: number; sessions: number; people: number; avgPeople: number }>;
   appVersions: Array<{ platform: UsagePlatform; version: string; sessions: number }>;
   pages: Array<{ page: string; views: number; users: number }>;
 }
@@ -280,8 +324,8 @@ function normalisePage(page: string): string {
   return stripped.replace(/\/[0-9a-f-]{6,}(?=\/|$)/gi, '/:id').replace(/\/\d+(?=\/|$)/g, '/:id');
 }
 
-function avgDauOf(daily: Array<{ users: number }>, daysWithUse: number): number {
-  return daily.reduce((sum, d) => sum + d.users, 0) / Math.max(1, daysWithUse);
+function avgDauOf(daily: Array<{ people: number }>, daysWithUse: number): number {
+  return daily.reduce((sum, d) => sum + d.people, 0) / Math.max(1, daysWithUse);
 }
 
 function round(value: number, digits = 1): number {
@@ -322,7 +366,7 @@ async function buildAnalytics(period: Period, fresh: boolean): Promise<Analytics
   type UserActiveDaysRow = { uid: string; activeDays: bigint };
   type DishAggRow = { dishId: string; n: bigint; avgStars: unknown };
   type StarRow = { stars: number; n: bigint };
-  type ClassRow = { name: string; seconds: unknown; users: bigint; sessions: bigint };
+  type ClassRow = { name: string; seconds: unknown; sessions: unknown; people: unknown; days: bigint };
 
   const [
     dailyRows,
@@ -362,6 +406,7 @@ async function buildAnalytics(period: Period, fresh: boolean): Promise<Analytics
     recentDau,
     webRows,
     usageRefusals,
+    logDays,
   ] = await Promise.all([
     prisma.$queryRaw<DailyRow[]>`
       SELECT day_key AS dayKey, ${PLATFORM_SQL} AS platform, COUNT(*) AS sessions, COUNT(DISTINCT ${PERSON_SQL}) AS users,
@@ -455,12 +500,15 @@ async function buildAnalytics(period: Period, fresh: boolean): Promise<Analytics
       GROUP BY dish_id ORDER BY n DESC LIMIT 1`,
     prisma.$queryRaw<StarRow[]>`SELECT stars, COUNT(*) AS n FROM dish_ratings GROUP BY stars`,
     prisma.dishRating.aggregate({ _avg: { stars: true } }),
+    // Anonymous class totals; a class shows from CLASS_MIN_PEOPLE
+    // person-days up, so no single person stands out.
     prisma.$queryRaw<ClassRow[]>`
-      SELECT u.webuntis_klasse_name AS name, SUM(s.active_seconds) AS seconds,
-             COUNT(DISTINCT s.stable_uid) AS users, COUNT(*) AS sessions
-      FROM usage_sessions s JOIN users u ON u.stable_uid = s.stable_uid
-      WHERE s.day_key >= ${fromKey} AND s.day_key <= ${toKey} AND u.role <> 'parent' AND u.webuntis_klasse_name <> ''
-      GROUP BY u.webuntis_klasse_name
+      SELECT klasse AS name, SUM(seconds) AS seconds, SUM(visits) AS sessions,
+             SUM(people) AS people, COUNT(*) AS days
+      FROM usage_class_days
+      WHERE day_key >= ${fromKey} AND day_key <= ${toKey}
+      GROUP BY klasse
+      HAVING SUM(people) >= ${CLASS_MIN_PEOPLE}
       ORDER BY seconds DESC LIMIT 10`,
     prisma.privacyConsent.count({ where: { usageStats: true } }),
     // Accounts active in the last 7 and 30 days: the server logs (everyone)
@@ -483,6 +531,9 @@ async function buildAnalytics(period: Period, fresh: boolean): Promise<Analytics
       FROM usage_sessions WHERE ${inPeriod} AND client <> 'app' GROUP BY day_key`,
     // A choice was made (it has a time) and it was no.
     prisma.privacyConsent.count({ where: { usageStats: false, usageStatsAt: { not: null } } }),
+    // Active accounts per day from the server logs: the period, the last 30
+    // days ("täglich da") and today, whatever the period.
+    requestLogDays(since < monthStart ? since : monthStart, until > now ? until : now, tz, fresh),
   ]);
 
   // ── Platforms: visits and request logs together ──────────────────────────
@@ -569,21 +620,30 @@ async function buildAnalytics(period: Period, fresh: boolean): Promise<Analytics
     if (!platformsByDay.has(row.dayKey)) platformsByDay.set(row.dayKey, zeroPlatforms());
     platformsByDay.get(row.dayKey)![asPlatform(row.platform)] += num(row.users);
   }
+  // A day counts whoever was there: the measured visits, or the server logs
+  // where they saw more.
+  const peopleOn = (dayKey: string, visitPeople: number) => Math.max(visitPeople, logDays.get(dayKey)?.all.size ?? 0);
   const daily = axis.map((dayKey) => {
     const total = totalsByDay.get(dayKey);
+    const visits = platformsByDay.get(dayKey) ?? zeroPlatforms();
+    const logged = logDays.get(dayKey);
+    const users = num(total?.users);
     return {
       dayKey,
-      users: num(total?.users),
+      users,
+      people: peopleOn(dayKey, users),
       sessions: num(total?.sessions),
       seconds: num(total?.seconds),
       userSeconds: num(total?.userSeconds),
-      byPlatform: platformsByDay.get(dayKey) ?? zeroPlatforms(),
+      byPlatform: logged
+        ? Object.fromEntries(USAGE_PLATFORMS.map((p) => [p, Math.max(visits[p], logged.byPlatform[p].size)])) as PlatformCounts
+        : visits,
       signups: signupsByDay.get(dayKey) ?? 0,
     };
   });
   const userDays = daily.reduce((sum, d) => sum + d.users, 0);
   const userSeconds = daily.reduce((sum, d) => sum + d.userSeconds, 0);
-  const daysWithUse = Math.max(1, daily.filter((d) => d.sessions > 0).length);
+  const daysWithUse = Math.max(1, daily.filter((d) => d.sessions > 0 || d.people > 0).length);
 
   const hourMap = new Map(hourRows.map((row) => [num(row.hour), row]));
   const hours = Array.from({ length: 24 }, (_, hour) => ({
@@ -595,12 +655,12 @@ async function buildAnalytics(period: Period, fresh: boolean): Promise<Analytics
   const weekdays = Array.from({ length: 7 }, (_, weekday) => {
     const ofDay = daily.filter((d) => weekdayOf(d.dayKey) === weekday);
     // Averaged over the days with use: a long period starts before Pokyh did.
-    const used = ofDay.filter((d) => d.sessions > 0);
+    const used = ofDay.filter((d) => d.people > 0);
     return {
       weekday,
       sessions: ofDay.reduce((sum, d) => sum + d.sessions, 0),
       seconds: ofDay.reduce((sum, d) => sum + d.seconds, 0),
-      avgUsers: used.length > 0 ? round(used.reduce((sum, d) => sum + d.users, 0) / used.length) : 0,
+      avgUsers: used.length > 0 ? round(used.reduce((sum, d) => sum + d.people, 0) / used.length) : 0,
     };
   });
 
@@ -635,14 +695,16 @@ async function buildAnalytics(period: Period, fresh: boolean): Promise<Analytics
   const namedDaysWithUse = daily.filter((d) => d.dayKey >= identityFrom && d.sessions > 0).length;
   const loyalThreshold = Math.max(2, Math.ceil(namedDaysWithUse / 2));
   const loyalUsers = activeDayRows.filter((row) => num(row.activeDays) >= loyalThreshold).length;
-  const avgDau = userDays / daysWithUse;
+  const avgDau = daily.reduce((sum, d) => sum + d.people, 0) / daysWithUse;
   const union = (a: UidRow[], b: UidRow[]) => new Set([...a, ...b].map((row) => row.uid)).size;
-  // Today counts everyone (day keys), 7 and 30 days count accounts (server
-  // logs and named visits); a longer window never shows fewer.
-  const dau = num(dauRow?.n);
+  // Today counts everyone (day keys, or the server logs where they saw more),
+  // 7 and 30 days count accounts (server logs and named visits); a longer
+  // window never shows fewer.
+  const dau = peopleOn(todayKey, num(dauRow?.n));
   const wau = Math.max(dau, union(weekLogUids, weekVisitUids));
   const mau = Math.max(wau, union(monthLogUids, monthVisitUids));
-  const recentAvgDau = recentDau.length > 0 ? recentDau.reduce((sum, row) => sum + num(row.n), 0) / 30 : 0;
+  const recentVisits = new Map(recentDau.map((row) => [row.dayKey, num(row.n)]));
+  const recentAvgDau = dayAxis(30, tz, now).reduce((sum, dayKey) => sum + peopleOn(dayKey, recentVisits.get(dayKey) ?? 0), 0) / 30;
 
   // ── Accounts and classes ──────────────────────────────────────────────────
   let students = 0;
@@ -656,7 +718,13 @@ async function buildAnalytics(period: Period, fresh: boolean): Promise<Analytics
     oldest = Math.min(oldest, user.createdAt.getTime());
   }
   const classes = classRows
-    .map((row) => ({ name: row.name, seconds: num(row.seconds), users: num(row.users), sessions: num(row.sessions) }))
+    .map((row) => ({
+      name: row.name,
+      seconds: num(row.seconds),
+      sessions: num(row.sessions),
+      people: num(row.people),
+      avgPeople: round(num(row.people) / Math.max(1, num(row.days))),
+    }))
     .filter((c) => c.seconds > 0);
 
   // ── Pages ─────────────────────────────────────────────────────────────────

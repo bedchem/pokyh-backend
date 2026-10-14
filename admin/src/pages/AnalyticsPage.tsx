@@ -19,7 +19,6 @@ import {
   RefreshCw,
   Repeat,
   ShieldCheck,
-  ShieldOff,
   ShieldQuestion,
   ShieldX,
   Smartphone,
@@ -185,7 +184,7 @@ function bucketsOf(daily: Day[]): { unit: 'day' | 'week' | 'month'; buckets: Buc
 
 // A bucket's daily figure: the average over its days with use.
 function perUsedDay(days: Day[], pick: (d: Day) => number): number {
-  const used = days.filter((d) => d.sessions > 0);
+  const used = days.filter((d) => d.sessions > 0 || d.people > 0);
   return used.length > 0 ? Math.round((used.reduce((s, d) => s + pick(d), 0) / used.length) * 10) / 10 : 0;
 }
 
@@ -789,7 +788,13 @@ export function AnalyticsPage() {
   // Periods longer than the server logs reach: people per day, on average.
   const perDay = platforms.mode === 'dailyAverage';
   const platformValue = (p: UsagePlatform) => (perDay ? de(platforms.byPlatform[p], 1) : platforms.byPlatform[p]);
-  const platformNote = (p: UsagePlatform) => (perDay ? <Delta>Ø pro Tag</Delta> : <Delta>{percent(platforms.byPlatform[p], platforms.total)} der Nutzer</Delta>);
+  const platformNote = (p: UsagePlatform) => (perDay ? <Delta>Ø pro Tag</Delta> : <Delta>{percent(platforms.byPlatform[p], platforms.total)} der {de(platforms.total)} aktiven</Delta>);
+  const platformHint = (p: UsagePlatform) => {
+    const where = p === 'web' ? 'die Website' : `die ${PLATFORM_LABEL[p]}`;
+    return perDay
+      ? `Im Zeitraum (${rangeLabel}) durchschnittlich so viele verschiedene Personen pro Tag, die ${where} genutzt haben.`
+      : `Konten, die im Zeitraum (${rangeLabel}) ${where} genutzt haben.\n\nWer mehrere Plattformen nutzt, zählt bei jeder; deshalb ist die Summe größer als die ${de(platforms.total)} aktiven Konten. Von ${de(accounts.total)} Konten waren ${de(Math.max(0, accounts.total - platforms.total))} im Zeitraum nicht aktiv.`;
+  };
   const years = data.availableYears.length > 0 ? data.availableYears : [new Date().getFullYear()];
   const isYear = /^\d{4}$/.test(range);
   const unitWord = trend?.unit === 'week' ? 'Woche' : trend?.unit === 'month' ? 'Monat' : 'Tag';
@@ -799,7 +804,7 @@ export function AnalyticsPage() {
   const shownPlatforms = PLATFORM_ORDER.filter((p) => p !== 'other' || platforms.byPlatform.other > 0 || time.byPlatform.other.sessions > 0);
 
   // ── Derived records ───────────────────────────────────────────────────────
-  const busiestDay = data.daily.reduce<AdminAnalytics['daily'][number] | null>((best, d) => (d.users > (best?.users ?? 0) ? d : best), null);
+  const busiestDay = data.daily.reduce<AdminAnalytics['daily'][number] | null>((best, d) => (d.people > (best?.people ?? 0) ? d : best), null);
   const peakHour = data.hours.reduce<AdminAnalytics['hours'][number] | null>((best, h) => (h.sessions > (best?.sessions ?? 0) ? h : best), null);
   const favouriteDay = data.weekdays.reduce<AdminAnalytics['weekdays'][number] | null>((best, w) => (w.avgUsers > (best?.avgUsers ?? 0) ? w : best), null);
   const hourList = (from: number, to: number) => Array.from({ length: 24 }, (_, h) => h).filter((h) => (from <= to ? h >= from && h < to : h >= from || h < to));
@@ -876,6 +881,7 @@ export function AnalyticsPage() {
               icon: Smartphone,
               note: platformNote('ios'),
               onClick: () => showPlatform('ios'),
+              hint: platformHint('ios'),
             },
             {
               label: 'Android-App',
@@ -883,6 +889,7 @@ export function AnalyticsPage() {
               icon: Smartphone,
               note: platformNote('android'),
               onClick: () => showPlatform('android'),
+              hint: platformHint('android'),
             },
             {
               label: 'Web',
@@ -890,6 +897,7 @@ export function AnalyticsPage() {
               icon: Globe,
               note: platformNote('web'),
               onClick: () => showPlatform('web'),
+              hint: platformHint('web'),
             },
             {
               label: 'Ø Zeit pro Tag',
@@ -920,6 +928,13 @@ export function AnalyticsPage() {
           className="-mt-px"
           items={[
             {
+              label: 'Konten',
+              value: accounts.total,
+              icon: Users,
+              note: <Delta>registriert</Delta>,
+              hint: `Alle Konten, aufgeteilt nach ihrer Wahl im Cookie-Banner: ${de(accounts.usageConsents)} mit Einwilligung + ${de(accounts.usageRefusals)} „Nur notwendige“ + ${de(accounts.usageUndecided)} noch ohne Wahl.\n\nGezählt werden alle: ohne Einwilligung anonym, mit Einwilligung zusätzlich mit Namen.`,
+            },
+            {
               label: 'Mit Einwilligung',
               value: accounts.usageConsents,
               icon: ShieldCheck,
@@ -928,25 +943,18 @@ export function AnalyticsPage() {
               hint: 'Haben „Alle akzeptieren“ gewählt oder die persönliche Statistik im Profil eingeschaltet.\n\nMit Namen (90 Tage, danach anonym): Zeit in Pokyh, Plattform und App-Version, aktive Tage, zuletzt aktiv, aufgerufene Seiten.\n\nNie gespeichert: IP-Adresse, Inhalte, Eingaben.\n\nKlick zeigt die Konten.',
             },
             {
-              label: 'Ohne Einwilligung',
-              value: Math.max(0, accounts.total - accounts.usageConsents),
-              icon: ShieldOff,
-              note: <Delta>nur anonym gezählt</Delta>,
-              hint: '„Nur notwendige“ gewählt oder noch keine Wahl.\n\nGezählt wird ohne Namen: Dauer, Plattform, App-Version und Uhrzeit eines Besuchs – mit einem Tagesschlüssel statt des Kontos, der nach dem Tag nicht mehr auflösbar ist.\n\nNicht möglich: Namen in Listen, Seitenaufrufe pro Person, Tage einer Person verknüpfen.',
-            },
-            {
               label: 'Nur notwendige',
               value: accounts.usageRefusals,
               icon: ShieldX,
-              note: <Delta>abgelehnt</Delta>,
-              hint: 'Haben im Banner „Nur notwendige“ gewählt. Sie werden wie alle ohne Einwilligung nur anonym gezählt.\n\nDer Banner fragt frühestens nach 6 Monaten erneut.',
+              note: <Delta>nur anonym gezählt</Delta>,
+              hint: 'Haben im Banner „Nur notwendige“ gewählt.\n\nGezählt wird ohne Namen: Dauer, Plattform, App-Version und Uhrzeit eines Besuchs, mit einem Tagesschlüssel statt des Kontos, der nach dem Tag nicht mehr auflösbar ist. Nicht möglich: Namen in Listen, Seitenaufrufe pro Person, Tage einer Person verknüpfen.\n\nDer Banner fragt frühestens nach 6 Monaten erneut.',
             },
             {
               label: 'Noch keine Wahl',
               value: accounts.usageUndecided,
               icon: ShieldQuestion,
-              note: <Delta>Banner noch offen</Delta>,
-              hint: 'Haben im Cookie-Banner noch nichts gewählt, zum Beispiel weil sie nur die Apps nutzen.\n\nBis dahin werden sie nur anonym gezählt.',
+              note: <Delta>nur anonym gezählt</Delta>,
+              hint: 'Haben im Cookie-Banner noch nichts gewählt, zum Beispiel weil sie die neue Website noch nicht geöffnet haben oder nur die Apps nutzen.\n\nBis dahin werden sie wie bei „Nur notwendige“ nur anonym gezählt.',
             },
           ]}
         />
@@ -967,7 +975,7 @@ export function AnalyticsPage() {
         <div key={tab} className="animate-fadeInUp mt-10">
           {tab === 'overview' && (
             <div className="flex flex-col gap-[56px]">
-              {hasVisits && trend && (
+              {trend && data.daily.some((d) => d.people > 0 || d.sessions > 0) && (
                 <Section
                   title={metric === 'users' ? 'Aktive Nutzer' : metric === 'time' ? 'Zeit pro Nutzer' : 'Sitzungen'}
                   meta={rangeLabel}
@@ -1313,19 +1321,20 @@ export function AnalyticsPage() {
                   } : undefined}
                 />
               </Section>
-              <Section title="Aktivste Klassen" meta="Konten mit Einwilligung">
+              <Section title="Aktivste Klassen" meta="nach Zeit in Pokyh">
                 <div className="mt-8">
                   <RankBars
                     unit=" Std."
                     items={data.classes.map((c) => ({
                       label: c.name,
                       value: Math.round(c.seconds / 360) / 10,
-                      note: `${de(c.users)} Nutzer · Ø ${duration(c.seconds / Math.max(c.users, 1))}`,
+                      note: `Ø ${de(c.avgPeople, 1)} Personen pro Tag · Ø ${duration(c.seconds / Math.max(c.people, 1))} pro Person und Tag`,
                     }))}
                     onSelect={(item) => show(`Klasse ${item.label}`, { klasse: item.label }, 'seconds')}
-                    empty="Noch keine Nutzungszeiten von Klassen."
+                    empty="Noch keine Klasse mit genug Nutzung im Zeitraum."
                   />
                 </div>
+                <Explain>Anonym gezählt; eine Klasse erscheint ab 5 Personen-Tagen. Klick zeigt die Konten mit Einwilligung.</Explain>
               </Section>
             </Pair>
           )}

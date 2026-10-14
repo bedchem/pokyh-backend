@@ -62,8 +62,38 @@ const FIRST_PING_WINDOW_MS = 115 * 1000;
 
 type Ping = z.infer<typeof pingSchema>;
 
+// A student's class, for the anonymous per-class totals; parents and accounts
+// without a class are left out. Held briefly: every open app pings.
+const CLASS_CACHE_MS = 10 * 60 * 1000;
+const classCache = new Map<string, { klasse: string | null; at: number }>();
+
+async function classOf(stableUid: string): Promise<string | null> {
+  const hit = classCache.get(stableUid);
+  if (hit && Date.now() - hit.at < CLASS_CACHE_MS) return hit.klasse;
+  const user = await prisma.user.findUnique({ where: { stableUid }, select: { role: true, webuntisKlasseName: true } });
+  const name = user?.webuntisKlasseName.trim() ?? '';
+  const klasse = user && user.role !== 'parent' && name ? name.slice(0, 64) : null;
+  if (classCache.size > 5000) classCache.clear();
+  classCache.set(stableUid, { klasse, at: Date.now() });
+  return klasse;
+}
+
+// Adds to a class's totals for the day. Best effort: a lost addition never
+// costs the ping itself.
+async function addToClass(account: string, dayKey: string, seconds: number, visits: number, people: number): Promise<void> {
+  if (seconds === 0 && visits === 0 && people === 0) return;
+  const klasse = await classOf(account);
+  if (!klasse) return;
+  await prisma.usageClassDay.upsert({
+    where: { dayKey_klasse: { dayKey, klasse } },
+    create: { dayKey, klasse, seconds, visits, people },
+    update: { seconds: { increment: seconds }, visits: { increment: visits }, people: { increment: people } },
+  });
+}
+
 // `account` is who sent the ping; `named` whether the row may say so.
-async function applyPing(ping: Ping, account: string | null, named: boolean, device: UsageDevice, now: Date): Promise<void> {
+// Resolves to true when the ping started a new visit.
+async function applyPing(ping: Ping, account: string | null, named: boolean, device: UsageDevice, now: Date): Promise<boolean> {
   const screens = Math.min(ping.screens, MAX_PING_SCREENS);
   const existing = await prisma.usageSession.findUnique({
     where: { id: ping.sessionId },
@@ -72,31 +102,36 @@ async function applyPing(ping: Ping, account: string | null, named: boolean, dev
 
   if (!existing) {
     const { dayKey, hour } = localDayAndHour(now, config.usageAnalytics.timezone);
+    const visitorKey = account ? await visitorKeyFor(account, dayKey) : null;
+    // The day's first visit of this person makes one more person for its class.
+    const firstToday = visitorKey ? (await prisma.usageSession.count({ where: { dayKey, visitorKey } })) === 0 : false;
+    const credited = creditedSeconds(ping.activeSeconds, FIRST_PING_WINDOW_MS, 0);
     await prisma.usageSession.create({
       data: {
         id: ping.sessionId,
         stableUid: named ? account : null,
-        visitorKey: account ? await visitorKeyFor(account, dayKey) : null,
+        visitorKey,
         device,
         client: ping.client,
         appVersion: ping.client === 'app' ? (ping.appVersion ?? '') : '',
         dayKey,
         startHour: hour,
-        activeSeconds: creditedSeconds(ping.activeSeconds, FIRST_PING_WINDOW_MS, 0),
+        activeSeconds: credited,
         screens,
         startedAt: now,
         lastSeenAt: now,
       },
     });
-    return;
+    if (account) await addToClass(account, dayKey, credited, 1, firstToday ? 1 : 0).catch(() => {});
+    return true;
   }
 
   // A visit belongs to the account that started it. Another account's ping
   // with the same id is ignored rather than merged into someone else's row.
   // The key is the visit's own day's, so a visit past midnight still matches.
   const visitorKey = account ? await visitorKeyFor(account, existing.dayKey) : null;
-  if (existing.visitorKey && visitorKey && existing.visitorKey !== visitorKey) return;
-  if (existing.stableUid && account && existing.stableUid !== account) return;
+  if (existing.visitorKey && visitorKey && existing.visitorKey !== visitorKey) return false;
+  if (existing.stableUid && account && existing.stableUid !== account) return false;
 
   const add = creditedSeconds(ping.activeSeconds, now.getTime() - existing.lastSeenAt.getTime(), existing.activeSeconds);
   await prisma.usageSession.update({
@@ -111,6 +146,8 @@ async function applyPing(ping: Ping, account: string | null, named: boolean, dev
       ...(!named && existing.stableUid ? { stableUid: null } : {}),
     },
   });
+  if (account && add > 0) await addToClass(account, existing.dayKey, add, 0, 0).catch(() => {});
+  return false;
 }
 
 router.post('/ping', optionalAuth, limiter, async (req: Request, res: Response): Promise<void> => {
@@ -127,11 +164,12 @@ router.post('/ping', optionalAuth, limiter, async (req: Request, res: Response):
   const now = new Date();
 
   try {
-    await applyPing(ping, account, named, device, now);
+    // A new visit reaches an open Analytics page at once (adminLive).
+    res.locals['usageNewVisit'] = await applyPing(ping, account, named, device, now);
   } catch (err) {
     // Two first pings of one visit can race; the loser simply updates.
     if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
-      await applyPing(ping, account, named, device, now).catch(() => {});
+      await applyPing(ping, account, named, device, now).catch(() => false);
     } else {
       if (config.debug) logger.warn('[usage] ping not stored', { message: err instanceof Error ? err.message : String(err), requestId: req.id });
       res.status(503).json({ error: 'Usage analytics unavailable' });

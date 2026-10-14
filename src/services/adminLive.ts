@@ -110,7 +110,10 @@ export function adminLive(req: Request, res: Response, next: NextFunction): void
     const path = (req.originalUrl || req.url).split('?')[0] ?? '';
 
     if (path.startsWith('/usage/')) {
-      if (res.statusCode < 400) announceUsage();
+      // Someone just opened Pokyh: shown at once. Further pings of a visit
+      // only move the time and are throttled.
+      if (res.statusCode < 400 && res.locals['usageNewVisit'] === true) announceChange(['analytics']);
+      else if (res.statusCode < 400) announceUsage();
       return;
     }
 

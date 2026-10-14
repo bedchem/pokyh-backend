@@ -541,6 +541,21 @@ model UsageDaySalt {
   @@map("usage_day_salts")
 }
 
+// Anonymous per-class totals behind "Aktivste Klassen": time, visits and
+// different people per class and day, added up as pings arrive. No account,
+// key or single visit is kept; the page shows a class only from a few people
+// up (routes/adminAnalytics.ts).
+model UsageClassDay {
+  dayKey  String @map("day_key") @db.VarChar(10)
+  klasse  String @db.VarChar(64)
+  seconds Int    @default(0)
+  visits  Int    @default(0)
+  people  Int    @default(0)
+
+  @@id([dayKey, klasse])
+  @@map("usage_class_days")
+}
+
 // ─── Privacy notice and usage-statistics consent ─────────────────────────────
 // Which version of the privacy notice an account last acknowledged at sign-in,
 // and its choice on the usage statistics — an opt-in, never preset, revocable
