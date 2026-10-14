@@ -31,7 +31,10 @@ export const globalLimiter = rateLimit({
   // Learn's BFF multiplexes many authenticated people through one server IP.
   // Its own route-level limiters use the verified stable UID after auth, so do
   // not make all learners compete for the application's IP-wide global bucket.
-  skip: (req) => req.method === 'OPTIONS' || hasValidServerKey(req) || req.path.startsWith('/learn'),
+  // The usage heartbeat (once a minute per open app) has its own per-account
+  // limiter too; behind a school's single address it would otherwise use up
+  // the bucket that real requests need.
+  skip: (req) => req.method === 'OPTIONS' || hasValidServerKey(req) || req.path.startsWith('/learn') || req.path === '/usage/ping',
 });
 
 export const authLimiter = rateLimit({

@@ -1,6 +1,7 @@
 import { useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import gsap from 'gsap';
 import { prefersReducedMotion } from '../motion';
+import { activeLabelFits, labelsClear } from './charts';
 
 export interface TrendSeries {
   key: string;
@@ -22,6 +23,8 @@ interface TrendChartProps {
   // Changing this replays the draw-in (a new range, not a data refresh).
   drawKey: string;
   ariaLabel: string;
+  // Makes a point clickable (pointer or Enter), e.g. to list who is behind it.
+  onSelect?: (index: number) => void;
 }
 
 const GUTTER = 46;
@@ -81,7 +84,7 @@ function monotonePath(points: Array<[number, number]>): string {
   return d;
 }
 
-export function TrendChart({ labels, titles, series, tickEvery = 1, restIndex, drawKey, ariaLabel }: TrendChartProps) {
+export function TrendChart({ labels, titles, series, tickEvery = 1, restIndex, drawKey, ariaLabel, onSelect }: TrendChartProps) {
   const gradientId = useId().replace(/:/g, '');
   const rootRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -178,13 +181,20 @@ export function TrendChart({ labels, titles, series, tickEvery = 1, restIndex, d
   // clear air between them, instead of a row of numbers that touch.
   const stepPx = count > 1 ? plotWidth / (count - 1) : plotWidth;
   const every = tickEvery * Math.max(1, Math.ceil(MIN_LABEL_GAP / Math.max(stepPx * tickEvery, 1)));
-  const activeIsTick = active % every === 0;
+  // The regular labels never change while hovering. A hovered point that has
+  // one highlights it; any other point gets its own label only where it fits.
+  const lastIndex = count - 1;
+  const lastTick = lastIndex - (lastIndex % every);
+  // The latest point keeps a label of its own whenever it clears the one before.
+  const showLast = lastIndex !== lastTick && labelsClear(labels[lastIndex] ?? '', labels[lastTick] ?? '', (lastIndex - lastTick) * stepPx);
+  const ticks = labels.map((_, i) => i).filter((i) => i % every === 0 || (i === lastIndex && showLast));
+  const extraLabel = activeLabelFits(active, ticks, labels, (i) => geometry.xAt(i));
 
   return (
     <div
       ref={rootRef}
       className="chart"
-      style={{ height: baseline + 44 }}
+      style={{ height: baseline + 44, cursor: onSelect ? 'pointer' : undefined }}
       role="img"
       aria-label={ariaLabel}
       tabIndex={0}
@@ -192,7 +202,14 @@ export function TrendChart({ labels, titles, series, tickEvery = 1, restIndex, d
       onPointerDown={(e) => setHovered(indexFromPointer(e.clientX))}
       onPointerLeave={() => setHovered(null)}
       onBlur={() => setHovered(null)}
-      onKeyDown={onKeyDown}
+      onClick={onSelect ? (e) => onSelect(indexFromPointer(e.clientX)) : undefined}
+      onKeyDown={(e) => {
+        if (onSelect && e.key === 'Enter') {
+          onSelect(active);
+          return;
+        }
+        onKeyDown(e);
+      }}
     >
       {ready && (
         <>
@@ -264,22 +281,26 @@ export function TrendChart({ labels, titles, series, tickEvery = 1, restIndex, d
           </svg>
 
           <div className="absolute inset-x-0" style={{ top: baseline + 14 }} aria-hidden="true">
-            {labels.map((label, i) => {
-              const isActive = i === active;
-              const isTick = i % every === 0;
-              const crowded = !activeIsTick && !isActive && Math.abs(geometry.xAt(i) - activeX) < MIN_LABEL_GAP - 10;
-              if (!isActive && (!isTick || crowded)) return null;
-              return (
-                <span
-                  key={i}
-                  className="chart-x absolute top-0 -translate-x-1/2 whitespace-nowrap"
-                  data-on={isActive}
-                  style={{ left: geometry.xAt(i) }}
-                >
-                  {label}
-                </span>
-              );
-            })}
+            {ticks.map((i) => (
+              <span
+                key={i}
+                className="chart-x absolute top-0 -translate-x-1/2 whitespace-nowrap"
+                data-on={i === active}
+                style={{ left: geometry.xAt(i) }}
+              >
+                {labels[i]}
+              </span>
+            ))}
+            {extraLabel && (
+              <span
+                key={`active-${active}`}
+                className="chart-x absolute top-0 -translate-x-1/2 whitespace-nowrap"
+                data-on="true"
+                style={{ left: activeX, animation: 'fade 0.18s ease backwards' }}
+              >
+                {labels[active]}
+              </span>
+            )}
           </div>
 
           {/* The anchor follows the pointer; the card inside it is what fades in. */}

@@ -19,13 +19,33 @@ interface BarsProps {
   tickEvery?: number;
   format?: (value: number) => string;
   ariaLabel: string;
+  // Makes the bars clickable, e.g. to list who is behind one.
+  onSelect?: (index: number) => void;
 }
 
 // Least distance between two axis labels, centre to centre.
 const MIN_LABEL_GAP = 64;
 
+// The width an axis label's pill takes (see .chart-x), estimated from its text.
+export function axisLabelWidth(text: string): number {
+  return Math.max(30, Math.round(text.length * 7.2) + 14);
+}
+
+// Whether two labels `apart` pixels apart, centre to centre, clear each other.
+export function labelsClear(a: string, b: string, apart: number): boolean {
+  return Math.abs(apart) >= (axisLabelWidth(a) + axisLabelWidth(b)) / 2 + 4;
+}
+
+// Whether the hovered point's own label fits between the regular ones without
+// touching any. The regular labels never move aside for it: if it does not
+// fit, the tooltip alone names the point.
+export function activeLabelFits(active: number, ticks: number[], labels: string[], positionOf: (i: number) => number): boolean {
+  if (ticks.includes(active)) return false;
+  return ticks.every((i) => labelsClear(labels[i] ?? '', labels[active] ?? '', positionOf(i) - positionOf(active)));
+}
+
 // Vertical bars that grow from the baseline; the latest one is in full colour.
-export function Bars({ values, labels, titles, unit, height = 132, color = '#4f96dc', tickEvery = 1, format, ariaLabel }: BarsProps) {
+export function Bars({ values, labels, titles, unit, height = 132, color = '#4f96dc', tickEvery = 1, format, ariaLabel, onSelect }: BarsProps) {
   const [hovered, setHovered] = useState<number | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(0);
@@ -47,15 +67,18 @@ export function Bars({ values, labels, titles, unit, height = 132, color = '#4f9
   // labels never run into each other.
   const slotPx = width > 0 ? width / values.length : MIN_LABEL_GAP;
   const every = tickEvery * Math.max(1, Math.ceil(MIN_LABEL_GAP / Math.max(slotPx * tickEvery, 1)));
-  const activeIsTick = active % every === 0;
-  const labelShown = (i: number) => {
-    if (i === active) return true;
-    if (i % every !== 0) return false;
-    return activeIsTick || Math.abs(i - active) * slotPx >= MIN_LABEL_GAP - 8;
-  };
+  // The regular labels never change while hovering. A hovered bar that has one
+  // highlights it; any other bar gets its own label only where it fits.
+  const lastIndex = values.length - 1;
+  const lastTick = lastIndex - (lastIndex % every);
+  // The latest bar keeps a label of its own whenever it clears the one before.
+  const showLast = lastIndex !== lastTick && labelsClear(labels[lastIndex] ?? '', labels[lastTick] ?? '', (lastIndex - lastTick) * slotPx);
+  const labelShown = (i: number) => i % every === 0 || (i === lastIndex && showLast);
+  const ticks = labels.map((_, i) => i).filter(labelShown);
+  const extraLabel = activeLabelFits(active, ticks, labels, (i) => (i + 0.5) * slotPx);
 
   return (
-    <div ref={rootRef} className="bars" role="img" aria-label={ariaLabel} onPointerLeave={() => setHovered(null)}>
+    <div ref={rootRef} className="bars" role="img" aria-label={ariaLabel} data-selectable={Boolean(onSelect)} onPointerLeave={() => setHovered(null)}>
       <div className="bars-plot" style={{ height }}>
         {values.map((value, i) => (
           <div
@@ -63,6 +86,7 @@ export function Bars({ values, labels, titles, unit, height = 132, color = '#4f9
             className="bars-slot"
             onPointerEnter={() => setHovered(i)}
             onPointerDown={() => setHovered(i)}
+            onClick={onSelect ? () => onSelect(i) : undefined}
           >
             {i === active && (
               <div className="bars-tip chart-tip" aria-hidden="true">
@@ -85,8 +109,14 @@ export function Bars({ values, labels, titles, unit, height = 132, color = '#4f9
       <div className="bars-axis" aria-hidden="true">
         {labels.map((label, i) => (
           <span key={i} className="bars-slot">
-            {labelShown(i) && (
-              <span className="chart-x" data-on={i === active}>{label}</span>
+            {(labelShown(i) || (i === active && extraLabel)) && (
+              <span
+                className="chart-x"
+                data-on={i === active}
+                style={{ animation: labelShown(i) ? undefined : 'fade 0.18s ease backwards' }}
+              >
+                {label}
+              </span>
             )}
           </span>
         ))}
@@ -184,26 +214,36 @@ export interface Rank {
 }
 
 // A ranked list where each row carries its own bar.
-export function RankBars({ items, color = '#4f96dc', unit = '', empty = 'Noch keine Daten.' }: { items: Rank[]; color?: string; unit?: string; empty?: string }) {
+// With `onSelect` every row is a button, e.g. to list who is behind it.
+export function RankBars({ items, color = '#4f96dc', unit = '', empty = 'Noch keine Daten.', onSelect }: { items: Rank[]; color?: string; unit?: string; empty?: string; onSelect?: (item: Rank) => void }) {
   const peak = Math.max(1, ...items.map((item) => item.value));
   const [focus, setFocus] = useState<string | null>(null);
   if (items.length === 0) return <p className="py-6 text-[14px] text-ink-3">{empty}</p>;
   return (
     <ul className="flex flex-col gap-[18px]" onPointerLeave={() => setFocus(null)}>
-      {items.map((item, i) => (
-        <li key={item.label} className="rank-row" data-dim={focus !== null && focus !== item.label} onPointerEnter={() => setFocus(item.label)}>
-          <div className="flex items-baseline justify-between gap-4">
-            <span className="min-w-0 truncate text-[14.5px]" title={item.label}>{item.label}</span>
-            <span className="tabular flex-shrink-0 text-[14px] font-medium">
-              {compact(item.value)}{unit}
-              {item.note && <span className="ml-2 font-normal text-ink-3">{item.note}</span>}
-            </span>
-          </div>
-          <div className="rank-track mt-2">
-            <span className="rank-fill" style={{ width: `${Math.max((item.value / peak) * 100, 2)}%`, background: color, animationDelay: `${i * 70}ms` }} />
-          </div>
-        </li>
-      ))}
+      {items.map((item, i) => {
+        const body = (
+          <>
+            <div className="flex items-baseline justify-between gap-4">
+              <span className="rank-label min-w-0 truncate text-[14.5px]" title={item.label}>{item.label}</span>
+              <span className="tabular flex-shrink-0 text-[14px] font-medium">
+                {compact(item.value)}{unit}
+                {item.note && <span className="ml-2 font-normal text-ink-3">{item.note}</span>}
+              </span>
+            </div>
+            <div className="rank-track mt-2">
+              <span className="rank-fill" style={{ width: `${Math.max((item.value / peak) * 100, 2)}%`, background: color, animationDelay: `${i * 70}ms` }} />
+            </div>
+          </>
+        );
+        return (
+          <li key={item.label} className="rank-row" data-dim={focus !== null && focus !== item.label} onPointerEnter={() => setFocus(item.label)}>
+            {onSelect
+              ? <button type="button" className="rank-link block w-full text-left" onClick={() => onSelect(item)}>{body}</button>
+              : body}
+          </li>
+        );
+      })}
     </ul>
   );
 }

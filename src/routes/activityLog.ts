@@ -5,6 +5,7 @@ import { prisma } from '../db';
 import { optionalAuth } from '../middleware/auth';
 import { clientIp } from '../middleware/requestLogger';
 import { logger } from '../utils/logger';
+import { hasUsageConsent } from '../services/privacyConsent';
 
 const router = Router();
 
@@ -42,11 +43,17 @@ router.post('/', limiter, optionalAuth, async (req: Request, res: Response): Pro
     return;
   }
 
-  const ip = clientIp(req);
+  // Page views are usage statistics: with the account's consent they keep who
+  // and from where; without it only the anonymous count of the page is kept.
+  // Sign-ins, sign-outs and downloads stay complete (security, abuse).
+  const named = event !== 'page_view'
+    || (req.user ? await hasUsageConsent(req.user.stableUid).catch(() => false) : false);
 
-  const stableUid = req.user?.stableUid ?? null;
-  const username  = req.user?.username  ?? null;
-  const userAgent = (req.headers['user-agent'] ?? '').slice(0, 500) || null;
+  const ip = named ? clientIp(req) : null;
+
+  const stableUid = named ? req.user?.stableUid ?? null : null;
+  const username  = named ? req.user?.username  ?? null : null;
+  const userAgent = named ? (req.headers['user-agent'] ?? '').slice(0, 500) || null : null;
 
   // Write to daily log file (persists even if DB is down)
   logger.info('Frontend activity', {

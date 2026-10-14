@@ -1150,6 +1150,23 @@
   transition: width 0.6s var(--glide);
 }
 
+/* Numbers that open a list of who is behind them: the clickable part gets an
+   underline that draws, nothing grows or moves. */
+.bars[data-selectable="true"] .bars-plot .bars-slot { cursor: pointer; }
+.rank-link .rank-label,
+.fact-link .fact-value,
+.ledger-link .ledger-value {
+  display: inline-block;
+  max-width: 100%;
+  background: linear-gradient(currentColor, currentColor) 0 100% / 0 1px no-repeat;
+  transition: background-size 0.45s var(--glide);
+}
+.rank-link:hover .rank-label, .rank-link:focus-visible .rank-label,
+.fact-link:hover .fact-value, .fact-link:focus-visible .fact-value,
+.ledger-link:hover .ledger-value, .ledger-link:focus-visible .ledger-value { background-size: 100% 1px; }
+.sort-btn { display: inline-flex; align-items: center; gap: 4px; color: inherit; transition: color 0.2s ease; }
+.sort-btn:hover, .sort-btn[data-on="true"] { color: var(--ink); }
+
 @keyframes growY { from { transform: scaleY(0); } to { transform: scaleY(1); } }
 @keyframes growX { from { transform: scaleX(0); } to { transform: scaleX(1); } }
 

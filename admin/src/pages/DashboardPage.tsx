@@ -327,7 +327,12 @@ export function DashboardPage() {
         </section>
 
         {usage && (
-          <Section className="mt-[50px]" title="App-Nutzung" meta="Heute">
+          <Section
+            className="mt-[50px]"
+            title="App-Nutzung"
+            meta="Heute"
+            action={<Link to="/analytics" className="btn btn-sm btn-line">Alle Analytics</Link>}
+          >
             <div className="mt-8 grid gap-x-14 gap-y-10 md:grid-cols-[auto_minmax(0,1fr)]">
               <div className="flex items-center gap-7">
                 <Ring share={activeShare} ariaLabel="Anteil der heute aktiven Konten">

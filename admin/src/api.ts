@@ -1,4 +1,4 @@
-import type { AdminStats, AdminClass, AdminSession, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish, AdminDishFull, AdminDishImportResult, AdminDishShiftResult, AdminDishRotateResult, AdminDishResetResult, AdminDishAnchorResult, DishPlan, AdminCommentsResponse, FileLogFile, FileLogResponse, FileLogEntry, FrontendActivityLogsResponse, FrontendActivityStats, AllTodosResponse, AllRemindersResponse, SchoolYearsResponse, ArchivedUsersResponse, ArchivedClass, ArchivedTodosResponse, ArchivedRemindersResponse, RolloverResult, RollbackResult, AdminApiKey, CreatedApiKey, LearnConfigValues, LearnAiConfigValues, LearnAiGrant, LearnAiTeamGrant, AdminLearnTeam, LearnTeamAssignableRole, AdminLearnCoursesResponse, AdminLearnCourseAccessResponse, AdminLearnCourse, AdminLearnCourseAccess, LearnCoursePermission, LearnCourseStatus, LearnCourseVisibility, AdminLearnCourseVocabularyResponse, AdminLearnVocabularyImportResponse, BackupsResponse, AdminPopup, PopupInput, ClusterStatus, ClusterInstall, CreatedClusterInstall, ClusterReach, ReachEntry, ClusterUpdates, ClusterUpdateSettings } from './types';
+import type { AdminStats, AdminClass, AdminSession, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish, AdminDishFull, AdminDishImportResult, AdminDishShiftResult, AdminDishRotateResult, AdminDishResetResult, AdminDishAnchorResult, DishPlan, AdminCommentsResponse, FileLogFile, FileLogResponse, FileLogEntry, FrontendActivityLogsResponse, FrontendActivityStats, AllTodosResponse, AllRemindersResponse, SchoolYearsResponse, ArchivedUsersResponse, ArchivedClass, ArchivedTodosResponse, ArchivedRemindersResponse, RolloverResult, RollbackResult, AdminApiKey, CreatedApiKey, LearnConfigValues, LearnAiConfigValues, LearnAiGrant, LearnAiTeamGrant, AdminLearnTeam, LearnTeamAssignableRole, AdminLearnCoursesResponse, AdminLearnCourseAccessResponse, AdminLearnCourse, AdminLearnCourseAccess, LearnCoursePermission, LearnCourseStatus, LearnCourseVisibility, AdminLearnCourseVocabularyResponse, AdminLearnVocabularyImportResponse, BackupsResponse, AdminPopup, PopupInput, ClusterStatus, ClusterInstall, CreatedClusterInstall, ClusterReach, ReachEntry, AdminAnalytics, AnalyticsRange, AnalyticsPeople, PeopleFilters, AnalyticsBreakdown, BreakdownKind, AnalyticsDishes, ClusterUpdates, ClusterUpdateSettings } from './types';
 
 const TOKEN_KEY = 'pokyh_admin_token';
 
@@ -630,6 +630,30 @@ export const adminApi = {
 
   createRelayCommand: (data: { origin: string; host: string; port: number; publicPort: boolean; domain: string; name: string }): Promise<{ command: string; sha256: string; expiresAt: string }> =>
     request<{ command: string; sha256: string; expiresAt: string }>('POST', '/api/admin/cluster/relay-command', data),
+
+  // `fresh` skips the server's short response cache (the refresh button).
+  analytics: (days: AnalyticsRange, fresh = false): Promise<AdminAnalytics> =>
+    request<AdminAnalytics>('GET', `/api/admin/analytics?days=${days}${fresh ? '&fresh=1' : ''}`),
+
+  analyticsPeople: (days: AnalyticsRange, filters: PeopleFilters): Promise<AnalyticsPeople> => {
+    const p = new URLSearchParams({ days: String(days) });
+    if (filters.platform) p.set('platform', filters.platform);
+    if (filters.day) p.set('day', filters.day);
+    if (filters.hours?.length) p.set('hours', filters.hours.join(','));
+    if (filters.weekdays?.length) p.set('weekdays', filters.weekdays.join(','));
+    if (filters.klasse) p.set('klasse', filters.klasse);
+    if (filters.segment) p.set('segment', filters.segment);
+    if (filters.page) p.set('page', filters.page);
+    if (filters.created) p.set('created', filters.created);
+    if (filters.band !== undefined) p.set('band', String(filters.band));
+    return request<AnalyticsPeople>('GET', `/api/admin/analytics/people?${p.toString()}`);
+  },
+
+  analyticsBreakdown: (kind: BreakdownKind, days: AnalyticsRange): Promise<AnalyticsBreakdown> =>
+    request<AnalyticsBreakdown>('GET', `/api/admin/analytics/breakdown?kind=${kind}&days=${days}`),
+
+  analyticsDishes: (): Promise<AnalyticsDishes> =>
+    request<AnalyticsDishes>('GET', '/api/admin/analytics/dishes'),
 
   // Updates: settings are cluster-wide, retry and roll back act on this node.
   getClusterUpdates: (): Promise<ClusterUpdates> =>

@@ -29,6 +29,7 @@ import { logger } from './utils/logger';
 import { getLearnConfig } from './services/learnConfig';
 import { ensureModelReady } from './services/learnAiOllama';
 import { learningDayKey } from './services/learnAnalytics';
+import { localDayAndHour } from './services/usageAnalytics';
 import { closeLearnCache } from './services/learnCache';
 import { withWwwOriginAlias } from './utils/cors';
 import { loadTokenRevocations } from './utils/revokedTokens';
@@ -326,6 +327,48 @@ async function cleanupExpiredLearnAnalytics() {
   });
 }
 
+async function cleanupExpiredUsageSessions() {
+  // Replicated data: in a cluster one node cleaning up is enough.
+  if (!ownsClusterWork('job:usage-analytics-cleanup')) return;
+  const { timezone, retentionDays } = config.usageAnalytics;
+  const cutoffDayKey = localDayAndHour(new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000), timezone).dayKey;
+  const { count } = await prisma.usageSession.deleteMany({ where: { dayKey: { lt: cutoffDayKey } } });
+  // Visits only exist with consent: anything of an account without it (data
+  // from before consent was asked, a race with a withdrawal on another node)
+  // goes. Rows of deleted accounts carry no account any more and stay.
+  const withoutConsent = await prisma.$executeRaw`
+    DELETE FROM usage_sessions
+    WHERE stable_uid IS NOT NULL
+      AND stable_uid NOT IN (SELECT stable_uid FROM privacy_consents WHERE usage_stats = 1)`;
+  if (count > 0 || withoutConsent > 0) logger.info('Usage analytics retention cleanup', {
+    action: 'usage_analytics_retention_cleanup',
+    deletedCount: count,
+    withoutConsentCount: withoutConsent,
+    retentionDays,
+  });
+}
+
+// Frontend activity (page views, sign-ins, downloads) is technical personal
+// data like the request logs and kept as long. Page views keep who and from
+// where only with the account's usage-statistics consent. Node-local table:
+// every node cleans its own rows.
+async function cleanupFrontendActivity() {
+  const cutoff = new Date(Date.now() - config.requestLogRetentionDays * 24 * 60 * 60 * 1000);
+  const { count } = await prisma.frontendActivityLog.deleteMany({ where: { createdAt: { lt: cutoff } } });
+  const anonymised = await prisma.$executeRaw`
+    UPDATE frontend_activity_logs
+    SET stable_uid = NULL, username = NULL, ip = NULL, user_agent = NULL
+    WHERE event = 'page_view'
+      AND (stable_uid IS NOT NULL OR username IS NOT NULL OR ip IS NOT NULL OR user_agent IS NOT NULL)
+      AND (stable_uid IS NULL OR stable_uid NOT IN (SELECT stable_uid FROM privacy_consents WHERE usage_stats = 1))`;
+  if (count > 0 || anonymised > 0) logger.info('Frontend activity retention cleanup', {
+    action: 'frontend_activity_cleanup',
+    deletedCount: count,
+    anonymisedCount: anonymised,
+    retentionDays: config.requestLogRetentionDays,
+  });
+}
+
 let backgroundJobsStarted = false;
 
 // Starts the periodic background jobs exactly once, after the DB is reachable.
@@ -348,6 +391,13 @@ function startBackgroundJobs() {
   // the normal request-log cleanup cadence.
   setTimeout(() => void cleanupExpiredLearnAnalytics().catch(() => {}), 15_000);
   setInterval(() => void cleanupExpiredLearnAnalytics().catch(() => {}), 24 * 60 * 60 * 1000);
+
+  // Per-visit usage rows behind the admin Analytics page have a finite,
+  // documented retention as well (USAGE_ANALYTICS_RETENTION_DAYS).
+  setTimeout(() => void cleanupExpiredUsageSessions().catch(() => {}), 20_000);
+  setInterval(() => void cleanupExpiredUsageSessions().catch(() => {}), 24 * 60 * 60 * 1000);
+  setTimeout(() => void cleanupFrontendActivity().catch(() => {}), 25_000);
+  setInterval(() => void cleanupFrontendActivity().catch(() => {}), config.requestLogCleanupIntervalMs);
 
   // Each job is started on its own: one that cannot start (for example a
   // rejected configuration value) must not keep the others from running.

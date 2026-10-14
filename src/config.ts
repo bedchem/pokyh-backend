@@ -326,6 +326,16 @@ export const config = {
   requestLogRetentionDays: boundedIntEnv('REQUEST_LOG_RETENTION_DAYS', 30, 1, 365),
   requestLogCleanupIntervalMs: boundedIntEnv('REQUEST_LOG_CLEANUP_INTERVAL_MS', 24 * 60 * 60 * 1000, 60 * 60 * 1000, 7 * 24 * 60 * 60 * 1000),
 
+  // ── Usage analytics (admin Analytics page) ────────────────────────────────
+  // Visits (device kind, foreground time, screen count — no IP or user agent)
+  // are pseudonymous, so their retention is finite as well.
+  usageAnalytics: {
+    // Visits are counted per calendar day and hour in this IANA timezone.
+    timezone: strEnv('ANALYTICS_TIMEZONE', 'Europe/Rome'),
+    // The Analytics page looks back 90 days at most, so nothing older is kept.
+    retentionDays: boundedIntEnv('USAGE_ANALYTICS_RETENTION_DAYS', 90, 30, 365),
+  },
+
   // ── Archiving of expired todos/reminders ───────────────────────────────────
   archiveAfterHours: intEnv('ARCHIVE_AFTER_HOURS', 24),
   archiveCheckIntervalMs: intEnv('ARCHIVE_CHECK_INTERVAL_MS', 60 * 60 * 1000),

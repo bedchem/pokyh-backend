@@ -1,5 +1,6 @@
 import {
   LayoutDashboard,
+  ChartNoAxesColumn,
   Users,
   Building2,
   MonitorSmartphone,
@@ -37,6 +38,7 @@ export const NAV_GROUPS: NavGroup[] = [
     title: 'Overview',
     items: [
       { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
+      { to: '/analytics', label: 'Analytics', icon: ChartNoAxesColumn },
       { to: '/users',     label: 'Users',     icon: Users },
       { to: '/classes',   label: 'Classes',   icon: Building2 },
       { to: '/sessions',  label: 'Sessions',  icon: MonitorSmartphone },

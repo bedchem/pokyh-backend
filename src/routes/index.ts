@@ -13,11 +13,14 @@ import { sseRouter } from './sse';
 import { adminRouter } from './admin';
 import { subjectImagesRouter } from './subjectImages';
 import { activityLogRouter } from './activityLog';
+import { usageRouter } from './usage';
+import { privacyRouter } from './privacy';
 import { pushRouter } from './push';
 import { learnRouter } from './learn';
 import { learnAiRouter } from './learnAi';
 import { popupsAdminRouter, popupsRouter } from './popups';
 import { clusterAdminRouter } from './adminCluster';
+import { analyticsAdminRouter } from './adminAnalytics';
 import { config } from '../config';
 
 const router = Router();
@@ -41,6 +44,7 @@ function requireLearnBrowserOrigin(req: Request, res: Response, next: NextFuncti
 // Admin routes — no API key required (same-origin, JWT-protected)
 router.use('/api/admin/popups', popupsAdminRouter);
 router.use('/api/admin/cluster', clusterAdminRouter);
+router.use('/api/admin/analytics', analyticsAdminRouter);
 router.use('/api/admin', adminRouter);
 
 // Public dish catalog — no API key required (read-only menu data)
@@ -70,6 +74,10 @@ router.use('/sse', sseRouter);
 router.use('/subject-images', subjectImagesRouter);
 // Frontend activity tracking
 router.use('/activity-log', activityLogRouter);
+// Foreground heartbeat behind the admin Analytics page (device kind and time only)
+router.use('/usage', usageRouter);
+// Privacy notice acknowledgement and the usage-statistics consent
+router.use('/privacy', privacyRouter);
 // Push notification registration
 router.use('/push', pushRouter);
 // Announcement popups (admin-authored, shown in the web and Android apps)

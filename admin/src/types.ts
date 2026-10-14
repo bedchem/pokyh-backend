@@ -947,3 +947,173 @@ export interface ClusterReach {
   relays: ClusterRelay[];
   peers: Array<{ id: string; name: string; outgoing: string | null; incoming: string | null }>;
 }
+
+// ─── Analytics (GET /api/admin/analytics) ───────────────────────────────────
+
+export type AnalyticsRange = 7 | 30 | 90;
+// The native apps on their own; everything in a browser (phone or computer,
+// tab or installed PWA) is "web". "other" is an app that names no platform.
+export type UsagePlatform = 'ios' | 'android' | 'web' | 'other';
+export type PlatformCounts = Record<UsagePlatform, number>;
+
+export interface AdminAnalytics {
+  generatedAt: string;
+  timezone: string;
+  days: number;
+  axis: string[];
+  live: { online: number; byPlatform: PlatformCounts };
+  platforms: {
+    total: number;
+    byPlatform: PlatformCounts;
+    multiPlatform: number;
+    web: { mobile: number; desktop: number; pwa: number; browser: number };
+    requestLogRetentionDays: number;
+    visitRetentionDays: number;
+  };
+  time: {
+    sessions: number;
+    guestSessions: number;
+    totalSeconds: number;
+    avgSessionSeconds: number;
+    medianSessionSeconds: number;
+    longestSessionSeconds: number;
+    avgDailySecondsPerUser: number;
+    sessionsPerUserDay: number;
+    screensPerSession: number;
+    byPlatform: Record<UsagePlatform, { sessions: number; seconds: number; users: number }>;
+    lengthBands: Array<{ label: string; sessions: number }>;
+  };
+  daily: Array<{
+    dayKey: string;
+    users: number;
+    sessions: number;
+    seconds: number;
+    userSeconds: number;
+    byPlatform: PlatformCounts;
+    signups: number;
+  }>;
+  hours: Array<{ hour: number; sessions: number; seconds: number }>;
+  weekdays: Array<{ weekday: number; sessions: number; avgUsers: number; seconds: number }>;
+  engagement: {
+    dau: number;
+    wau: number;
+    mau: number;
+    visitUsers: number;
+    activeUsers: number;
+    avgDau: number;
+    stickiness: number | null;
+    newUsers: number;
+    returningUsers: number;
+    loyalUsers: number;
+    activeDaysPerUser: number;
+  };
+  accounts: {
+    total: number;
+    students: number;
+    parents: number;
+    untis: number;
+    local: number;
+    newInRange: number;
+    withPush: number;
+    withLearn: number;
+    admins: number;
+    classes: number;
+    oldestDays: number;
+    // Accounts that consented to the usage statistics.
+    usageConsents: number;
+  };
+  features: {
+    todos: number;
+    todosDone: number;
+    reminders: number;
+    reminderComments: number;
+    dishComments: number;
+    dishRatings: number;
+    avgStars: number | null;
+    learnAnswers: number;
+    learnCorrect: number;
+    learnMinutes: number;
+    learnLearners: number;
+    pageViews: number;
+    downloads: number;
+  };
+  mensa: {
+    topRated: { name: string; avg: number; ratings: number } | null;
+    mostRated: { name: string; ratings: number } | null;
+    mostCommented: { name: string; comments: number } | null;
+    starBands: number[];
+  };
+  classes: Array<{ name: string; seconds: number; users: number; sessions: number }>;
+  appVersions: Array<{ platform: UsagePlatform; version: string; users: number }>;
+  pages: Array<{ page: string; views: number; users: number }>;
+}
+
+// GET /api/admin/analytics/people — the accounts behind a figure.
+export interface PeopleFilters {
+  platform?: UsagePlatform;
+  // One local day, YYYY-MM-DD.
+  day?: string;
+  hours?: number[];
+  // 0 = Monday … 6 = Sunday.
+  weekdays?: number[];
+  klasse?: string;
+  segment?: 'loyal' | 'multi' | 'new' | 'returning' | 'inactive';
+  // A website page as the page list shows it ("/timetable").
+  page?: string;
+  // Accounts created on this local day, YYYY-MM-DD.
+  created?: string;
+  // Session-length band, the index into time.lengthBands.
+  band?: number;
+}
+
+export interface AnalyticsPerson {
+  stableUid: string;
+  username: string;
+  klasse: string;
+  role: string;
+  createdAt: string;
+  seconds: number;
+  // 0 when the account shows up only in the server logs.
+  visits: number;
+  activeDays: number;
+  lastSeenAt: string | null;
+  platforms: UsagePlatform[];
+  // With a platform filter: app version, or for the web device and how it was opened.
+  detail: string;
+}
+
+export interface AnalyticsPeople {
+  days: number;
+  total: number;
+  // Matching accounts without usage-statistics consent: counted, never named.
+  hidden: number;
+  people: AnalyticsPerson[];
+}
+
+// GET /api/admin/analytics/breakdown — what a "created" figure is made of.
+export type BreakdownKind = 'todos' | 'reminders' | 'reminderComments' | 'downloads' | 'learn';
+
+export interface AnalyticsBreakdown {
+  kind: BreakdownKind;
+  days: number;
+  total: number;
+  items: Array<{ label: string; value: number; note: string }>;
+}
+
+// GET /api/admin/analytics/dishes — every rated or commented dish.
+export interface AnalyticsDish {
+  key: string;
+  name: string;
+  lastServed: string;
+  served: number;
+  ratings: number;
+  avgStars: number | null;
+  // Ratings with 1 … 5 stars.
+  stars: number[];
+  comments: number;
+}
+
+export interface AnalyticsDishes {
+  total: number;
+  dishes: AnalyticsDish[];
+}
