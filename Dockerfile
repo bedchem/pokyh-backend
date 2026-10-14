@@ -56,6 +56,10 @@ RUN npx prisma generate
 # Admin scripts (make-admin, create-user, etc.)
 COPY --chown=pokyh:pokyh scripts ./scripts
 
+# The one-line node installer (deploy/node): this node hands it, together with
+# its own build, to a server it sets up (src/cluster/provision.ts).
+COPY --chown=pokyh:pokyh deploy ./deploy
+
 # Startup script
 COPY entrypoint.sh ./
 RUN chmod +x entrypoint.sh

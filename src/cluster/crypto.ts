@@ -39,8 +39,16 @@ import {
 //
 // Every message inside a session is sealed with AES-256-GCM under a
 // direction-specific key and a strictly unique counter nonce.
+//
+// Over the mutually authenticated TLS channel (mtls.ts) both handshakes also
+// cover the pins of the two certificates each side actually saw in its TLS
+// connection (protocol version 3). The pins are not sent: each side enters
+// what it observed. Should anything sit between the two nodes and terminate
+// TLS on its own — even with a certificate somebody trusted by mistake — the
+// two transcripts differ and the handshake fails.
 
 export const PROTOCOL_VERSION = 2;
+export const TLS_PROTOCOL_VERSION = 3;
 const LABEL = 'pokyh-cluster/v1';
 
 const KEY_BYTES = 32;
@@ -206,6 +214,17 @@ export function sharedSecret(privateKey: KeyObject, peerPublic: Buffer): Buffer 
 
 // ─── Pairing handshake ───────────────────────────────────────────────────────
 
+// Pins of the client's and the server's certificate on the TLS connection a
+// handshake runs over.
+export interface ChannelBinding {
+  client: string;
+  server: string;
+}
+
+function bindingFields(tls: ChannelBinding | undefined): string[] {
+  return tls ? ['tls', tls.client, tls.server] : [];
+}
+
 export interface PairInit {
   from: string;
   name: string;
@@ -213,6 +232,7 @@ export interface PairInit {
   salt: Buffer;
   e: Buffer;
   n: Buffer;
+  tls?: ChannelBinding;
 }
 
 export interface PairAccept {
@@ -223,7 +243,8 @@ export interface PairAccept {
 }
 
 function pairInitTranscript(init: PairInit): Buffer {
-  return encodeFields(['pair-init', String(PROTOCOL_VERSION), init.from, init.name, init.addr, init.salt, init.e, init.n]);
+  const version = String(init.tls ? TLS_PROTOCOL_VERSION : PROTOCOL_VERSION);
+  return encodeFields(['pair-init', version, init.from, init.name, init.addr, init.salt, init.e, init.n, ...bindingFields(init.tls)]);
 }
 
 // Proves, before the responder commits any state, that the initiator knows the
@@ -261,6 +282,7 @@ export interface SessionInit {
   to: string;
   e: Buffer;
   n: Buffer;
+  tls?: ChannelBinding;
 }
 
 export interface SessionAccept {
@@ -270,7 +292,8 @@ export interface SessionAccept {
 }
 
 function sessionInitTranscript(init: SessionInit): Buffer {
-  return encodeFields(['session-init', String(PROTOCOL_VERSION), init.from, init.to, init.e, init.n]);
+  const version = String(init.tls ? TLS_PROTOCOL_VERSION : PROTOCOL_VERSION);
+  return encodeFields(['session-init', version, init.from, init.to, init.e, init.n, ...bindingFields(init.tls)]);
 }
 
 function sessionFullTranscript(init: SessionInit, accept: SessionAccept): Buffer {

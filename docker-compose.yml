@@ -82,6 +82,12 @@ services:
       # Publish the API on every host interface by default. TLS termination and
       # any reverse-proxy policy are operated outside this application stack.
       - "${BACKEND_BIND_ADDRESS:-0.0.0.0}:${PORT:-4000}:${PORT:-4000}"
+      # The cluster's mutually authenticated channel (CLUSTER_MTLS_PORT=4100 in
+      # the backend env). By default only a random loopback port, so nothing is
+      # exposed and no host port can collide; set CLUSTER_MTLS_PUBLISH to
+      # e.g. 0.0.0.0:4100 to make it reachable for the other nodes. It accepts
+      # nothing but pinned certificates.
+      - "${CLUSTER_MTLS_PUBLISH:-127.0.0.1:}:4100"
     depends_on:
       mysql:
         condition: service_healthy

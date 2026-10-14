@@ -1,4 +1,4 @@
-import type { AdminStats, AdminClass, AdminSession, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish, AdminDishFull, AdminDishImportResult, AdminDishShiftResult, AdminDishRotateResult, AdminDishResetResult, AdminDishAnchorResult, DishPlan, AdminCommentsResponse, FileLogFile, FileLogResponse, FileLogEntry, FrontendActivityLogsResponse, FrontendActivityStats, AllTodosResponse, AllRemindersResponse, SchoolYearsResponse, ArchivedUsersResponse, ArchivedClass, ArchivedTodosResponse, ArchivedRemindersResponse, RolloverResult, RollbackResult, AdminApiKey, CreatedApiKey, LearnConfigValues, LearnAiConfigValues, LearnAiGrant, LearnAiTeamGrant, AdminLearnTeam, LearnTeamAssignableRole, AdminLearnCoursesResponse, AdminLearnCourseAccessResponse, AdminLearnCourse, AdminLearnCourseAccess, LearnCoursePermission, LearnCourseStatus, LearnCourseVisibility, AdminLearnCourseVocabularyResponse, AdminLearnVocabularyImportResponse, BackupsResponse, AdminPopup, PopupInput, ClusterStatus } from './types';
+import type { AdminStats, AdminClass, AdminSession, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish, AdminDishFull, AdminDishImportResult, AdminDishShiftResult, AdminDishRotateResult, AdminDishResetResult, AdminDishAnchorResult, DishPlan, AdminCommentsResponse, FileLogFile, FileLogResponse, FileLogEntry, FrontendActivityLogsResponse, FrontendActivityStats, AllTodosResponse, AllRemindersResponse, SchoolYearsResponse, ArchivedUsersResponse, ArchivedClass, ArchivedTodosResponse, ArchivedRemindersResponse, RolloverResult, RollbackResult, AdminApiKey, CreatedApiKey, LearnConfigValues, LearnAiConfigValues, LearnAiGrant, LearnAiTeamGrant, AdminLearnTeam, LearnTeamAssignableRole, AdminLearnCoursesResponse, AdminLearnCourseAccessResponse, AdminLearnCourse, AdminLearnCourseAccess, LearnCoursePermission, LearnCourseStatus, LearnCourseVisibility, AdminLearnCourseVocabularyResponse, AdminLearnVocabularyImportResponse, BackupsResponse, AdminPopup, PopupInput, ClusterStatus, ClusterInstall, CreatedClusterInstall, ClusterReach, ReachEntry } from './types';
 
 const TOKEN_KEY = 'pokyh_admin_token';
 
@@ -598,6 +598,38 @@ export const adminApi = {
 
   renameClusterNode: (name: string): Promise<{ ok: boolean }> =>
     request<{ ok: boolean }>('PATCH', '/api/admin/cluster/node', { name }),
+
+  // One-line node install: the command is returned once and never again.
+  createClusterInstall: (data: { domain: string; name?: string; withAi?: boolean; acmeEmail?: string }): Promise<CreatedClusterInstall> =>
+    request<CreatedClusterInstall>('POST', '/api/admin/cluster/node-installs', data),
+
+  getClusterInstalls: (): Promise<{ installs: ClusterInstall[] }> =>
+    request<{ installs: ClusterInstall[] }>('GET', '/api/admin/cluster/node-installs'),
+
+  revokeClusterInstall: (id: string): Promise<{ ok: boolean }> =>
+    request<{ ok: boolean }>('DELETE', `/api/admin/cluster/node-installs/${id}`),
+
+  rotateClusterCertificate: (): Promise<{ pin: string; peers: number }> =>
+    request<{ pin: string; peers: number }>('POST', '/api/admin/cluster/certificate/rotate'),
+
+  // How this node is reached (several ways), relays
+  getClusterReach: (): Promise<ClusterReach> =>
+    request<ClusterReach>('GET', '/api/admin/cluster/reach'),
+
+  saveClusterReach: (entries: Array<Pick<ReachEntry, 'kind' | 'endpoint' | 'enabled' | 'backend'> & { id?: string }>): Promise<ClusterReach> =>
+    request<ClusterReach>('PUT', '/api/admin/cluster/reach', { entries }),
+
+  addClusterRelay: (key: string): Promise<{ id: string; name: string }> =>
+    request<{ id: string; name: string }>('POST', '/api/admin/cluster/relays', { key }),
+
+  updateClusterRelay: (id: string, data: { enabled?: boolean; usePorts?: boolean; useSni?: boolean; name?: string }): Promise<{ ok: boolean }> =>
+    request<{ ok: boolean }>('PATCH', `/api/admin/cluster/relays/${id}`, data),
+
+  removeClusterRelay: (id: string): Promise<{ ok: boolean }> =>
+    request<{ ok: boolean }>('DELETE', `/api/admin/cluster/relays/${id}`),
+
+  createRelayCommand: (data: { origin: string; host: string; port: number; publicPort: boolean; domain: string; name: string }): Promise<{ command: string; sha256: string; expiresAt: string }> =>
+    request<{ command: string; sha256: string; expiresAt: string }>('POST', '/api/admin/cluster/relay-command', data),
 
   getToken,
 };

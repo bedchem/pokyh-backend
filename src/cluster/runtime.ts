@@ -1,4 +1,5 @@
 import type { Catalog } from './catalog';
+import type { Endpoint } from './endpoints';
 import type { Health } from './health';
 import type { ReplayWindow } from './crypto';
 
@@ -6,7 +7,13 @@ import type { ReplayWindow } from './crypto';
 // keys, queues) live in the database; everything here is rebuilt after a
 // restart from the database and the first heartbeats.
 
+// 'tls': over the mutually authenticated channel (mtls.ts), with the session
+// bound to the certificates of that connection; 'plain': over the public
+// path or CLUSTER_PORT, protected by the frame layer alone.
+export type Channel = 'tls' | 'plain';
+
 export interface ClientSession {
+  channel: Channel;
   sid: Buffer;
   c2s: Buffer;
   s2c: Buffer;
@@ -16,12 +23,27 @@ export interface ClientSession {
 
 export interface ServerSession {
   peerRowId: string;
+  // Pin of the client certificate the session was opened with; every call of
+  // the session must come over a connection with that certificate. Null for
+  // a session opened outside the mutually authenticated channel.
+  channelPin: string | null;
   sid: Buffer;
   c2s: Buffer;
   s2c: Buffer;
   replay: ReplayWindow;
   createdAt: number;
   lastUsedAt: number;
+}
+
+// A peer's pinned certificate and where its channel is reached.
+export interface PeerTls {
+  url: string;
+  // Every way it announced, in its order of preference; `url` is the first.
+  endpoints: Endpoint[];
+  pin: string;
+  certPem: string;
+  // The certificate it used before a rotation, accepted until `until`.
+  previous: { pin: string; certPem: string; until: number } | null;
 }
 
 export interface RemoteView {
@@ -35,6 +57,8 @@ export interface RemoteView {
   blocked: string[];
   // The address the other node announces for itself.
   addr: string;
+  // The way the other node currently reaches this one (its report).
+  via: string | null;
 }
 
 // Where a peer stands in this node's change feed. The durable part
@@ -104,7 +128,16 @@ export interface PeerRuntime {
   schemaMatch: boolean | null;
   secretsMatch: { jwt: boolean | null; apiKey: boolean | null; serverKey: boolean | null };
   session: ClientSession | null;
-  handshake: Promise<ClientSession> | null;
+  handshake: { channel: Channel; promise: Promise<ClientSession> } | null;
+  // The mutually authenticated channel: the pinned certificate, whether the
+  // link is locked to it (no other path accepted any more), which directions
+  // have worked over it since the start, and until when a failed attempt
+  // makes calls use the other path (only while not locked).
+  tls: PeerTls | null;
+  tlsLocked: boolean;
+  tlsOutOk: boolean;
+  tlsInOk: boolean;
+  tlsRetryAt: number;
   syncing: boolean;
   lastSyncAt: number | null;
   lastSyncError: string | null;
@@ -166,7 +199,7 @@ export function peerByNodeId(nodeId: string): PeerRuntime | undefined {
 }
 
 export function emptyRemoteView(): RemoteView {
-  return { name: null, schema: null, appVersion: null, captureReady: null, peers: [], pairing: [], blocked: [], addr: '' };
+  return { name: null, schema: null, appVersion: null, captureReady: null, peers: [], pairing: [], blocked: [], addr: '', via: null };
 }
 
 export function nowMicros(): bigint {

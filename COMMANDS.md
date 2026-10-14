@@ -88,9 +88,35 @@ npm run test:cluster
 
 ## Cluster
 
-Nodes are linked in the admin panel under **Cluster**: create an invite code on
-any member (**Node einladen**) and use it on the new node (**Beitreten**). See
-README.md → "Cluster".
+Nodes are linked in the admin panel under **Cluster**:
+
+- **Server per Einzeiler hinzufügen** — a fresh Debian/Ubuntu server becomes a
+  complete node with one command run as root (needs `CLUSTER_MTLS_PORT` on the
+  inviting node).
+- **Node einladen** / **Beitreten** — link a node you set up yourself with an
+  invite code.
+- **Erreichbarkeit dieser Node** — the ways the others reach this node (direct,
+  proxy by port, proxy on 443 by name), with proxy configuration to copy.
+- **Relays** — "Relay auf VPS einrichten" prints a command for a VPS; paste the
+  relay key it prints under "Relay hinzufügen" and every node registers there.
+
+```bash
+# On the VPS running a relay
+docker logs -f pokyh-relay
+cat /opt/pokyh-relay/data/relay-key.txt
+```
+
+See README.md → "Cluster".
+
+```bash
+# One-line install command through the API (shown once; admin token required)
+curl -s -X POST -H "Authorization: Bearer $ADMIN_TOKEN" -H 'content-type: application/json' \
+  -d '{"domain":"node2.example.org"}' http://localhost:4000/api/admin/cluster/node-installs
+
+# On a node set up by the installer
+/opt/pokyh/pokyh ps
+/opt/pokyh/pokyh logs -f app
+```
 
 ```bash
 # Status of this node and its peers (admin token required)

@@ -189,3 +189,41 @@ test('field encoding is unambiguous', () => {
   assert.notDeepEqual(c.encodeFields(['ab', 'c']), c.encodeFields(['a', 'bc']));
   assert.notDeepEqual(c.encodeFields(['a', '']), c.encodeFields(['a']));
 });
+
+// ─── Binding to the mutually authenticated channel ───────────────────────────
+
+const PIN_A = 'A'.repeat(43) + '=';
+const PIN_B = 'B'.repeat(43) + '=';
+const PIN_MITM = 'M'.repeat(43) + '=';
+
+test('over the channel, the pairing proof covers both certificates each side saw', async () => {
+  const salt = c.randomToken(16);
+  const psk = await c.derivePairingPsk(PAIRING_KEY, salt);
+  const eph = c.generateEphemeral();
+  const base = { from: 'node-a', name: 'A', addr: 'https://node-a.example.org:4100', salt, e: eph.publicKey, n: c.randomToken(16) };
+  const seenByJoiner = c.pairInitMac(psk, { ...base, tls: { client: PIN_A, server: PIN_B } });
+  // The host saw the same two certificates: accepted.
+  assert.ok(c.safeEqual(seenByJoiner, c.pairInitMac(psk, { ...base, tls: { client: PIN_A, server: PIN_B } })));
+  // Something in between terminated TLS with its own certificate on either side: refused.
+  assert.ok(!c.safeEqual(seenByJoiner, c.pairInitMac(psk, { ...base, tls: { client: PIN_MITM, server: PIN_B } })));
+  assert.ok(!c.safeEqual(seenByJoiner, c.pairInitMac(psk, { ...base, tls: { client: PIN_A, server: PIN_MITM } })));
+  // A channel-bound proof is never valid without the channel, and vice versa.
+  assert.ok(!c.safeEqual(seenByJoiner, c.pairInitMac(psk, base)));
+});
+
+test('over the channel, session keys and proofs are bound to the certificates', () => {
+  const linkKey = c.randomToken(32);
+  const ephC = c.generateEphemeral();
+  const ephS = c.generateEphemeral();
+  const base = { from: 'node-a', to: 'node-b', e: ephC.publicKey, n: c.randomToken(16) };
+  const bound = { ...base, tls: { client: PIN_A, server: PIN_B } };
+  const forged = { ...base, tls: { client: PIN_MITM, server: PIN_B } };
+  assert.ok(!c.safeEqual(c.sessionInitMac(linkKey, bound), c.sessionInitMac(linkKey, forged)));
+  assert.ok(!c.safeEqual(c.sessionInitMac(linkKey, bound), c.sessionInitMac(linkKey, base)));
+  const accept = { sid: c.randomToken(16), e: ephS.publicKey, n: c.randomToken(16) };
+  const client = c.sessionKeys(linkKey, c.sharedSecret(ephC.privateKey, accept.e), bound, accept);
+  const server = c.sessionKeys(linkKey, c.sharedSecret(ephS.privateKey, base.e), bound, accept);
+  assert.deepEqual(client.c2s, server.c2s);
+  const mismatched = c.sessionKeys(linkKey, c.sharedSecret(ephS.privateKey, base.e), forged, accept);
+  assert.notDeepEqual(client.c2s, mismatched.c2s, 'a different view of the connection yields unrelated keys');
+});

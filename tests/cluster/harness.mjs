@@ -119,23 +119,38 @@ export class Cluster {
 
   // ── Nodes ────────────────────────────────────────────────────────────────
 
-  async addNode(name, overrides = {}) {
+  // Options: `mtls` gives the node its mutually authenticated channel on a
+  // port of its own; `appDir` runs the server from that directory (an
+  // unpacked install bundle) instead of this repository's build.
+  async addNode(name, overrides = {}, { mtls = false, appDir = null } = {}) {
     const database = `pokyh_e2e_${this.suffix}_${name}`;
     await this.adminDb.$executeRawUnsafe(`CREATE DATABASE \`${database}\``);
-    const dir = path.join(this.root, name);
+    const dir = appDir ?? path.join(this.root, name);
     mkdirSync(dir, { recursive: true });
     const linkType = process.platform === 'win32' ? 'junction' : 'dir';
-    symlinkSync(path.join(REPO, 'prisma'), path.join(dir, 'prisma'), linkType);
-    symlinkSync(path.join(REPO, 'node_modules'), path.join(dir, 'node_modules'), linkType);
-    writeFileSync(path.join(dir, 'package.json'), '{"name":"pokyh-cluster-e2e-node","private":true}\n');
+    if (!existsSync(path.join(dir, 'prisma'))) symlinkSync(path.join(REPO, 'prisma'), path.join(dir, 'prisma'), linkType);
+    if (!existsSync(path.join(dir, 'node_modules'))) symlinkSync(path.join(REPO, 'node_modules'), path.join(dir, 'node_modules'), linkType);
+    if (!appDir) writeFileSync(path.join(dir, 'package.json'), '{"name":"pokyh-cluster-e2e-node","private":true}\n');
     this.installClientShims(dir);
 
     const port = await freePort();
+    const mtlsPort = mtls ? await freePort() : null;
     const databaseUrl = `${this.mysqlUrl}/${database}`;
+    if (mtlsPort) {
+      overrides = {
+        CLUSTER_MTLS_PORT: String(mtlsPort),
+        CLUSTER_MTLS_BIND_ADDRESS: '127.0.0.1',
+        CLUSTER_MTLS_URL: `https://127.0.0.1:${mtlsPort}`,
+        ...overrides,
+      };
+    }
     const node = {
       name,
       dir,
+      entry: path.join(appDir ?? REPO, 'dist', 'index.js'),
       port,
+      mtlsPort,
+      channelUrl: mtlsPort ? `https://127.0.0.1:${mtlsPort}` : null,
       database,
       databaseUrl,
       url: `http://127.0.0.1:${port}`,
@@ -217,7 +232,7 @@ child.on('exit', (code) => process.exit(code === null ? 1 : code));
   async start(node) {
     if (node.process) return;
     const logFile = path.join(node.dir, 'node.log');
-    const child = spawn(process.execPath, [path.join(REPO, 'dist', 'index.js')], {
+    const child = spawn(process.execPath, [node.entry], {
       cwd: node.dir,
       env: this.environmentFor(node),
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -236,6 +251,7 @@ child.on('exit', (code) => process.exit(code === null ? 1 : code));
     await waitFor(async () => (await this.status(node)).running === true, {
       timeoutMs: 60_000, intervalMs: 200, label: `the cluster layer of node ${node.name} to start`,
     });
+    node.nodeId = (await this.status(node)).node.id;
   }
 
   async stop(node, signal = 'SIGTERM') {
@@ -299,8 +315,14 @@ child.on('exit', (code) => process.exit(code === null ? 1 : code));
     return res.json;
   }
 
+  // A node's entry for another one: by node id once known (addresses may be
+  // anything — a relay, a proxy, a dead first choice), else by port.
   peerOf(status, other) {
-    return status.peers.find((peer) => peer.address.endsWith(`:${other.port}`) || (other.proxyPort && peer.address.endsWith(`:${other.proxyPort}`)));
+    const byId = other.nodeId ? status.peers.find((peer) => peer.nodeId === other.nodeId) : undefined;
+    if (byId) return byId;
+    return status.peers.find((peer) => peer.address.endsWith(`:${other.port}`)
+      || (other.proxyPort && peer.address.endsWith(`:${other.proxyPort}`))
+      || (other.mtlsPort && peer.address.endsWith(`:${other.mtlsPort}`)));
   }
 
   // Links two nodes the way an operator does: an invite code created on A,

@@ -3,6 +3,7 @@ import { Prisma, type ClusterPeer } from '@prisma/client';
 import { prisma } from '../db';
 import { config } from '../config';
 import { deriveKek, unwrapSecret, wrapSecret } from './crypto';
+import { formatEndpoint, parseEndpointList, type Endpoint } from './endpoints';
 
 // Durable cluster facts: this node's identity, the configured peers and their
 // wrapped key material.
@@ -27,6 +28,44 @@ export function wrap(plaintext: Buffer, context: string): string {
 
 export function unwrap(wrapped: string, context: string): Buffer {
   return unwrapSecret(kek(), wrapped, context);
+}
+
+// Secrets in replicated tables (relay keys) must be readable on every node,
+// so they are wrapped with a key derived from JWT_SECRET, which all nodes
+// share — domain-separated from the per-node key above. A node with a
+// different JWT_SECRET cannot read them (the cluster page warns about that).
+let cachedSharedKek: Buffer | null = null;
+
+function sharedKek(): Buffer {
+  if (!cachedSharedKek) cachedSharedKek = deriveKek(`cluster-shared-config:${config.jwtSecret}`);
+  return cachedSharedKek;
+}
+
+export function wrapShared(plaintext: Buffer, context: string): string {
+  return wrapSecret(sharedKek(), plaintext, `shared/${context}`);
+}
+
+export function unwrapShared(wrapped: string, context: string): Buffer {
+  return unwrapSecret(sharedKek(), wrapped, `shared/${context}`);
+}
+
+// A peer's announced endpoints as stored (JSON array of written endpoints).
+export function storedEndpoints(peer: { channelEndpoints: string | null; channelUrl: string | null }): Endpoint[] {
+  let list: string[] = [];
+  if (peer.channelEndpoints) {
+    try {
+      const parsed = JSON.parse(peer.channelEndpoints) as unknown;
+      if (Array.isArray(parsed)) list = parsed.filter((item): item is string => typeof item === 'string');
+    } catch {
+      list = [];
+    }
+  }
+  if (list.length === 0 && peer.channelUrl) list = [peer.channelUrl];
+  return parseEndpointList(list).endpoints;
+}
+
+function endpointsColumn(endpoints: Endpoint[] | undefined): string | null {
+  return endpoints && endpoints.length > 0 ? JSON.stringify(endpoints.map(formatEndpoint)) : null;
 }
 
 export async function loadOrCreateNode(): Promise<{ nodeId: string; name: string; advertiseUrl: string }> {
@@ -89,6 +128,17 @@ function pairingWindowEnd(): Date {
 // (an invite of ours, or an introduction where the other node calls us); the
 // address may still be unknown. JOIN: this node contacts the other one at
 // `address`, expecting the node id the invite named.
+// What is known in advance about the other node's mutually authenticated
+// channel: its certificate (or only its pin, from an invite code) and where
+// it is reached. A HOST entry with a certificate accepts only that node.
+export interface PeerTlsInput {
+  url: string;
+  pin: string;
+  certPem: string | null;
+  // Every way to reach it, in order; `url` is the first.
+  endpoints?: Endpoint[];
+}
+
 export async function createPendingPeer(input: {
   role: PeerRole;
   address: string;
@@ -97,6 +147,10 @@ export async function createPendingPeer(input: {
   nodeId?: string | null;
   introducedBy?: string | null;
   createdBy: string;
+  tls?: PeerTlsInput | null;
+  // The pairing may only be completed over the mutually authenticated channel.
+  tlsRequired?: boolean;
+  expiresAt?: Date;
 }): Promise<ClusterPeer> {
   const id = randomUUID();
   return prisma.clusterPeer.create({
@@ -111,16 +165,42 @@ export async function createPendingPeer(input: {
       introducedBy: input.introducedBy ?? null,
       status: 'PENDING',
       pairingSecretEnc: wrap(Buffer.from(input.secret, 'utf8'), `pairing:${id}`),
-      pairingExpiresAt: pairingWindowEnd(),
+      pairingExpiresAt: input.expiresAt ?? pairingWindowEnd(),
       createdBy: input.createdBy,
+      certPem: input.tls?.certPem ?? null,
+      certPin: input.tls?.pin ?? null,
+      channelUrl: input.tls?.url ?? null,
+      channelEndpoints: endpointsColumn(input.tls?.endpoints),
+      tlsRequired: input.tlsRequired ?? false,
     },
   });
+}
+
+// Stores what was learned about a peer's channel over an authenticated path.
+export async function savePeerTls(id: string, tls: { url: string; pin: string; certPem: string; endpoints?: Endpoint[] }): Promise<void> {
+  await prisma.clusterPeer.updateMany({
+    where: { id },
+    data: { channelUrl: tls.url, certPin: tls.pin, certPem: tls.certPem, channelEndpoints: endpointsColumn(tls.endpoints) },
+  });
+}
+
+export async function lockPeerTls(id: string): Promise<void> {
+  await prisma.clusterPeer.updateMany({ where: { id }, data: { tlsLocked: true } });
 }
 
 // Completes a pairing: stores the wrapped link key and forgets the pairing
 // key. The peer receives everything through a complete transfer; changes from
 // `feedFrom` on reach it through the change feed.
-export async function activatePeer(id: string, input: { nodeId: string; name: string; linkKey: Buffer; address?: string; feedFrom: bigint }): Promise<ClusterPeer> {
+// With `tls` the pairing ran over the mutually authenticated channel: the
+// peer's certificate is pinned and the link is locked to the channel.
+export async function activatePeer(id: string, input: {
+  nodeId: string;
+  name: string;
+  linkKey: Buffer;
+  address?: string;
+  feedFrom: bigint;
+  tls?: { url: string; pin: string; certPem: string; endpoints?: Endpoint[] } | null;
+}): Promise<ClusterPeer> {
   const current = await prisma.clusterPeer.findUniqueOrThrow({ where: { id } });
   return prisma.clusterPeer.update({
     where: { id },
@@ -128,6 +208,16 @@ export async function activatePeer(id: string, input: { nodeId: string; name: st
       nodeId: input.nodeId,
       name: current.name || input.name.slice(0, 120),
       ...(input.address ? { address: input.address } : {}),
+      ...(input.tls
+        ? {
+            channelUrl: input.tls.url,
+            certPin: input.tls.pin,
+            certPem: input.tls.certPem,
+            channelEndpoints: endpointsColumn(input.tls.endpoints),
+            tlsLocked: true,
+            tlsRequired: false,
+          }
+        : {}),
       status: 'ACTIVE',
       linkKeyEnc: wrap(input.linkKey, `link:${id}`),
       pairingSecretEnc: null,

@@ -16,16 +16,44 @@ import {
   trackedTables,
 } from './capture';
 import { configFingerprint } from './crypto';
+import { ClusterError } from './errors';
+import { formatEndpoint, parseEndpointList, writtenPort } from './endpoints';
+import { isChannelUrl } from './installToken';
+import { runBootstrap, stopBootstrap, type BootstrapJoin, type BootstrapStatus } from './joinFile';
 import { estimateSkewMs, healthAfter, normalizePeerAddress, rendezvousOwner, type Health } from './health';
 import { setRestoreWrapper, setWorkPolicy } from './hooks';
 import { decodeInvite, encodeInvite, newInviteSecret } from './invite';
 import { listenerState } from './listener';
 import { handleIntroduce, meshTick } from './mesh';
-import { advertisedAddress, expectedNodeOf, forgetPairing, pairingProgressOf, pairingTick, setActivationHook } from './pairing';
-import { heartbeatSchema, offerSchema, pushSchema, type Heartbeat } from './protocol';
+import {
+  currentPathTo,
+  loadOrCreateIdentity,
+  mtlsState,
+  ownIdentity,
+  replaceIdentity,
+  setTlsGate,
+  startMtlsListener,
+  stopMtlsListener,
+} from './mtls';
+import { envEndpoints, loadReach, panelEntries, relayReach, saveReach, type ReachEntry } from './reach';
+import { proxySnippets, validProxyRoute, type ProxySnippets } from './proxySnippets';
+import { addRelay, relayStatus, removeRelay, setRelayEndpointsHook, startRelays, stopRelays, updateRelay } from './relayClient';
+import { routeLabel } from './relayProtocol';
+import { createRelayCommand as relayCommand, type RelayCommandInput } from './relaySetup';
+import { advertisedAddress, expectedNodeOf, forgetPairing, ownChannel, pairingProgressOf, pairingTick, setActivationHook } from './pairing';
+import { certRotateSchema, heartbeatSchema, offerSchema, pushSchema, type Heartbeat } from './protocol';
+import {
+  completeInstallFor,
+  createInstall,
+  expireInstalls,
+  installWindowOpen,
+  listInstalls,
+  refreshInstallWindows,
+  revokeInstall,
+} from './provision';
 import { hasPendingWork, pendingCount, readFeedHead, stableFeedPosition, syncPeer } from './replicator';
-import { allowlist } from './router';
-import { emptyRemoteView, newFeedProgress, recordEvent, state, type PeerRuntime } from './runtime';
+import { allowlist, createClusterRouter } from './router';
+import { emptyRemoteView, newFeedProgress, recordEvent, state, type PeerRuntime, type PeerTls } from './runtime';
 import {
   createPendingPeer,
   deletePeer,
@@ -34,11 +62,15 @@ import {
   linkKeyOf,
   listPeers,
   loadOrCreateNode,
+  lockPeerTls,
   renameNode,
   saveAdvertiseUrl,
+  savePeerTls,
   setPeerStatus,
+  storedEndpoints,
 } from './store';
-import { RpcError, dropSessionsOf, rpc, setRpcHandler, sweepSessions } from './transport';
+import { RpcError, dropSessionsOf, pinAccepted, rpc, setChannelHook, setRpcHandler, sweepSessions } from './transport';
+import { createNodeCertificate, inspectNodeCertificate } from './x509';
 import { handleDigest, handleRows, verifyPeer } from './verify';
 
 // Entry point of the cluster layer: start-up, the periodic loops, the calls a
@@ -55,13 +87,17 @@ import { handleDigest, handleRows, verifyPeer } from './verify';
 // check (mesh.ts) links nodes that are not linked yet, and background work is
 // shared out by key over whichever nodes are reachable (hooks.ts).
 
-const APP_VERSION = '2';
+const APP_VERSION = '3';
 const PAIRING_TICK_MS = 5_000;
 const MAINTENANCE_TICK_MS = 60_000;
 const DEFERRED_RETRY_MS = 5_000;
 const PRUNE_EVERY_MS = 60 * 60 * 1000;
 const LAST_SYNCED_PERSIST_MS = 10 * 60 * 1000;
 const MAX_SYNC_BACKOFF_MS = 60_000;
+// A peer's previous certificate stays accepted this long after it renewed it.
+const ROTATION_GRACE_MS = 15 * 60 * 1000;
+// A certificate this close to its end is reported.
+const CERTIFICATE_WARN_MS = 180 * 24 * 60 * 60 * 1000;
 
 const timers: NodeJS.Timeout[] = [];
 let startedAt = 0;
@@ -69,12 +105,7 @@ let lastPruneAt = 0;
 let lastHead = 0n;
 const lastSyncedPersisted = new Map<string, number>();
 
-export class ClusterError extends Error {
-  constructor(message: string, public readonly statusCode = 400) {
-    super(message);
-    this.name = 'ClusterError';
-  }
-}
+export { ClusterError };
 
 function message(err: unknown): string {
   return (err instanceof Error ? err.message : String(err)).split('\n')[0]!.slice(0, 300);
@@ -154,6 +185,19 @@ async function ensureCapture(): Promise<void> {
 
 // ─── Peers in memory ─────────────────────────────────────────────────────────
 
+// The peer's pinned certificate, if it is stored and still acceptable.
+function peerTlsOf(row: ClusterPeer): PeerTls | null {
+  if (!row.certPem || !row.certPin || !row.channelUrl) return null;
+  try {
+    const facts = inspectNodeCertificate(row.certPem);
+    const endpoints = storedEndpoints(row);
+    if (facts.pin !== row.certPin || endpoints.length === 0) return null;
+    return { url: endpoints[0]!.url, endpoints, pin: facts.pin, certPem: facts.pem, previous: null };
+  } catch {
+    return null;
+  }
+}
+
 function loadPeerRuntime(row: ClusterPeer): PeerRuntime | null {
   if (row.status !== 'ACTIVE' || !row.nodeId) return null;
   const linkKey = linkKeyOf(row);
@@ -164,6 +208,12 @@ function loadPeerRuntime(row: ClusterPeer): PeerRuntime | null {
   }
   const previous = state.peers.get(row.id);
   const retentionMs = config.cluster.tombstoneRetentionDays * 24 * 60 * 60 * 1000;
+  const tls = peerTlsOf(row);
+  if (row.tlsLocked && !tls) {
+    recordEvent('error', `Peer ${row.name || row.address} is locked to the mutually authenticated channel, but its stored certificate is unusable — invite it again`);
+  }
+  const samePin = Boolean(tls && previous?.tls && previous.tls.pin === tls.pin);
+  if (tls && samePin && previous?.tls?.previous) tls.previous = previous.tls.previous;
   const runtime: PeerRuntime = {
     rowId: row.id,
     nodeId: row.nodeId,
@@ -183,6 +233,11 @@ function loadPeerRuntime(row: ClusterPeer): PeerRuntime | null {
     secretsMatch: previous?.secretsMatch ?? { jwt: null, apiKey: null, serverKey: null },
     session: null,
     handshake: null,
+    tls,
+    tlsLocked: row.tlsLocked,
+    tlsOutOk: samePin ? previous!.tlsOutOk : false,
+    tlsInOk: samePin ? previous!.tlsInOk : false,
+    tlsRetryAt: previous?.tlsRetryAt ?? 0,
     syncing: false,
     lastSyncAt: previous?.lastSyncAt ?? null,
     lastSyncError: previous?.lastSyncError ?? null,
@@ -208,6 +263,8 @@ function unloadPeer(rowId: string): void {
 }
 
 async function onPeerActivated(rowId: string): Promise<void> {
+  await completeInstallFor(rowId).catch(() => {});
+  await refreshPeerLists().catch(() => {});
   const row = await getPeer(rowId);
   if (!row) return;
   // Sessions keyed with a previous link key are worthless now.
@@ -217,6 +274,16 @@ async function onPeerActivated(rowId: string): Promise<void> {
   await prepareCapture();
   recordEvent('info', `Paired with ${labelOf(runtime)}; the initial transfer has started`);
   logger.info('Cluster peer paired', { action: 'cluster_peer_paired', peer: runtime.nodeId });
+  // The waiting side stores the link before it answers the confirmation, and
+  // the joining side only once it has that answer: a heartbeat sent from here
+  // at once would be turned away. It follows shortly after the answer.
+  if (row.role === 'HOST') {
+    setTimeout(() => {
+      if (state.peers.get(rowId) !== runtime) return;
+      void heartbeatPeer(runtime).then(() => meshTick()).catch(() => {});
+    }, 1_000).unref();
+    return;
+  }
   await heartbeatPeer(runtime);
   // A new member is introduced to the others right away, not at the next tick.
   void meshTick().catch(() => {});
@@ -256,6 +323,9 @@ export function mayRunExclusive(job: string): boolean {
 
 let refusedNodes: string[] = [];
 let pairingNodes: string[] = [];
+// A pairing window this node waits in is open: an unknown certificate may
+// then reach the pairing endpoints of the channel (mtls.ts).
+let hostWindowOpen = false;
 
 async function refreshPeerLists(): Promise<void> {
   const rows = await listPeers();
@@ -264,6 +334,74 @@ async function refreshPeerLists(): Promise<void> {
     .filter((row) => row.status === 'PENDING' && row.pairingExpiresAt && row.pairingExpiresAt.getTime() > Date.now())
     .map((row) => row.nodeId ?? expectedNodeOf(row))
     .filter((id): id is string => Boolean(id));
+  hostWindowOpen = rows.some((row) => row.role === 'HOST' && row.status === 'PENDING' && row.pairingExpiresAt !== null && row.pairingExpiresAt.getTime() > Date.now());
+}
+
+async function refreshHostWindows(): Promise<void> {
+  if (!mtlsState.listening) return;
+  hostWindowOpen = (await prisma.clusterPeer.count({
+    where: { role: 'HOST', status: 'PENDING', pairingExpiresAt: { gt: new Date() } },
+  })) > 0;
+}
+
+// ─── The mutually authenticated channel ──────────────────────────────────────
+
+// A direction of a link worked over the channel. Once both have, the link is
+// locked to it: from then on nothing else is tried or accepted.
+function onChannelVerified(peer: PeerRuntime): void {
+  if (peer.tlsLocked || !peer.tlsOutOk || !peer.tlsInOk) return;
+  peer.tlsLocked = true;
+  if (peer.session?.channel === 'plain') peer.session = null;
+  for (const [key, session] of state.serverSessions) {
+    if (session.peerRowId === peer.rowId && session.channelPin === null) state.serverSessions.delete(key);
+  }
+  void lockPeerTls(peer.rowId)
+    .then(() => {
+      recordEvent('info', `${labelOf(peer)}: the link now runs over the mutually authenticated channel only`);
+      logger.info('Cluster link locked to the mutually authenticated channel', { action: 'cluster_tls_locked', peer: peer.nodeId });
+    })
+    .catch((err) => logger.warn('Cluster link lock could not be stored', { action: 'cluster_tls_lock_failed', message: message(err) }));
+}
+
+const certificateMismatchNoted = new Set<string>();
+
+// A peer announced its channel over the authenticated link. A link made
+// before the channel existed moves there by itself; a different certificate
+// than the pinned one is never adopted this way (only by a renewal).
+function absorbChannel(peer: PeerRuntime, advert: { url: string; cert: string; endpoints?: string[] } | null | undefined): void {
+  if (!advert || !ownChannel()) return;
+  const endpoints = parseEndpointList(advert.endpoints ?? [advert.url]).endpoints;
+  if (endpoints.length === 0) return;
+  let facts;
+  try {
+    facts = inspectNodeCertificate(advert.cert);
+  } catch {
+    return;
+  }
+  if (peer.tls) {
+    if (peer.tls.pin !== facts.pin) {
+      if (!certificateMismatchNoted.has(peer.rowId)) {
+        certificateMismatchNoted.add(peer.rowId);
+        recordEvent('warn', `${labelOf(peer)} announces a certificate other than the pinned one; it is ignored`);
+      }
+      return;
+    }
+    // Its ways to be reached changed (a relay, a proxy, a new address):
+    // learned over the authenticated link, used from now on.
+    const before = peer.tls.endpoints.map(formatEndpoint).join(' ');
+    if (endpoints.map(formatEndpoint).join(' ') !== before) {
+      peer.tls.endpoints = endpoints;
+      peer.tls.url = endpoints[0]!.url;
+      void savePeerTls(peer.rowId, { url: peer.tls.url, endpoints, pin: facts.pin, certPem: peer.tls.certPem }).catch(() => {});
+    }
+    return;
+  }
+  if (peer.tlsLocked) return;
+  peer.tls = { url: endpoints[0]!.url, endpoints, pin: facts.pin, certPem: facts.pem, previous: null };
+  peer.tlsRetryAt = 0;
+  void savePeerTls(peer.rowId, { url: endpoints[0]!.url, endpoints, pin: facts.pin, certPem: facts.pem })
+    .then(() => recordEvent('info', `${labelOf(peer)} offers the mutually authenticated channel; the link moves there`))
+    .catch((err) => logger.warn('Peer certificate could not be stored', { action: 'cluster_tls_pin_failed', message: message(err) }));
 }
 
 function heartbeatPayload(peer: PeerRuntime): Heartbeat {
@@ -283,6 +421,11 @@ function heartbeatPayload(peer: PeerRuntime): Heartbeat {
     pairing: pairingNodes.slice(0, 64),
     blocked: refusedNodes.slice(0, 64),
     addr: advertisedAddress(),
+    tls: (() => {
+      const channel = ownChannel();
+      return channel ? { url: channel.url, cert: channel.certPem, endpoints: channel.endpoints.map(formatEndpoint) } : null;
+    })(),
+    via: peer.tls ? currentPathTo(peer.tls.pin) : null,
   };
 }
 
@@ -314,6 +457,7 @@ function absorbHeartbeat(peer: PeerRuntime, remote: Heartbeat): void {
     pairing: remote.pairing,
     blocked: remote.blocked,
     addr: remote.addr,
+    via: remote.via ?? null,
   };
   const localSchema = state.catalog?.fingerprint ?? '';
   const schemaMatch = Boolean(localSchema) && remote.schema === localSchema;
@@ -328,6 +472,7 @@ function absorbHeartbeat(peer: PeerRuntime, remote: Heartbeat): void {
     serverKey: remote.secrets.serverKey === configFingerprint(peer.linkKey, 'server-key', config.serverKey),
   };
   if (!remote.pending) peer.drainedAt = Date.now();
+  absorbChannel(peer, remote.tls);
 }
 
 async function heartbeatPeer(peer: PeerRuntime): Promise<void> {
@@ -443,6 +588,32 @@ async function handleCall(peer: PeerRuntime, method: string, params: unknown): P
     }
     case 'introduce':
       return handleIntroduce(peer, params);
+    case 'cert.rotate': {
+      // The peer renewed its certificate; told over the current, still
+      // authenticated link. The previous one is accepted for a while longer.
+      const input = certRotateSchema.parse(params);
+      let facts;
+      try {
+        facts = inspectNodeCertificate(input.cert);
+      } catch (err) {
+        throw new RpcError('bad_request', `certificate is unusable: ${message(err)}`);
+      }
+      if (!peer.tls) throw new RpcError('bad_request', 'this link has no pinned certificate');
+      if (facts.pin !== peer.tls.pin) {
+        peer.tls = {
+          url: peer.tls.url,
+          endpoints: peer.tls.endpoints,
+          pin: facts.pin,
+          certPem: facts.pem,
+          previous: { pin: peer.tls.pin, certPem: peer.tls.certPem, until: Date.now() + ROTATION_GRACE_MS },
+        };
+        await savePeerTls(peer.rowId, { url: peer.tls.url, endpoints: peer.tls.endpoints, pin: facts.pin, certPem: facts.pem });
+        certificateMismatchNoted.delete(peer.rowId);
+        recordEvent('info', `${labelOf(peer)} renewed its certificate`);
+        logger.info('Cluster peer certificate renewed', { action: 'cluster_tls_peer_rotated', peer: peer.nodeId });
+      }
+      return { ok: true };
+    }
     case 'verify.digest':
       if (!mayReplicateWith(peer)) throw new RpcError('paused', 'replication is paused on this node');
       return handleDigest(params);
@@ -500,6 +671,7 @@ async function maintenance(): Promise<void> {
   sweepSessions();
   const expired = await expirePairingWindows();
   if (expired > 0) recordEvent('warn', `${expired} invite(s) expired without being used`);
+  await expireInstalls();
   await refreshPeerLists();
   if (state.captureReady && !state.paused) {
     if (Date.now() - lastPruneAt > PRUNE_EVERY_MS) {
@@ -519,8 +691,16 @@ export async function startCluster(): Promise<void> {
     state.nodeId = node.nodeId;
     state.nodeName = node.name;
     state.advertiseUrl = node.advertiseUrl;
+    await loadOrCreateIdentity(node.nodeId);
+    await loadReach().catch(() => {});
 
     setRpcHandler(handleCall);
+    setChannelHook(onChannelVerified);
+    setTlsGate({
+      isPinned: (pin) => [...state.peers.values()].some((peer) => pinAccepted(peer, pin)),
+      pairingOpen: () => hostWindowOpen,
+      installOpen: installWindowOpen,
+    });
     setActivationHook(onPeerActivated);
     setWorkPolicy({ owns: ownsWork, exclusive: mayRunExclusive });
     setRestoreWrapper(restoreWithinCluster);
@@ -539,8 +719,17 @@ export async function startCluster(): Promise<void> {
     lastHead = head.max;
     await refreshPeerLists().catch(() => {});
 
+    await refreshInstallWindows().catch(() => {});
+
     startedAt = Date.now();
     state.started = true;
+    await startMtlsListener(createClusterRouter('mtls'));
+    // A change in this node's ways to be reached (a relay connection up or
+    // down) reaches the other nodes with the next heartbeat, sent right away.
+    setRelayEndpointsHook(() => {
+      for (const peer of state.peers.values()) void heartbeatPeer(peer);
+    });
+    if (config.cluster.mtlsPort > 0) await startRelays();
 
     // Every peer is handled on its own: one that answers slowly, or not at
     // all, never delays the heartbeat or the transfer of another.
@@ -549,6 +738,7 @@ export async function startCluster(): Promise<void> {
     });
     every(config.cluster.syncIntervalMs, syncTick);
     every(PAIRING_TICK_MS, pairingTick);
+    every(PAIRING_TICK_MS, refreshHostWindows);
     every(MAINTENANCE_TICK_MS, maintenance);
     every(MAINTENANCE_TICK_MS, verifyTick);
     // Changes that were set aside are retried soon: what they wait for (a
@@ -562,6 +752,8 @@ export async function startCluster(): Promise<void> {
       logger.info('Cluster started', { action: 'cluster_started', nodeId: state.nodeId, peers: state.peers.size });
       void Promise.all([...state.peers.values()].map((peer) => heartbeatPeer(peer)));
     }
+    // A server set up by the one-line installer joins the cluster now.
+    await runBootstrap({ join: joinFromBootstrap, status: bootstrapStatus });
   } catch (err) {
     logger.error('Cluster could not be started', { action: 'cluster_start_failed', message: message(err) });
   }
@@ -569,7 +761,10 @@ export async function startCluster(): Promise<void> {
 
 export async function stopCluster(): Promise<void> {
   for (const timer of timers.splice(0)) clearInterval(timer);
+  stopBootstrap();
+  stopRelays();
   state.started = false;
+  await stopMtlsListener();
   await closeApplier();
 }
 
@@ -658,7 +853,16 @@ export async function createInvite(input: { ownAddress: string; createdBy: strin
   const secret = newInviteSecret();
   const peer = await createPendingPeer({ role: 'HOST', address: '', name: '', secret, createdBy: input.createdBy });
   const expiresAt = peer.pairingExpiresAt ?? new Date(Date.now() + config.cluster.pairingTtlMinutes * 60_000);
-  const code = encodeInvite({ address: ownAddress, nodeId: state.nodeId, name: state.nodeName, secret, expiresAt });
+  const channel = ownChannel();
+  const code = encodeInvite({
+    address: ownAddress,
+    nodeId: state.nodeId,
+    name: state.nodeName,
+    secret,
+    expiresAt,
+    channel: channel ? { url: channel.url, pin: channel.pin, endpoints: channel.endpoints.map(formatEndpoint) } : null,
+  });
+  await refreshPeerLists().catch(() => {});
   recordEvent('info', `Invite created (valid until ${expiresAt.toISOString().slice(11, 16)} UTC)`);
   return { id: peer.id, code, expiresAt: expiresAt.toISOString() };
 }
@@ -681,6 +885,10 @@ export async function joinCluster(input: { code: string; ownAddress: string; cre
     forgetPairing(peer.id);
     await deletePeer(peer.id);
   }
+  // Both nodes have the mutually authenticated channel: pair there, pinned to
+  // the certificate the code names.
+  const channelEndpoints = invite.channel ? parseEndpointList(invite.channel.endpoints ?? [invite.channel.url]).endpoints : [];
+  const overTls = Boolean(invite.channel && channelEndpoints.length > 0 && ownChannel());
   const peer = await createPendingPeer({
     role: 'JOIN',
     address: target.url,
@@ -688,10 +896,201 @@ export async function joinCluster(input: { code: string; ownAddress: string; cre
     secret: invite.secret,
     nodeId: invite.nodeId,
     createdBy: input.createdBy,
+    tls: overTls ? { url: channelEndpoints[0]!.url, endpoints: channelEndpoints, pin: invite.channel!.pin, certPem: null } : null,
   });
-  recordEvent('info', `Joining ${invite.name || target.url}`);
+  recordEvent('info', `Joining ${invite.name || target.url}${overTls ? ' over the mutually authenticated channel' : ''}`);
   void pairingTick().catch(() => {});
   return { id: peer.id };
+}
+
+// ─── How this node is reached ────────────────────────────────────────────────
+
+function announceReachChange(): void {
+  for (const peer of state.peers.values()) void heartbeatPeer(peer);
+}
+
+// Proxy configuration for each way set to go through a proxy.
+function snippetsFor(entry: ReachEntry): ProxySnippets | null {
+  if (entry.kind === 'direct' || !entry.backend) return null;
+  const endpoint = parseEndpointList([entry.endpoint]).endpoints[0];
+  if (!endpoint) return null;
+  const url = new URL(endpoint.url);
+  const route = {
+    listenPort: writtenPort(endpoint.url) ?? 443,
+    serverNames: entry.kind === 'proxy-sni' ? [endpoint.sni ?? url.hostname] : [],
+    backend: entry.backend,
+  };
+  return validProxyRoute(route) ? proxySnippets(route) : null;
+}
+
+export function reachStatus() {
+  requireRunning();
+  const channel = ownChannel();
+  const env = envEndpoints();
+  const relays = relayStatus();
+  return {
+    port: config.cluster.mtlsPort,
+    listening: mtlsState.listening,
+    effective: channel ? channel.endpoints.map(formatEndpoint) : [],
+    env: env.endpoints.map(formatEndpoint),
+    envInvalid: env.invalid,
+    entries: panelEntries().map((entry) => ({ ...entry, snippets: snippetsFor(entry) })),
+    relayEndpoints: relayReach().map(formatEndpoint),
+    relayLabel: config.cluster.relayLabel || routeLabel(state.nodeName, state.nodeId),
+    relays: relays.map((relay) => ({
+      ...relay,
+      // A relay behind the administrator's proxy on 443: what that proxy has to do.
+      snippets: relay.domain && relay.useSni
+        ? proxySnippets({ listenPort: 443, serverNames: [`*.${relay.domain}`], backend: '127.0.0.1:4100' })
+        : null,
+    })),
+    peers: [...state.peers.values()].map((peer) => ({
+      id: peer.rowId,
+      name: labelOf(peer),
+      // How this node reaches the peer, and how the peer reaches this node.
+      outgoing: peer.tls ? currentPathTo(peer.tls.pin) : null,
+      incoming: peer.remote.via,
+    })),
+  };
+}
+
+export async function updateReach(entries: Array<Partial<ReachEntry>>): Promise<ReturnType<typeof reachStatus>> {
+  requireRunning();
+  try {
+    await saveReach(entries);
+  } catch (err) {
+    throw new ClusterError(message(err));
+  }
+  announceReachChange();
+  recordEvent('info', 'The ways to reach this node were changed');
+  return reachStatus();
+}
+
+export async function addClusterRelay(key: string, createdBy: string): Promise<{ id: string; name: string }> {
+  requireRunning();
+  return addRelay(key, createdBy);
+}
+
+export async function updateClusterRelay(id: string, input: { enabled?: boolean; usePorts?: boolean; useSni?: boolean; name?: string }): Promise<void> {
+  requireRunning();
+  await updateRelay(id, input);
+}
+
+export async function removeClusterRelay(id: string): Promise<void> {
+  requireRunning();
+  await removeRelay(id);
+}
+
+export function createRelayCommand(input: RelayCommandInput) {
+  requireRunning();
+  return relayCommand(input);
+}
+
+// ─── One-line node install ───────────────────────────────────────────────────
+
+export async function createNodeInstall(input: { domain: string; name: string; withAi: boolean; acmeEmail: string; createdBy: string }) {
+  requireRunning();
+  // In place before anyone can join, as for an invite.
+  await ensureCapture();
+  const created = await createInstall(input);
+  await refreshPeerLists().catch(() => {});
+  return created;
+}
+
+export async function listNodeInstalls() {
+  requireRunning();
+  return listInstalls();
+}
+
+export async function revokeNodeInstall(id: string): Promise<void> {
+  requireRunning();
+  const result = await revokeInstall(id);
+  if (result.peerId) forgetPairing(result.peerId);
+  await refreshPeerLists().catch(() => {});
+}
+
+// The one-time join instruction the installer left for this node.
+async function joinFromBootstrap(input: BootstrapJoin): Promise<void> {
+  if (input.nodeId === state.nodeId) throw new ClusterError('The join instruction names this node itself');
+  // A node reachable only through a relay has its address once it is parked.
+  for (let waited = 0; !ownChannel() && waited < 60_000; waited += 1_000) {
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+  }
+  if (!ownChannel()) throw new ClusterError('The mutually authenticated channel is not running on this node (CLUSTER_MTLS_PORT, CLUSTER_MTLS_URL)');
+  await ensureCapture();
+  const existing = (await listPeers()).filter((peer) => peer.nodeId === input.nodeId);
+  if (existing.some((peer) => peer.status === 'ACTIVE')) return;
+  for (const peer of existing) {
+    forgetPairing(peer.id);
+    await deletePeer(peer.id);
+  }
+  await createPendingPeer({
+    role: 'JOIN',
+    address: input.url,
+    name: input.name,
+    secret: input.secret,
+    nodeId: input.nodeId,
+    createdBy: 'installer',
+    tls: { url: input.url, endpoints: input.endpoints, pin: input.pin, certPem: input.certPem },
+    tlsRequired: true,
+    expiresAt: input.expiresAt,
+  });
+  recordEvent('info', `Joining ${input.name || input.url} as set up by the one-line installer`);
+  void pairingTick().catch(() => {});
+}
+
+async function bootstrapStatus(peerNodeId: string): Promise<BootstrapStatus> {
+  const own = ownIdentity()?.pin ?? '';
+  const row = (await listPeers()).find((peer) => peer.nodeId === peerNodeId);
+  if (!row) return { state: 'failed', message: 'The join entry is gone — create a new one-line command', peerName: '', rowsReceived: 0, ownPin: own };
+  const base = { peerName: row.name, ownPin: own };
+  if (row.status === 'PENDING') {
+    return { ...base, state: 'joining', message: pairingProgressOf(row.id)?.message ?? 'Contacting the other node', rowsReceived: 0 };
+  }
+  if (row.status !== 'ACTIVE') {
+    const reason = row.status === 'LOCKED' ? 'the other node refused the install secret' : row.status === 'EXPIRED' ? 'the pairing window expired' : `the entry is ${row.status.toLowerCase()}`;
+    return { ...base, state: 'failed', message: `Joining failed: ${reason}`, rowsReceived: 0 };
+  }
+  const runtime = state.peers.get(row.id);
+  if (!runtime || runtime.health !== 'ONLINE') {
+    return { ...base, state: 'paired', message: 'Paired; connecting', rowsReceived: runtime?.rowsReceived ?? 0 };
+  }
+  const synced = runtime.drainedAt !== null && !runtime.transferActive && (await deferredCount().catch(() => 1)) === 0;
+  return {
+    ...base,
+    state: synced ? 'synced' : 'paired',
+    message: synced ? 'All of the cluster\'s data received' : 'Receiving the cluster\'s data',
+    rowsReceived: runtime.rowsReceived,
+  };
+}
+
+// Renews this node's certificate. Every linked node learns the new one over
+// the current link first; only when all have, this node switches to it.
+export async function rotateCertificate(): Promise<{ pin: string; peers: number }> {
+  requireRunning();
+  const current = ownIdentity();
+  if (!current) throw new ClusterError('This node has no certificate yet', 409);
+  const peers = [...state.peers.values()];
+  const away = peers.filter((peer) => peer.health !== 'ONLINE');
+  if (away.length > 0) {
+    throw new ClusterError(`Every linked node has to be online to renew the certificate (not online: ${away.map(labelOf).join(', ')})`, 409);
+  }
+  const next = createNodeCertificate(`pokyh-node-${state.nodeId}`);
+  const told: PeerRuntime[] = [];
+  try {
+    for (const peer of peers) {
+      await rpc(peer, 'cert.rotate', { cert: next.certPem });
+      told.push(peer);
+    }
+  } catch (err) {
+    for (const peer of told) await rpc(peer, 'cert.rotate', { cert: current.certPem }).catch(() => {});
+    throw new ClusterError(`Certificate renewal aborted, nothing changed: ${message(err)}`, 502);
+  }
+  await replaceIdentity(state.nodeId, next);
+  for (const peer of peers) peer.session = null;
+  recordEvent('info', `Certificate renewed; ${peers.length} node(s) pinned the new one`);
+  logger.info('Cluster certificate renewed', { action: 'cluster_tls_rotated', peers: peers.length });
+  return { pin: next.pin, peers: peers.length };
 }
 
 export async function updatePeer(id: string, input: { address?: string; name?: string; enabled?: boolean }): Promise<void> {
@@ -835,6 +1234,16 @@ export async function setNodeName(name: string): Promise<void> {
 
 function channelStatus() {
   const warnings: string[] = [];
+  if (config.cluster.mtlsPort > 0 && !mtlsState.listening) {
+    warnings.push(`The mutually authenticated channel on port ${config.cluster.mtlsPort} is not listening${mtlsState.error ? ` (${mtlsState.error})` : ''}`);
+  }
+  if (config.cluster.mtlsPort > 0 && mtlsState.listening && !ownChannel()) {
+    warnings.push('The address of the mutually authenticated channel is unknown — set CLUSTER_MTLS_URL (https://host:port)');
+  }
+  const own = ownIdentity();
+  if (own && own.notAfter.getTime() - Date.now() < CERTIFICATE_WARN_MS) {
+    warnings.push(`This node's certificate ends on ${own.notAfter.toISOString().slice(0, 10)} — renew it`);
+  }
   if (!config.cluster.publicPath && config.cluster.port === 0) {
     warnings.push('Neither CLUSTER_PUBLIC_PATH nor CLUSTER_PORT is enabled — other nodes cannot reach this one');
   }
@@ -850,11 +1259,20 @@ function channelStatus() {
   if (config.cluster.publicPath && allowlist.size > 0 && config.trustProxy === false) {
     warnings.push('CLUSTER_ALLOWLIST also applies to the API port, but TRUST_PROXY is off — behind a reverse proxy every request then looks like it comes from the proxy');
   }
+  const channel = ownChannel();
   return {
     publicPath: config.cluster.publicPath,
     port: config.cluster.port,
     bindAddress: config.cluster.bindAddress,
     listening: listenerState.listening,
+    mtls: {
+      port: config.cluster.mtlsPort,
+      bindAddress: config.cluster.mtlsBindAddress,
+      listening: mtlsState.listening,
+      url: channel?.url ?? null,
+      pin: own?.pin ?? null,
+      certificateEnds: own ? own.notAfter.toISOString() : null,
+    },
     allowlistEntries: allowlist.size,
     autoMesh: config.cluster.autoMesh,
     warnings,
@@ -921,6 +1339,15 @@ export async function clusterStatus() {
           }
         : null,
       knownPeers: runtime?.remote.peers.map((other) => ({ id: other.id, health: other.health })) ?? [],
+      tls: row.certPin
+        ? {
+            pin: row.certPin,
+            url: row.channelUrl,
+            locked: runtime?.tlsLocked ?? row.tlsLocked,
+            // Not locked yet: whether calls currently go over the channel.
+            active: runtime ? runtime.tlsLocked || (runtime.tls !== null && Date.now() >= runtime.tlsRetryAt) : false,
+          }
+        : null,
       warnings,
       createdAt: row.createdAt.toISOString(),
     };
@@ -947,6 +1374,9 @@ export async function clusterStatus() {
       exclusiveJobsHere: mayRunExclusive('archiver') || mayRunExclusive('school-year-rollover'),
       verifyIntervalMinutes: config.cluster.verifyIntervalMinutes,
       inviteMinutes: config.cluster.pairingTtlMinutes,
+      installMinutes: config.cluster.installTtlMinutes,
+      // Default for the AI choice of a server set up with the one-line installer.
+      aiEnabled: config.learnAi.enabled,
     },
     channel: channelStatus(),
     peers,

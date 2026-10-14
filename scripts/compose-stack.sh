@@ -29,7 +29,7 @@ export COMPOSE_DISABLE_ENV_FILE=1
 read_env_value() {
   awk -v key="$1" 'index($0, key "=") == 1 { sub(/^[^=]*=/, ""); print; exit }' "$backend_env_file"
 }
-for key in OLLAMA_MEM_LIMIT OLLAMA_CPUS OLLAMA_KEEP_ALIVE OLLAMA_NUM_PARALLEL OLLAMA_MAX_LOADED_MODELS OLLAMA_NUM_THREAD; do
+for key in OLLAMA_MEM_LIMIT OLLAMA_CPUS OLLAMA_KEEP_ALIVE OLLAMA_NUM_PARALLEL OLLAMA_MAX_LOADED_MODELS OLLAMA_NUM_THREAD CLUSTER_MTLS_PUBLISH; do
   value=$(read_env_value "$key")
   if [ -n "$value" ]; then
     export "$key=$value"

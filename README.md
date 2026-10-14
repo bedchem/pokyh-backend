@@ -299,9 +299,9 @@ so additive schema changes are applied on every deploy.
 | Learn              | `/learn/*`                                        | Additive learning API; API key, then per-resource bearer authorization |
 | Learn sign-in      | `/auth/learn-login`                               | API-key-gated WebUntis verification for the Learn BFF only; production legal gate must be ready before verification |
 | Admin              | `/api/admin/*`                                    | JWT + admin only (no API key)           |
-| Cluster admin      | `/api/admin/cluster`                              | Invites, joining, peers, status — see [Cluster](#cluster-multi-node-replication) |
-| Cluster channel    | `/cluster/v1/*`                                   | Node-to-node only (API port with `CLUSTER_PUBLIC_PATH`, or `CLUSTER_PORT`); encrypted frames, own authentication, optional IP allowlist |
-| Setup              | `/api/setup`                                      | First-run wizard                        |
+| Cluster admin      | `/api/admin/cluster`                              | Invites, one-line installs, joining, peers, certificate renewal, status — see [Cluster](#cluster-multi-node-replication) |
+| Cluster channel    | `/cluster/v1/*`                                   | Node-to-node only (API port with `CLUSTER_PUBLIC_PATH`, `CLUSTER_PORT`, or the mutually authenticated `CLUSTER_MTLS_PORT`); encrypted frames, own authentication, pinned certificates, optional IP allowlist. The installer's endpoints exist on the mTLS port only |
+| Setup              | `/api/setup`                                      | First-run wizard. Reachable without credentials only while no administrator can sign in at all (none in the env file, none with a password in the database) and never on a cluster node; usernames are restricted to letters, digits, `.`, `_`, `-`, nothing multi-line reaches the env file, rate limited, one at a time |
 | Health             | `/health`                                         | Liveness probe                          |
 | Readiness          | `/readyz`                                         | DB-aware readiness probe for Compose/load balancers |
 
@@ -448,7 +448,63 @@ within about a second, a node that was offline catches up by itself when it retu
 can be served by whichever node is nearest or least busy. The feature is dormant until the first
 invite: a standalone server installs no trigger and behaves exactly as before.
 
-### Adding a node
+### Adding a server with one command
+
+A fresh Debian 12+ or Ubuntu 22.04+ server becomes a complete node with a single command — Docker,
+database, HTTPS, configuration and joining the cluster included:
+
+1. Point the new server's domain (e.g. `node2.example.org`) at it in DNS.
+2. On any node that has the mutually authenticated channel (see below): admin panel → **Cluster** →
+   **Server per Einzeiler hinzufügen**, enter the domain (optionally a name, an e-mail address for
+   Let's Encrypt, and whether the AI runtime is installed too). Or through the API:
+   `POST /api/admin/cluster/node-installs` `{"domain": "node2.example.org"}` with an admin token.
+3. Run the command it shows, as root, on the new server:
+
+   ```bash
+   curl -fsSk --proto '=https' --pinnedpubkey 'sha256//<this node's pin>' -o pokyh-install.sh 'https://node1.example.org:4100/cluster/v1/install.sh' \
+     && echo '<sha256>  pokyh-install.sh' | sha256sum -c - && sh pokyh-install.sh 'pokyhnode1.…'
+   ```
+
+The installer ([deploy/node/install.sh](deploy/node/install.sh)) checks the system (OS, memory,
+disk, free ports 80/443/4100, clock synchronisation), installs Docker Engine from Docker's
+repository (key fingerprint pinned), fetches the cluster's shared configuration and the inviting
+node's exact build, writes `/opt/pokyh/.env` (mode 0600) with a database password and
+`CLUSTER_SECRET` of its own, starts MySQL, Redis, the backend, Caddy (automatic Let's Encrypt
+certificate for the domain) and optionally Ollama, and waits until the node has paired and received
+the cluster's data. Run the same command again to resume after a failure. Afterwards
+`/opt/pokyh/pokyh` is `docker compose` for that stack (`/opt/pokyh/pokyh logs -f app`).
+
+What the new node takes over: the settings that have to be equal on every node — `JWT_SECRET`,
+`REFRESH_TOKEN_SECRET`, `API_KEY`, `SERVER_KEY`, `VAPID_*`, the admin login as currently in effect,
+`CORS_ORIGIN`, `PUBLIC_BASE_URL` (exactly as on the inviting node, so stored links never point at one node),
+`WEBUNTIS_*`, `LEARN_*`, rate limits, school-year and cluster tuning
+([src/cluster/sharedEnv.ts](src/cluster/sharedEnv.ts)). Never: database credentials,
+`CLUSTER_SECRET`, the node's own addresses, ports, proxy trust, paths.
+
+How the command is protected:
+
+- **The script**: curl accepts only the inviting node's public key (`--pinnedpubkey`), and
+  `sha256sum` only this exact script. DNS, a certificate authority or a proxy cannot hand out
+  another.
+- **The token** (`pokyhnode1.…`) names the inviting node's channel, its certificate pin, the install
+  and a 256-bit secret that never travels. From it the new server derives a proof key (every request
+  carries an HMAC over a fresh nonce and the time), the key that opens the configuration
+  (AES-256-GCM, bound to that very request — readable by nobody else, not even a TLS-terminating
+  proxy), and the one-time pairing secret.
+- **Once, briefly**: the command must be started within `CLUSTER_INSTALL_TTL_MINUTES` (30); the
+  configuration is handed out exactly once; `CLUSTER_PAIRING_MAX_FAILURES` wrong proofs lock the
+  install; the panel can revoke it; the secret is forgotten as soon as the node joined. Neither the
+  token nor the command is stored or logged.
+- **The build**: the download is checked against the SHA-256 that arrived inside the sealed
+  configuration. The new node runs exactly the inviting node's version.
+- **Joining**: the new node pairs over the mutually authenticated channel only, with both
+  certificates bound into the handshake. Its join instruction is deleted from disk at its first
+  start.
+
+The installing node must run a build (`npm run build && npm start` or the Docker image), since it
+hands that build out.
+
+### Adding a node with an invite code
 
 1. On any existing node: admin panel → **Cluster** → **Node einladen**. Enter the address the new
    node will reach this one at (prefilled from `CLUSTER_ADVERTISE_URL`, otherwise from the address
@@ -490,6 +546,99 @@ on the Cluster page:
 Both entry points can be on at the same time. `CLUSTER_ADVERTISE_URL` is the address the other
 nodes should use for this one.
 
+### The mutually authenticated channel (mTLS)
+
+With `CLUSTER_MTLS_PORT` (4100 by convention) a node serves the node-to-node channel over TLS 1.3
+with **certificates on both ends**:
+
+- Every node creates its own certificate (ECDSA P-256) on first start; the private key never leaves
+  it and is stored only wrapped (like link keys). There is no certificate authority: nodes **pin**
+  each other's public key (`sha256//…`, as `curl --pinnedpubkey`). Pins are learned only over
+  authenticated paths — the install token, an invite code, an introduction by a common peer, or the
+  already encrypted link — and removing a peer revokes it immediately.
+- A connection without a certificate, or with one nobody pinned, is cut off right after the
+  handshake, before any HTTP is read — unless a pairing or an install is open, and then it reaches
+  only the endpoints those need (`/pair/*`; `install.sh`, `/provision`, `/provision/bundle`).
+- Outgoing, the peer's certificate is the only trust anchor and its pin is checked again; a
+  different certificate ends the connection before any request data is written.
+- Inside, the frame layer keeps running with its own keys, and its handshakes cover both
+  certificates of the connection (protocol version 3): something that terminated TLS in between,
+  even with a trusted certificate, makes them fail. Two independent, mutually authenticated layers.
+- Links made before the channel existed move onto it by themselves: the nodes exchange their
+  certificates over the encrypted link and switch. Once both directions have worked there, the link
+  is **locked** to the channel and nothing else is accepted from or tried towards that peer.
+- **Zertifikat erneuern** (panel) or `POST /api/admin/cluster/certificate/rotate` replaces a node's
+  certificate; every linked node (all must be online) pins the new one first, the old one stays
+  accepted for 15 minutes.
+
+| Setting | Effect |
+|---------|--------|
+| `CLUSTER_MTLS_PORT=4100` | Serves the channel; required for one-line installs. |
+| `CLUSTER_MTLS_URL=https://node1.example.org:4100` | How the other nodes reach it; derived from the host of `CLUSTER_ADVERTISE_URL` (or `PUBLIC_BASE_URL`) when empty. Must reach this server directly, not through a proxy that terminates TLS. |
+| `CLUSTER_MTLS_BIND_ADDRESS` | Interface to listen on (`0.0.0.0`). |
+| `CLUSTER_MTLS_PUBLISH=0.0.0.0:4100` | Docker Compose / Dokploy: publishes the channel port (by default only a random loopback port is published, so nothing is exposed). |
+
+On a Dokploy node: set `CLUSTER_MTLS_PORT=4100`, `CLUSTER_MTLS_PUBLISH=0.0.0.0:4100` and, if the
+domain is proxied (e.g. by Cloudflare), `CLUSTER_MTLS_URL` with a name that resolves to the server
+itself; open TCP 4100 in the firewall.
+
+### Several ways to reach a node: direct, proxy, relay
+
+A node can announce several ways to reach its channel, in its order of preference. The others try
+them in turn, stay with the one that works, fall back to the next when it fails and give the
+preferred ones another chance every few minutes. Changes reach every peer with the next heartbeat.
+Whichever way a connection takes, it ends at the node's own pinned certificate: proxies and relays
+carry ciphertext only and can neither read, alter nor impersonate anything.
+
+Admin panel → **Cluster** → **Erreichbarkeit dieser Node** (each switchable, reorderable), or
+`CLUSTER_MTLS_ENDPOINTS` (comma separated; listed first):
+
+| Way | Example | |
+|-----|---------|---|
+| Direct | `https://10.8.0.2:4100` | public address, or a WireGuard/Tailscale address the others share |
+| Proxy · own port | `https://vps.example.org:4100` | a proxy (VPS) passes TCP 4100 on to the node unchanged |
+| Proxy · 443 (SNI) | `https://node1.cluster.example.org:443` | the proxy passes TLS for that name on 443 on unchanged, web traffic stays as it is |
+| Relay | (automatic) | see below |
+
+For the proxy ways the panel shows ready-made configuration for nginx (`stream` + `ssl_preread`),
+HAProxy, Traefik (TCP, `passthrough`) and Caddy (`layer4`) once the address behind the proxy (e.g.
+the node's WireGuard address and port) is entered. Whatever proxy is used: it must pass the TCP
+connection on and never terminate TLS. An endpoint's server name can differ from the host
+connected to: `https://vps.example.org:4100?sni=node1.cluster.example.org`.
+
+### Relays (no open ports needed)
+
+A Pokyh relay ([deploy/relay/relay.mjs](deploy/relay/relay.mjs), no dependencies) runs on any
+server with a public address. A node that cannot accept connections (homelab behind NAT, no VPN)
+keeps a few connections open *to* the relay; when another node connects to the relay, the relay
+reads the server name of the TLS ClientHello — without terminating TLS — and splices the connection
+onto one of them. The nodes then run their own mutual TLS through it, end to end.
+
+1. **Cluster** → **Relay auf VPS einrichten**: enter the VPS's public name and choose the relay's
+   own port (4100) and/or 443 through your proxy under a domain (`*.cluster.example.org` → VPS, the
+   proxy passes those names on 443 to the relay). Run the command on the VPS as root; it installs
+   Docker if needed, runs the relay as a container (unprivileged, read-only, restarted by itself)
+   and prints the **relay key**.
+2. **Relay hinzufügen** → paste the key. That is all: the relay is stored (encrypted, under a key
+   every node derives from the shared `JWT_SECRET`) in a replicated table, so every node of the
+   cluster — also every node added later — registers itself and announces its relay ways. Or, for
+   one node only, put the key into `CLUSTER_RELAY_KEYS`.
+
+There is still no leader: a relay is one more path, not a coordinator. Several relays can be used;
+any node can add, switch (own port / 443) or remove them and the change reaches all nodes through
+replication; when a relay is down the nodes keep using every other way and re-register by
+themselves when it is back.
+
+What protects the relay path:
+- A node parks only at the relay whose certificate matches the pin in the key, and proves the
+  key's registration secret for every parked connection (HMAC over route, time, a fresh nonce and
+  the node's own certificate); replays, wrong secrets, names outside the relay's domain and a
+  route another node is using are refused.
+- The relay sees server names and ciphertext, nothing else; unknown names are dropped silently.
+  Connections are rate limited per address, bounded in number and closed when idle.
+- What the relay could do if it were compromised: refuse to carry traffic. Nothing more — the
+  nodes authenticate each other by their pinned certificates through it.
+
 ### What protects the link
 
 - **Pairing**: the invite's 256-bit one-time secret is stretched with scrypt and a random salt and
@@ -504,8 +653,11 @@ nodes should use for this one.
   altered, replayed or foreign messages are rejected. Through an HTTPS reverse proxy TLS adds a
   second, independent layer.
 - **Who may connect**: optionally only the addresses in `CLUSTER_ALLOWLIST`, on a port of its own.
-- **At rest**: link keys are stored encrypted (key derived from `CLUSTER_SECRET`, or from
-  `JWT_SECRET` when unset) and are never logged or returned by any API; neither is an invite code.
+- **At rest**: link keys and the node's certificate key are stored encrypted (key derived from
+  `CLUSTER_SECRET`, or from `JWT_SECRET` when unset) and are never logged or returned by any API;
+  neither is an invite code or an install token.
+- **Certificates**: with the mutually authenticated channel, pinned certificates on both ends and
+  the handshakes bound to them (see above).
 
 The channel protects the data in transit and makes sure only linked nodes take part; it cannot
 protect against a node that is itself compromised, or against someone who obtains a valid invite
@@ -578,11 +730,23 @@ reports that changes went unrecorded and offers to publish this node's data to a
 
 ### Verifying
 
-`npm test` covers the pure parts (trigger SQL, crypto, framing, invite codes, allowlist, work
-distribution). `npm run test:cluster` starts a throw-away MySQL container and three backend
+`npm test` covers the pure parts (trigger SQL, crypto and its binding to the channel, framing,
+invite codes, allowlist, work distribution, node certificates and real mutual TLS handshakes, the
+install token, its keys and sealing on both sides, what is shared, the bundle, the installer script
+through `sh -n` and shellcheck, endpoints and proxy configuration, the relay protocol on both sides
+and the relay itself carrying end-to-end TLS). `npm run test:cluster` starts a throw-away MySQL container and three backend
 processes and runs the whole life cycle against them: invite and join, auto-mesh, initial transfer,
 live replication, the self-check, node failure and recovery, conflicting changes on separated
-nodes, replayed and tampered traffic, backup restore. It needs Docker (or `CLUSTER_E2E_MYSQL_URL`
+nodes, replayed and tampered traffic, backup restore. Its second part
+(`tests/cluster/install.e2e.mjs`) runs the one-line installer against real nodes: the command as
+shown, an impostor certificate, guessed tokens until the lock, revocation, single use, the new node
+started from the handed-out build joining by itself over the channel, a third node joined through
+the second and linked by the mesh, certificate renewal, links moving onto the channel by
+themselves, and attempts to abuse the first-run setup. The third part (`tests/cluster/relay.e2e.mjs`)
+runs a real relay: a node reachable only through it, a server installed and joined through it, the
+relay setting reaching that server through replication, a forged relay key, the relay going away and
+coming back, a proxy routing by server name taking over when the relay is switched off, and the
+relay setup command. It needs Docker (or `CLUSTER_E2E_MYSQL_URL`
 pointing at a throw-away MySQL server) and does not touch a local `.env` or database.
 
 ---

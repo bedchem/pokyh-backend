@@ -775,8 +775,35 @@ export interface ClusterPeer {
   verify: { lastAt: string | null; repaired: number; running: boolean; error: string | null } | null;
   pairing: { expiresAt: string | null; failures: number; message: string } | null;
   knownPeers: Array<{ id: string; health: string }>;
+  // The peer's pinned certificate on the mutually authenticated channel.
+  tls: { pin: string; url: string | null; locked: boolean; active: boolean } | null;
   warnings: string[];
   createdAt: string;
+}
+
+export type ClusterInstallState = 'OPEN' | 'PROVISIONED' | 'DONE' | 'EXPIRED' | 'LOCKED' | 'REVOKED';
+
+export interface ClusterInstall {
+  id: string;
+  status: ClusterInstallState;
+  domain: string;
+  name: string;
+  withAi: boolean;
+  failures: number;
+  expiresAt: string;
+  provisionedAt: string | null;
+  createdBy: string | null;
+  createdAt: string;
+}
+
+export interface CreatedClusterInstall {
+  id: string;
+  command: string;
+  expiresAt: string;
+  domain: string;
+  name: string;
+  pin: string;
+  scriptSha256: string;
 }
 
 export interface ClusterStatus {
@@ -799,16 +826,78 @@ export interface ClusterStatus {
     exclusiveJobsHere: boolean;
     verifyIntervalMinutes: number;
     inviteMinutes: number;
+    installMinutes: number;
+    aiEnabled: boolean;
   };
   channel: {
     publicPath: boolean;
     port: number;
     bindAddress: string;
     listening: boolean;
+    mtls: {
+      port: number;
+      bindAddress: string;
+      listening: boolean;
+      url: string | null;
+      pin: string | null;
+      certificateEnds: string | null;
+    };
     allowlistEntries: number;
     autoMesh: boolean;
     warnings: string[];
   };
   peers: ClusterPeer[];
   events: Array<{ at: string; level: 'info' | 'warn' | 'error'; message: string }>;
+}
+
+// ── Cluster: how a node is reached, relays ──────────────────────────────────
+
+export type ReachKind = 'direct' | 'proxy-port' | 'proxy-sni';
+
+export interface ProxySnippets {
+  nginx: string;
+  haproxy: string;
+  traefik: string;
+  caddy: string;
+}
+
+export interface ReachEntry {
+  id: string;
+  kind: ReachKind;
+  endpoint: string;
+  enabled: boolean;
+  backend: string;
+  snippets?: ProxySnippets | null;
+}
+
+export interface ClusterRelay {
+  id: string | null;
+  pin: string;
+  name: string;
+  source: 'panel' | 'env';
+  enabled: boolean;
+  usePorts: boolean;
+  useSni: boolean;
+  route: string;
+  domain: string;
+  ports: string[];
+  parked: number;
+  handedOver: number;
+  lastParkedAt: string | null;
+  error: string | null;
+  endpoints: string[];
+  snippets: ProxySnippets | null;
+}
+
+export interface ClusterReach {
+  port: number;
+  listening: boolean;
+  effective: string[];
+  env: string[];
+  envInvalid: string[];
+  entries: ReachEntry[];
+  relayEndpoints: string[];
+  relayLabel: string;
+  relays: ClusterRelay[];
+  peers: Array<{ id: string; name: string; outgoing: string | null; incoming: string | null }>;
 }

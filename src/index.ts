@@ -35,6 +35,7 @@ import { mayRunExclusiveJob, ownsClusterWork } from './cluster/hooks';
 import { CLUSTER_PATH } from './cluster/protocol';
 import { createClusterRouter } from './cluster/router';
 import { startClusterListener, stopClusterListener } from './cluster/listener';
+import { RELAY_SCRIPT_PATH, handleRelayScript } from './cluster/relaySetup';
 import { startCluster, stopCluster } from './cluster';
 
 const app = express();
@@ -126,6 +127,9 @@ app.use(
 // CLUSTER_PORT serves it on a listener of its own. Answers 404 for everything
 // while the cluster layer is not running.
 if (config.cluster.publicPath) app.use(CLUSTER_PATH, createClusterRouter('public'));
+// The relay installer, only while an administrator has opened its window
+// (relaySetup.ts); no secret in it, checked by SHA-256 on the relay server.
+app.get(RELAY_SCRIPT_PATH, handleRelayScript);
 
 // ─── Body parsing ────────────────────────────────────────────────────────────
 

@@ -992,6 +992,13 @@ model ClusterNode {
   // The address other nodes reach this one at, as last entered when inviting
   // or joining (CLUSTER_ADVERTISE_URL takes precedence when set).
   advertiseUrl String   @default("") @map("advertise_url") @db.VarChar(255)
+  // This node's certificate for the mutually authenticated channel and its
+  // private key, stored only in wrapped form (mtls.ts). Created on first use.
+  tlsCert      String?  @map("tls_cert") @db.Text
+  tlsKeyEnc    String?  @map("tls_key_enc") @db.Text
+  // The ways to reach this node set in the admin panel (JSON; see
+  // src/cluster/reach.ts), in addition to CLUSTER_MTLS_URL/_ENDPOINTS.
+  reachConfig  String?  @map("reach_config") @db.Text
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
@@ -1034,11 +1041,76 @@ model ClusterPeer {
   sentSeq          BigInt    @default(0) @map("sent_seq") @db.UnsignedBigInt
   lastSyncedAt     DateTime? @map("last_synced_at")
   lastVerifiedAt   DateTime? @map("last_verified_at")
+  // The peer's pinned certificate and its pin (SHA-256 of the public key),
+  // and where its mutually authenticated channel is reached. Learned only
+  // over authenticated paths: pairing, an introduction, the install token or
+  // the encrypted link itself.
+  certPem          String?   @map("cert_pem") @db.Text
+  certPin          String?   @map("cert_pin") @db.VarChar(64)
+  channelUrl       String?   @map("channel_url") @db.VarChar(255)
+  // Every way the peer announced to reach its channel, in its order of
+  // preference (JSON array of endpoints; channelUrl is the first).
+  channelEndpoints String?   @map("channel_endpoints") @db.Text
+  // Set once both directions have worked over the mutually authenticated
+  // channel: from then on the peer is only accepted there (no downgrade).
+  tlsLocked        Boolean   @default(false) @map("tls_locked")
+  // A pairing window that may only be completed over that channel.
+  tlsRequired      Boolean   @default(false) @map("tls_required")
   createdBy        String?   @map("created_by") @db.VarChar(100)
   createdAt        DateTime  @default(now()) @map("created_at")
   updatedAt        DateTime  @updatedAt @map("updated_at")
 
   @@map("cluster_peers")
+}
+
+// A Pokyh relay the nodes of this cluster can be reached through
+// (src/cluster/relayClient.ts, deploy/relay). Unlike the cluster_* tables it
+// is replicated, so a relay added on one node is used by every node — there
+// is no leader to configure. The relay key holds a registration secret and is
+// stored only encrypted, under a key every node derives from the shared
+// JWT_SECRET.
+model Relay {
+  id        String   @id @default(uuid()) @db.VarChar(36)
+  name      String   @default("") @db.VarChar(60)
+  // The pin of the relay's own certificate identifies the relay.
+  relayPin  String   @unique @map("relay_pin") @db.VarChar(64)
+  keyEnc    String   @map("key_enc") @db.Text
+  enabled   Boolean  @default(true)
+  // Reach the nodes through the relay's own port(s), and/or on 443 under the
+  // relay's domain (forwarded by the administrator's proxy).
+  usePorts  Boolean  @default(true) @map("use_ports")
+  useSni    Boolean  @default(true) @map("use_sni")
+  createdBy String?  @map("created_by") @db.VarChar(100)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("relays")
+}
+
+// A one-line node install (provision.ts). Node-local like every cluster_*
+// table. The token itself is never stored; its secret is kept only in
+// wrapped form until the install is finished, revoked or expired.
+model ClusterInstall {
+  id            String    @id @db.VarChar(36)
+  secretEnc     String?   @map("secret_enc") @db.VarChar(255)
+  // OPEN → PROVISIONED (configuration handed over) → DONE (node paired);
+  // or EXPIRED, LOCKED (too many wrong proofs), REVOKED.
+  status        String    @default("OPEN") @db.VarChar(20)
+  // The HOST pairing window the new node joins through.
+  peerId        String    @map("peer_id") @db.VarChar(36)
+  domain        String    @db.VarChar(253)
+  name          String    @default("") @db.VarChar(120)
+  withAi        Boolean   @default(false) @map("with_ai")
+  acmeEmail     String    @default("") @map("acme_email") @db.VarChar(254)
+  failures      Int       @default(0)
+  expiresAt     DateTime  @map("expires_at")
+  provisionedAt DateTime? @map("provisioned_at")
+  createdBy     String?   @map("created_by") @db.VarChar(100)
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  @@index([status, expiresAt])
+  @@map("cluster_installs")
 }
 
 // Version and tombstone registry, and at the same time the change feed: one

@@ -1,15 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { CalendarClock, Globe, Layers, LogIn, Megaphone, Moon, Pencil, Plus, Power, Save, Smartphone, Sun, Trash2, UserRound, Users, X } from 'lucide-react';
+import { AlertTriangle, CalendarClock, Globe, Layers, LogIn, Megaphone, Moon, Pencil, Plus, Power, Save, Smartphone, Sun, Trash2, UserRound, Users, X } from 'lucide-react';
 import { adminApi } from '../api';
 import { useToast } from '../components/Toast';
 import { useLive } from '../live';
-import { Figures, PageHeader, Segmented as KitSegmented } from '../components/kit';
+import { Figures, Notice, PageHeader, Segmented as KitSegmented } from '../components/kit';
 import { PopupEditor } from '../components/popups/PopupEditor';
 import { AndroidPopupPreview, WebPopupPreview, type PreviewTheme } from '../components/popups/PopupPreview';
 import type { AdminPopup, PopupAudience, PopupInput, PopupMode, PopupPlatform, PopupStatus } from '../types';
 
 const dimText = { color: 'rgb(var(--ink-rgb) / 0.62)' };
-const blueBtn: React.CSSProperties = {};
 
 const PLATFORM_LABEL: Record<PopupPlatform, string> = { all: 'Alle', android: 'Android', web: 'Website' };
 const AUDIENCE_LABEL: Record<PopupAudience, string> = { all: 'Alle Besucher', users: 'Eingeloggt', guests: 'Gäste' };
@@ -65,6 +64,8 @@ export function PopupsPage() {
   const [form, setForm] = useState<PopupInput>(EMPTY);
   const [html, setHtml] = useState('');
   const [saving, setSaving] = useState(false);
+  // Missing fields are pointed out once saving was attempted, not while typing.
+  const [attempted, setAttempted] = useState(false);
   const [previewTheme, setPreviewTheme] = useState<PreviewTheme>('light');
   const [previewTarget, setPreviewTarget] = useState<'android' | 'web'>('android');
 
@@ -96,6 +97,7 @@ export function PopupsPage() {
   }
 
   function openNew() {
+    setAttempted(false);
     setForm({ ...EMPTY });
     setHtml('');
     setEditingId('');
@@ -103,6 +105,7 @@ export function PopupsPage() {
   }
 
   function openEdit(p: AdminPopup) {
+    setAttempted(false);
     setForm({
       title: p.title, content: p.content, platform: p.platform, audience: p.audience, mode: p.mode,
       showCount: p.mode === 'once' ? 7 : p.showCount, startsAt: p.startsAt, endsAt: p.endsAt, enabled: p.enabled, resetSeen: false,
@@ -126,19 +129,31 @@ export function PopupsPage() {
     });
   }
 
-  const validation = useMemo(() => {
-    if (!form.title.trim()) return 'Titel fehlt';
-    if (!form.content.trim()) return 'Text fehlt';
-    if (form.startsAt && form.endsAt && new Date(form.endsAt) <= new Date(form.startsAt)) return 'Ende muss nach dem Start liegen';
-    if (form.mode === 'recurring') {
-      if (!form.startsAt || !form.endsAt) return 'Start und Ende angeben';
-      if (form.showCount < 2) return 'Mindestens 2 Anzeigen';
+  // Everything still missing before the popup can be saved, each with the
+  // field it belongs to. Only the title is required; the text may be empty.
+  const problems = useMemo(() => {
+    const list: Array<{ field: 'title' | 'schedule' | 'showCount'; message: string }> = [];
+    if (!form.title.trim()) list.push({ field: 'title', message: 'Titel eingeben — er erscheint als Überschrift des Popups.' });
+    if (form.startsAt && form.endsAt && new Date(form.endsAt) <= new Date(form.startsAt)) {
+      list.push({ field: 'schedule', message: 'Das Ende muss nach dem Start liegen.' });
     }
-    return null;
+    if (form.mode === 'recurring') {
+      if (!form.startsAt || !form.endsAt) list.push({ field: 'schedule', message: 'Für „Mehrmals im Zeitraum“ Start und Ende angeben.' });
+      if (form.showCount < 2) list.push({ field: 'showCount', message: 'Für „Mehrmals im Zeitraum“ mindestens 2 Anzeigen wählen.' });
+    }
+    return list;
   }, [form]);
+  const showProblems = attempted && problems.length > 0;
+  const invalid = (field: 'title' | 'schedule' | 'showCount') => showProblems && problems.some((problem) => problem.field === field);
+  const invalidStyle: React.CSSProperties = { boxShadow: 'inset 0 0 0 1.5px var(--rose-deep)' };
 
   async function save() {
-    if (validation) { showToast(validation, 'error'); return; }
+    if (problems.length > 0) {
+      setAttempted(true);
+      const first = problems[0]!.field;
+      document.getElementById(first === 'title' ? 'popup-title' : first === 'showCount' ? 'popup-show-count' : 'popup-starts-at')?.focus();
+      return;
+    }
     setSaving(true);
     try {
       // Android has no guests, so its audience is irrelevant — store the neutral value.
@@ -250,17 +265,18 @@ export function PopupsPage() {
               )}
 
               <div>
-                <label className="text-[12px] block mb-1.5" style={dimText}>Titel</label>
-                <input value={form.title} maxLength={200} onChange={(e) => set('title', e.target.value)}
+                <label htmlFor="popup-title" className="text-[12px] block mb-1.5" style={dimText}>Titel <span style={{ color: 'var(--rose-deep)' }}>*</span></label>
+                <input id="popup-title" value={form.title} maxLength={200} onChange={(e) => set('title', e.target.value)}
                   placeholder="z. B. Neue Funktion: Mensa-Bewertungen"
-                  className="field h-11 px-4 text-[14px] w-full" />
+                  aria-invalid={invalid('title')} aria-describedby={invalid('title') ? 'popup-problems' : undefined}
+                  className="field h-11 px-4 text-[14px] w-full" style={invalid('title') ? invalidStyle : undefined} />
               </div>
 
               <div>
-                <label className="text-[12px] block mb-1.5" style={dimText}>Text</label>
+                <label className="text-[12px] block mb-1.5" style={dimText}>Text (optional)</label>
                 <PopupEditor value={form.content} onChange={(v) => set('content', v)} />
                 <p className="text-[11.5px] mt-1.5" style={dimText}>
-                  GitHub-Markdown und HTML werden unterstützt. Ein Bild-Link (…png/jpg/gif/webp) wird automatisch als Bild angezeigt.
+                  Darf leer bleiben — dann zeigt das Popup nur den Titel. GitHub-Markdown und HTML werden unterstützt; ein Bild-Link (…png/jpg/gif/webp) wird automatisch als Bild angezeigt.
                 </p>
               </div>
 
@@ -277,9 +293,10 @@ export function PopupsPage() {
 
                 {form.mode === 'recurring' && (
                   <div className="flex items-center gap-2 text-[13px]" style={{ color: 'rgb(var(--ink-rgb) / 0.86)' }}>
-                    <input type="number" min={2} max={1000} value={form.showCount}
+                    <input id="popup-show-count" type="number" min={2} max={1000} value={form.showCount}
                       onChange={(e) => set('showCount', Math.max(1, Number(e.target.value) || 1))}
-                      className="field h-11 px-4 text-[14px] w-24" />
+                      aria-invalid={invalid('showCount')}
+                      className="field h-11 px-4 text-[14px] w-24" style={invalid('showCount') ? invalidStyle : undefined} />
                     <span>× anzeigen zwischen Start und Ende</span>
                   </div>
                 )}
@@ -287,13 +304,15 @@ export function PopupsPage() {
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <label className="text-[12px] block mb-1" style={dimText}>Start {form.mode === 'once' && '(optional)'}</label>
-                    <input type="datetime-local" value={toLocalInput(form.startsAt)} onChange={(e) => set('startsAt', fromLocalInput(e.target.value))}
-                      className="field h-11 px-4 text-[14px] w-full" />
+                    <input id="popup-starts-at" type="datetime-local" value={toLocalInput(form.startsAt)} onChange={(e) => set('startsAt', fromLocalInput(e.target.value))}
+                      aria-invalid={invalid('schedule')}
+                      className="field h-11 px-4 text-[14px] w-full" style={invalid('schedule') ? invalidStyle : undefined} />
                   </div>
                   <div>
                     <label className="text-[12px] block mb-1" style={dimText}>Ende {form.mode === 'once' && '(optional)'}</label>
                     <input type="datetime-local" value={toLocalInput(form.endsAt)} onChange={(e) => set('endsAt', fromLocalInput(e.target.value))}
-                      className="field h-11 px-4 text-[14px] w-full" />
+                      aria-invalid={invalid('schedule')}
+                      className="field h-11 px-4 text-[14px] w-full" style={invalid('schedule') ? invalidStyle : undefined} />
                   </div>
                 </div>
                 {form.mode === 'recurring' && (
@@ -328,13 +347,22 @@ export function PopupsPage() {
                 )}
               </div>
 
-              <div className="flex items-center gap-2">
-                <button onClick={() => void save()} disabled={saving}
-                  className="flex items-center gap-2 px-4 py-2.5 rounded-full text-[13px] font-medium disabled:opacity-50" style={blueBtn}>
-                  <Save size={14} /> {saving ? 'Speichert…' : editingId ? 'Speichern' : 'Erstellen'}
+              {showProblems && (
+                <div id="popup-problems">
+                  <Notice tone="rose" icon={AlertTriangle}>
+                    <p className="font-medium">{editingId ? 'Noch nicht gespeichert' : 'Noch nicht erstellt'} — bitte ergänzen:</p>
+                    <ul className="mt-1 list-disc pl-5">
+                      {problems.map((problem) => <li key={problem.message}>{problem.message}</li>)}
+                    </ul>
+                  </Notice>
+                </div>
+              )}
+
+              <div className="flex flex-wrap items-center gap-3 pt-1">
+                <button type="button" onClick={() => void save()} disabled={saving} className="btn btn-primary">
+                  <Save size={16} strokeWidth={1.7} /> {saving ? 'Speichert…' : editingId ? 'Speichern' : 'Popup erstellen'}
                 </button>
-                <button onClick={() => setEditingId(null)} className="px-4 py-2.5 rounded-full text-[13px]" style={dimText}>Abbrechen</button>
-                {validation && <span className="text-[12px]" style={{ color: 'var(--amber-deep)' }}>{validation}</span>}
+                <button type="button" onClick={() => setEditingId(null)} className="btn btn-quiet">Abbrechen</button>
               </div>
             </div>
 

@@ -32,14 +32,21 @@ const nodeName = z.string().max(120);
 const mac = fixedBytes(32);
 
 const address = z.string().min(1).max(255);
+// Over the channel, the initiator announces every way to reach it, separated
+// by spaces (endpoints.ts).
+const addressList = z.string().min(1).max(2_600);
+
+// Version 3: over the mutually authenticated channel, with the certificates
+// of the connection bound into the handshake (crypto.ts).
+const handshakeVersion = z.union([z.literal(2), z.literal(3)]);
 
 export const pairInitSchema = z.object({
-  v: z.literal(2),
+  v: handshakeVersion,
   from: nodeId,
   name: nodeName,
   // Where the initiator can be reached; the responder stores it as the
   // peer's address. Covered by the MAC, so it cannot be swapped in transit.
-  addr: address,
+  addr: addressList,
   salt: fixedBytes(PAIRING_SALT_BYTES),
   e: fixedBytes(X25519_PUBLIC_BYTES),
   n: fixedBytes(HANDSHAKE_NONCE_BYTES),
@@ -60,7 +67,7 @@ export const pairConfirmSchema = z.object({
 });
 
 export const sessionInitSchema = z.object({
-  v: z.literal(2),
+  v: handshakeVersion,
   from: nodeId,
   to: nodeId,
   e: fixedBytes(X25519_PUBLIC_BYTES),
@@ -82,6 +89,13 @@ const pkHash = z.string().regex(/^[0-9a-f]{64}$/);
 const version = z.string().regex(/^[0-9]{1,20}$/);
 const wireValue = z.union([z.string(), z.number(), z.boolean(), z.null()]);
 
+const channelAdvert = z.object({
+  url: z.string().max(255),
+  cert: z.string().max(4096),
+  // Every way to reach it, in order (endpoints.ts); `url` is the first.
+  endpoints: z.array(z.string().max(300)).max(8).optional(),
+});
+
 export const heartbeatSchema = z.object({
   t: z.number(),
   name: nodeName,
@@ -99,6 +113,12 @@ export const heartbeatSchema = z.object({
   // administrator), and the address it can be reached at.
   blocked: z.array(nodeId).max(64),
   addr: z.string().max(255),
+  // The sender's mutually authenticated channel and certificate, so a link
+  // made before the channel existed moves onto it by itself. Null while the
+  // sender has no channel.
+  tls: channelAdvert.nullable().optional(),
+  // The way the sender currently reaches the receiver (for its status page).
+  via: z.string().max(300).nullable().optional(),
 });
 export type Heartbeat = z.infer<typeof heartbeatSchema>;
 
@@ -136,12 +156,21 @@ export type ItemResult = 'a' | 's' | 'd' | 'r';
 
 // A common peer asks the receiver to pair with another node (mesh.ts).
 // HOST: wait for that node to call; JOIN: call it at `addr`.
+// With `tls`, the two pair over the mutually authenticated channel and each
+// learns the other's certificate from the introducer, which holds both pinned.
 export const introduceSchema = z.object({
   node: nodeId,
   name: nodeName,
   addr: z.string().max(255),
   role: z.union([z.literal('HOST'), z.literal('JOIN')]),
   secret: z.string().min(32).max(128),
+  tls: channelAdvert.nullable().optional(),
+});
+
+// A peer replaces its certificate (mtls.ts rotation); sent over the current,
+// still authenticated link.
+export const certRotateSchema = z.object({
+  cert: z.string().max(4096),
 });
 
 // Data checks (verify.ts). A digest summarises rows per group: count and an
@@ -159,7 +188,8 @@ export const digestReplySchema = z.object({
 });
 export const rowsRequestSchema = z.object({
   t: tableName,
-  p: z.string().regex(/^[0-9a-f]{1,6}$/),
+  // Empty for a table small enough to be compared row by row at once.
+  p: z.string().regex(/^[0-9a-f]{0,6}$/),
   floor: version,
 });
 export const rowsReplySchema = z.object({

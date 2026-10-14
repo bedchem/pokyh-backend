@@ -1,0 +1,190 @@
+# Stack of a node set up by the one-line installer (install.sh), in
+# /opt/pokyh. Started with
+#
+#   docker compose --project-directory /opt/pokyh --env-file /opt/pokyh/compose.env -f /opt/pokyh/compose.yml up -d
+#
+# (/opt/pokyh/pokyh is a shortcut for exactly that). compose.env holds only
+# non-secret stack settings; every application setting and secret is in
+# /opt/pokyh/.env, which is mounted read-only and never interpolated, so a `$`
+# in a secret stays a `$`.
+#
+# Reachable from outside: 80/443 (Caddy, HTTPS for this server's domain with
+# an automatic Let's Encrypt certificate) and the cluster channel (mutual TLS,
+# pinned certificates, default 4100). The API port, MySQL, Redis and Ollama
+# are reachable only inside their Docker networks.
+
+name: ${COMPOSE_PROJECT_NAME:-pokyh}
+
+services:
+  mysql:
+    image: mysql:8.0.40
+    restart: unless-stopped
+    volumes:
+      - type: bind
+        source: ./.env
+        target: /run/configs/pokyh-backend.env
+        read_only: true
+      - mysql_data:/var/lib/mysql
+    # MySQL receives only its own two values from the backend env file.
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        config_file=/run/configs/pokyh-backend.env
+        read_value() {
+          awk -v key="$$1" 'index($$0, key "=") == 1 { sub(/^[^=]*=/, ""); print; exit }' "$$config_file"
+        }
+        mysql_root_password="$$(read_value MYSQL_ROOT_PASSWORD)"
+        mysql_database="$$(read_value DB_NAME)"
+        test -n "$$mysql_root_password" || { echo "MYSQL_ROOT_PASSWORD is required" >&2; exit 1; }
+        test -n "$$mysql_database" || { echo "DB_NAME is required" >&2; exit 1; }
+        exec env -i PATH="$$PATH" HOME=/root \
+          MYSQL_ROOT_PASSWORD="$$mysql_root_password" \
+          MYSQL_DATABASE="$$mysql_database" \
+          /usr/local/bin/docker-entrypoint.sh "$$@"
+      - --
+    command: ["mysqld"]
+    healthcheck:
+      test: ["CMD", "sh", "-c", "mysqladmin ping -h localhost -u root --password=\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 30s
+    networks:
+      - database
+
+  redis:
+    image: redis:7.4.1-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "no", "--save", "", "--protected-mode", "yes"]
+    user: redis
+    read_only: true
+    tmpfs:
+      - /data
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    networks:
+      - database
+
+  app:
+    build:
+      context: ./app
+      dockerfile: deploy/node/Dockerfile
+    image: pokyh-node:local
+    restart: unless-stopped
+    init: true
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "5"
+    ports:
+      # The cluster channel only. It accepts nothing but pinned certificates
+      # (and, while an install or pairing is open, the endpoints those need).
+      - "${POKYH_CLUSTER_BIND:-0.0.0.0}:${POKYH_CLUSTER_PORT:-4100}:4100"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - path: ./.env
+        required: true
+        format: raw
+    environment:
+      - LEARN_REDIS_URL=redis://redis:6379
+      - LEARN_AI_OLLAMA_BASE_URL=http://ollama:11434
+    volumes:
+      - backups:/app/backups
+      # The installer's one-time join instruction and the progress report.
+      - ./data/bootstrap:/app/data/bootstrap
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch(`http://127.0.0.1:$${process.env.PORT}/readyz`).then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 120s
+    networks:
+      - edge
+      - database
+      - ai-internal
+
+  # HTTPS for this server's domain. The certificate (Let's Encrypt) is
+  # obtained and renewed automatically; ports 80 and 443 must be reachable.
+  caddy:
+    image: caddy:2.8.4-alpine
+    restart: unless-stopped
+    ports:
+      - "${POKYH_HTTP_PORT:-80}:80"
+      - "${POKYH_HTTPS_PORT:-443}:443"
+      - "${POKYH_HTTPS_PORT:-443}:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - app
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - edge
+
+  # The AI vocabulary trainer's model runtime; only with COMPOSE_PROFILES=ai.
+  ollama:
+    image: ollama/ollama:0.34.2
+    profiles: ["ai"]
+    restart: unless-stopped
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      - OLLAMA_KEEP_ALIVE=${OLLAMA_KEEP_ALIVE:-30m}
+      - OLLAMA_NUM_PARALLEL=${OLLAMA_NUM_PARALLEL:-10}
+      - OLLAMA_MAX_LOADED_MODELS=${OLLAMA_MAX_LOADED_MODELS:-1}
+      - OLLAMA_NUM_THREAD=${OLLAMA_NUM_THREAD:-4}
+    mem_limit: ${OLLAMA_MEM_LIMIT:-10g}
+    cpus: ${OLLAMA_CPUS:-4}
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - ai-internal
+
+volumes:
+  mysql_data:
+  backups:
+  ollama_data:
+  caddy_data:
+  caddy_config:
+
+networks:
+  edge:
+  database:
+    internal: true
+  ai-internal:

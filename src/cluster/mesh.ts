@@ -1,6 +1,7 @@
 import { config } from '../config';
 import { logger } from '../utils/logger';
 import { prisma } from '../db';
+import { formatEndpoint, parseEndpointList } from './endpoints';
 import { normalizePeerAddress } from './health';
 import { newInviteSecret } from './invite';
 import { expectationFor, expectedNodeOf, pairingTick } from './pairing';
@@ -8,6 +9,7 @@ import { introduceSchema } from './protocol';
 import { recordEvent, state, type PeerRuntime } from './runtime';
 import { createPendingPeer, listPeers } from './store';
 import { RpcError, rpc } from './transport';
+import { inspectNodeCertificate } from './x509';
 
 // Keeps every node linked directly with every other (CLUSTER_AUTO_MESH), so
 // changes never depend on a detour and the loss of one node never cuts two
@@ -21,6 +23,10 @@ import { RpcError, rpc } from './transport';
 // pair — the one with the smallest id among the nodes linked with both — and
 // a pair is introduced again only after the previous attempt has had its full
 // pairing window to complete.
+//
+// When the introducer's links with both nodes run over the mutually
+// authenticated channel, it hands each the other's pinned certificate as
+// well, and the two pair over that channel only.
 
 const lastIntroduced = new Map<string, number>();
 
@@ -61,13 +67,16 @@ export async function meshTick(): Promise<void> {
       const address = reachableAddress(joiner);
       lastIntroduced.set(key, now);
       const secret = newInviteSecret();
+      const overTls = Boolean(host.tls && joiner.tls && host.tlsLocked && joiner.tlsLocked);
       try {
         const hostReply = await rpc<{ ok: boolean; reason?: string }>(host, 'introduce', {
-          node: joiner.nodeId, name: joiner.name || joiner.remote.name || '', addr: address, role: 'HOST', secret,
+          node: joiner.nodeId, name: joiner.name || joiner.remote.name || '', addr: overTls ? joiner.tls!.url : address, role: 'HOST', secret,
+          tls: overTls ? { url: joiner.tls!.url, cert: joiner.tls!.certPem, endpoints: joiner.tls!.endpoints.map(formatEndpoint) } : null,
         });
         if (!hostReply.ok) continue;
         const joinReply = await rpc<{ ok: boolean; reason?: string }>(joiner, 'introduce', {
-          node: host.nodeId, name: host.name || host.remote.name || '', addr: reachableAddress(host), role: 'JOIN', secret,
+          node: host.nodeId, name: host.name || host.remote.name || '', addr: overTls ? host.tls!.url : reachableAddress(host), role: 'JOIN', secret,
+          tls: overTls ? { url: host.tls!.url, cert: host.tls!.certPem, endpoints: host.tls!.endpoints.map(formatEndpoint) } : null,
         });
         if (!joinReply.ok) continue;
         recordEvent('info', `Introduced ${host.name || host.baseUrl} and ${joiner.name || joiner.baseUrl} to each other`);
@@ -98,8 +107,22 @@ export async function handleIntroduce(from: PeerRuntime, params: unknown): Promi
   // Expired or locked attempts give way to the new one.
   for (const peer of existing) await prisma.clusterPeer.deleteMany({ where: { id: peer.id } });
 
+  // The other node's certificate, vouched for by a peer this node is linked
+  // with over an authenticated channel.
+  let tls: { url: string; pin: string; certPem: string; endpoints: ReturnType<typeof parseEndpointList>['endpoints'] } | null = null;
+  if (input.tls) {
+    const endpoints = parseEndpointList(input.tls.endpoints ?? [input.tls.url]).endpoints;
+    if (endpoints.length === 0) throw new RpcError('bad_request', 'introduced channel address is unusable');
+    try {
+      const facts = inspectNodeCertificate(input.tls.cert);
+      tls = { url: endpoints[0]!.url, pin: facts.pin, certPem: facts.pem, endpoints };
+    } catch (err) {
+      throw new RpcError('bad_request', `introduced certificate is unusable: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   if (input.role === 'JOIN') {
-    const address = normalizePeerAddress(input.addr);
+    const address = normalizePeerAddress(tls ? tls.url : input.addr);
     if (!address.ok) throw new RpcError('bad_request', `introduced address is unusable: ${address.error}`);
     await createPendingPeer({
       role: 'JOIN',
@@ -109,6 +132,8 @@ export async function handleIntroduce(from: PeerRuntime, params: unknown): Promi
       nodeId: input.node,
       introducedBy: from.nodeId,
       createdBy: 'cluster',
+      tls,
+      tlsRequired: tls !== null,
     });
     void pairingTick().catch(() => {});
   } else {
@@ -119,6 +144,8 @@ export async function handleIntroduce(from: PeerRuntime, params: unknown): Promi
       secret: input.secret,
       introducedBy: from.nodeId,
       createdBy: 'cluster',
+      tls,
+      tlsRequired: tls !== null,
     });
     await prisma.clusterPeer.update({ where: { id: peer.id }, data: { pairingStateEnc: expectationFor(peer.id, input.node) } });
   }

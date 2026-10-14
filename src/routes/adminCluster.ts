@@ -5,20 +5,31 @@ import { writeLimiter } from '../middleware/rateLimiter';
 import { logger } from '../utils/logger';
 import {
   ClusterError,
+  addClusterRelay,
   clusterStatus,
   createInvite,
+  createNodeInstall,
+  createRelayCommand,
+  reachStatus,
+  removeClusterRelay,
+  updateClusterRelay,
+  updateReach,
   joinCluster,
+  listNodeInstalls,
   rebuildFromThisNode,
   removePeer,
   resyncPeer,
+  revokeNodeInstall,
+  rotateCertificate,
   setNodeName,
   updatePeer,
   verifyNow,
 } from '../cluster';
 
 // ─── Cluster administration: /api/admin/cluster ──────────────────────────────
-// A node joins with a one-time invite code created on any member. The code is
-// returned exactly once, to the administrator who created it, and is never
+// A node joins with a one-time invite code created on any member, or is set
+// up from scratch with a one-line install command. Codes and commands are
+// returned exactly once, to the administrator who created them, and are never
 // logged; nothing here ever returns stored key material.
 
 const router = Router();
@@ -131,6 +142,139 @@ router.post('/rebuild', requireAdmin, writeLimiter, async (req: Request, res: Re
   await guarded(res, async () => {
     const result = await rebuildFromThisNode();
     logger.info('Admin action: cluster versions rebuilt', { action: 'cluster_rebuild', adminUsername: actor(req), rows: result.rows });
+    res.json(result);
+  });
+});
+
+// ─── One-line node install ───────────────────────────────────────────────────
+
+const installSchema = z.object({
+  domain: z.string().trim().min(1).max(253),
+  name: z.string().trim().max(120).optional(),
+  withAi: z.boolean().optional(),
+  acmeEmail: z.string().trim().max(254).optional(),
+});
+
+router.post('/node-installs', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+  const body = installSchema.parse(req.body);
+  await guarded(res, async () => {
+    const install = await createNodeInstall({
+      domain: body.domain,
+      name: body.name ?? '',
+      withAi: body.withAi === true,
+      acmeEmail: body.acmeEmail ?? '',
+      createdBy: actor(req),
+    });
+    logger.info('Admin action: one-line node install created', { action: 'cluster_install_created', adminUsername: actor(req), installId: install.id });
+    res.setHeader('Cache-Control', 'no-store');
+    res.status(201).json(install);
+  });
+});
+
+router.get('/node-installs', requireAdmin, async (_req: Request, res: Response): Promise<void> => {
+  await guarded(res, async () => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ installs: await listNodeInstalls() });
+  });
+});
+
+router.delete('/node-installs/:id', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+  const id = peerIdSchema.parse(req.params['id']);
+  await guarded(res, async () => {
+    await revokeNodeInstall(id);
+    logger.info('Admin action: one-line node install revoked', { action: 'cluster_install_revoked', adminUsername: actor(req), installId: id });
+    res.json({ ok: true });
+  });
+});
+
+// Renews this node's certificate on every linked node at once.
+router.post('/certificate/rotate', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+  await guarded(res, async () => {
+    const result = await rotateCertificate();
+    logger.info('Admin action: cluster certificate renewed', { action: 'cluster_certificate_rotated', adminUsername: actor(req), peers: result.peers });
+    res.json(result);
+  });
+});
+
+// ─── How this node is reached, relays ────────────────────────────────────────
+
+router.get('/reach', requireAdmin, async (_req: Request, res: Response): Promise<void> => {
+  await guarded(res, async () => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.json(reachStatus());
+  });
+});
+
+const reachEntrySchema = z.object({
+  id: z.string().max(36).optional(),
+  kind: z.enum(['direct', 'proxy-port', 'proxy-sni']),
+  endpoint: z.string().trim().min(1).max(300),
+  enabled: z.boolean(),
+  backend: z.string().trim().max(270).optional(),
+});
+const reachSchema = z.object({ entries: z.array(reachEntrySchema).max(8) });
+
+router.put('/reach', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+  const body = reachSchema.parse(req.body);
+  await guarded(res, async () => {
+    const result = await updateReach(body.entries);
+    logger.info('Admin action: cluster reachability changed', { action: 'cluster_reach_changed', adminUsername: actor(req), entries: body.entries.length });
+    res.json(result);
+  });
+});
+
+const relayKeySchema = z.object({ key: z.string().trim().min(10).max(4096) });
+
+router.post('/relays', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+  const body = relayKeySchema.parse(req.body);
+  await guarded(res, async () => {
+    const relay = await addClusterRelay(body.key, actor(req));
+    logger.info('Admin action: cluster relay added', { action: 'cluster_relay_added', adminUsername: actor(req), relayId: relay.id });
+    res.status(201).json(relay);
+  });
+});
+
+const relayUpdateSchema = z.object({
+  enabled: z.boolean().optional(),
+  usePorts: z.boolean().optional(),
+  useSni: z.boolean().optional(),
+  name: z.string().trim().max(60).optional(),
+});
+
+router.patch('/relays/:id', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+  const id = peerIdSchema.parse(req.params['id']);
+  const body = relayUpdateSchema.parse(req.body);
+  await guarded(res, async () => {
+    await updateClusterRelay(id, body);
+    logger.info('Admin action: cluster relay updated', { action: 'cluster_relay_updated', adminUsername: actor(req), relayId: id, fields: Object.keys(body) });
+    res.json({ ok: true });
+  });
+});
+
+router.delete('/relays/:id', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+  const id = peerIdSchema.parse(req.params['id']);
+  await guarded(res, async () => {
+    await removeClusterRelay(id);
+    logger.info('Admin action: cluster relay removed', { action: 'cluster_relay_removed', adminUsername: actor(req), relayId: id });
+    res.json({ ok: true });
+  });
+});
+
+const relayCommandSchema = z.object({
+  origin: z.string().trim().min(1).max(255),
+  host: z.string().trim().max(253).default(''),
+  port: z.number().int().min(1).max(65_535).default(4100),
+  publicPort: z.boolean().default(true),
+  domain: z.string().trim().max(253).default(''),
+  name: z.string().trim().max(60).default('relay'),
+});
+
+router.post('/relay-command', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+  const body = relayCommandSchema.parse(req.body);
+  await guarded(res, async () => {
+    const result = createRelayCommand(body);
+    logger.info('Admin action: relay setup command created', { action: 'cluster_relay_command', adminUsername: actor(req) });
+    res.setHeader('Cache-Control', 'no-store');
     res.json(result);
   });
 });

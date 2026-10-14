@@ -384,6 +384,33 @@ export const config = {
     // every node ends up linked directly with every other.
     autoMesh: boolEnv('CLUSTER_AUTO_MESH', true),
 
+    // The mutually authenticated channel (mtls.ts): a TLS 1.3 listener of its
+    // own (0 = off) where every node proves itself with its own certificate
+    // and peers accept only the certificates they pinned. Required for the
+    // one-line node installer. CLUSTER_MTLS_URL is how the other nodes reach
+    // it (https://node1.example.org:4100); when empty it is derived from the
+    // host of CLUSTER_ADVERTISE_URL (or PUBLIC_BASE_URL) and the port.
+    mtlsPort: boundedIntEnv('CLUSTER_MTLS_PORT', 0, 0, 65_535),
+    mtlsBindAddress: strEnv('CLUSTER_MTLS_BIND_ADDRESS', '0.0.0.0'),
+    mtlsUrl: strEnv('CLUSTER_MTLS_URL', '').replace(/\/$/, ''),
+    // Further ways to reach the channel, in order of preference, comma
+    // separated: https://host:port, optionally ?sni=name (a VPN address, a
+    // proxy port, a proxy on 443 routing by name). More can be added in the
+    // admin panel; see src/cluster/endpoints.ts.
+    mtlsEndpoints: strEnv('CLUSTER_MTLS_ENDPOINTS', ''),
+    // Pokyh relays this node registers at (keys from the relay's setup, comma
+    // separated). Relays added in the admin panel apply to every node.
+    relayKeys: (process.env['CLUSTER_RELAY_KEYS'] ?? '').split(',').map((key) => key.trim()).filter(Boolean),
+    // The name this node is registered under at relays (default: from its name).
+    relayLabel: strEnv('CLUSTER_RELAY_LABEL', '').toLowerCase(),
+    // Connections kept parked at each relay, ready for incoming connections.
+    relayPoolSize: boundedIntEnv('CLUSTER_RELAY_POOL_SIZE', 4, 1, 32),
+    // How long a one-line install command can be started after it was made.
+    installTtlMinutes: boundedIntEnv('CLUSTER_INSTALL_TTL_MINUTES', 30, 5, 24 * 60),
+    // Set by the installer on the node it sets up: where that node finds its
+    // one-time join instructions and reports its progress back.
+    bootstrapDir: strEnv('CLUSTER_BOOTSTRAP_DIR', ''),
+
     heartbeatIntervalMs: boundedIntEnv('CLUSTER_HEARTBEAT_INTERVAL_MS', 5_000, 500, 60_000),
     requestTimeoutMs: boundedIntEnv('CLUSTER_REQUEST_TIMEOUT_MS', 4_000, 500, 60_000),
     syncTimeoutMs: boundedIntEnv('CLUSTER_SYNC_TIMEOUT_MS', 60_000, 5_000, 600_000),

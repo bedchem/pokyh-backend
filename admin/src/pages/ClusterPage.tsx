@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
-  AlertTriangle, Check, Copy, Hourglass, LogIn, Network, Power, RefreshCw, Save, Server, ShieldCheck, Trash2, UserPlus, Wifi,
+  AlertTriangle, Check, Copy, Hourglass, KeyRound, LogIn, Network, Power, RefreshCw, Save, Server, ShieldCheck, Terminal, Trash2, UserPlus, Wifi, X,
 } from 'lucide-react';
 import { adminApi } from '../api';
 import { useToast } from '../components/Toast';
 import { useAutoRefresh } from '../hooks/useAutoRefresh';
-import { Delta, Dialog, Empty, FieldLabel, Figures, FormSection, IconButton, Notice, PageHeader, Section, Spinner, Status, Tag, type Tone } from '../components/kit';
-import type { ClusterPeer, ClusterStatus } from '../types';
+import { Delta, Dialog, Empty, FieldLabel, Figures, FormSection, IconButton, Notice, PageHeader, Section, Spinner, Status, Tag, Toggle, type Tone } from '../components/kit';
+import type { ClusterInstall, ClusterPeer, ClusterStatus, CreatedClusterInstall } from '../types';
+import { ReachSection } from '../components/cluster/ReachSection';
 
 function badgeFor(peer: ClusterPeer): { label: string; tone: Tone } {
   switch (peer.status) {
@@ -135,6 +136,111 @@ function InviteDialog({ data, onClose, onCreated }: { data: ClusterStatus | null
   );
 }
 
+const INSTALL_STATE: Record<ClusterInstall['status'], { label: string; tone: Tone }> = {
+  OPEN: { label: 'Wartet auf den Server', tone: 'amber' },
+  PROVISIONED: { label: 'Wird installiert', tone: 'sky' },
+  DONE: { label: 'Beigetreten', tone: 'mint' },
+  EXPIRED: { label: 'Abgelaufen', tone: 'ink' },
+  LOCKED: { label: 'Gesperrt (falscher Schlüssel)', tone: 'rose' },
+  REVOKED: { label: 'Widerrufen', tone: 'ink' },
+};
+
+// The one-line install: the administrator names the new server's domain and
+// receives a command to run there as root. The command is shown once.
+function InstallDialog({ data, onClose, onCreated }: { data: ClusterStatus | null; onClose: () => void; onCreated: () => void }) {
+  const { showToast } = useToast();
+  const [domain, setDomain] = useState('');
+  const [name, setName] = useState('');
+  const [acmeEmail, setAcmeEmail] = useState('');
+  const [withAi, setWithAi] = useState(Boolean(data?.node.aiEnabled));
+  const [busy, setBusy] = useState(false);
+  const [created, setCreated] = useState<CreatedClusterInstall | null>(null);
+  const [copied, setCopied] = useState(false);
+  const now = useNow(created !== null);
+  const mtls = data?.channel.mtls;
+  const channelReady = Boolean(mtls?.listening && mtls.url);
+
+  async function create() {
+    setBusy(true);
+    try {
+      const res = await adminApi.createClusterInstall({ domain: domain.trim(), name: name.trim() || undefined, acmeEmail: acmeEmail.trim() || undefined, withAi });
+      setCreated(res);
+      onCreated();
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Erzeugen fehlgeschlagen', 'error');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function copy() {
+    if (!created) return;
+    try {
+      await navigator.clipboard.writeText(created.command);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2000);
+    } catch {
+      showToast('Kopieren nicht möglich — bitte von Hand markieren', 'error');
+    }
+  }
+
+  return (
+    <Dialog title="Server per Einzeiler hinzufügen" subtitle="Ein Befehl richtet einen frischen Server komplett als Node ein und verbindet ihn mit dem Cluster." onClose={onClose} width={640}>
+      {!created ? (
+        <div className="flex flex-col gap-5">
+          {!channelReady && (
+            <Notice tone="amber" icon={AlertTriangle}>
+              Der gesicherte Cluster-Kanal (mTLS) läuft auf dieser Node nicht. Setze <code>CLUSTER_MTLS_PORT=4100</code> (und
+              falls nötig <code>CLUSTER_MTLS_URL</code>), veröffentliche den Port und öffne ihn für die anderen Server.
+            </Notice>
+          )}
+          <FieldLabel label="Domain des neuen Servers" hint="Muss schon per DNS auf den neuen Server zeigen. Das HTTPS-Zertifikat holt der Server selbst (Let's Encrypt).">
+            <input value={domain} onChange={(e) => setDomain(e.target.value)} spellCheck={false} autoCapitalize="off" autoCorrect="off"
+              className="field h-12 w-full px-4 font-mono text-[13.5px]" placeholder="node2.example.org" />
+          </FieldLabel>
+          <div className="grid gap-5 sm:grid-cols-2">
+            <FieldLabel label="Name (optional)">
+              <input value={name} onChange={(e) => setName(e.target.value)} maxLength={120} className="field h-12 w-full px-4 text-[14px]" placeholder="z. B. Wien" />
+            </FieldLabel>
+            <FieldLabel label="E-Mail für Let's Encrypt (optional)">
+              <input value={acmeEmail} onChange={(e) => setAcmeEmail(e.target.value)} spellCheck={false} autoCapitalize="off"
+                className="field h-12 w-full px-4 text-[14px]" placeholder="ops@example.org" />
+            </FieldLabel>
+          </div>
+          <Toggle checked={withAi} onChange={setWithAi} label="KI-Vokabeltrainer (Ollama) mitinstallieren — braucht mindestens 12 GB RAM" />
+          <button type="button" onClick={() => void create()} disabled={busy || !domain.trim() || !channelReady} className="btn btn-primary w-full sm:w-auto sm:self-start">
+            {busy ? <Spinner /> : <Terminal size={16} strokeWidth={1.7} />}
+            {busy ? 'Erzeuge…' : 'Einzeiler erzeugen'}
+          </button>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-4">
+          <p className="text-[13.5px] text-ink-2">Auf <span className="font-mono">{created.domain}</span> als root ausführen (Debian 12+ oder Ubuntu 22.04+):</p>
+          <div className="max-h-[220px] overflow-y-auto rounded-[16px] bg-well p-4 font-mono text-[12px] leading-relaxed text-ink" style={{ wordBreak: 'break-all' }}>
+            {created.command}
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
+            <button type="button" onClick={() => void copy()} className="btn btn-primary">
+              {copied ? <Check size={16} strokeWidth={1.8} /> : <Copy size={16} strokeWidth={1.7} />}
+              {copied ? 'Kopiert' : 'Befehl kopieren'}
+            </button>
+            <span className="tabular text-[13px] text-ink-3">{remaining(created.expiresAt, now)}</span>
+          </div>
+          <Notice tone="amber" icon={AlertTriangle}>
+            Der Befehl gilt einmal und muss innerhalb von {data?.node.installMinutes ?? 30} Minuten gestartet werden. Wer ihn hat, kann einen Server
+            mit allen Daten in den Cluster bringen — nur über einen sicheren Weg weitergeben. Er wird nicht noch einmal angezeigt.
+          </Notice>
+          <Notice tone="sky" icon={ShieldCheck}>
+            Der neue Server spricht nur mit dieser Node: Ihr Zertifikat ist im Befehl gepinnt
+            (<span className="font-mono break-all">sha256//{created.pin}</span>), das Skript per SHA-256 geprüft. Ports 80 und 443 (HTTPS) und 4100
+            (Cluster) müssen am neuen Server erreichbar sein, 4100 auch hier.
+          </Notice>
+        </div>
+      )}
+    </Dialog>
+  );
+}
+
 function JoinDialog({ data, onClose, onJoined }: { data: ClusterStatus | null; onClose: () => void; onJoined: () => void }) {
   const { showToast } = useToast();
   const [code, setCode] = useState('');
@@ -188,13 +294,18 @@ export function ClusterPage() {
   const [busyPeer, setBusyPeer] = useState<string | null>(null);
   const [nodeName, setNodeName] = useState('');
   const [nodeNameDirty, setNodeNameDirty] = useState(false);
-  const [dialog, setDialog] = useState<'invite' | 'join' | null>(null);
+  const [dialog, setDialog] = useState<'invite' | 'join' | 'install' | null>(null);
+  const [installs, setInstalls] = useState<ClusterInstall[]>([]);
+  const [rotating, setRotating] = useState(false);
   const now = useNow(true);
 
   const load = useCallback(async () => {
     try {
       const res = await adminApi.getCluster();
       setData(res);
+      if (res.running) {
+        adminApi.getClusterInstalls().then((list) => setInstalls(list.installs)).catch(() => { /* shown again next round */ });
+      }
       setNodeNameDirty((dirty) => {
         if (!dirty) setNodeName(res.node.name);
         return dirty;
@@ -266,7 +377,34 @@ export function ClusterPage() {
     }
   }
 
+  async function revokeInstall(install: ClusterInstall) {
+    if (!window.confirm(`Den Einzeiler für ${install.domain} widerrufen? Er funktioniert danach nicht mehr.`)) return;
+    try {
+      await adminApi.revokeClusterInstall(install.id);
+      showToast('Einzeiler widerrufen', 'success');
+      await load();
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Widerrufen fehlgeschlagen', 'error');
+    }
+  }
+
+  async function rotateCertificate() {
+    if (!window.confirm('Das Zertifikat dieser Node erneuern?\n\nAlle verbundenen Nodes müssen online sein; sie übernehmen das neue Zertifikat sofort. Ein ausgegebener, noch nicht gestarteter Einzeiler funktioniert danach nicht mehr.')) return;
+    setRotating(true);
+    try {
+      const res = await adminApi.rotateClusterCertificate();
+      showToast(`Zertifikat erneuert — ${res.peers} Node(s) haben es übernommen`, 'success');
+      await load();
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Erneuern fehlgeschlagen', 'error');
+    } finally {
+      setRotating(false);
+    }
+  }
+
   const peers = data?.peers ?? [];
+  const openInstalls = installs.filter((install) => install.status === 'OPEN' || install.status === 'PROVISIONED');
+  const recentInstalls = installs.slice(0, 8);
   const active = peers.filter((p) => p.status === 'ACTIVE');
   const online = active.filter((p) => p.health === 'ONLINE').length;
   const pending = active.reduce((sum, p) => sum + p.pendingRows, 0);
@@ -280,7 +418,10 @@ export function ClusterPage() {
         title="Cluster"
         subtitle="Alle Nodes sind gleichberechtigt: jede nimmt Änderungen an, alle halten dieselben Daten und prüfen sich laufend gegenseitig."
       >
-        <button type="button" onClick={() => setDialog('invite')} className="btn btn-primary" disabled={!data?.running}>
+        <button type="button" onClick={() => setDialog('install')} className="btn btn-primary" disabled={!data?.running}>
+          <Terminal size={16} strokeWidth={1.7} /> Server per Einzeiler hinzufügen
+        </button>
+        <button type="button" onClick={() => setDialog('invite')} className="btn btn-quiet" disabled={!data?.running}>
           <UserPlus size={16} strokeWidth={1.7} /> Node einladen
         </button>
         <button type="button" onClick={() => setDialog('join')} className="btn btn-quiet" disabled={!data?.running}>
@@ -343,8 +484,11 @@ export function ClusterPage() {
                         <Status tone={badge.tone}>{badge.label}</Status>
                       </div>
                       {peer.name && peer.address && <div className="mt-1 font-mono text-[12.5px] text-ink-3">{peer.address}</div>}
+                      {peer.tls && <div className="mt-0.5 flex items-center gap-1.5 font-mono text-[11.5px] text-ink-3" title={`sha256//${peer.tls.pin}`}><KeyRound size={12} strokeWidth={1.7} /> sha256//{peer.tls.pin.slice(0, 16)}…</div>}
                       <div className="mt-2 flex flex-wrap gap-1.5">
                         {peer.introducedBy ? <Tag tone="violet">automatisch vorgestellt</Tag> : peer.role === 'HOST' ? <Tag>eingeladen</Tag> : <Tag>beigetreten</Tag>}
+                        {peer.tls?.locked && <Tag tone="mint">mTLS · gepinnt</Tag>}
+                        {peer.tls && !peer.tls.locked && <Tag tone="sky">{peer.tls.active ? 'wechselt auf mTLS' : 'mTLS gepinnt, noch nicht erreichbar'}</Tag>}
                         {peer.fullTransfer && <Tag tone="amber">vollständiger Abgleich läuft</Tag>}
                         {peer.verify?.running && <Tag tone="sky">Selbstcheck läuft</Tag>}
                       </div>
@@ -407,12 +551,46 @@ export function ClusterPage() {
         )}
       </Section>
 
+      {recentInstalls.length > 0 && (
+        <Section className="mt-6" title="Einzeiler" meta={openInstalls.length > 0 ? `${openInstalls.length} offen` : 'keiner offen'}>
+          <ul className="stack mt-3">
+            {recentInstalls.map((install) => {
+              const state = INSTALL_STATE[install.status];
+              const open = install.status === 'OPEN' || install.status === 'PROVISIONED';
+              return (
+                <li key={install.id} className="flex flex-wrap items-center gap-x-4 gap-y-2 py-4">
+                  <span className="orb h-10 w-10"><Terminal size={16} strokeWidth={1.6} /></span>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                      <span className="font-mono text-[13.5px]">{install.domain}</span>
+                      <Status tone={state.tone}>{state.label}</Status>
+                      {install.withAi && <Tag tone="violet">mit KI</Tag>}
+                    </div>
+                    <div className="mt-1 text-[12.5px] text-ink-3">
+                      {install.name && `${install.name} · `}
+                      {install.status === 'OPEN' ? `startbar ${remaining(install.expiresAt, now)}` : `erstellt ${ago(install.createdAt)}`}
+                      {install.failures > 0 && ` · Fehlversuche: ${install.failures}`}
+                    </div>
+                  </div>
+                  {open && <IconButton icon={X} tone="rose" label="Widerrufen" onClick={() => void revokeInstall(install)} />}
+                </li>
+              );
+            })}
+          </ul>
+        </Section>
+      )}
+
       <div className="mt-6">
-        <FormSection icon={Network} title="Verbindung" hint="Wie die Nodes einander erreichen. Festgelegt in der .env (CLUSTER_PUBLIC_PATH, CLUSTER_PORT, CLUSTER_ALLOWLIST, CLUSTER_AUTO_MESH); jede Nachricht ist zusätzlich Ende-zu-Ende verschlüsselt.">
+        <FormSection icon={Network} title="Verbindung" hint="Wie die Nodes einander erreichen. Festgelegt in der .env (CLUSTER_MTLS_PORT, CLUSTER_PUBLIC_PATH, CLUSTER_PORT, CLUSTER_ALLOWLIST, CLUSTER_AUTO_MESH); jede Nachricht ist zusätzlich Ende-zu-Ende verschlüsselt.">
           {!channel ? (
             <div className="shimmer h-24 max-w-[620px] rounded-[18px]" />
           ) : (
             <div className="stack max-w-[620px]">
+              <ChannelRow
+                label="Gesicherter Kanal (mTLS, gepinnte Zertifikate)"
+                value={channel.mtls.port === 0 ? 'aus' : `${channel.mtls.url ?? `${channel.mtls.bindAddress}:${channel.mtls.port}`}${channel.mtls.listening ? '' : ' — lauscht nicht'}`}
+                tone={channel.mtls.port === 0 ? 'amber' : channel.mtls.listening ? 'mint' : 'rose'}
+              />
               <ChannelRow label="Über den API-Port (Reverse-Proxy)" value={channel.publicPath ? 'an' : 'aus'} tone={channel.publicPath ? 'mint' : 'ink'} />
               <ChannelRow
                 label="Eigener Cluster-Port"
@@ -421,9 +599,23 @@ export function ClusterPage() {
               />
               <ChannelRow label="IP-Allowlist" value={channel.allowlistEntries > 0 ? `${channel.allowlistEntries} Einträge` : 'aus (alle Adressen)'} tone={channel.allowlistEntries > 0 ? 'mint' : 'amber'} />
               <ChannelRow label="Auto-Mesh" value={channel.autoMesh ? 'an — neue Nodes verbinden sich mit allen' : 'aus'} tone={channel.autoMesh ? 'mint' : 'ink'} />
+              {channel.mtls.pin && (
+                <div className="flex flex-col gap-3 py-3">
+                  <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
+                    <span className="text-[14px] text-ink-2">Zertifikat dieser Node</span>
+                    <span className="text-[12.5px] text-ink-3">gültig bis {channel.mtls.certificateEnds ? new Date(channel.mtls.certificateEnds).toLocaleDateString('de-DE') : '—'}</span>
+                  </div>
+                  <div className="break-all font-mono text-[12px] text-ink-2">sha256//{channel.mtls.pin}</div>
+                  <button type="button" onClick={() => void rotateCertificate()} disabled={rotating} className="btn btn-quiet btn-sm self-start">
+                    {rotating ? <Spinner /> : <KeyRound size={15} strokeWidth={1.7} />} Zertifikat erneuern
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </FormSection>
+
+        <ReachSection running={Boolean(data?.running)} />
 
         <FormSection icon={Server} title="Diese Node" hint="Der Name, unter dem diese Node bei den anderen erscheint.">
           {loading || !data ? (
@@ -474,6 +666,7 @@ export function ClusterPage() {
         </Section>
       )}
 
+      {dialog === 'install' && <InstallDialog data={data} onClose={() => setDialog(null)} onCreated={() => void load()} />}
       {dialog === 'invite' && <InviteDialog data={data} onClose={() => setDialog(null)} onCreated={() => void load()} />}
       {dialog === 'join' && <JoinDialog data={data} onClose={() => setDialog(null)} onJoined={() => void load()} />}
     </div>
