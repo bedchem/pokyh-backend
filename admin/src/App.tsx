@@ -6,6 +6,7 @@ import { MarkLoader } from './components/kit';
 import { LoginPage } from './pages/LoginPage';
 import { SetupPage } from './pages/SetupPage';
 import { DashboardPage } from './pages/DashboardPage';
+import { AnalyticsPage } from './pages/AnalyticsPage';
 import { UsersPage } from './pages/UsersPage';
 import { ClassesPage } from './pages/ClassesPage';
 import { SessionsPage } from './pages/SessionsPage';
@@ -80,6 +81,7 @@ export default function App() {
             <Route path="/"               element={<RootRedirect />} />
             <Route path="/login"          element={<LoginPage />} />
             <Route path="/dashboard"      element={<ProtectedRoute bleed><DashboardPage /></ProtectedRoute>} />
+            <Route path="/analytics"      element={<ProtectedRoute><AnalyticsPage /></ProtectedRoute>} />
             <Route path="/users"          element={<ProtectedRoute><UsersPage /></ProtectedRoute>} />
             <Route path="/classes"        element={<ProtectedRoute><ClassesPage /></ProtectedRoute>} />
             <Route path="/sessions"       element={<ProtectedRoute><SessionsPage /></ProtectedRoute>} />

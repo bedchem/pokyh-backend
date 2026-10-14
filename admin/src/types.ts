@@ -901,3 +901,101 @@ export interface ClusterReach {
   relays: ClusterRelay[];
   peers: Array<{ id: string; name: string; outgoing: string | null; incoming: string | null }>;
 }
+
+// ─── Analytics (GET /api/admin/analytics) ───────────────────────────────────
+
+export type AnalyticsRange = 7 | 30 | 90;
+// The native apps on their own; everything in a browser (phone or computer,
+// tab or installed PWA) is "web". "other" is an app that names no platform.
+export type UsagePlatform = 'ios' | 'android' | 'web' | 'other';
+export type PlatformCounts = Record<UsagePlatform, number>;
+
+export interface AdminAnalytics {
+  generatedAt: string;
+  timezone: string;
+  days: number;
+  axis: string[];
+  live: { online: number; byPlatform: PlatformCounts };
+  platforms: {
+    total: number;
+    byPlatform: PlatformCounts;
+    multiPlatform: number;
+    web: { mobile: number; desktop: number; pwa: number; browser: number };
+    requestLogRetentionDays: number;
+    visitRetentionDays: number;
+  };
+  time: {
+    sessions: number;
+    guestSessions: number;
+    totalSeconds: number;
+    avgSessionSeconds: number;
+    medianSessionSeconds: number;
+    longestSessionSeconds: number;
+    avgDailySecondsPerUser: number;
+    sessionsPerUserDay: number;
+    screensPerSession: number;
+    byPlatform: Record<UsagePlatform, { sessions: number; seconds: number; users: number }>;
+    lengthBands: Array<{ label: string; sessions: number }>;
+  };
+  daily: Array<{
+    dayKey: string;
+    users: number;
+    sessions: number;
+    seconds: number;
+    userSeconds: number;
+    byPlatform: PlatformCounts;
+    signups: number;
+  }>;
+  hours: Array<{ hour: number; sessions: number; seconds: number }>;
+  weekdays: Array<{ weekday: number; sessions: number; avgUsers: number; seconds: number }>;
+  engagement: {
+    dau: number;
+    wau: number;
+    mau: number;
+    visitUsers: number;
+    activeUsers: number;
+    avgDau: number;
+    stickiness: number | null;
+    newUsers: number;
+    returningUsers: number;
+    loyalUsers: number;
+    activeDaysPerUser: number;
+  };
+  accounts: {
+    total: number;
+    students: number;
+    parents: number;
+    untis: number;
+    local: number;
+    newInRange: number;
+    withPush: number;
+    withLearn: number;
+    admins: number;
+    classes: number;
+    oldestDays: number;
+  };
+  features: {
+    todos: number;
+    todosDone: number;
+    reminders: number;
+    reminderComments: number;
+    dishComments: number;
+    dishRatings: number;
+    avgStars: number | null;
+    learnAnswers: number;
+    learnCorrect: number;
+    learnMinutes: number;
+    learnLearners: number;
+    pageViews: number;
+    downloads: number;
+  };
+  mensa: {
+    topRated: { name: string; avg: number; ratings: number } | null;
+    mostRated: { name: string; ratings: number } | null;
+    mostCommented: { name: string; comments: number } | null;
+    starBands: number[];
+  };
+  classes: Array<{ name: string; active: number; members: number }>;
+  appVersions: Array<{ platform: UsagePlatform; version: string; users: number }>;
+  pages: Array<{ page: string; views: number; users: number }>;
+}

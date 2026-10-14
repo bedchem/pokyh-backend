@@ -28,6 +28,7 @@ import { logger } from './utils/logger';
 import { getLearnConfig } from './services/learnConfig';
 import { ensureModelReady } from './services/learnAiOllama';
 import { learningDayKey } from './services/learnAnalytics';
+import { localDayAndHour } from './services/usageAnalytics';
 import { closeLearnCache } from './services/learnCache';
 import { withWwwOriginAlias } from './utils/cors';
 import { loadTokenRevocations } from './utils/revokedTokens';
@@ -321,6 +322,19 @@ async function cleanupExpiredLearnAnalytics() {
   });
 }
 
+async function cleanupExpiredUsageSessions() {
+  // Replicated data: in a cluster one node cleaning up is enough.
+  if (!ownsClusterWork('job:usage-analytics-cleanup')) return;
+  const { timezone, retentionDays } = config.usageAnalytics;
+  const cutoffDayKey = localDayAndHour(new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000), timezone).dayKey;
+  const { count } = await prisma.usageSession.deleteMany({ where: { dayKey: { lt: cutoffDayKey } } });
+  if (count > 0) logger.info('Usage analytics retention cleanup', {
+    action: 'usage_analytics_retention_cleanup',
+    deletedCount: count,
+    retentionDays,
+  });
+}
+
 let backgroundJobsStarted = false;
 
 // Starts the periodic background jobs exactly once, after the DB is reachable.
@@ -343,6 +357,11 @@ function startBackgroundJobs() {
   // the normal request-log cleanup cadence.
   setTimeout(() => void cleanupExpiredLearnAnalytics().catch(() => {}), 15_000);
   setInterval(() => void cleanupExpiredLearnAnalytics().catch(() => {}), 24 * 60 * 60 * 1000);
+
+  // Per-visit usage rows behind the admin Analytics page have a finite,
+  // documented retention as well (USAGE_ANALYTICS_RETENTION_DAYS).
+  setTimeout(() => void cleanupExpiredUsageSessions().catch(() => {}), 20_000);
+  setInterval(() => void cleanupExpiredUsageSessions().catch(() => {}), 24 * 60 * 60 * 1000);
 
   // Each job is started on its own: one that cannot start (for example a
   // rejected configuration value) must not keep the others from running.

@@ -3,8 +3,11 @@ import { prisma } from '../db';
 import { config } from '../config';
 import { logger } from '../utils/logger';
 
-// Paths to skip logging (health checks, static assets, admin panel HTML)
-const SKIP_PATHS = new Set(['/health', '/readyz', '/favicon.ico']);
+// Paths to skip logging (health checks, static assets, admin panel HTML). The
+// usage heartbeat arrives once a minute from every open app; logging each one
+// would bury the real requests and keep IP/user agent for a ping that is
+// meant to store neither.
+const SKIP_PATHS = new Set(['/health', '/readyz', '/favicon.ico', '/usage/ping']);
 const SKIP_PREFIXES = ['/admin/', '/admin'];
 
 export function clientIp(req: Request): string {

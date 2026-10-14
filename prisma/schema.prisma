@@ -48,6 +48,7 @@ model User {
   learnAiAccessGrant      LearnAiAccessGrant?
   learnAiUsageCounters    LearnAiUsageCounter[]
   learnAiTrainingPrompts  LearnAiTrainingPrompt[]
+  usageSessions           UsageSession[]
 
   @@map("users")
 }
@@ -482,6 +483,42 @@ model FrontendActivityLog {
   @@index([createdAt])
   @@index([event])
   @@map("frontend_activity_logs")
+}
+
+// ─── Usage analytics ─────────────────────────────────────────────────────────
+// One row per visit to Pokyh, kept current by a foreground heartbeat from the
+// web app and the iOS and Android apps (POST /usage/ping). It holds only what
+// the admin Analytics page aggregates: the kind of device and client, how long
+// Pokyh was in the foreground and how many screens were opened. No IP address, user
+// agent, page path or content is stored. A deleted account's rows lose their
+// link to it (SET NULL), and every row is removed after
+// USAGE_ANALYTICS_RETENTION_DAYS.
+model UsageSession {
+  // Random per visit, chosen by the client and never reused.
+  id            String   @id @db.VarChar(36)
+  // Null for visitors who are not signed in (the website's guest pages).
+  stableUid     String?  @map("stable_uid")
+  // "ios" | "android" | "desktop" | "other"
+  device        String   @db.VarChar(10)
+  // "app" (native) | "pwa" (website installed to the home screen) | "browser"
+  client        String   @db.VarChar(10)
+  // Native app version, e.g. "2.0.1"; empty for the website.
+  appVersion    String   @default("") @map("app_version") @db.VarChar(32)
+  // Local day and hour (ANALYTICS_TIMEZONE) the visit started in, so daily
+  // and hourly figures group without timezone arithmetic in SQL.
+  dayKey        String   @map("day_key") @db.VarChar(10)
+  startHour     Int      @map("start_hour")
+  activeSeconds Int      @default(0) @map("active_seconds")
+  screens       Int      @default(0)
+  startedAt     DateTime @default(now()) @map("started_at")
+  lastSeenAt    DateTime @default(now()) @map("last_seen_at")
+
+  user User? @relation(fields: [stableUid], references: [stableUid], onDelete: SetNull)
+
+  @@index([dayKey])
+  @@index([stableUid, dayKey])
+  @@index([lastSeenAt])
+  @@map("usage_sessions")
 }
 
 // ─── Pokyh Learn ─────────────────────────────────────────────────────────────

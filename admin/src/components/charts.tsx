@@ -24,6 +24,24 @@ interface BarsProps {
 // Least distance between two axis labels, centre to centre.
 const MIN_LABEL_GAP = 64;
 
+// The width an axis label's pill takes (see .chart-x), estimated from its text.
+export function axisLabelWidth(text: string): number {
+  return Math.max(30, Math.round(text.length * 7.2) + 14);
+}
+
+// Whether two labels `apart` pixels apart, centre to centre, clear each other.
+export function labelsClear(a: string, b: string, apart: number): boolean {
+  return Math.abs(apart) >= (axisLabelWidth(a) + axisLabelWidth(b)) / 2 + 4;
+}
+
+// Whether the hovered point's own label fits between the regular ones without
+// touching any. The regular labels never move aside for it: if it does not
+// fit, the tooltip alone names the point.
+export function activeLabelFits(active: number, ticks: number[], labels: string[], positionOf: (i: number) => number): boolean {
+  if (ticks.includes(active)) return false;
+  return ticks.every((i) => labelsClear(labels[i] ?? '', labels[active] ?? '', positionOf(i) - positionOf(active)));
+}
+
 // Vertical bars that grow from the baseline; the latest one is in full colour.
 export function Bars({ values, labels, titles, unit, height = 132, color = '#4f96dc', tickEvery = 1, format, ariaLabel }: BarsProps) {
   const [hovered, setHovered] = useState<number | null>(null);
@@ -47,12 +65,15 @@ export function Bars({ values, labels, titles, unit, height = 132, color = '#4f9
   // labels never run into each other.
   const slotPx = width > 0 ? width / values.length : MIN_LABEL_GAP;
   const every = tickEvery * Math.max(1, Math.ceil(MIN_LABEL_GAP / Math.max(slotPx * tickEvery, 1)));
-  const activeIsTick = active % every === 0;
-  const labelShown = (i: number) => {
-    if (i === active) return true;
-    if (i % every !== 0) return false;
-    return activeIsTick || Math.abs(i - active) * slotPx >= MIN_LABEL_GAP - 8;
-  };
+  // The regular labels never change while hovering. A hovered bar that has one
+  // highlights it; any other bar gets its own label only where it fits.
+  const lastIndex = values.length - 1;
+  const lastTick = lastIndex - (lastIndex % every);
+  // The latest bar keeps a label of its own whenever it clears the one before.
+  const showLast = lastIndex !== lastTick && labelsClear(labels[lastIndex] ?? '', labels[lastTick] ?? '', (lastIndex - lastTick) * slotPx);
+  const labelShown = (i: number) => i % every === 0 || (i === lastIndex && showLast);
+  const ticks = labels.map((_, i) => i).filter(labelShown);
+  const extraLabel = activeLabelFits(active, ticks, labels, (i) => (i + 0.5) * slotPx);
 
   return (
     <div ref={rootRef} className="bars" role="img" aria-label={ariaLabel} onPointerLeave={() => setHovered(null)}>
@@ -85,8 +106,14 @@ export function Bars({ values, labels, titles, unit, height = 132, color = '#4f9
       <div className="bars-axis" aria-hidden="true">
         {labels.map((label, i) => (
           <span key={i} className="bars-slot">
-            {labelShown(i) && (
-              <span className="chart-x" data-on={i === active}>{label}</span>
+            {(labelShown(i) || (i === active && extraLabel)) && (
+              <span
+                className="chart-x"
+                data-on={i === active}
+                style={{ animation: labelShown(i) ? undefined : 'fade 0.18s ease backwards' }}
+              >
+                {label}
+              </span>
             )}
           </span>
         ))}

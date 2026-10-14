@@ -23,6 +23,29 @@ const MUTATING = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 // this often so an open dashboard stays current without being flooded.
 const REQUEST_TICK_MS = 10_000;
 let lastRequestTick = 0;
+// The usage heartbeat arrives every minute from every open app. The Analytics
+// page hears about it at most this often: live, but not a refetch per ping.
+const USAGE_TICK_MS = 5_000;
+let lastUsageTick = 0;
+let usageTrailing: NodeJS.Timeout | null = null;
+
+// At most one announcement per window; a ping inside the window is announced
+// when it ends, so the last of a burst is never left for the page's timer.
+function announceUsage(): void {
+  const wait = lastUsageTick + USAGE_TICK_MS - Date.now();
+  if (wait <= 0) {
+    lastUsageTick = Date.now();
+    announceChange(['analytics']);
+    return;
+  }
+  if (usageTrailing) return;
+  usageTrailing = setTimeout(() => {
+    usageTrailing = null;
+    lastUsageTick = Date.now();
+    announceChange(['analytics']);
+  }, wait);
+  usageTrailing.unref?.();
+}
 
 // Path segment -> the panel areas it affects.
 const AREAS: Record<string, string[]> = {
@@ -54,6 +77,8 @@ const AREAS: Record<string, string[]> = {
   'school-years': ['all'],
   // Registering a push token changes nothing the panel shows.
   push: [],
+  // The usage heartbeat is announced on its own, throttled (see adminLive).
+  usage: [],
 };
 
 function areasFor(path: string): string[] {
@@ -83,6 +108,11 @@ export function adminLive(req: Request, res: Response, next: NextFunction): void
   res.on('finish', () => {
     if (sseManager.getClientCount(ADMIN_LIVE_KEY) === 0) return;
     const path = (req.originalUrl || req.url).split('?')[0] ?? '';
+
+    if (path.startsWith('/usage/')) {
+      if (res.statusCode < 400) announceUsage();
+      return;
+    }
 
     if (MUTATING.has(req.method)) {
       if (res.statusCode < 400) announceChange(areasFor(path));

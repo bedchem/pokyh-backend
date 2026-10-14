@@ -1,4 +1,4 @@
-import type { AdminStats, AdminClass, AdminSession, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish, AdminDishFull, AdminDishImportResult, AdminDishShiftResult, AdminDishRotateResult, AdminDishResetResult, AdminDishAnchorResult, DishPlan, AdminCommentsResponse, FileLogFile, FileLogResponse, FileLogEntry, FrontendActivityLogsResponse, FrontendActivityStats, AllTodosResponse, AllRemindersResponse, SchoolYearsResponse, ArchivedUsersResponse, ArchivedClass, ArchivedTodosResponse, ArchivedRemindersResponse, RolloverResult, RollbackResult, AdminApiKey, CreatedApiKey, LearnConfigValues, LearnAiConfigValues, LearnAiGrant, LearnAiTeamGrant, AdminLearnTeam, LearnTeamAssignableRole, AdminLearnCoursesResponse, AdminLearnCourseAccessResponse, AdminLearnCourse, AdminLearnCourseAccess, LearnCoursePermission, LearnCourseStatus, LearnCourseVisibility, AdminLearnCourseVocabularyResponse, AdminLearnVocabularyImportResponse, BackupsResponse, AdminPopup, PopupInput, ClusterStatus, ClusterInstall, CreatedClusterInstall, ClusterReach, ReachEntry } from './types';
+import type { AdminStats, AdminClass, AdminSession, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish, AdminDishFull, AdminDishImportResult, AdminDishShiftResult, AdminDishRotateResult, AdminDishResetResult, AdminDishAnchorResult, DishPlan, AdminCommentsResponse, FileLogFile, FileLogResponse, FileLogEntry, FrontendActivityLogsResponse, FrontendActivityStats, AllTodosResponse, AllRemindersResponse, SchoolYearsResponse, ArchivedUsersResponse, ArchivedClass, ArchivedTodosResponse, ArchivedRemindersResponse, RolloverResult, RollbackResult, AdminApiKey, CreatedApiKey, LearnConfigValues, LearnAiConfigValues, LearnAiGrant, LearnAiTeamGrant, AdminLearnTeam, LearnTeamAssignableRole, AdminLearnCoursesResponse, AdminLearnCourseAccessResponse, AdminLearnCourse, AdminLearnCourseAccess, LearnCoursePermission, LearnCourseStatus, LearnCourseVisibility, AdminLearnCourseVocabularyResponse, AdminLearnVocabularyImportResponse, BackupsResponse, AdminPopup, PopupInput, ClusterStatus, ClusterInstall, CreatedClusterInstall, ClusterReach, ReachEntry, AdminAnalytics, AnalyticsRange } from './types';
 
 const TOKEN_KEY = 'pokyh_admin_token';
 
@@ -630,6 +630,10 @@ export const adminApi = {
 
   createRelayCommand: (data: { origin: string; host: string; port: number; publicPort: boolean; domain: string; name: string }): Promise<{ command: string; sha256: string; expiresAt: string }> =>
     request<{ command: string; sha256: string; expiresAt: string }>('POST', '/api/admin/cluster/relay-command', data),
+
+  // `fresh` skips the server's short response cache (the refresh button).
+  analytics: (days: AnalyticsRange, fresh = false): Promise<AdminAnalytics> =>
+    request<AdminAnalytics>('GET', `/api/admin/analytics?days=${days}${fresh ? '&fresh=1' : ''}`),
 
   getToken,
 };

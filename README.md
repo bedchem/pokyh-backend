@@ -222,6 +222,7 @@ npx web-push generate-vapid-keys
 | `LEARN_REVIEW_*` / `LEARN_ANALYTICS_RETENTION_DAYS` | Bounded adaptive-review policy and retention for private daily activity aggregates. |
 | `LEARN_REDIS_URL` / `LEARN_REDIS_KEY_PREFIX` / `LEARN_ANALYTICS_CACHE_TTL_SECONDS` | Optional internal course-specific analytics cache. Do not expose Redis publicly or use it for tokens, answers, permissions, or durable state. |
 | `REQUEST_LOG_RETENTION_DAYS` / `LOG_FILE_RETENTION_DAYS` | Finite retention for database/file request logs containing technical security data. |
+| `ANALYTICS_TIMEZONE` / `USAGE_ANALYTICS_RETENTION_DAYS` | Day/hour grouping and finite retention (30–1095 days) for the per-visit usage rows behind the admin Analytics page. |
 | `TRUST_PROXY`            | `false` for direct exposure; set the exact trusted proxy topology only when an operator puts one in front of the API. |
 | `VAPID_*`                | Web Push key pair + contact e-mail.                                                      |
 
