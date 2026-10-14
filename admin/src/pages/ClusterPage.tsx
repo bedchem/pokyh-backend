@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
-  AlertTriangle, Check, Copy, Hourglass, KeyRound, LogIn, Network, Power, RefreshCw, Save, Server, ShieldCheck, Terminal, Trash2, UserPlus, Wifi, X,
+  AlertTriangle, Check, Copy, Hourglass, KeyRound, LogIn, Network, Plus, Power, RefreshCw, Save, Server, ShieldCheck, Terminal, Trash2, UserPlus, Wifi, X,
 } from 'lucide-react';
 import { adminApi } from '../api';
 import { useToast } from '../components/Toast';
 import { useAutoRefresh } from '../hooks/useAutoRefresh';
-import { Delta, Dialog, Empty, FieldLabel, Figures, FormSection, IconButton, Notice, PageHeader, Section, Spinner, Status, Tag, Toggle, type Tone } from '../components/kit';
+import { Delta, Dialog, Empty, FieldLabel, Figures, FormSection, IconButton, Notice, PageHeader, Section, Spinner, Status, Tag, type Tone } from '../components/kit';
+import { Explained, InfoTip, ToggleField } from '../components/cluster/explain';
+import { UpdatesSection } from '../components/cluster/UpdatesSection';
 import type { ClusterInstall, ClusterPeer, ClusterStatus, CreatedClusterInstall } from '../types';
 import { ReachSection } from '../components/cluster/ReachSection';
 
@@ -145,32 +147,57 @@ const INSTALL_STATE: Record<ClusterInstall['status'], { label: string; tone: Ton
   REVOKED: { label: 'Widerrufen', tone: 'ink' },
 };
 
-// The one-line install: the administrator names the new server's domain and
-// receives a command to run there as root. The command is shown once.
+// The one-line install: the administrator names the new server (and, if they
+// like, its domain or IP) and receives a command to run there. The command
+// is shown once; several can be open at the same time.
+const DOMAIN_LIKE = /^(?=.{1,253}$)(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))+$/i;
+const IPV4_LIKE = /^\d{1,3}(\.\d{1,3}){3}$/;
+
 function InstallDialog({ data, onClose, onCreated }: { data: ClusterStatus | null; onClose: () => void; onCreated: () => void }) {
   const { showToast } = useToast();
-  const [domain, setDomain] = useState('');
   const [name, setName] = useState('');
+  const [address, setAddress] = useState('');
   const [acmeEmail, setAcmeEmail] = useState('');
   const [withAi, setWithAi] = useState(Boolean(data?.node.aiEnabled));
   const [busy, setBusy] = useState(false);
   const [created, setCreated] = useState<CreatedClusterInstall | null>(null);
+  const [count, setCount] = useState(0);
   const [copied, setCopied] = useState(false);
   const now = useNow(created !== null);
   const mtls = data?.channel.mtls;
   const channelReady = Boolean(mtls?.listening && mtls.url);
+  const origin = window.location.origin;
+  const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(window.location.hostname);
+  const originOk = window.location.protocol === 'https:' || loopback;
+  const trimmed = address.trim().replace(/\.$/, '');
+  const isDomain = trimmed !== '' && DOMAIN_LIKE.test(trimmed) && !IPV4_LIKE.test(trimmed);
+  const minutes = data?.node.installMinutes ?? 30;
 
   async function create() {
     setBusy(true);
     try {
-      const res = await adminApi.createClusterInstall({ domain: domain.trim(), name: name.trim() || undefined, acmeEmail: acmeEmail.trim() || undefined, withAi });
+      const res = await adminApi.createClusterInstall({
+        name: name.trim(),
+        address: trimmed || undefined,
+        acmeEmail: isDomain ? acmeEmail.trim() || undefined : undefined,
+        withAi,
+        origin,
+      });
       setCreated(res);
+      setCount((value) => value + 1);
       onCreated();
     } catch (err) {
       showToast(err instanceof Error ? err.message : 'Erzeugen fehlgeschlagen', 'error');
     } finally {
       setBusy(false);
     }
+  }
+
+  function another() {
+    setCreated(null);
+    setCopied(false);
+    setName('');
+    setAddress('');
   }
 
   async function copy() {
@@ -185,7 +212,12 @@ function InstallDialog({ data, onClose, onCreated }: { data: ClusterStatus | nul
   }
 
   return (
-    <Dialog title="Server per Einzeiler hinzufügen" subtitle="Ein Befehl richtet einen frischen Server komplett als Node ein und verbindet ihn mit dem Cluster." onClose={onClose} width={640}>
+    <Dialog
+      title="Server per Einzeiler hinzufügen"
+      subtitle="Ein Befehl richtet einen frischen Debian- oder Ubuntu-Server komplett als Node ein und verbindet ihn mit dem Cluster."
+      onClose={onClose}
+      width={660}
+    >
       {!created ? (
         <div className="flex flex-col gap-5">
           {!channelReady && (
@@ -194,28 +226,66 @@ function InstallDialog({ data, onClose, onCreated }: { data: ClusterStatus | nul
               falls nötig <code>CLUSTER_MTLS_URL</code>), veröffentliche den Port und öffne ihn für die anderen Server.
             </Notice>
           )}
-          <FieldLabel label="Domain des neuen Servers" hint="Muss schon per DNS auf den neuen Server zeigen. Das HTTPS-Zertifikat holt der Server selbst (Let's Encrypt).">
-            <input value={domain} onChange={(e) => setDomain(e.target.value)} spellCheck={false} autoCapitalize="off" autoCorrect="off"
-              className="field h-12 w-full px-4 font-mono text-[13.5px]" placeholder="node2.example.org" />
+          {!originOk && (
+            <Notice tone="amber" icon={AlertTriangle}>
+              Öffne das Admin-Panel über die öffentliche <b>https</b>-Adresse dieser Node — der neue Server lädt seine Einrichtung genau von dort.
+            </Notice>
+          )}
+          {count > 0 && <Notice tone="mint" icon={Check}>{count} {count === 1 ? 'Befehl' : 'Befehle'} erzeugt. Jeder gilt für genau einen Server.</Notice>}
+          <FieldLabel
+            label={<Explained tip="Unter diesem Namen erscheint der neue Server bei allen Nodes, z. B. „Wien“ oder „Homelab“. Erlaubt sind Buchstaben, Ziffern, Leerzeichen, Punkt, Bindestrich und Unterstrich.">Name</Explained>}
+          >
+            <input value={name} onChange={(e) => setName(e.target.value)} maxLength={120} className="field h-12 w-full px-4 text-[14px]" placeholder="z. B. Homelab" autoFocus />
           </FieldLabel>
-          <div className="grid gap-5 sm:grid-cols-2">
-            <FieldLabel label="Name (optional)">
-              <input value={name} onChange={(e) => setName(e.target.value)} maxLength={120} className="field h-12 w-full px-4 text-[14px]" placeholder="z. B. Wien" />
-            </FieldLabel>
-            <FieldLabel label="E-Mail für Let's Encrypt (optional)">
+          <FieldLabel
+            label={(
+              <Explained tip={<>
+                <b>Leer lassen</b> (empfohlen, wenn du unsicher bist): Beim Einrichten erkennt diese Node die öffentliche IP des neuen Servers selbst. Der Server bekommt keine eigene Web-Adresse — Apps reden weiter mit deinen bisherigen Adressen, die Nodes verbinden sich über Port 4100 (oder über ein Relay, wenn der Server hinter NAT steht).<br /><br />
+                <b>Domain</b> (z. B. node2.example.org): Der Server bekommt zusätzlich eigenes HTTPS mit Let’s-Encrypt-Zertifikat und kann selbst Anfragen annehmen. Die Domain muss schon per DNS auf ihn zeigen, Ports 80 und 443 müssen offen sein.<br /><br />
+                <b>IP</b>: wie „leer“, nur fest vorgegeben (z. B. wenn der Server mehrere Adressen hat).
+              </>}>Adresse (optional)</Explained>
+            )}
+            hint={trimmed === '' ? 'Leer: IP wird beim Einrichten automatisch erkannt, keine eigene Web-Adresse.' : isDomain ? 'Domain: eigener HTTPS-Zugang über Caddy und Let’s Encrypt.' : 'IP: feste Adresse für den Cluster, keine eigene Web-Adresse.'}
+          >
+            <input value={address} onChange={(e) => setAddress(e.target.value)} spellCheck={false} autoCapitalize="off" autoCorrect="off"
+              className="field h-12 w-full px-4 font-mono text-[13.5px]" placeholder="leer, node2.example.org oder 203.0.113.20" />
+          </FieldLabel>
+          {isDomain && (
+            <FieldLabel label={<Explained tip="Let’s Encrypt schickt an diese Adresse nur Warnungen, falls ein Zertifikat nicht erneuert werden kann. Leer lassen geht auch.">E-Mail für Let’s Encrypt (optional)</Explained>}>
               <input value={acmeEmail} onChange={(e) => setAcmeEmail(e.target.value)} spellCheck={false} autoCapitalize="off"
                 className="field h-12 w-full px-4 text-[14px]" placeholder="ops@example.org" />
             </FieldLabel>
+          )}
+          <ToggleField
+            checked={withAi}
+            onChange={setWithAi}
+            label="KI-Vokabeltrainer mitinstallieren"
+            hint="Ollama auf dem neuen Server — braucht mindestens 12 GB RAM."
+            tip="Installiert zusätzlich Ollama, das Sprachmodell für den KI-Vokabeltrainer. Hat der Server zu wenig Arbeitsspeicher, lässt der Installer es weg und sagt Bescheid. Ohne KI läuft alles andere ganz normal."
+          />
+          <div className="flex flex-col gap-1.5 rounded-[16px] bg-well px-4 py-3 text-[12.5px] leading-relaxed text-ink-3">
+            <span className="flex items-center gap-1.5 text-[13px] text-ink-2">
+              <ShieldCheck size={14} strokeWidth={1.7} /> So bleibt das sicher
+              <InfoTip>
+                Der Befehl lädt das Installationsskript von <span className="font-mono">{origin}/setup</span>. Diese Adresse gibt es nur, solange ein
+                Einzeiler offen ist (höchstens {minutes} Minuten) — sonst antwortet sie wie jede unbekannte Seite mit 404. Das Skript ist per
+                SHA-256 im Befehl festgeschrieben: Ändert es jemand unterwegs, bricht der Befehl ab, bevor etwas läuft. Die Konfiguration mit allen
+                Schlüsseln bekommt nur, wer den Schlüssel im Befehl hat — verschlüsselt, genau einmal. Fünf falsche Versuche sperren den Befehl.
+              </InfoTip>
+            </span>
+            <span><span className="font-mono">/setup</span> ist nur offen, während du Server hinzufügst — sonst 404.</span>
           </div>
-          <Toggle checked={withAi} onChange={setWithAi} label="KI-Vokabeltrainer (Ollama) mitinstallieren — braucht mindestens 12 GB RAM" />
-          <button type="button" onClick={() => void create()} disabled={busy || !domain.trim() || !channelReady} className="btn btn-primary w-full sm:w-auto sm:self-start">
+          <button type="button" onClick={() => void create()} disabled={busy || !name.trim() || !channelReady || !originOk} className="btn btn-primary w-full sm:w-auto sm:self-start">
             {busy ? <Spinner /> : <Terminal size={16} strokeWidth={1.7} />}
             {busy ? 'Erzeuge…' : 'Einzeiler erzeugen'}
           </button>
         </div>
       ) : (
         <div className="flex flex-col gap-4">
-          <p className="text-[13.5px] text-ink-2">Auf <span className="font-mono">{created.domain}</span> als root ausführen (Debian 12+ oder Ubuntu 22.04+):</p>
+          <p className="text-[13.5px] text-ink-2">
+            Auf dem neuen Server <b>{created.name}</b>{created.address && <> (<span className="font-mono">{created.address}</span>)</>} ausführen —
+            als root oder als Benutzer mit sudo (Debian 12+ oder Ubuntu 22.04+):
+          </p>
           <div className="max-h-[220px] overflow-y-auto rounded-[16px] bg-well p-4 font-mono text-[12px] leading-relaxed text-ink" style={{ wordBreak: 'break-all' }}>
             {created.command}
           </div>
@@ -224,16 +294,19 @@ function InstallDialog({ data, onClose, onCreated }: { data: ClusterStatus | nul
               {copied ? <Check size={16} strokeWidth={1.8} /> : <Copy size={16} strokeWidth={1.7} />}
               {copied ? 'Kopiert' : 'Befehl kopieren'}
             </button>
+            <button type="button" onClick={another} className="btn btn-quiet">
+              <Plus size={16} strokeWidth={1.7} /> Noch einen Server hinzufügen
+            </button>
             <span className="tabular text-[13px] text-ink-3">{remaining(created.expiresAt, now)}</span>
           </div>
           <Notice tone="amber" icon={AlertTriangle}>
-            Der Befehl gilt einmal und muss innerhalb von {data?.node.installMinutes ?? 30} Minuten gestartet werden. Wer ihn hat, kann einen Server
+            Der Befehl gilt für einen Server und muss innerhalb von {minutes} Minuten gestartet werden. Wer ihn hat, kann einen Server
             mit allen Daten in den Cluster bringen — nur über einen sicheren Weg weitergeben. Er wird nicht noch einmal angezeigt.
           </Notice>
           <Notice tone="sky" icon={ShieldCheck}>
-            Der neue Server spricht nur mit dieser Node: Ihr Zertifikat ist im Befehl gepinnt
-            (<span className="font-mono break-all">sha256//{created.pin}</span>), das Skript per SHA-256 geprüft. Ports 80 und 443 (HTTPS) und 4100
-            (Cluster) müssen am neuen Server erreichbar sein, 4100 auch hier.
+            Der Installer richtet Docker ein, härtet den Server (automatische Sicherheitsupdates, Firewall nur für SSH und Pokyh) und startet
+            die Node. Am neuen Server muss Port 4100 (Cluster) erreichbar sein{created.address && DOMAIN_LIKE.test(created.address) && !IPV4_LIKE.test(created.address) ? ', dazu 80 und 443 für HTTPS' : ''} —
+            steht er hinter NAT, verbindet er sich über ein Relay. Die Firewall-Härtung lässt sich mit <code>POKYH_HARDEN=0</code> vor dem Befehl abschalten.
           </Notice>
         </div>
       )}
@@ -378,7 +451,7 @@ export function ClusterPage() {
   }
 
   async function revokeInstall(install: ClusterInstall) {
-    if (!window.confirm(`Den Einzeiler für ${install.domain} widerrufen? Er funktioniert danach nicht mehr.`)) return;
+    if (!window.confirm(`Den Einzeiler für ${install.name || install.address} widerrufen? Er funktioniert danach nicht mehr.`)) return;
     try {
       await adminApi.revokeClusterInstall(install.id);
       showToast('Einzeiler widerrufen', 'success');
@@ -416,7 +489,13 @@ export function ClusterPage() {
     <div>
       <PageHeader
         title="Cluster"
-        subtitle="Alle Nodes sind gleichberechtigt: jede nimmt Änderungen an, alle halten dieselben Daten und prüfen sich laufend gegenseitig."
+        subtitle={(
+          <Explained tip={<>
+            Ein Cluster sind mehrere Server (Nodes) mit denselben Daten. Es gibt <b>keinen Chef</b>: jede Node nimmt Änderungen an und gibt sie
+            an alle anderen weiter. Fällt eine aus, arbeiten die anderen einfach weiter — und holt sie danach alles nach. Eine Node allein
+            funktioniert genauso; weitere machen das Ganze ausfallsicher. Du kannst beliebig viele hinzufügen, auch mehrere gleichzeitig.
+          </>}>Alle Nodes sind gleichberechtigt: jede nimmt Änderungen an, alle halten dieselben Daten und prüfen sich laufend gegenseitig.</Explained>
+        )}
       >
         <button type="button" onClick={() => setDialog('install')} className="btn btn-primary" disabled={!data?.running}>
           <Terminal size={16} strokeWidth={1.7} /> Server per Einzeiler hinzufügen
@@ -459,7 +538,7 @@ export function ClusterPage() {
         </div>
       )}
 
-      <Section className="mt-[52px]" title="Nodes" meta={`${active.length} verbunden`}>
+      <Section className="mt-[52px]" title={<Explained tip="Die anderen Server dieses Clusters. „mTLS · gepinnt“ heißt: Die Verbindung läuft über den gesicherten Kanal, und jede Seite akzeptiert nur das eine Zertifikat, das sie von der anderen kennt. „Ausstehend“ sind Änderungen, die noch übertragen werden.">Nodes</Explained>} meta={`${active.length} verbunden`}>
         {loading ? (
           <div className="mt-7 flex flex-col gap-5">
             {Array.from({ length: 2 }).map((_, i) => (
@@ -552,7 +631,7 @@ export function ClusterPage() {
       </Section>
 
       {recentInstalls.length > 0 && (
-        <Section className="mt-6" title="Einzeiler" meta={openInstalls.length > 0 ? `${openInstalls.length} offen` : 'keiner offen'}>
+        <Section className="mt-6" title={<Explained tip="Die Befehle, mit denen du neue Server hinzugefügt hast. Solange einer offen ist (höchstens 30 Minuten), ist /setup erreichbar; danach antwortet es mit 404. Einen offenen Befehl kannst du jederzeit widerrufen — er funktioniert dann sofort nicht mehr.">Einzeiler</Explained>} meta={openInstalls.length > 0 ? `${openInstalls.length} offen` : 'keiner offen'}>
           <ul className="stack mt-3">
             {recentInstalls.map((install) => {
               const state = INSTALL_STATE[install.status];
@@ -562,12 +641,12 @@ export function ClusterPage() {
                   <span className="orb h-10 w-10"><Terminal size={16} strokeWidth={1.6} /></span>
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                      <span className="font-mono text-[13.5px]">{install.domain}</span>
+                      <span className="text-[14px] font-medium">{install.name || 'Server'}</span>
+                      <span className="font-mono text-[12.5px] text-ink-3">{install.address || 'IP wird erkannt'}</span>
                       <Status tone={state.tone}>{state.label}</Status>
                       {install.withAi && <Tag tone="violet">mit KI</Tag>}
                     </div>
                     <div className="mt-1 text-[12.5px] text-ink-3">
-                      {install.name && `${install.name} · `}
                       {install.status === 'OPEN' ? `startbar ${remaining(install.expiresAt, now)}` : `erstellt ${ago(install.createdAt)}`}
                       {install.failures > 0 && ` · Fehlversuche: ${install.failures}`}
                     </div>
@@ -581,7 +660,7 @@ export function ClusterPage() {
       )}
 
       <div className="mt-6">
-        <FormSection icon={Network} title="Verbindung" hint="Wie die Nodes einander erreichen. Festgelegt in der .env (CLUSTER_MTLS_PORT, CLUSTER_PUBLIC_PATH, CLUSTER_PORT, CLUSTER_ALLOWLIST, CLUSTER_AUTO_MESH); jede Nachricht ist zusätzlich Ende-zu-Ende verschlüsselt.">
+        <FormSection icon={Network} title={<Explained tip="So reden die Nodes miteinander: über einen eigenen, gegenseitig per Zertifikat abgesicherten Kanal (mTLS, Standard-Port 4100). Jede Node kennt das Zertifikat jeder anderen genau (gepinnt) — niemand dazwischen kann sich als Node ausgeben, auch nicht mit einem gültigen Web-Zertifikat. Zusätzlich ist jede Nachricht Ende-zu-Ende verschlüsselt.">Verbindung</Explained>} hint="Wie die Nodes einander erreichen. Festgelegt in der .env (CLUSTER_MTLS_PORT, CLUSTER_PUBLIC_PATH, CLUSTER_PORT, CLUSTER_ALLOWLIST, CLUSTER_AUTO_MESH); jede Nachricht ist zusätzlich Ende-zu-Ende verschlüsselt.">
           {!channel ? (
             <div className="shimmer h-24 max-w-[620px] rounded-[18px]" />
           ) : (
@@ -617,7 +696,9 @@ export function ClusterPage() {
 
         <ReachSection running={Boolean(data?.running)} />
 
-        <FormSection icon={Server} title="Diese Node" hint="Der Name, unter dem diese Node bei den anderen erscheint.">
+        <UpdatesSection running={Boolean(data?.running)} />
+
+        <FormSection icon={Server} title={<Explained tip="Die Node, deren Admin-Panel du gerade offen hast. Hintergrundjobs (z. B. Erinnerungen) werden auf alle erreichbaren Nodes verteilt; einmalige Jobs laufen nur auf einer, damit nichts doppelt passiert.">Diese Node</Explained>} hint="Der Name, unter dem diese Node bei den anderen erscheint.">
           {loading || !data ? (
             <div className="shimmer h-16 max-w-[620px] rounded-[18px]" />
           ) : (
@@ -654,7 +735,7 @@ export function ClusterPage() {
       </div>
 
       {data && data.events.length > 0 && (
-        <Section className="border-t border-line pt-[38px]" title="Ereignisse" meta={`Letzte ${Math.min(data.events.length, 25)}`}>
+        <Section className="border-t border-line pt-[38px]" title={<Explained tip="Was im Cluster zuletzt passiert ist — neue Nodes, Ausfälle, Updates, Warnungen. Nur auf dieser Node, die letzten 100.">Ereignisse</Explained>} meta={`Letzte ${Math.min(data.events.length, 25)}`}>
           <ul className="mt-6 flex flex-col gap-3.5">
             {data.events.slice(0, 25).map((event, index) => (
               <li key={`${event.at}-${index}`} className="flex items-baseline gap-3 text-[13.5px] sm:gap-4">

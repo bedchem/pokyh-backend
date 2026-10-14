@@ -1,12 +1,16 @@
 import { createPublicKey, X509Certificate } from 'crypto';
 import express, { type Router } from 'express';
 import https from 'https';
+import net from 'net';
+import { Duplex } from 'stream';
 import tls, { type TLSSocket } from 'tls';
 import { prisma } from '../db';
 import { config } from '../config';
 import { logger } from '../utils/logger';
 import { connectTarget, endpointKey, type Endpoint } from './endpoints';
+import { isAllowed, parseAllowlist } from './netpolicy';
 import { CLUSTER_PATH } from './protocol';
+import { parseProxyHeader } from './proxyProtocol';
 import { unwrap, wrap } from './store';
 import { certificatePin, createNodeCertificate, inspectNodeCertificate, type NodeCertificate } from './x509';
 
@@ -97,6 +101,7 @@ async function saveIdentity(nodeId: string, created: NodeCertificate): Promise<v
 export async function replaceIdentity(nodeId: string, next: NodeCertificate): Promise<void> {
   await saveIdentity(nodeId, next);
   if (server && identity) server.setSecureContext({ key: identity.keyPem, cert: identity.certPem, minVersion: 'TLSv1.3' });
+  if (identity) secureContext = tls.createSecureContext({ key: identity.keyPem, cert: identity.certPem, minVersion: 'TLSv1.3' });
   resetClientAgents();
 }
 
@@ -178,11 +183,81 @@ function admit(socket: TLSSocket): void {
 // ─── Listener ────────────────────────────────────────────────────────────────
 
 let server: https.Server | null = null;
+// With a forwarder in front (PROXY protocol): the socket listening on the
+// port, which hands each connection to `server` once TLS is up.
+let proxyListener: net.Server | null = null;
+let secureContext: tls.SecureContext | null = null;
+// The client address of connections set up by the PROXY protocol path.
+const forwardedAddresses = new WeakMap<object, string>();
+const proxyFrom = parseAllowlist(config.cluster.mtlsProxyFrom);
 
 export const mtlsState = {
   listening: false,
   error: null as string | null,
 };
+
+// A stream that first replays bytes already read from a socket, then
+// carries the socket on: TLS over a connection whose first line was read.
+function replaying(socket: net.Socket, head: Buffer): Duplex {
+  const duplex = new Duplex({
+    read() { socket.resume(); },
+    write(chunk, _encoding, callback) { socket.write(chunk, callback); },
+    final(callback) { socket.end(); callback(); },
+    destroy(err, callback) { socket.destroy(err ?? undefined); callback(err); },
+  });
+  if (head.length > 0) duplex.push(head);
+  socket.on('data', (chunk: Buffer) => { if (!duplex.push(chunk)) socket.pause(); });
+  socket.on('end', () => duplex.push(null));
+  socket.on('error', (err) => duplex.destroy(err));
+  socket.on('close', () => duplex.destroy());
+  return duplex;
+}
+
+const isLoopback = (address: string | undefined) => /^(127\.|::1$|::ffff:127\.)/.test(address ?? '');
+
+// One connection through the forwarder: read its PROXY line, then run TLS on
+// the rest. A connection that is not from a trusted forwarder may not name a
+// client; one from this node itself (a relay hand-over) needs no line.
+function acceptForwarded(socket: net.Socket): void {
+  socket.setTimeout(15_000, () => socket.destroy());
+  let head = Buffer.alloc(0);
+  const onData = (chunk: Buffer) => {
+    head = Buffer.concat([head, chunk]);
+    const parsed = parseProxyHeader(head);
+    if (parsed.status === 'more') return;
+    socket.off('data', onData);
+    socket.pause();
+    let address: string | undefined;
+    let rest = head;
+    if (parsed.status === 'ok') {
+      if (!isAllowed(proxyFrom, socket.remoteAddress)) { socket.destroy(); return; }
+      address = parsed.address ?? socket.remoteAddress;
+      rest = head.subarray(parsed.length);
+    } else if (parsed.status === 'none' && isLoopback(socket.remoteAddress)) {
+      address = clientAddressOf(socket);
+    } else {
+      socket.destroy();
+      return;
+    }
+    if (!server || !secureContext) { socket.destroy(); return; }
+    const secure = new tls.TLSSocket(replaying(socket, rest), {
+      isServer: true,
+      secureContext,
+      requestCert: true,
+      rejectUnauthorized: false,
+      server,
+    });
+    if (address) forwardedAddresses.set(secure, address);
+    secure.once('secure', () => {
+      socket.setTimeout(0);
+      admit(secure);
+      if (!secure.destroyed) server?.emit('secureConnection', secure);
+    });
+    secure.on('error', () => secure.destroy());
+  };
+  socket.on('data', onData);
+  socket.on('error', () => socket.destroy());
+}
 
 // Resolves once the channel listens (or failed to), so whatever depends on it
 // — a join set up by the installer — starts only then.
@@ -209,24 +284,28 @@ export function startMtlsListener(router: Router): Promise<void> {
     requestCert: true,
     rejectUnauthorized: false,
   }, app);
-  created.on('secureConnection', admit);
+  if (!config.cluster.mtlsProxyProtocol) created.on('secureConnection', admit);
   created.on('tlsClientError', () => { /* failed handshakes: nothing to serve */ });
   created.keepAliveTimeout = 15_000;
   created.headersTimeout = 20_000;
   created.requestTimeout = config.cluster.syncTimeoutMs + 10_000;
   server = created;
+  secureContext = tls.createSecureContext({ key: identity.keyPem, cert: identity.certPem, minVersion: 'TLSv1.3' });
+  const listening: net.Server = config.cluster.mtlsProxyProtocol ? net.createServer(acceptForwarded) : created;
+  if (config.cluster.mtlsProxyProtocol) proxyListener = listening;
   return new Promise((resolve) => {
-    created.listen(config.cluster.mtlsPort, config.cluster.mtlsBindAddress, () => {
+    listening.listen(config.cluster.mtlsPort, config.cluster.mtlsBindAddress, () => {
       mtlsState.listening = true;
       mtlsState.error = null;
-      logger.info(`Cluster channel (mutual TLS) listening on ${config.cluster.mtlsBindAddress}:${config.cluster.mtlsPort}`, { action: 'cluster_tls_listener_started' });
+      logger.info(`Cluster channel (mutual TLS) listening on ${config.cluster.mtlsBindAddress}:${config.cluster.mtlsPort}${config.cluster.mtlsProxyProtocol ? ' behind a forwarder' : ''}`, { action: 'cluster_tls_listener_started' });
       resolve();
     });
-    created.on('error', (err) => {
+    listening.on('error', (err) => {
       mtlsState.listening = false;
       mtlsState.error = err.message.split('\n')[0]!.slice(0, 200);
       logger.error('Cluster channel (mutual TLS) failed', { action: 'cluster_tls_listener_failed', message: mtlsState.error });
       server = null;
+      proxyListener = null;
       resolve();
     });
   });
@@ -235,6 +314,8 @@ export function startMtlsListener(router: Router): Promise<void> {
 export function stopMtlsListener(): Promise<void> {
   const active = server;
   server = null;
+  proxyListener?.close();
+  proxyListener = null;
   mtlsState.listening = false;
   resetClientAgents();
   if (!active) return Promise.resolve();
@@ -268,6 +349,8 @@ export function noteRelayedConnection(localAddress: string | undefined, localPor
 // connections, else the socket's own.
 export function clientAddressOf(socket: { remoteAddress?: string; remotePort?: number } | null | undefined): string | undefined {
   if (!socket) return undefined;
+  const forwarded = forwardedAddresses.get(socket);
+  if (forwarded) return forwarded;
   const entry = relayed.get(`${normalizeAddress(socket.remoteAddress)}|${socket.remotePort}`);
   return entry ? entry.address : socket.remoteAddress;
 }

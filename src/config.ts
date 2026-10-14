@@ -405,6 +405,35 @@ export const config = {
     relayLabel: strEnv('CLUSTER_RELAY_LABEL', '').toLowerCase(),
     // Connections kept parked at each relay, ready for incoming connections.
     relayPoolSize: boundedIntEnv('CLUSTER_RELAY_POOL_SIZE', 4, 1, 32),
+    // A forwarder in front of the channel (the installer's stack:
+    // deploy/node/edge.mjs) names the original client in a PROXY protocol
+    // line; it is believed only from these addresses (IPs or CIDR ranges).
+    mtlsProxyProtocol: boolEnv('CLUSTER_MTLS_PROXY_PROTOCOL', false),
+    mtlsProxyFrom: strEnv('CLUSTER_MTLS_PROXY_FROM', '10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,127.0.0.0/8,::1/128,fc00::/7')
+      .split(',')
+      .map((entry) => entry.trim())
+      .filter(Boolean),
+
+    // Updates without downtime (updates.ts). The newest commit of BRANCH in
+    // REPO (a git repository reachable over https) is rolled out node by
+    // node; empty REPO: versions only travel between nodes. Every value can
+    // also be changed in the admin panel for the whole cluster.
+    update: {
+      repo: strEnv('CLUSTER_UPDATE_REPO', ''),
+      branch: strEnv('CLUSTER_UPDATE_BRANCH', 'main'),
+      auto: boolEnv('CLUSTER_UPDATE_AUTO', true),
+      // Only commits whose checks on GitHub passed are rolled out.
+      requireCi: boolEnv('CLUSTER_UPDATE_REQUIRE_CI', true),
+      pollMinutes: boundedIntEnv('CLUSTER_UPDATE_POLL_MINUTES', 2, 1, 24 * 60),
+      // A node that stays unreachable this long is passed over in a rollout.
+      skipOfflineMinutes: boundedIntEnv('CLUSTER_UPDATE_SKIP_OFFLINE_MINUTES', 10, 1, 24 * 60),
+      // How long a new version may take to become healthy before the node
+      // stays on the previous one.
+      healthTimeoutSeconds: boundedIntEnv('CLUSTER_UPDATE_HEALTH_TIMEOUT_SECONDS', 300, 30, 3600),
+      // Optional, this node only: a GitHub token (read-only) for more API
+      // requests when checking CI; public repositories work without one.
+      githubToken: strEnv('CLUSTER_UPDATE_GITHUB_TOKEN', ''),
+    },
     // How long a one-line install command can be started after it was made.
     installTtlMinutes: boundedIntEnv('CLUSTER_INSTALL_TTL_MINUTES', 30, 5, 24 * 60),
     // Set by the installer on the node it sets up: where that node finds its
@@ -447,6 +476,15 @@ export const config = {
       .split(',')
       .map((table) => table.trim().toLocaleLowerCase('en-US'))
       .filter((table) => /^[a-z0-9_]+$/.test(table)),
+  },
+
+  // ── Blue/green on servers set up by the installer (deploy/node) ───────────
+  // This container's colour, the file the updater writes the active colour
+  // into, and the directory it shares with the updater. Empty elsewhere.
+  deploy: {
+    color: strEnv('POKYH_COLOR', ''),
+    activationFile: strEnv('POKYH_ACTIVATION_FILE', ''),
+    updateDir: strEnv('POKYH_UPDATE_DIR', ''),
   },
 
   // ── Misc tunables (no hardcoded values) ────────────────────────────────────

@@ -209,15 +209,21 @@ test('the Caddyfile, compose settings and AI sizing follow the choices', () => {
   const caddy = bootstrap.renderCaddyfile({ domain: 'node2.example.org', acmeEmail: 'ops@example.org', tlsInternal: false });
   assert.match(caddy, /email ops@example\.org/);
   assert.match(caddy, /^node2\.example\.org \{$/m);
-  assert.match(caddy, /reverse_proxy app:4000/);
+  assert.match(caddy, /reverse_proxy app-blue:4000 app-green:4000/, 'both colours of a blue\/green update');
+  assert.match(caddy, /health_uri \/readyz/, 'only to a colour that is ready');
+  assert.match(caddy, /lb_try_duration/);
   assert.doesNotMatch(caddy, /tls internal/);
   assert.match(bootstrap.renderCaddyfile({ domain: 'a.b', acmeEmail: '', tlsInternal: true }), /tls internal/);
   assert.deepEqual(bootstrap.aiPlan({ withAi: false, memKb: 64e6, cpus: 8 }), { enabled: false, note: '' });
   assert.equal(bootstrap.aiPlan({ withAi: true, memKb: 8 * 1024 * 1024, cpus: 8 }).enabled, false, 'too little memory');
   const big = bootstrap.aiPlan({ withAi: true, memKb: 32 * 1024 * 1024, cpus: 8 });
   assert.deepEqual([big.enabled, big.memLimit, big.cpus], [true, '10g', '4']);
-  assert.match(bootstrap.renderComposeEnv({ ai: big }), /^COMPOSE_PROFILES=ai$/m);
-  assert.doesNotMatch(bootstrap.renderComposeEnv({ ai: { enabled: false } }), /COMPOSE_PROFILES/);
+  assert.match(bootstrap.renderComposeEnv({ ai: big, web: true }), /^COMPOSE_PROFILES=blue,web,ai$/m);
+  const plain = bootstrap.renderComposeEnv({ ai: { enabled: false }, web: false, runtime: { repo: 'https://github.com/bedchem/pokyh-backend', branch: 'main' } });
+  assert.match(plain, /^COMPOSE_PROFILES=blue$/m, 'no domain: no Caddy');
+  assert.match(plain, /^POKYH_RUNTIME_REPO=https:\/\/github\.com\/bedchem\/pokyh-backend$/m);
+  assert.match(plain, /^POKYH_RUNTIME_BRANCH=main$/m);
+  assert.match(plain, /^POKYH_HOME=\/opt\/pokyh$/m);
   assert.equal(bootstrap.clockDifferenceMs(new Date(Date.now() - 120_000).toUTCString()) > 100_000, true);
   assert.equal(bootstrap.clockDifferenceMs('garbage'), 0);
 });
@@ -331,4 +337,37 @@ test('the token carries every way to the inviting node, and the bootstrap reads 
   // A token whose list holds something unusable is refused as a whole.
   const body = JSON.parse(Buffer.from(encoded.slice(11), 'base64url').toString());
   assert.throws(() => bootstrap.decodeToken(`pokyhnode1.${Buffer.from(JSON.stringify({ ...body, x: ['http://evil:1'] })).toString('base64url')}`), /damaged/);
+});
+
+// ─── Address: domain, IP, or detected ───────────────────────────────────────
+
+test('the token names the inviting node\'s public address, and the bootstrap reads it', () => {
+  const t = sampleToken({ web: 'https://api.pokyh.com' });
+  const encoded = token.encodeInstallToken(t);
+  assert.equal(token.decodeInstallToken(encoded).token.web, 'https://api.pokyh.com');
+  assert.equal(bootstrap.decodeToken(encoded).web, 'https://api.pokyh.com');
+  assert.equal(bootstrap.decodeToken(token.encodeInstallToken(sampleToken())).web, null, 'older tokens: channel only');
+  const body = JSON.parse(Buffer.from(encoded.slice(11), 'base64url').toString());
+  const encode = (value) => `pokyhnode1.${Buffer.from(JSON.stringify(value)).toString('base64url')}`;
+  for (const bad of ['https://api.pokyh.com/setup', 'javascript:alert(1)', 'https://a b', 42]) {
+    assert.equal(token.decodeInstallToken(encode({ ...body, w: bad })).ok, false, String(bad));
+    assert.throws(() => bootstrap.decodeToken(encode({ ...body, w: bad })), /damaged/, String(bad));
+  }
+});
+
+test('a node without a domain is reached at its IP and serves no web of its own', () => {
+  const t = sampleToken();
+  const ipOnly = samplePayload(t, { node: { name: 'Homelab', domain: '', address: '203.0.113.20', withAi: false, acmeEmail: '' } });
+  assert.doesNotThrow(() => bootstrap.validatePayload(ipOnly, t));
+  const env = Object.fromEntries(bootstrap.buildEnvFile({ payload: ipOnly, secrets: { mysqlRootPassword: 'pw', clusterSecret: 'cs' }, generatedAt: 'now' })
+    .split('\n').filter((line) => /^[A-Z]/.test(line)).map((line) => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)]));
+  assert.equal(env.CLUSTER_MTLS_URL, 'https://203.0.113.20:4100');
+  assert.equal(env.CLUSTER_NODE_NAME, 'Homelab');
+  assert.equal(env.CLUSTER_MTLS_PROXY_PROTOCOL, 'true', 'the edge forwarder names each client');
+  assert.equal(env.POKYH_ACTIVATION_FILE, '/app/data/update/active');
+  assert.equal(bootstrap.channelHost({ domain: '', address: '2001:db8::5' }), '[2001:db8::5]');
+  assert.equal(bootstrap.channelHost({ domain: '', address: '' }), '', 'unknown: reached through relays only');
+  assert.throws(() => bootstrap.validatePayload(samplePayload(t, { node: { name: 'x', domain: '', address: 'not-an-ip', withAi: false, acmeEmail: '' } }), t), /address/);
+  assert.throws(() => bootstrap.validatePayload(samplePayload(t, { update: { repo: 'http://evil.example/x/y', branch: 'main' } }), t), /update/);
+  assert.throws(() => bootstrap.validatePayload(samplePayload(t, { update: { repo: '', branch: '../x' } }), t), /update/);
 });

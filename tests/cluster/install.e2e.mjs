@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import http from 'node:http';
 import https from 'node:https';
 import os from 'node:os';
 import path from 'node:path';
@@ -65,7 +66,7 @@ function channelRequest(node, pathname, { identity = null, method = 'GET', body 
 }
 
 function tokenOf(command) {
-  return /sh pokyh-install\.sh '(pokyhnode1\.[A-Za-z0-9_-]+)'/.exec(command)[1];
+  return /sh pokyh\.sh '(pokyhnode1\.[A-Za-z0-9_-]+)'/.exec(command)[1];
 }
 
 function withBody(tokenText, change) {
@@ -96,8 +97,14 @@ function parseEnv(file) {
   return env;
 }
 
+// As the admin panel sends it: its own address as the browser shows it.
 async function createInstall(node, body) {
-  return cluster.admin(node, 'POST', '/cluster/node-installs', body);
+  return cluster.admin(node, 'POST', '/cluster/node-installs', { origin: node.url, ...body });
+}
+
+async function setupRoute(node, method = 'GET', route = '') {
+  const res = await fetch(`${node.url}/setup${route}`, { method, headers: { 'content-type': 'application/json' }, body: method === 'POST' ? '{}' : undefined });
+  return { status: res.status, text: await res.text() };
 }
 
 async function installed(node) {
@@ -179,64 +186,119 @@ test('while a pairing is open, an unknown certificate reaches the pairing steps 
 // ─── Creating a command ──────────────────────────────────────────────────────
 
 test('only an administrator can create a one-line command, and only with clean input', async () => {
-  assert.equal((await cluster.request(a, 'POST', '/api/admin/cluster/node-installs', { body: { domain: 'x.example.org' }, apiKey: false })).status, 401);
+  const body = { name: 'X', origin: a.url };
+  assert.equal((await cluster.request(a, 'POST', '/api/admin/cluster/node-installs', { body, apiKey: false })).status, 401);
   const user = await cluster.login(a, 'install-mallory');
   // A signed-in user who is not an administrator is refused as well.
-  assert.ok([401, 403].includes((await cluster.request(a, 'POST', '/api/admin/cluster/node-installs', { body: { domain: 'x.example.org' }, token: user.token })).status));
+  assert.ok([401, 403].includes((await cluster.request(a, 'POST', '/api/admin/cluster/node-installs', { body, token: user.token })).status));
   assert.ok([401, 403].includes((await cluster.request(a, 'GET', '/api/admin/cluster/node-installs', { token: user.token })).status));
   assert.ok([401, 403].includes((await cluster.request(a, 'POST', '/api/admin/cluster/certificate/rotate', { token: user.token })).status));
 
-  for (const [body, pattern] of [
-    [{ domain: 'https://node.example.org' }, /domain/],
-    [{ domain: 'node.example.org:443' }, /domain/],
-    [{ domain: 'localhost' }, /domain/],
-    [{ domain: 'node.example.org', acmeEmail: 'a}@b.cd' }, /e-mail/],
-    [{ domain: 'node.example.org', name: 'x\nNODE_OPTIONS=evil' }, /name/],
+  for (const [input, pattern] of [
+    [{ name: 'X', address: 'https://node.example.org' }, /address/],
+    [{ name: 'X', address: 'node.example.org:443' }, /address/],
+    [{ name: 'X', address: 'localhost' }, /address/],
+    [{ name: 'X', address: '1.2.3.4; rm -rf /' }, /address/],
+    [{ name: 'X', address: 'node.example.org', acmeEmail: 'a}@b.cd' }, /e-mail/],
+    [{ name: 'x\nNODE_OPTIONS=evil' }, /name/],
+    [{ name: 'X', origin: 'http://api.example.org' }, /public https address/],
+    [{ name: 'X', origin: 'https://api.example.org/admin' }, /public https address/],
   ]) {
-    const res = await createInstall(a, body);
-    assert.equal(res.status, 400, JSON.stringify(body));
+    const res = await createInstall(a, input);
+    assert.equal(res.status, 400, JSON.stringify(input));
     assert.match(res.json.error, pattern);
+  }
+  for (const input of [{ origin: a.url }, { name: '', origin: a.url }, { name: 'X' }]) {
+    const res = await cluster.admin(a, 'POST', '/cluster/node-installs', input);
+    assert.equal(res.status, 400, `${JSON.stringify(input)}: name and origin are required`);
   }
   assert.deepEqual(await installed(a), [], 'nothing was created by the refused requests');
 });
 
+test('/setup exists only while a node is being added', async () => {
+  // No install open: indistinguishable from a path that does not exist.
+  for (const [method, route] of [['GET', ''], ['POST', '/provision'], ['POST', '/bundle'], ['GET', '/anything']]) {
+    assert.equal((await setupRoute(a, method, route)).status, 404, `${method} /setup${route}`);
+  }
+  const created = await createInstall(a, { name: 'Window' });
+  assert.equal(created.status, 201, created.text);
+  const open = await setupRoute(a);
+  assert.equal(open.status, 200);
+  assert.equal(createHash('sha256').update(open.text).digest('hex'), created.json.scriptSha256);
+  assert.equal((await setupRoute(a, 'POST', '/provision')).status, 400, 'open, but a request without a valid proof gets nothing');
+  assert.equal((await setupRoute(a, 'GET', '/anything')).status, 404);
+  assert.equal((await cluster.admin(a, 'DELETE', `/cluster/node-installs/${created.json.id}`)).status, 200);
+  assert.equal((await setupRoute(a)).status, 404, 'closed again once no install is open');
+});
+
 test('the command fetches exactly the pinned, hash-checked installer', async () => {
-  const created = await createInstall(a, { domain: 'node-b.example.org', name: 'Node B', acmeEmail: 'ops@example.org' });
+  const created = await createInstall(a, { address: 'node-b.example.org', name: 'Node B', acmeEmail: 'ops@example.org' });
   assert.equal(created.status, 201, created.text);
   installB = created.json;
   const status = await cluster.status(a);
   assert.equal(installB.pin, status.channel.mtls.pin);
   const command = installB.command;
-  assert.ok(command.startsWith(`curl -fsSk --proto '=https' --pinnedpubkey 'sha256//${installB.pin}' -o pokyh-install.sh '${a.channelUrl}/cluster/v1/install.sh'`));
-  assert.ok(command.includes(`echo '${installB.scriptSha256}  pokyh-install.sh' | sha256sum -c -`));
+  assert.ok(command.startsWith(`curl -fsSL --proto '=http,https' -o pokyh.sh '${a.url}/setup'`), command);
+  assert.ok(command.includes(`echo '${installB.scriptSha256}  pokyh.sh' | sha256sum -c -`));
+  assert.equal(installB.address, 'node-b.example.org');
   const decoded = installToken.decodeInstallToken(tokenOf(command));
   assert.equal(decoded.ok, true);
   assert.equal(decoded.token.url, a.channelUrl);
   assert.equal(decoded.token.pin, installB.pin);
   assert.equal(decoded.token.id, installB.id);
+  assert.equal(decoded.token.web, a.url, 'the public address the panel was opened under');
 
   // The first two steps of the command, word for word.
   const dir = mkdtempSync(path.join(work, 'fetch-'));
-  const fetchPart = command.slice(0, command.indexOf(' && sh pokyh-install.sh'));
+  const fetchPart = command.slice(0, command.indexOf(' && sh pokyh.sh'));
   const fetched = await run('sh', ['-c', fetchPart], { cwd: dir });
   assert.equal(fetched.code, 0, fetched.stderr);
-  const script = readFileSync(path.join(dir, 'pokyh-install.sh'));
+  const script = readFileSync(path.join(dir, 'pokyh.sh'));
   assert.equal(createHash('sha256').update(script).digest('hex'), installB.scriptSha256);
   assert.ok(!script.toString().includes(decoded.token.secret.toString('base64url')), 'the script carries no secret');
 
-  // Someone in between with another certificate: curl refuses to talk to it.
-  const impostor = x509.createNodeCertificate('impostor');
-  const wrongPin = await run('sh', ['-c', fetchPart.replace(installB.pin, impostor.pin)], { cwd: dir });
-  assert.equal(wrongPin.code, 90);
-  // A script changed on the way fails the hash check.
-  writeFileSync(path.join(dir, 'pokyh-install.sh'), `${script}\necho injected\n`);
-  const check = await run('sh', ['-c', `echo '${installB.scriptSha256}  pokyh-install.sh' | sha256sum -c -`], { cwd: dir });
+  // A script changed on the way (a proxy, a CDN) fails the hash check, and
+  // the command stops before running anything.
+  writeFileSync(path.join(dir, 'pokyh.sh'), `${script}\necho injected\n`);
+  const check = await run('sh', ['-c', `echo '${installB.scriptSha256}  pokyh.sh' | sha256sum -c - && echo RAN`], { cwd: dir });
   assert.notEqual(check.code, 0);
+  assert.doesNotMatch(check.stdout, /RAN/);
+});
+
+test('a fake public address hands out nothing the bootstrap accepts', async () => {
+  // Something else answers at the public address (a misrouted proxy, an
+  // attacker): its answers do not open with the key, so the bootstrap turns
+  // to the pinned channel — and gets the genuine configuration there.
+  const created = await createInstall(a, { name: 'Fake' });
+  const fake = http.createServer((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ iv: randomBytes(12).toString('base64url'), ct: randomBytes(64).toString('base64url') }));
+    });
+  });
+  await new Promise((resolve) => fake.listen(0, '127.0.0.1', resolve));
+  try {
+    const forged = withBody(tokenOf(created.json.command), (body) => ({ ...body, w: `http://127.0.0.1:${fake.address().port}` }));
+    const out = mkdtempSync(path.join(work, 'fake-web-'));
+    const result = await bootstrap(forged, out);
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /does not verify — trying the cluster channel/);
+    assert.match(result.stdout, /certificate matches the pin/);
+    assert.equal(parseEnv(path.join(out, '.env')).JWT_SECRET, cluster.secrets.jwt);
+  } finally {
+    fake.close();
+    await cluster.admin(a, 'DELETE', `/cluster/node-installs/${created.json.id}`);
+  }
 });
 
 test('the bootstrap refuses an impostor and leaves the install untouched', async () => {
   const impostor = x509.createNodeCertificate('impostor');
-  const forged = withBody(tokenOf(installB.command), (body) => ({ ...body, f: impostor.pin }));
+  // Only the channel, with someone else's certificate on it.
+  const forged = withBody(tokenOf(installB.command), (body) => {
+    const { w, ...rest } = body;
+    return { ...rest, f: impostor.pin };
+  });
   const out = mkdtempSync(path.join(work, 'impostor-'));
   const result = await bootstrap(forged, out);
   assert.notEqual(result.code, 0);
@@ -246,7 +308,7 @@ test('the bootstrap refuses an impostor and leaves the install untouched', async
 });
 
 test('wrong proofs lock an install, and a locked install hands out nothing', async () => {
-  const created = await createInstall(a, { domain: 'node-x.example.org' });
+  const created = await createInstall(a, { name: 'Guessed', address: 'node-x.example.org' });
   assert.equal(created.status, 201);
   const genuine = tokenOf(created.json.command);
   const guessed = withBody(genuine, (body) => ({ ...body, s: randomBytes(32).toString('base64url') }));
@@ -266,7 +328,7 @@ test('wrong proofs lock an install, and a locked install hands out nothing', asy
 });
 
 test('a revoked command is dead', async () => {
-  const created = await createInstall(a, { domain: 'node-r.example.org' });
+  const created = await createInstall(a, { name: 'Revoked', address: 'node-r.example.org' });
   assert.equal((await cluster.admin(a, 'DELETE', `/cluster/node-installs/${created.json.id}`)).status, 200);
   const result = await bootstrap(tokenOf(created.json.command), mkdtempSync(path.join(work, 'revoked-')));
   assert.notEqual(result.code, 0);
@@ -280,7 +342,7 @@ test('the bootstrap writes the new node\'s configuration, once', async () => {
   mkdirSync(out);
   const result = await bootstrap(tokenOf(installB.command), out);
   assert.equal(result.code, 0, result.stderr);
-  assert.match(result.stdout, /certificate matches the pin/);
+  assert.match(result.stdout, new RegExp(`Reached ${a.url.replace(/[.]/g, '\\.')}`), 'over the public address');
   assert.match(result.stdout, /verified/);
 
   const mode = (file) => statSync(path.join(out, file)).mode & 0o777;
@@ -296,6 +358,7 @@ test('the bootstrap writes the new node\'s configuration, once', async () => {
   assert.equal(env.CLUSTER_MTLS_URL, 'https://node-b.example.org:4100');
   assert.equal(env.CLUSTER_NODE_NAME, 'Node B');
   assert.match(readFileSync(path.join(out, 'Caddyfile'), 'utf8'), /^node-b\.example\.org \{$/m);
+  assert.match(readFileSync(path.join(out, 'compose.env'), 'utf8'), /^COMPOSE_PROFILES=blue,web$/m, 'with a domain: its own HTTPS');
   const bundleHash = createHash('sha256').update(readFileSync(path.join(out, 'state/bundle.tgz'))).digest('hex');
   const provision = JSON.parse(readFileSync(path.join(out, 'state/provision.json'), 'utf8'));
   assert.equal(bundleHash, provision.bundle.sha256);
@@ -357,7 +420,7 @@ test('the first-run setup is closed on an installed node', async () => {
 });
 
 test('a third node installed through the second is linked with the first by the mesh, over the channel', async () => {
-  const created = await createInstall(b, { domain: 'node-c.example.org', name: 'Node C' });
+  const created = await createInstall(b, { address: 'node-c.example.org', name: 'Node C' });
   assert.equal(created.status, 201, created.text);
   const out = path.join(work, 'node-c');
   mkdirSync(out);
@@ -371,6 +434,41 @@ test('a third node installed through the second is linked with the first by the 
   assert.ok(cOnA.introducedBy, 'introduced by B');
   assert.equal(cOnA.tls.locked, true, 'the introduced link runs over the channel only');
   await cluster.converged([a, b, c], { timeoutMs: 180_000 });
+});
+
+test('without an address, the new server is named by the IP its setup came from', async () => {
+  const created = await createInstall(a, { name: 'Homelab' });
+  assert.equal(created.status, 201, created.text);
+  const out = mkdtempSync(path.join(work, 'ip-only-'));
+  try {
+    const result = await bootstrap(tokenOf(created.json.command), out);
+    assert.equal(result.code, 0, result.stderr);
+    const env = parseEnv(path.join(out, '.env'));
+    assert.equal(env.CLUSTER_MTLS_URL, 'https://127.0.0.1:4100', 'the address the request came from');
+    assert.equal(existsSync(path.join(out, 'Caddyfile')), false, 'no domain: no web server of its own');
+    assert.match(readFileSync(path.join(out, 'compose.env'), 'utf8'), /^COMPOSE_PROFILES=blue$/m);
+  } finally {
+    await cluster.admin(a, 'DELETE', `/cluster/node-installs/${created.json.id}`);
+  }
+});
+
+test('several servers can be added at the same time, each with its own key', async () => {
+  const created = await Promise.all(['Spare 1', 'Spare 2', 'Spare 3'].map((name) => createInstall(a, { name })));
+  for (const entry of created) assert.equal(entry.status, 201, entry.text);
+  const outs = created.map(() => mkdtempSync(path.join(work, 'parallel-')));
+  try {
+    const results = await Promise.all(created.map((entry, index) => bootstrap(tokenOf(entry.json.command), outs[index])));
+    for (const result of results) assert.equal(result.code, 0, result.stderr);
+    const secrets = outs.map((out) => parseEnv(path.join(out, '.env')).CLUSTER_SECRET);
+    assert.equal(new Set(secrets).size, 3, 'every server has secrets of its own');
+    // A key works for its own install only.
+    const swapped = withBody(tokenOf(created[0].json.command), (body) => ({ ...body, i: created[1].json.id }));
+    const refused = await bootstrap(swapped, mkdtempSync(path.join(work, 'swapped-')));
+    assert.notEqual(refused.code, 0);
+  } finally {
+    for (const entry of created) await cluster.admin(a, 'DELETE', `/cluster/node-installs/${entry.json.id}`);
+  }
+  assert.equal((await setupRoute(a)).status, 404, 'closed again once every install is used up or revoked');
 });
 
 test('renewing a certificate keeps every link up', async () => {

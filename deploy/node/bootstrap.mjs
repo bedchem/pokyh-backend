@@ -25,6 +25,7 @@
 
 import { X509Certificate, createDecipheriv, createHash, createHmac, hkdfSync, randomBytes } from 'node:crypto';
 import fs from 'node:fs';
+import http from 'node:http';
 import https from 'node:https';
 import { isIP } from 'node:net';
 import path from 'node:path';
@@ -124,7 +125,7 @@ export function decodeToken(text, now = Date.now()) {
   } catch {
     throw new BootstrapError('The install token is damaged or incomplete');
   }
-  const { v, a, f, n, i, s, e, x } = body ?? {};
+  const { v, a, f, n, i, s, e, x, w } = body ?? {};
   if (v !== 1) throw new BootstrapError('The install token comes from a different Pokyh version');
   if (typeof a !== 'string' || a.length > 255 || !isChannelUrl(a) || typeof f !== 'string' || !PIN.test(f)
     || typeof n !== 'string' || !NODE_ID.test(n) || typeof i !== 'string' || !INSTALL_ID.test(i)
@@ -133,7 +134,8 @@ export function decodeToken(text, now = Date.now()) {
   }
   const listed = Array.isArray(x) ? x.slice(0, 8).map(parseEndpoint) : [parseEndpoint(a)];
   if (listed.some((endpoint) => endpoint === null) || listed.length === 0) throw new BootstrapError('The install token is damaged or incomplete');
-  return { url: a, endpoints: listed, pin: f, nodeId: n, id: i, secret: Buffer.from(s, 'base64url'), expiresAt: new Date(e * 1000), expired: e * 1000 <= now };
+  if (w !== undefined && (typeof w !== 'string' || w.length > 255 || !/^https?:\/\/(\[[0-9a-fA-F:.]+\]|[A-Za-z0-9.-]+)(:\d{1,5})?$/.test(w))) throw new BootstrapError('The install token is damaged or incomplete');
+  return { url: a, endpoints: listed, web: w ?? null, pin: f, nodeId: n, id: i, secret: Buffer.from(s, 'base64url'), expiresAt: new Date(e * 1000), expired: e * 1000 <= now };
 }
 
 function derive(secret, id, purpose) {
@@ -186,7 +188,11 @@ export function validatePayload(payload, token) {
   const fail = (what) => { throw new BootstrapError(`The configuration from the cluster is unusable (${what})`); };
   if (!payload || payload.v !== 1) fail('version');
   const node = payload.node ?? {};
-  if (typeof node.domain !== 'string' || !DOMAIN.test(node.domain)) fail('domain');
+  if (typeof node.domain !== 'string' || (node.domain !== '' && !DOMAIN.test(node.domain))) fail('domain');
+  if (node.address !== undefined && (typeof node.address !== 'string' || (node.address !== '' && isIP(node.address) === 0))) fail('address');
+  const update = payload.update ?? { repo: '', branch: 'main' };
+  if (typeof update.repo !== 'string' || (update.repo !== '' && !/^https:\/\/[A-Za-z0-9.-]+(:\d{1,5})?(\/[A-Za-z0-9._~-]+){2,4}$/.test(update.repo))) fail('update.repo');
+  if (typeof update.branch !== 'string' || !/^[A-Za-z0-9._/-]{1,200}$/.test(update.branch) || update.branch.includes('..')) fail('update.branch');
   if (typeof node.name !== 'string' || !NAME.test(node.name)) fail('name');
   if (typeof node.withAi !== 'boolean') fail('AI choice');
   if (typeof node.acmeEmail !== 'string' || (node.acmeEmail !== '' && !EMAIL.test(node.acmeEmail))) fail('e-mail');
@@ -217,9 +223,17 @@ function envLine(key, value) {
   return `${key}=${value}\n`;
 }
 
+// The address the other nodes reach this one at: its domain, else its IP.
+export function channelHost(node) {
+  if (node.domain) return node.domain;
+  if (node.address) return isIP(node.address) === 6 ? `[${node.address}]` : node.address;
+  return '';
+}
+
 export function buildEnvFile({ payload, secrets, generatedAt }) {
   const { node } = payload;
-  const channelUrl = `https://${node.domain}:4100`;
+  const host = channelHost(node);
+  const channelUrl = host ? `https://${host}:4100` : '';
   const local = {
     NODE_ENV: 'production',
     PORT: '4000',
@@ -235,7 +249,7 @@ export function buildEnvFile({ payload, secrets, generatedAt }) {
     DATABASE_URL: `mysql://root:${secrets.mysqlRootPassword}@mysql:3306/pokyh`,
     DB_AUTO_PUSH: 'true',
     CLUSTER_ENABLED: 'true',
-    CLUSTER_NODE_NAME: node.name || node.domain.split('.')[0],
+    CLUSTER_NODE_NAME: node.name || (node.domain ? node.domain.split('.')[0] : 'node'),
     CLUSTER_SECRET: secrets.clusterSecret,
     CLUSTER_PUBLIC_PATH: 'false',
     CLUSTER_PORT: '0',
@@ -244,6 +258,12 @@ export function buildEnvFile({ payload, secrets, generatedAt }) {
     CLUSTER_MTLS_URL: channelUrl,
     CLUSTER_ADVERTISE_URL: channelUrl,
     CLUSTER_BOOTSTRAP_DIR: '/app/data/bootstrap',
+    // The channel port belongs to the edge forwarder (deploy/node/edge.mjs),
+    // which names each client in a PROXY protocol line.
+    CLUSTER_MTLS_PROXY_PROTOCOL: 'true',
+    // Shared with the updater (blue/green updates, src/cluster/updates.ts).
+    POKYH_UPDATE_DIR: '/app/data/update',
+    POKYH_ACTIVATION_FILE: '/app/data/update/active',
   };
   const shared = Object.fromEntries(Object.entries(payload.env).filter(([key]) => !isNodeLocal(key)));
   shared.LEARN_AI_ENABLED = node.withAi ? 'true' : 'false';
@@ -251,7 +271,7 @@ export function buildEnvFile({ payload, secrets, generatedAt }) {
   // data must not point at one particular node, so an empty value (relative
   // links) stays empty here as well.
 
-  let text = `# Pokyh node ${node.domain} — written by the one-line installer on ${generatedAt}.\n`;
+  let text = `# Pokyh node ${node.name || node.domain || host} — written by the one-line installer on ${generatedAt}.\n`;
   text += '# Keep this file private (mode 0600). Settings below "shared" came from the\n';
   text += `# cluster node ${(payload.cluster.name || payload.cluster.url).replace(/[^\p{L}\p{N} .:/_-]/gu, '')} and must stay equal on every node.\n\n`;
   text += '# ── This node ──\n';
@@ -264,13 +284,31 @@ export function buildEnvFile({ payload, secrets, generatedAt }) {
 export function renderCaddyfile({ domain, acmeEmail, tlsInternal }) {
   const global = [];
   if (acmeEmail) global.push(`\temail ${acmeEmail}`);
+  // The colour that is not running fails its health check every second;
+  // that is expected and would only flood the log.
+  global.push('\tlog default {\n\t\texclude http.handlers.reverse_proxy.health_checker.active\n\t}');
   let text = '# Written by the Pokyh node installer.\n';
   if (global.length > 0) text += `{\n${global.join('\n')}\n}\n\n`;
   text += `${domain} {\n`;
   if (tlsInternal) text += '\ttls internal\n';
   text += '\tencode zstd gzip\n';
   text += '\theader Strict-Transport-Security "max-age=31536000"\n';
-  text += '\treverse_proxy app:4000\n';
+  // Both colours of a blue/green update; only those that answer /readyz get
+  // requests, so a version that is still starting (or failing) never does.
+  // While one goes away, a request is retried at the other.
+  text += '\treverse_proxy app-blue:4000 app-green:4000 {\n';
+  text += '\t\thealth_uri /readyz\n';
+  text += '\t\thealth_interval 1s\n';
+  text += '\t\thealth_timeout 2s\n';
+  text += '\t\thealth_passes 2\n';
+  text += '\t\thealth_fails 1\n';
+  text += '\t\tlb_policy round_robin\n';
+  text += '\t\tlb_try_duration 15s\n';
+  text += '\t\tlb_try_interval 250ms\n';
+  text += '\t\tfail_duration 10s\n';
+  // A colour that just went away must not hold a request up for long.
+  text += '\t\ttransport http {\n\t\t\tdial_timeout 1s\n\t\t}\n';
+  text += '\t}\n';
   text += '}\n';
   return text;
 }
@@ -289,13 +327,16 @@ export function aiPlan({ withAi, memKb, cpus }) {
   };
 }
 
-export function renderComposeEnv({ ai }) {
-  let text = '# Stack settings for /opt/pokyh/compose.yml (not secret). Written by the installer.\n';
+export function renderComposeEnv({ ai, web, home = '/opt/pokyh', runtime = { repo: '', branch: 'main' } }) {
+  const profiles = ['blue', ...(web ? ['web'] : []), ...(ai.enabled ? ['ai'] : [])];
+  let text = '# Stack settings for compose.yml (not secret). Written by the installer;\n';
+  text += '# the updater changes POKYH_IMAGE_* and COMPOSE_PROFILES (blue/green).\n';
   text += 'COMPOSE_PROJECT_NAME=pokyh\n';
-  if (ai.enabled) {
-    text += 'COMPOSE_PROFILES=ai\n';
-    text += `OLLAMA_MEM_LIMIT=${ai.memLimit}\nOLLAMA_CPUS=${ai.cpus}\nOLLAMA_NUM_THREAD=${ai.threads}\n`;
-  }
+  text += `POKYH_HOME=${home}\n`;
+  text += `COMPOSE_PROFILES=${profiles.join(',')}\n`;
+  // The only source the updater takes its own files from (updater.mjs).
+  text += `POKYH_RUNTIME_REPO=${runtime.repo}\nPOKYH_RUNTIME_BRANCH=${runtime.branch}\n`;
+  if (ai.enabled) text += `OLLAMA_MEM_LIMIT=${ai.memLimit}\nOLLAMA_CPUS=${ai.cpus}\nOLLAMA_NUM_THREAD=${ai.threads}\n`;
   return text;
 }
 
@@ -407,6 +448,38 @@ async function pinnedRequest(ways, pin, certPem, pathname, payload, options) {
   throw new BootstrapError(`Request to the cluster node failed (${failures.join('; ')})`);
 }
 
+// A request to the inviting node's public address (normal TLS with the
+// system's certificate authorities). Its answer protects itself: the
+// configuration is sealed with the key, the build checked by hash.
+function publicRequest(base, pathname, payload, { maxBytes, file }) {
+  const url = new URL(`${base}/setup${pathname}`);
+  const body = Buffer.from(JSON.stringify(payload), 'utf8');
+  const client = url.protocol === 'https:' ? https : http;
+  return new Promise((resolve, reject) => {
+    const req = client.request(url, { method: 'POST', headers: { 'content-type': 'application/json', 'content-length': String(body.length) } }, (res) => {
+      const hash = createHash('sha256');
+      const chunks = [];
+      let size = 0;
+      const out = file && res.statusCode === 200 ? fs.createWriteStream(file, { mode: 0o600 }) : null;
+      out?.on('error', (err) => { res.destroy(); reject(new BootstrapError(`The build could not be saved: ${err.message}`)); });
+      res.on('data', (chunk) => {
+        size += chunk.length;
+        if (size > maxBytes) { res.destroy(); out?.destroy(); reject(new BootstrapError('The answer is larger than allowed')); return; }
+        hash.update(chunk);
+        if (out) out.write(chunk); else chunks.push(chunk);
+      });
+      res.on('end', () => {
+        const finish = () => resolve({ status: res.statusCode ?? 0, date: res.headers.date ?? '', body: Buffer.concat(chunks), sha256: hash.digest('hex'), bytes: size });
+        if (out) out.end(finish); else finish();
+      });
+      res.on('error', (err) => reject(new BootstrapError(err.message)));
+    });
+    req.setTimeout(file ? 10 * 60_000 : TIMEOUT_MS, () => req.destroy(new BootstrapError('no answer')));
+    req.on('error', (err) => reject(err instanceof BootstrapError ? err : new BootstrapError(err.message)));
+    req.end(body);
+  });
+}
+
 function signedRequest(token, keys, purpose) {
   const nonce = randomBytes(24).toString('base64url');
   const t = Date.now();
@@ -474,28 +547,76 @@ export async function main({ out = process.env.POKYH_OUT || '/out', tokenText } 
   fs.mkdirSync(bootstrapDir, { recursive: true, mode: 0o700 });
   const provisionFile = path.join(stateDir, 'provision.json');
 
-  // The cluster node's certificate, checked against the token's pin, over
-  // the first of its ways that answers; that way is tried first from now on.
-  const reached = await fetchPinnedCertificate(token.endpoints, token.pin);
-  const certPem = reached.certPem;
-  const ways = [reached.endpoint, ...token.endpoints.filter((endpoint) => endpoint !== reached.endpoint)];
-  log(`Connected to ${describe(reached.endpoint)} — certificate matches the pin`);
+  // Two ways to the inviting node: its public address (as the admin panel
+  // shows it) and its pinned channel. The public one is tried first — the
+  // channel may not be reachable from outside yet. Whatever answers, the key
+  // decides: the configuration is sealed with it, the build fixed by the
+  // hash inside it, the inviting node's certificate checked against the pin.
+  let channel = null;
+  const viaChannel = async () => {
+    if (!channel) {
+      const reached = await fetchPinnedCertificate(token.endpoints, token.pin);
+      channel = { certPem: reached.certPem, ways: [reached.endpoint, ...token.endpoints.filter((endpoint) => endpoint !== reached.endpoint)] };
+      log(`Connected to ${describe(reached.endpoint)} — certificate matches the pin`);
+    }
+    return channel;
+  };
+  // A refusal by the node itself is final; anything else on the public way
+  // (unreachable, not this cluster's node, an answer that does not verify)
+  // makes the bootstrap try the channel instead.
+  const FINAL = new Set([403, 409, 429]);
+  const ask = async (purpose, pathname, options, accept) => {
+    let publicError = null;
+    if (token.web) {
+      const request = signedRequest(token, keys, purpose);
+      let reply = null;
+      try {
+        reply = await publicRequest(token.web, pathname, request.body, options);
+      } catch (err) {
+        publicError = `${token.web} cannot be reached: ${err.message}`;
+      }
+      if (reply && FINAL.has(reply.status)) throw new BootstrapError(explainRefusal(reply.status, reply.body));
+      if (reply && reply.status === 200) {
+        try {
+          const result = accept(reply, request.nonce);
+          log(`Reached ${token.web}`);
+          return result;
+        } catch (err) {
+          publicError = `the answer from ${token.web} does not verify (${err.message})`;
+        }
+      } else if (reply) {
+        publicError = `${token.web}: ${explainRefusal(reply.status, reply.body)}`;
+      }
+      if (options.file) fs.rmSync(options.file, { force: true });
+      log(`${publicError} — trying the cluster channel`);
+    }
+    const request = signedRequest(token, keys, purpose);
+    let reply;
+    try {
+      const { certPem: pinned, ways } = await viaChannel();
+      reply = await pinnedRequest(ways, token.pin, pinned, pathname === '/bundle' ? '/provision/bundle' : '/provision', request.body, options);
+    } catch (err) {
+      throw new BootstrapError(publicError ? `${publicError}; over the cluster channel: ${err.message}` : err.message);
+    }
+    if (reply.status !== 200) throw new BootstrapError(explainRefusal(reply.status, reply.body));
+    return accept(reply, request.nonce);
+  };
 
   let payload;
   if (fs.existsSync(provisionFile)) {
     payload = validatePayload(JSON.parse(fs.readFileSync(provisionFile, 'utf8')), token);
     log('Using the configuration received earlier');
   } else {
-    if (token.expired) throw new BootstrapError('The install token has expired — create a new one-line command in the admin panel');
-    const request = signedRequest(token, keys, 'provision');
-    const reply = await pinnedRequest(ways, token.pin, certPem, '/provision', request.body, { maxBytes: 1024 * 1024 });
-    if (reply.status !== 200) throw new BootstrapError(explainRefusal(reply.status, reply.body));
-    const sealed = JSON.parse(reply.body.toString('utf8'));
-    payload = validatePayload(JSON.parse(openPayload(keys.enc, token.id, request.nonce, sealed).toString('utf8')), token);
-    // Kept before anything else can fail: it can be fetched only once.
-    writePrivate(provisionFile, JSON.stringify(payload));
+    if (token.expired) throw new BootstrapError('The install key has expired — create a new one-line command in the admin panel');
+    payload = await ask('provision', '/provision', { maxBytes: 1024 * 1024 }, (reply, nonce) => {
+      const sealed = JSON.parse(reply.body.toString('utf8'));
+      const opened = validatePayload(JSON.parse(openPayload(keys.enc, token.id, nonce, sealed).toString('utf8')), token);
+      // Kept before anything else can fail: it can be fetched only once.
+      writePrivate(provisionFile, JSON.stringify(opened));
+      checkClock(reply);
+      return opened;
+    });
     log(`Configuration received from ${payload.cluster.name || token.url} (${Object.keys(payload.env).length} shared settings)`);
-    checkClock(reply);
   }
 
   // The cluster node's exact build, verified against the sealed hash.
@@ -503,17 +624,21 @@ export async function main({ out = process.env.POKYH_OUT || '/out', tokenText } 
   const haveBundle = fs.existsSync(bundleFile)
     && createHash('sha256').update(fs.readFileSync(bundleFile)).digest('hex') === payload.bundle.sha256;
   if (!haveBundle) {
-    const request = signedRequest(token, keys, 'bundle');
     const partial = `${bundleFile}.part`;
-    const reply = await pinnedRequest(ways, token.pin, certPem, '/provision/bundle', request.body, { maxBytes: MAX_BUNDLE_BYTES, file: partial });
-    if (reply.status !== 200) { fs.rmSync(partial, { force: true }); throw new BootstrapError(explainRefusal(reply.status, reply.body)); }
-    checkClock(reply);
-    if (reply.sha256 !== payload.bundle.sha256 || reply.bytes !== payload.bundle.bytes) {
+    try {
+      const reply = await ask('bundle', '/bundle', { maxBytes: MAX_BUNDLE_BYTES, file: partial }, (answer) => {
+        if (answer.sha256 !== payload.bundle.sha256 || answer.bytes !== payload.bundle.bytes) {
+          throw new BootstrapError('The downloaded build does not match the hash the cluster sealed — refusing to install it');
+        }
+        return answer;
+      });
+      checkClock(reply);
+      fs.renameSync(partial, bundleFile);
+      log(`Build downloaded and verified (${(reply.bytes / 1024 / 1024).toFixed(1)} MB, sha256 ${reply.sha256.slice(0, 16)}…)`);
+    } catch (err) {
       fs.rmSync(partial, { force: true });
-      throw new BootstrapError('The downloaded build does not match the hash the cluster sealed — refusing to install it');
+      throw err;
     }
-    fs.renameSync(partial, bundleFile);
-    log(`Build downloaded and verified (${(reply.bytes / 1024 / 1024).toFixed(1)} MB, sha256 ${reply.sha256.slice(0, 16)}…)`);
   }
 
   // This node's own secrets: generated once, kept across a resumed run.
@@ -530,12 +655,15 @@ export async function main({ out = process.env.POKYH_OUT || '/out', tokenText } 
   if (ai.note) log(ai.note);
   const effective = ai.enabled || !payload.node.withAi ? payload : { ...payload, node: { ...payload.node, withAi: false } };
   writePrivate(path.join(out, '.env'), buildEnvFile({ payload: effective, secrets, generatedAt: new Date().toISOString() }));
-  writePrivate(path.join(out, 'compose.env'), renderComposeEnv({ ai }));
-  fs.writeFileSync(path.join(out, 'Caddyfile'), renderCaddyfile({
-    domain: payload.node.domain,
-    acmeEmail: payload.node.acmeEmail,
-    tlsInternal: process.env.POKYH_TLS_INTERNAL === '1',
-  }), { mode: 0o644 });
+  const web = Boolean(payload.node.domain);
+  writePrivate(path.join(out, 'compose.env'), renderComposeEnv({ ai, web, home: process.env.POKYH_HOME_ON_HOST || '/opt/pokyh', runtime: payload.update ?? { repo: '', branch: 'main' } }));
+  if (web) {
+    fs.writeFileSync(path.join(out, 'Caddyfile'), renderCaddyfile({
+      domain: payload.node.domain,
+      acmeEmail: payload.node.acmeEmail,
+      tlsInternal: process.env.POKYH_TLS_INTERNAL === '1',
+    }), { mode: 0o644 });
+  }
 
   // The backend takes this over at its first start and deletes it at once.
   if (AS_ROOT) fs.chownSync(bootstrapDir, appUid, appUid);
@@ -545,8 +673,8 @@ export async function main({ out = process.env.POKYH_OUT || '/out', tokenText } 
 
   const safeName = (payload.node.name || '').replace(/[^A-Za-z0-9 ._-]/g, '').slice(0, 120);
   const safePeer = (payload.cluster.name || '').replace(/[^A-Za-z0-9 ._-]/g, '').slice(0, 120);
-  fs.writeFileSync(path.join(stateDir, 'summary'), `domain=${payload.node.domain}\nname=${safeName}\npeer=${safePeer}\nai=${ai.enabled ? 'yes' : 'no'}\n`, { mode: 0o600 });
-  log(`Configuration for ${payload.node.domain} written`);
+  fs.writeFileSync(path.join(stateDir, 'summary'), `domain=${payload.node.domain}\naddress=${payload.node.address ?? ''}\nname=${safeName}\npeer=${safePeer}\nai=${ai.enabled ? 'yes' : 'no'}\n`, { mode: 0o600 });
+  log(`Configuration for ${safeName || payload.node.domain} written`);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

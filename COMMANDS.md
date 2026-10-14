@@ -84,6 +84,10 @@ npm test
 # Multi-node cluster test: starts a throw-away MySQL container and three
 # backend processes (needs Docker; does not use your .env or database)
 npm run test:cluster
+
+# The updater's blue/green switch against real Docker (stand-in images; needs
+# node:22-alpine, mysql:8.0.40 and redis:7.4.1-alpine locally)
+npm run test:updater
 ```
 
 ## Cluster
@@ -91,8 +95,11 @@ npm run test:cluster
 Nodes are linked in the admin panel under **Cluster**:
 
 - **Server per Einzeiler hinzufügen** — a fresh Debian/Ubuntu server becomes a
-  complete node with one command run as root (needs `CLUSTER_MTLS_PORT` on the
-  inviting node).
+  complete node with one command (root or sudo). Needs `CLUSTER_MTLS_PORT` on the
+  inviting node; open the panel under its public https address. `/setup` is
+  reachable only while a command is open. Several servers can be added at once.
+- **Updates** — repository, branch, automatic or by hand, only with passed checks;
+  nodes update one after the other without downtime (no leader).
 - **Node einladen** / **Beitreten** — link a node you set up yourself with an
   invite code.
 - **Erreichbarkeit dieser Node** — the ways the others reach this node (direct,
@@ -111,11 +118,21 @@ See README.md → "Cluster".
 ```bash
 # One-line install command through the API (shown once; admin token required)
 curl -s -X POST -H "Authorization: Bearer $ADMIN_TOKEN" -H 'content-type: application/json' \
-  -d '{"domain":"node2.example.org"}' http://localhost:4000/api/admin/cluster/node-installs
+  -d '{"name":"Homelab","address":"","origin":"https://api.example.org"}' http://localhost:4000/api/admin/cluster/node-installs
 
 # On a node set up by the installer
 /opt/pokyh/pokyh ps
-/opt/pokyh/pokyh logs -f app
+/opt/pokyh/pokyh logs -f app-blue      # or app-green — whichever is active
+/opt/pokyh/pokyh logs -f updater
+cat /opt/pokyh/data/update/active      # the active colour
+cat /opt/pokyh/data/update/status.json # the last update
+```
+
+```bash
+# Updates (admin token required): state, check now, roll back this node
+curl -s -H "Authorization: Bearer $ADMIN_TOKEN" http://localhost:4000/api/admin/cluster/updates
+curl -s -X POST -H "Authorization: Bearer $ADMIN_TOKEN" http://localhost:4000/api/admin/cluster/updates/check
+curl -s -X POST -H "Authorization: Bearer $ADMIN_TOKEN" http://localhost:4000/api/admin/cluster/updates/rollback
 ```
 
 ```bash

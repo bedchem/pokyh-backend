@@ -786,7 +786,8 @@ export type ClusterInstallState = 'OPEN' | 'PROVISIONED' | 'DONE' | 'EXPIRED' | 
 export interface ClusterInstall {
   id: string;
   status: ClusterInstallState;
-  domain: string;
+  // The new server's domain or IP as entered; empty: detected on install.
+  address: string;
   name: string;
   withAi: boolean;
   failures: number;
@@ -800,7 +801,7 @@ export interface CreatedClusterInstall {
   id: string;
   command: string;
   expiresAt: string;
-  domain: string;
+  address: string;
   name: string;
   pin: string;
   scriptSha256: string;
@@ -887,6 +888,51 @@ export interface ClusterRelay {
   error: string | null;
   endpoints: string[];
   snippets: ProxySnippets | null;
+}
+
+export interface ClusterUpdateSettings {
+  repo: string;
+  branch: string;
+  auto: boolean;
+  requireCi: boolean;
+  approvedCommit: string;
+  source: 'panel' | 'env';
+  updatedBy: string | null;
+  updatedAt: string | null;
+}
+
+export type ClusterUpdateNodeState = 'done' | 'updating' | 'failed' | 'manual' | 'skipped' | 'waiting' | 'next';
+
+export interface ClusterUpdates {
+  settings: ClusterUpdateSettings;
+  defaults: { pollMinutes: number; skipOfflineMinutes: number; healthTimeoutSeconds: number };
+  upstream: {
+    commit: string | null;
+    checkedAt: string | null;
+    error: string | null;
+    ci: { state: 'success' | 'pending' | 'failure' | 'none' | 'unsupported' | 'error'; detail: string; commit: string } | null;
+  };
+  target: string | null;
+  targetWhy: string;
+  self: {
+    nodeId: string;
+    commit: string | null;
+    builtAt: string | null;
+    color: string | null;
+    selfUpdating: boolean;
+    updaterSeenAt: string | null;
+    state: 'idle' | 'fetching' | 'requested' | 'preparing' | 'building' | 'starting' | 'switching' | 'done' | 'failed';
+    message: string | null;
+    failed: string | null;
+    failedMessage: string | null;
+    canRollBack: boolean;
+  };
+  nodes: Array<{ id: string; name: string; commit: string | null; selfUpdating: boolean; online: boolean; failed: string | null }>;
+  decision: {
+    action: 'none' | 'update' | 'wait' | 'blocked' | 'manual' | 'failed';
+    reason: string;
+    order: Array<{ id: string; name: string; state: ClusterUpdateNodeState }>;
+  } | null;
 }
 
 export interface ClusterReach {

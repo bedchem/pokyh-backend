@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import fs from 'fs';
 import express, { Request, Response, NextFunction } from 'express';
 import helmet from 'helmet';
 import cors from 'cors';
@@ -36,6 +37,7 @@ import { CLUSTER_PATH } from './cluster/protocol';
 import { createClusterRouter } from './cluster/router';
 import { startClusterListener, stopClusterListener } from './cluster/listener';
 import { RELAY_SCRIPT_PATH, handleRelayScript } from './cluster/relaySetup';
+import { SETUP_PATH, createSetupRouter } from './cluster/provision';
 import { startCluster, stopCluster } from './cluster';
 
 const app = express();
@@ -130,6 +132,9 @@ if (config.cluster.publicPath) app.use(CLUSTER_PATH, createClusterRouter('public
 // The relay installer, only while an administrator has opened its window
 // (relaySetup.ts); no secret in it, checked by SHA-256 on the relay server.
 app.get(RELAY_SCRIPT_PATH, handleRelayScript);
+// The one-line node installer's public address: 404 unless an administrator
+// has just created an install command (provision.ts).
+app.use(SETUP_PATH, createSetupRouter());
 
 // ─── Body parsing ────────────────────────────────────────────────────────────
 
@@ -462,6 +467,10 @@ async function connectDatabaseWithRetry() {
       try { await loadTokenRevocations(); } catch (err) {
         logger.warn(`token revocation load failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
       }
+      // Blue/green (servers set up by the installer): a new container serves
+      // HTTP at once, but takes over background work and the cluster only
+      // once the updater has stopped the previous one and named this one.
+      await waitForActivation();
       // Before the background jobs: they ask the cluster layer whether this
       // node is the one that should run them. Never throws.
       await startCluster();
@@ -478,6 +487,31 @@ async function connectDatabaseWithRetry() {
       logger.warn(`DB init attempt ${attempt} failed (${msg.split('\n')[0]}). Retrying in ${delay}ms…`);
       await new Promise((r) => setTimeout(r, delay));
     }
+  }
+}
+
+// Returns once this container is the active one (immediately where no
+// activation file is configured, or none has been written yet).
+async function waitForActivation(): Promise<void> {
+  const { color, activationFile } = config.deploy;
+  if (!color || !activationFile) return;
+  let announced = false;
+  for (;;) {
+    let active: string | null = null;
+    try {
+      active = fs.readFileSync(activationFile, 'utf8').trim();
+    } catch {
+      active = null;
+    }
+    if (active === null || active === '' || active === color) {
+      if (announced) logger.info('Activated by the updater; taking over background work and the cluster', { action: 'deploy_activated', color });
+      return;
+    }
+    if (!announced) {
+      announced = true;
+      logger.info('Waiting to be activated by the updater (serving HTTP meanwhile)', { action: 'deploy_waiting', color, active });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
   }
 }
 

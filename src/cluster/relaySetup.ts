@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from 'fs';
 import path from 'path';
 import type { Request, Response } from 'express';
 import { isIP } from 'net';
-import { isServerName } from './endpoints';
+import { isServerName, publicOrigin } from './endpoints';
 import { ClusterError } from './errors';
 
 // Setting up a Pokyh relay on a server with a public address (a VPS): the
@@ -51,16 +51,9 @@ function quote(value: string): string {
 }
 
 export function createRelayCommand(input: RelayCommandInput): { command: string; sha256: string; expiresAt: string } {
-  let origin: URL;
-  try {
-    origin = new URL(input.origin);
-  } catch {
-    throw new ClusterError('The address of this node is not valid');
-  }
-  const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(origin.hostname);
-  if ((origin.protocol !== 'https:' && !(origin.protocol === 'http:' && loopback)) || origin.pathname !== '/' || origin.search || origin.username) {
-    throw new ClusterError('Open the admin panel under this node\'s public https address to create the command');
-  }
+  const canonical = publicOrigin(input.origin);
+  if (!canonical) throw new ClusterError('Open the admin panel under this node\'s public https address to create the command');
+  const origin = new URL(canonical);
   const host = input.host.trim().toLowerCase();
   const domain = input.domain.trim().toLowerCase();
   if (input.publicPort && !(isServerName(host) || isIP(host) === 4)) throw new ClusterError('Enter the VPS\'s public name or IPv4 address');

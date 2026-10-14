@@ -1,4 +1,4 @@
-import type { AdminStats, AdminClass, AdminSession, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish, AdminDishFull, AdminDishImportResult, AdminDishShiftResult, AdminDishRotateResult, AdminDishResetResult, AdminDishAnchorResult, DishPlan, AdminCommentsResponse, FileLogFile, FileLogResponse, FileLogEntry, FrontendActivityLogsResponse, FrontendActivityStats, AllTodosResponse, AllRemindersResponse, SchoolYearsResponse, ArchivedUsersResponse, ArchivedClass, ArchivedTodosResponse, ArchivedRemindersResponse, RolloverResult, RollbackResult, AdminApiKey, CreatedApiKey, LearnConfigValues, LearnAiConfigValues, LearnAiGrant, LearnAiTeamGrant, AdminLearnTeam, LearnTeamAssignableRole, AdminLearnCoursesResponse, AdminLearnCourseAccessResponse, AdminLearnCourse, AdminLearnCourseAccess, LearnCoursePermission, LearnCourseStatus, LearnCourseVisibility, AdminLearnCourseVocabularyResponse, AdminLearnVocabularyImportResponse, BackupsResponse, AdminPopup, PopupInput, ClusterStatus, ClusterInstall, CreatedClusterInstall, ClusterReach, ReachEntry } from './types';
+import type { AdminStats, AdminClass, AdminSession, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish, AdminDishFull, AdminDishImportResult, AdminDishShiftResult, AdminDishRotateResult, AdminDishResetResult, AdminDishAnchorResult, DishPlan, AdminCommentsResponse, FileLogFile, FileLogResponse, FileLogEntry, FrontendActivityLogsResponse, FrontendActivityStats, AllTodosResponse, AllRemindersResponse, SchoolYearsResponse, ArchivedUsersResponse, ArchivedClass, ArchivedTodosResponse, ArchivedRemindersResponse, RolloverResult, RollbackResult, AdminApiKey, CreatedApiKey, LearnConfigValues, LearnAiConfigValues, LearnAiGrant, LearnAiTeamGrant, AdminLearnTeam, LearnTeamAssignableRole, AdminLearnCoursesResponse, AdminLearnCourseAccessResponse, AdminLearnCourse, AdminLearnCourseAccess, LearnCoursePermission, LearnCourseStatus, LearnCourseVisibility, AdminLearnCourseVocabularyResponse, AdminLearnVocabularyImportResponse, BackupsResponse, AdminPopup, PopupInput, ClusterStatus, ClusterInstall, CreatedClusterInstall, ClusterReach, ReachEntry, ClusterUpdates, ClusterUpdateSettings } from './types';
 
 const TOKEN_KEY = 'pokyh_admin_token';
 
@@ -600,7 +600,7 @@ export const adminApi = {
     request<{ ok: boolean }>('PATCH', '/api/admin/cluster/node', { name }),
 
   // One-line node install: the command is returned once and never again.
-  createClusterInstall: (data: { domain: string; name?: string; withAi?: boolean; acmeEmail?: string }): Promise<CreatedClusterInstall> =>
+  createClusterInstall: (data: { name: string; address?: string; withAi?: boolean; acmeEmail?: string; origin: string }): Promise<CreatedClusterInstall> =>
     request<CreatedClusterInstall>('POST', '/api/admin/cluster/node-installs', data),
 
   getClusterInstalls: (): Promise<{ installs: ClusterInstall[] }> =>
@@ -630,6 +630,25 @@ export const adminApi = {
 
   createRelayCommand: (data: { origin: string; host: string; port: number; publicPort: boolean; domain: string; name: string }): Promise<{ command: string; sha256: string; expiresAt: string }> =>
     request<{ command: string; sha256: string; expiresAt: string }>('POST', '/api/admin/cluster/relay-command', data),
+
+  // Updates: settings are cluster-wide, retry and roll back act on this node.
+  getClusterUpdates: (): Promise<ClusterUpdates> =>
+    request<ClusterUpdates>('GET', '/api/admin/cluster/updates'),
+
+  saveClusterUpdateSettings: (data: { repo: string; branch: string; auto: boolean; requireCi: boolean }): Promise<ClusterUpdateSettings> =>
+    request<ClusterUpdateSettings>('PUT', '/api/admin/cluster/updates/settings', data),
+
+  checkClusterUpdates: (): Promise<ClusterUpdates> =>
+    request<ClusterUpdates>('POST', '/api/admin/cluster/updates/check'),
+
+  releaseClusterUpdate: (commit: string): Promise<{ ok: boolean }> =>
+    request<{ ok: boolean }>('POST', '/api/admin/cluster/updates/release', { commit }),
+
+  retryClusterUpdate: (): Promise<{ ok: boolean }> =>
+    request<{ ok: boolean }>('POST', '/api/admin/cluster/updates/retry'),
+
+  rollBackClusterNode: (): Promise<{ ok: boolean }> =>
+    request<{ ok: boolean }>('POST', '/api/admin/cluster/updates/rollback'),
 
   getToken,
 };

@@ -1087,6 +1087,26 @@ model Relay {
   @@map("relays")
 }
 
+// How the cluster updates itself (src/cluster/updates.ts): which git
+// repository and branch, whether new versions roll out on their own, and
+// whether their checks must have passed. One row ("cluster"); replicated like
+// `relays`, so a change on any node applies to all of them. Without the row,
+// the CLUSTER_UPDATE_* settings apply.
+model UpdateSettings {
+  id             String   @id @db.VarChar(36)
+  repo           String   @default("") @db.VarChar(300)
+  branch         String   @default("main") @db.VarChar(200)
+  auto           Boolean  @default(true)
+  requireCi      Boolean  @default(true) @map("require_ci")
+  // With automatic updates off: the commit an administrator released.
+  approvedCommit String   @default("") @map("approved_commit") @db.VarChar(40)
+  updatedBy      String?  @map("updated_by") @db.VarChar(100)
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@map("update_settings")
+}
+
 // A one-line node install (provision.ts). Node-local like every cluster_*
 // table. The token itself is never stored; its secret is kept only in
 // wrapped form until the install is finished, revoked or expired.

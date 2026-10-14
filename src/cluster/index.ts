@@ -72,6 +72,18 @@ import {
 import { RpcError, dropSessionsOf, pinAccepted, rpc, setChannelHook, setRpcHandler, sweepSessions } from './transport';
 import { createNodeCertificate, inspectNodeCertificate } from './x509';
 import { handleDigest, handleRows, verifyPeer } from './verify';
+import {
+  checkNow as checkUpdatesNow,
+  handleBuildCall,
+  releaseCommit,
+  retryUpdate,
+  rollBack,
+  saveSettings as saveUpdateSettings,
+  startUpdates,
+  stopUpdates,
+  updateAdvert,
+  updateStatus,
+} from './updates';
 
 // Entry point of the cluster layer: start-up, the periodic loops, the calls a
 // peer may make, and the operations the admin API exposes.
@@ -426,6 +438,7 @@ function heartbeatPayload(peer: PeerRuntime): Heartbeat {
       return channel ? { url: channel.url, cert: channel.certPem, endpoints: channel.endpoints.map(formatEndpoint) } : null;
     })(),
     via: peer.tls ? currentPathTo(peer.tls.pin) : null,
+    upd: updateAdvert(),
   };
 }
 
@@ -458,6 +471,7 @@ function absorbHeartbeat(peer: PeerRuntime, remote: Heartbeat): void {
     blocked: remote.blocked,
     addr: remote.addr,
     via: remote.via ?? null,
+    update: remote.upd ?? null,
   };
   const localSchema = state.catalog?.fingerprint ?? '';
   const schemaMatch = Boolean(localSchema) && remote.schema === localSchema;
@@ -620,6 +634,9 @@ async function handleCall(peer: PeerRuntime, method: string, params: unknown): P
     case 'verify.rows':
       if (!mayReplicateWith(peer)) throw new RpcError('paused', 'replication is paused on this node');
       return handleRows(params);
+    case 'update.build':
+      // Another node takes this node's build to update to its version.
+      return handleBuildCall(params);
     case 'bye': {
       // The peer removed this node from its cluster.
       await setPeerStatus(peer.rowId, 'REMOVED');
@@ -752,6 +769,8 @@ export async function startCluster(): Promise<void> {
       logger.info('Cluster started', { action: 'cluster_started', nodeId: state.nodeId, peers: state.peers.size });
       void Promise.all([...state.peers.values()].map((peer) => heartbeatPeer(peer)));
     }
+    // Updates roll out by themselves, one node after the other (updates.ts).
+    startUpdates();
     // A server set up by the one-line installer joins the cluster now.
     await runBootstrap({ join: joinFromBootstrap, status: bootstrapStatus });
   } catch (err) {
@@ -761,6 +780,7 @@ export async function startCluster(): Promise<void> {
 
 export async function stopCluster(): Promise<void> {
   for (const timer of timers.splice(0)) clearInterval(timer);
+  stopUpdates();
   stopBootstrap();
   stopRelays();
   state.started = false;
@@ -988,7 +1008,7 @@ export function createRelayCommand(input: RelayCommandInput) {
 
 // ─── One-line node install ───────────────────────────────────────────────────
 
-export async function createNodeInstall(input: { domain: string; name: string; withAi: boolean; acmeEmail: string; createdBy: string }) {
+export async function createNodeInstall(input: { name: string; address: string; withAi: boolean; acmeEmail: string; origin: string; createdBy: string }) {
   requireRunning();
   // In place before anyone can join, as for an invite.
   await ensureCapture();
@@ -1383,3 +1403,7 @@ export async function clusterStatus() {
     events: [...state.events].reverse().slice(0, 50),
   };
 }
+
+// ─── Updates ─────────────────────────────────────────────────────────────────
+
+export { updateStatus, checkUpdatesNow, releaseCommit, retryUpdate, rollBack, saveUpdateSettings };

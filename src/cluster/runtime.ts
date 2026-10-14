@@ -2,6 +2,7 @@ import type { Catalog } from './catalog';
 import type { Endpoint } from './endpoints';
 import type { Health } from './health';
 import type { ReplayWindow } from './crypto';
+import type { UpdateAdvert } from './protocol';
 
 // Shared in-memory state of the cluster layer. Durable facts (identity, peers,
 // keys, queues) live in the database; everything here is rebuilt after a
@@ -59,6 +60,8 @@ export interface RemoteView {
   addr: string;
   // The way the other node currently reaches this one (its report).
   via: string | null;
+  // Its version and update state (updates.ts); null from older nodes.
+  update: UpdateAdvert | null;
 }
 
 // Where a peer stands in this node's change feed. The durable part
@@ -199,7 +202,7 @@ export function peerByNodeId(nodeId: string): PeerRuntime | undefined {
 }
 
 export function emptyRemoteView(): RemoteView {
-  return { name: null, schema: null, appVersion: null, captureReady: null, peers: [], pairing: [], blocked: [], addr: '', via: null };
+  return { name: null, schema: null, appVersion: null, captureReady: null, peers: [], pairing: [], blocked: [], addr: '', via: null, update: null };
 }
 
 export function nowMicros(): bigint {

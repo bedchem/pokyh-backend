@@ -2,7 +2,8 @@ import { useCallback, useEffect, useState } from 'react';
 import { AlertTriangle, ArrowDown, ArrowUp, Check, Copy, KeyRound, Plus, Radio, Route, Save, ShieldCheck, Terminal, Trash2, Undo2 } from 'lucide-react';
 import { adminApi } from '../../api';
 import { useToast } from '../Toast';
-import { Dialog, FieldLabel, FormSection, IconButton, Notice, Segmented, Spinner, Status, Tag, Toggle } from '../kit';
+import { Dialog, FieldLabel, FormSection, IconButton, Notice, Segmented, Spinner, Status, Tag } from '../kit';
+import { Explained, ToggleField } from './explain';
 import type { ClusterReach, ClusterRelay, ProxySnippets, ReachEntry, ReachKind } from '../../types';
 
 // How the other nodes reach this one, and the relays of the cluster. Every
@@ -135,13 +136,17 @@ function RelaySetupDialog({ onClose }: { onClose: () => void }) {
               <input type="number" min={1} max={65535} value={port} onChange={(e) => setPort(Math.max(1, Math.min(65535, Number(e.target.value) || 4100)))} className="field h-12 w-full px-4 text-[14px]" />
             </FieldLabel>
           </div>
-          <Toggle checked={publicPort} onChange={setPublicPort} label="Eigener Port öffentlich erreichbar (Nodes verbinden sich direkt mit dem Relay)" />
+          <ToggleField checked={publicPort} onChange={setPublicPort} label="Eigener Port öffentlich erreichbar"
+            hint="Die Nodes verbinden sich direkt mit dem Relay, z. B. auf Port 4100."
+            tip="Der Relay-Server öffnet einen eigenen Port im Internet. Nodes hinter NAT (z. B. im Homelab) halten von sich aus eine Verbindung dorthin offen; die anderen Nodes erreichen sie dann über diesen Port." />
           {publicPort && (
             <FieldLabel label="Öffentliche Adresse des VPS" hint="Name oder IPv4, unter der die Nodes den VPS erreichen.">
               <input value={host} onChange={(e) => setHost(e.target.value)} spellCheck={false} autoCapitalize="off" className="field h-12 w-full px-4 font-mono text-[13.5px]" placeholder="vps.example.org" />
             </FieldLabel>
           )}
-          <Toggle checked={viaProxy} onChange={setViaProxy} label="Zusätzlich über 443 durch meinen Proxy (SNI)" />
+          <ToggleField checked={viaProxy} onChange={setViaProxy} label="Zusätzlich über 443 durch meinen Proxy"
+            hint="Dein Proxy erkennt Cluster-Verkehr am Namen (SNI) und reicht ihn durch."
+            tip="Praktisch, wenn nur 443 offen sein darf: Dein Proxy auf dem VPS (nginx, Caddy, Traefik, eigener) schaut nur auf den Servernamen im ersten Paket und reicht Cluster-Verbindungen unverändert an das Relay weiter. Verschlüsselung und Zertifikate bleiben Ende-zu-Ende." />
           {viaProxy && (
             <FieldLabel label="Cluster-Domain" hint="DNS: *.DOMAIN → VPS. Dein Proxy reicht TLS für *.DOMAIN auf 443 unverändert an das Relay durch.">
               <input value={domain} onChange={(e) => setDomain(e.target.value)} spellCheck={false} autoCapitalize="off" className="field h-12 w-full px-4 font-mono text-[13.5px]" placeholder="cluster.example.org" />
@@ -252,7 +257,12 @@ export function ReachSection({ running }: { running: boolean }) {
     <>
       <FormSection
         icon={Route}
-        title="Erreichbarkeit dieser Node"
+        title={<Explained tip={<>
+          Alle Wege, auf denen die anderen Nodes diese erreichen — der Reihe nach probiert, bis einer klappt. <b>Direkt</b>: öffentliche IP
+          oder VPN-Adresse (WireGuard/Tailscale) mit Port 4100. <b>Proxy · eigener Port</b>: dein VPS reicht einen Port unverändert durch.
+          <b>Proxy · 443 (SNI)</b>: dein VPS-Proxy erkennt Cluster-Verkehr am Namen und reicht ihn durch, alles andere geht an deine Websites.
+          Jeder Weg endet an dem gepinnten Zertifikat dieser Node — ein Proxy sieht nur verschlüsselte Bytes.
+        </>}>Erreichbarkeit dieser Node</Explained>}
         hint="Wie die anderen Nodes diese erreichen — in dieser Reihenfolge probiert, bei Ausfall automatisch der nächste Weg. Egal welcher Weg: Ende-zu-Ende geschützt durch die gepinnten Zertifikate; Proxy und Relay sehen nur verschlüsselte Bytes."
       >
         {!reach ? (
@@ -298,7 +308,7 @@ export function ReachSection({ running }: { running: boolean }) {
                       options={(Object.keys(KIND_LABEL) as ReachKind[]).map((kind) => ({ value: kind, label: KIND_LABEL[kind] }))}
                     />
                     <div className="flex items-center gap-1.5">
-                      <Toggle checked={entry.enabled} onChange={(enabled) => change(index, { enabled })} label="Aktiv" />
+                      <ToggleField checked={entry.enabled} onChange={(enabled) => change(index, { enabled })} label="Aktiv" />
                       <IconButton icon={ArrowUp} label="Nach oben" size={34} disabled={index === 0} onClick={() => move(index, -1)} />
                       <IconButton icon={ArrowDown} label="Nach unten" size={34} disabled={index === draft.length - 1} onClick={() => move(index, 1)} />
                       <IconButton icon={Trash2} tone="rose" label="Entfernen" size={34} onClick={() => { setDraft((list) => list.filter((_, i) => i !== index)); setDirty(true); }} />
@@ -361,7 +371,7 @@ export function ReachSection({ running }: { running: boolean }) {
 
       <FormSection
         icon={Radio}
-        title="Relays"
+        title={<Explained tip="Ein Relay ist ein kleiner Dienst auf einem Server mit öffentlicher Adresse (z. B. einem VPS). Nodes ohne offene Ports — etwa daheim hinter dem Router — verbinden sich von selbst dorthin und sind dann über das Relay erreichbar. Das Relay leitet nur verschlüsselte Bytes weiter; es kennt keine Schlüssel und keine Daten.">Relays</Explained>}
         hint="Für Nodes ohne offene Ports (Homelab hinter NAT, ohne VPN): Die Node verbindet sich von sich aus mit dem Relay und ist darüber erreichbar. Kein Leader — ein hier hinzugefügtes Relay gilt automatisch für alle Nodes, jede meldet sich selbst an, und alle anderen Wege bleiben bestehen."
       >
         <div className="flex max-w-[720px] flex-col gap-4">
@@ -382,14 +392,16 @@ export function ReachSection({ running }: { running: boolean }) {
                     {relay.error && <div className="break-words text-[13px] text-rose-deep">{relay.error}</div>}
                     {relay.route && <div className="font-mono text-[12px] text-ink-3">Name dieser Node am Relay: {relay.route}</div>}
                     <div className="flex flex-wrap gap-x-5 gap-y-2">
-                      <Toggle checked={relay.enabled} disabled={!editable || busy} label="Aktiv"
+                      <ToggleField checked={relay.enabled} disabled={!editable || busy} label="Aktiv"
                         onChange={(enabled) => void relayAction(relay, () => adminApi.updateClusterRelay(relay.id!, { enabled }), enabled ? 'Relay eingeschaltet' : 'Relay ausgeschaltet')} />
                       {relay.ports.length > 0 && (
-                        <Toggle checked={relay.usePorts} disabled={!editable || busy} label={`Über eigenen Port (${relay.ports.map((port) => port.replace('https://', '')).join(', ')})`}
+                        <ToggleField checked={relay.usePorts} disabled={!editable || busy} label={`Über eigenen Port (${relay.ports.map((port) => port.replace('https://', '')).join(', ')})`}
+                          tip="Die Nodes verbinden sich über den eigenen Port des Relays."
                           onChange={(usePorts) => void relayAction(relay, () => adminApi.updateClusterRelay(relay.id!, { usePorts }), 'Gespeichert')} />
                       )}
                       {relay.domain && (
-                        <Toggle checked={relay.useSni} disabled={!editable || busy} label={`Über 443 (SNI, *.${relay.domain})`}
+                        <ToggleField checked={relay.useSni} disabled={!editable || busy} label={`Über 443 (SNI, *.${relay.domain})`}
+                          tip="Die Nodes verbinden sich über Port 443 deines Proxys, der den Verkehr anhand des Namens an das Relay durchreicht."
                           onChange={(useSni) => void relayAction(relay, () => adminApi.updateClusterRelay(relay.id!, { useSni }), 'Gespeichert')} />
                       )}
                     </div>

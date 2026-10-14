@@ -1,5 +1,5 @@
 # Stack of a node set up by the one-line installer (install.sh), in
-# /opt/pokyh. Started with
+# POKYH_HOME (/opt/pokyh). Started with
 #
 #   docker compose --project-directory /opt/pokyh --env-file /opt/pokyh/compose.env -f /opt/pokyh/compose.yml up -d
 #
@@ -8,12 +8,66 @@
 # /opt/pokyh/.env, which is mounted read-only and never interpolated, so a `$`
 # in a secret stays a `$`.
 #
-# Reachable from outside: 80/443 (Caddy, HTTPS for this server's domain with
-# an automatic Let's Encrypt certificate) and the cluster channel (mutual TLS,
-# pinned certificates, default 4100). The API port, MySQL, Redis and Ollama
-# are reachable only inside their Docker networks.
+# Updates without downtime (src/cluster/updates.ts, updater.mjs): the app
+# runs as "app-blue" or "app-green" — one active, the other only while an
+# update starts. Caddy (HTTPS, only with a domain: profile "web") sends
+# requests only to a colour whose /readyz answers, the edge forwarder of the
+# cluster channel to whichever accepts; so the switch drops no request.
+#
+# Reachable from outside: the cluster channel (edge, default 4100: mutual
+# TLS, pinned certificates) and, with a domain, 80/443 (Caddy). The API port,
+# MySQL, Redis and Ollama are reachable only inside their Docker networks.
 
 name: ${COMPOSE_PROJECT_NAME:-pokyh}
+
+x-app-environment: &app-environment
+  LEARN_REDIS_URL: redis://redis:6379
+  LEARN_AI_OLLAMA_BASE_URL: http://ollama:11434
+  POKYH_UPDATE_DIR: /app/data/update
+  POKYH_ACTIVATION_FILE: /app/data/update/active
+
+x-app: &app
+  restart: unless-stopped
+  init: true
+  logging:
+    driver: local
+    options:
+      max-size: "10m"
+      max-file: "5"
+  depends_on:
+    mysql:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  env_file:
+    - path: ./.env
+      required: true
+      format: raw
+  volumes:
+    - backups:/app/backups
+    # The installer's one-time join instruction and the progress report.
+    - ./data/bootstrap:/app/data/bootstrap
+    # Shared with the updater: update requests, builds, the active colour.
+    - ./data/update:/app/data/update
+  cap_drop:
+    - ALL
+  cap_add:
+    - CHOWN
+    - SETUID
+    - SETGID
+  security_opt:
+    - no-new-privileges:true
+  stop_grace_period: 30s
+  healthcheck:
+    test: ["CMD", "node", "-e", "fetch(`http://127.0.0.1:$${process.env.PORT}/readyz`).then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"]
+    interval: 5s
+    timeout: 5s
+    retries: 6
+    start_period: 120s
+  networks:
+    - edge
+    - database
+    - ai-internal
 
 services:
   mysql:
@@ -74,72 +128,64 @@ services:
     networks:
       - database
 
-  app:
-    build:
-      context: ./app
-      dockerfile: deploy/node/Dockerfile
-    image: pokyh-node:local
+  app-blue:
+    <<: *app
+    image: pokyh-node:${POKYH_IMAGE_BLUE:-none}
+    profiles: ["blue"]
+    environment:
+      <<: *app-environment
+      POKYH_COLOR: blue
+
+  app-green:
+    <<: *app
+    image: pokyh-node:${POKYH_IMAGE_GREEN:-none}
+    profiles: ["green"]
+    environment:
+      <<: *app-environment
+      POKYH_COLOR: green
+
+  # Owns the cluster channel port and passes every connection on, unchanged
+  # (TLS stays end to end), to whichever app container accepts it.
+  edge:
+    image: node:22-alpine
     restart: unless-stopped
-    init: true
+    command: ["node", "/edge/edge.mjs"]
+    user: "10003:10003"
+    read_only: true
+    environment:
+      EDGE_PORT: "4100"
+      EDGE_TARGET_HOSTS: app-blue,app-green
+      EDGE_TARGET_PORT: "4100"
+    volumes:
+      - ./runtime/edge.mjs:/edge/edge.mjs:ro
+    ports:
+      - "${POKYH_CLUSTER_BIND:-0.0.0.0}:${POKYH_CLUSTER_PORT:-4100}:4100"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - edge
+
+  # HTTPS for this server's domain (profile "web"). The certificate (Let's
+  # Encrypt) is obtained and renewed automatically; 80 and 443 must be open.
+  caddy:
+    image: caddy:2.8.4-alpine
+    profiles: ["web"]
+    restart: unless-stopped
     logging:
       driver: local
       options:
         max-size: "10m"
-        max-file: "5"
+        max-file: "3"
     ports:
-      # The cluster channel only. It accepts nothing but pinned certificates
-      # (and, while an install or pairing is open, the endpoints those need).
-      - "${POKYH_CLUSTER_BIND:-0.0.0.0}:${POKYH_CLUSTER_PORT:-4100}:4100"
-    depends_on:
-      mysql:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    env_file:
-      - path: ./.env
-        required: true
-        format: raw
-    environment:
-      - LEARN_REDIS_URL=redis://redis:6379
-      - LEARN_AI_OLLAMA_BASE_URL=http://ollama:11434
-    volumes:
-      - backups:/app/backups
-      # The installer's one-time join instruction and the progress report.
-      - ./data/bootstrap:/app/data/bootstrap
-    cap_drop:
-      - ALL
-    cap_add:
-      - CHOWN
-      - SETUID
-      - SETGID
-    security_opt:
-      - no-new-privileges:true
-    healthcheck:
-      test: ["CMD", "node", "-e", "fetch(`http://127.0.0.1:$${process.env.PORT}/readyz`).then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"]
-      interval: 15s
-      timeout: 5s
-      retries: 8
-      start_period: 120s
-    networks:
-      - edge
-      - database
-      - ai-internal
-
-  # HTTPS for this server's domain. The certificate (Let's Encrypt) is
-  # obtained and renewed automatically; ports 80 and 443 must be reachable.
-  caddy:
-    image: caddy:2.8.4-alpine
-    restart: unless-stopped
-    ports:
-      - "${POKYH_HTTP_PORT:-80}:80"
-      - "${POKYH_HTTPS_PORT:-443}:443"
-      - "${POKYH_HTTPS_PORT:-443}:443/udp"
+      - "${POKYH_WEB_BIND:-0.0.0.0}:${POKYH_HTTP_PORT:-80}:80"
+      - "${POKYH_WEB_BIND:-0.0.0.0}:${POKYH_HTTPS_PORT:-443}:443"
+      - "${POKYH_WEB_BIND:-0.0.0.0}:${POKYH_HTTPS_PORT:-443}:443/udp"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
-    depends_on:
-      - app
     cap_drop:
       - ALL
     cap_add:
@@ -149,7 +195,25 @@ services:
     networks:
       - edge
 
-  # The AI vocabulary trainer's model runtime; only with COMPOSE_PROFILES=ai.
+  # Carries out updates the app requests (updater.mjs): builds the new
+  # version, starts it next to the running one, switches over once it is
+  # healthy, or leaves everything as it was. The only service with access to
+  # Docker; it opens no port and the app cannot reach it — they share files
+  # in data/update only.
+  updater:
+    image: pokyh-updater:local
+    restart: unless-stopped
+    command: ["node", "${POKYH_HOME:-/opt/pokyh}/runtime/updater.mjs"]
+    environment:
+      POKYH_HOME: ${POKYH_HOME:-/opt/pokyh}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${POKYH_HOME:-/opt/pokyh}:${POKYH_HOME:-/opt/pokyh}
+    security_opt:
+      - no-new-privileges:true
+    network_mode: bridge
+
+  # The AI vocabulary trainer's model runtime; only with profile "ai".
   ollama:
     image: ollama/ollama:0.34.2
     profiles: ["ai"]

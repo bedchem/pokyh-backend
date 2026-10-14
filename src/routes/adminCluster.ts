@@ -24,6 +24,12 @@ import {
   setNodeName,
   updatePeer,
   verifyNow,
+  updateStatus,
+  checkUpdatesNow,
+  releaseCommit,
+  retryUpdate,
+  rollBack,
+  saveUpdateSettings,
 } from '../cluster';
 
 // ─── Cluster administration: /api/admin/cluster ──────────────────────────────
@@ -149,20 +155,24 @@ router.post('/rebuild', requireAdmin, writeLimiter, async (req: Request, res: Re
 // ─── One-line node install ───────────────────────────────────────────────────
 
 const installSchema = z.object({
-  domain: z.string().trim().min(1).max(253),
-  name: z.string().trim().max(120).optional(),
+  name: z.string().trim().min(1).max(120),
+  // Optional: the new server's domain or IP; empty = detected.
+  address: z.string().trim().max(253).optional(),
   withAi: z.boolean().optional(),
   acmeEmail: z.string().trim().max(254).optional(),
+  // This node's public address as the browser shows it (window.location.origin).
+  origin: z.string().trim().min(1).max(255),
 });
 
 router.post('/node-installs', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
   const body = installSchema.parse(req.body);
   await guarded(res, async () => {
     const install = await createNodeInstall({
-      domain: body.domain,
-      name: body.name ?? '',
+      name: body.name,
+      address: body.address ?? '',
       withAi: body.withAi === true,
       acmeEmail: body.acmeEmail ?? '',
+      origin: body.origin,
       createdBy: actor(req),
     });
     logger.info('Admin action: one-line node install created', { action: 'cluster_install_created', adminUsername: actor(req), installId: install.id });
@@ -286,6 +296,71 @@ router.patch('/node', requireAdmin, writeLimiter, async (req: Request, res: Resp
   await guarded(res, async () => {
     await setNodeName(body.name);
     logger.info('Admin action: cluster node renamed', { action: 'cluster_node_renamed', adminUsername: actor(req) });
+    res.json({ ok: true });
+  });
+});
+
+// ─── Updates (src/cluster/updates.ts) ────────────────────────────────────────
+// Settings are cluster-wide (replicated); retry and roll back act on this
+// node only — the one whose admin panel is open.
+
+router.get('/updates', requireAdmin, async (_req: Request, res: Response): Promise<void> => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.json(await updateStatus());
+});
+
+const updateSettingsSchema = z.object({
+  repo: z.string().trim().max(300),
+  branch: z.string().trim().min(1).max(200),
+  auto: z.boolean(),
+  requireCi: z.boolean(),
+});
+
+router.put('/updates/settings', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+  const parsed = updateSettingsSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: 'Invalid update settings' });
+    return;
+  }
+  await guarded(res, async () => {
+    const settings = await saveUpdateSettings(parsed.data, actor(req));
+    logger.info('Cluster update settings changed', { action: 'cluster_update_settings', admin: actor(req), auto: settings.auto, requireCi: settings.requireCi });
+    res.json(settings);
+  });
+});
+
+router.post('/updates/check', requireAdmin, writeLimiter, async (_req: Request, res: Response): Promise<void> => {
+  await guarded(res, async () => {
+    await checkUpdatesNow();
+    res.json(await updateStatus());
+  });
+});
+
+router.post('/updates/release', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+  const parsed = z.object({ commit: z.string().regex(/^[0-9a-f]{40}$/) }).safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: 'Invalid commit' });
+    return;
+  }
+  await guarded(res, async () => {
+    await releaseCommit(parsed.data.commit, actor(req));
+    logger.info('Cluster update released', { action: 'cluster_update_released', admin: actor(req), commit: parsed.data.commit });
+    res.json({ ok: true });
+  });
+});
+
+router.post('/updates/retry', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+  await guarded(res, async () => {
+    retryUpdate(actor(req));
+    logger.info('Cluster update retried', { action: 'cluster_update_retry', admin: actor(req) });
+    res.json({ ok: true });
+  });
+});
+
+router.post('/updates/rollback', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+  await guarded(res, async () => {
+    rollBack(actor(req));
+    logger.warn('Cluster node rolled back', { action: 'cluster_update_rollback', admin: actor(req) });
     res.json({ ok: true });
   });
 });

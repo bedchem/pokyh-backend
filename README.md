@@ -299,8 +299,9 @@ so additive schema changes are applied on every deploy.
 | Learn              | `/learn/*`                                        | Additive learning API; API key, then per-resource bearer authorization |
 | Learn sign-in      | `/auth/learn-login`                               | API-key-gated WebUntis verification for the Learn BFF only; production legal gate must be ready before verification |
 | Admin              | `/api/admin/*`                                    | JWT + admin only (no API key)           |
-| Cluster admin      | `/api/admin/cluster`                              | Invites, one-line installs, joining, peers, certificate renewal, status — see [Cluster](#cluster-multi-node-replication) |
-| Cluster channel    | `/cluster/v1/*`                                   | Node-to-node only (API port with `CLUSTER_PUBLIC_PATH`, `CLUSTER_PORT`, or the mutually authenticated `CLUSTER_MTLS_PORT`); encrypted frames, own authentication, pinned certificates, optional IP allowlist. The installer's endpoints exist on the mTLS port only |
+| Cluster admin      | `/api/admin/cluster`                              | Invites, one-line installs, joining, peers, certificate renewal, updates, status — see [Cluster](#cluster-multi-node-replication) |
+| Cluster channel    | `/cluster/v1/*`                                   | Node-to-node only (API port with `CLUSTER_PUBLIC_PATH`, `CLUSTER_PORT`, or the mutually authenticated `CLUSTER_MTLS_PORT`); encrypted frames, own authentication, pinned certificates, optional IP allowlist |
+| Node setup         | `/setup`, `/setup/provision`, `/setup/bundle`     | The one-line installer; answers 404 unless an administrator has an install command open. Everything it hands out is sealed with or checked against the command's key |
 | Setup              | `/api/setup`                                      | First-run wizard. Reachable without credentials only while no administrator can sign in at all (none in the env file, none with a password in the database) and never on a cluster node; usernames are restricted to letters, digits, `.`, `_`, `-`, nothing multi-line reaches the env file, rate limited, one at a time |
 | Health             | `/health`                                         | Liveness probe                          |
 | Readiness          | `/readyz`                                         | DB-aware readiness probe for Compose/load balancers |
@@ -451,50 +452,73 @@ invite: a standalone server installs no trigger and behaves exactly as before.
 ### Adding a server with one command
 
 A fresh Debian 12+ or Ubuntu 22.04+ server becomes a complete node with a single command — Docker,
-database, HTTPS, configuration and joining the cluster included:
+database, configuration, hardening and joining the cluster included. Any node can add servers;
+several can be added at the same time, each with its own command.
 
-1. Point the new server's domain (e.g. `node2.example.org`) at it in DNS.
-2. On any node that has the mutually authenticated channel (see below): admin panel → **Cluster** →
-   **Server per Einzeiler hinzufügen**, enter the domain (optionally a name, an e-mail address for
-   Let's Encrypt, and whether the AI runtime is installed too). Or through the API:
-   `POST /api/admin/cluster/node-installs` `{"domain": "node2.example.org"}` with an admin token.
-3. Run the command it shows, as root, on the new server:
+1. On any node that has the mutually authenticated channel (see below), open the admin panel under
+   its public **https** address → **Cluster** → **Server per Einzeiler hinzufügen**. Enter a name
+   and, optionally, the new server's address:
+   - **empty** (default): the new server's public IP is taken from where its setup comes from. It
+     gets no web address of its own — clients keep using your existing addresses; the nodes reach
+     it on port 4100, or through a relay when it is behind NAT;
+   - **a domain** (`node2.example.org`, already pointing at it): it also serves HTTPS itself (Caddy,
+     Let's Encrypt; ports 80 and 443 must be open);
+   - **an IP**: like empty, but fixed.
+
+   Or through the API: `POST /api/admin/cluster/node-installs`
+   `{"name": "Homelab", "address": "", "origin": "https://api.example.org"}` with an admin token.
+2. Run the command it shows on the new server, as root or as a user with sudo:
 
    ```bash
-   curl -fsSk --proto '=https' --pinnedpubkey 'sha256//<this node's pin>' -o pokyh-install.sh 'https://node1.example.org:4100/cluster/v1/install.sh' \
-     && echo '<sha256>  pokyh-install.sh' | sha256sum -c - && sh pokyh-install.sh 'pokyhnode1.…'
+   curl -fsSL --proto '=https' -o pokyh.sh 'https://api.example.org/setup' \
+     && echo '<sha256>  pokyh.sh' | sha256sum -c - && sh pokyh.sh 'pokyhnode1.…'
    ```
 
+`/setup` exists on the API port only while an install command is open (at most
+`CLUSTER_INSTALL_TTL_MINUTES`, 30 by default); at any other time it answers 404 like any unknown
+path. It works through whatever is in front of the API (a proxy, a CDN), because nothing on that
+way has to be trusted: `sha256sum` accepts only this exact script, and everything else is protected
+by the key in the command (below).
+
 The installer ([deploy/node/install.sh](deploy/node/install.sh)) checks the system (OS, memory,
-disk, free ports 80/443/4100, clock synchronisation), installs Docker Engine from Docker's
-repository (key fingerprint pinned), fetches the cluster's shared configuration and the inviting
-node's exact build, writes `/opt/pokyh/.env` (mode 0600) with a database password and
-`CLUSTER_SECRET` of its own, starts MySQL, Redis, the backend, Caddy (automatic Let's Encrypt
-certificate for the domain) and optionally Ollama, and waits until the node has paired and received
-the cluster's data. Run the same command again to resume after a failure. Afterwards
-`/opt/pokyh/pokyh` is `docker compose` for that stack (`/opt/pokyh/pokyh logs -f app`).
+disk, the cluster port, clock synchronisation), installs Docker Engine from Docker's repository (key
+fingerprint pinned), fetches the cluster's shared configuration and the inviting node's exact build
+(over the public address, or — if that does not answer correctly — over the inviting node's pinned
+channel), writes `/opt/pokyh/.env` (mode 0600) with a database password and `CLUSTER_SECRET` of its
+own, hardens the server, starts the stack and waits until the node has paired and received the
+cluster's data. Run the same command again to resume after a failure. Afterwards `/opt/pokyh/pokyh`
+is `docker compose` for that stack (`/opt/pokyh/pokyh ps`, `… logs -f app-blue`, `… logs -f updater`).
+
+The stack ([deploy/node/compose.yml](deploy/node/compose.yml)): MySQL, Redis, the backend as
+`app-blue`/`app-green` (one active; see *Updates* below), `edge` (owns the cluster port and passes
+connections on unchanged, with a PROXY protocol line naming the client), `updater` (the only part
+with Docker access; opens no port), Caddy with a domain, Ollama if chosen.
+
+Hardening (skip with `POKYH_HARDEN=0 sh pokyh.sh …`): automatic security updates
+(`unattended-upgrades`) and a firewall (`ufw`) that lets in only SSH — on the port(s) `sshd` really
+listens on, so nobody is locked out — the cluster port and, with a domain, 80/443. SSH itself is
+not changed.
 
 What the new node takes over: the settings that have to be equal on every node — `JWT_SECRET`,
 `REFRESH_TOKEN_SECRET`, `API_KEY`, `SERVER_KEY`, `VAPID_*`, the admin login as currently in effect,
 `CORS_ORIGIN`, `PUBLIC_BASE_URL` (exactly as on the inviting node, so stored links never point at one node),
-`WEBUNTIS_*`, `LEARN_*`, rate limits, school-year and cluster tuning
+`WEBUNTIS_*`, `LEARN_*`, rate limits, school-year, cluster and update settings
 ([src/cluster/sharedEnv.ts](src/cluster/sharedEnv.ts)). Never: database credentials,
 `CLUSTER_SECRET`, the node's own addresses, ports, proxy trust, paths.
 
 How the command is protected:
 
-- **The script**: curl accepts only the inviting node's public key (`--pinnedpubkey`), and
-  `sha256sum` only this exact script. DNS, a certificate authority or a proxy cannot hand out
-  another.
-- **The token** (`pokyhnode1.…`) names the inviting node's channel, its certificate pin, the install
-  and a 256-bit secret that never travels. From it the new server derives a proof key (every request
-  carries an HMAC over a fresh nonce and the time), the key that opens the configuration
-  (AES-256-GCM, bound to that very request — readable by nobody else, not even a TLS-terminating
-  proxy), and the one-time pairing secret.
-- **Once, briefly**: the command must be started within `CLUSTER_INSTALL_TTL_MINUTES` (30); the
+- **The script**: `sha256sum` accepts only this exact script; a script changed on the way stops the
+  command before anything runs. It holds nothing secret.
+- **The key** (`pokyhnode1.…`) names the inviting node's public address and channel, its
+  certificate pin, the install and a 256-bit secret that never travels. From it the new server
+  derives a proof key (every request carries an HMAC over a fresh nonce and the time), the key that
+  opens the configuration (AES-256-GCM, bound to that very request — readable by nobody else, not
+  by a proxy or CDN in between), and the one-time pairing secret.
+- **Once, briefly**: the command must be started within `CLUSTER_INSTALL_TTL_MINUTES`; the
   configuration is handed out exactly once; `CLUSTER_PAIRING_MAX_FAILURES` wrong proofs lock the
   install; the panel can revoke it; the secret is forgotten as soon as the node joined. Neither the
-  token nor the command is stored or logged.
+  key nor the command is stored or logged.
 - **The build**: the download is checked against the SHA-256 that arrived inside the sealed
   configuration. The new node runs exactly the inviting node's version.
 - **Joining**: the new node pairs over the mutually authenticated channel only, with both
@@ -503,6 +527,53 @@ How the command is protected:
 
 The installing node must run a build (`npm run build && npm start` or the Docker image), since it
 hands that build out.
+
+### Updates without downtime, node by node
+
+Set the repository in the panel (**Cluster → Updates**) or with `CLUSTER_UPDATE_REPO` (e.g.
+`https://github.com/bedchem/pokyh-backend`) and `CLUSTER_UPDATE_BRANCH` (`main`). Every node then
+checks the branch every `CLUSTER_UPDATE_POLL_MINUTES` (git's own HTTP protocol, any git host) and,
+with `CLUSTER_UPDATE_REQUIRE_CI` (on), accepts a commit only when all its GitHub checks passed.
+With `CLUSTER_UPDATE_AUTO` (on) new versions roll out by themselves; off, the panel shows the new
+version with **Jetzt ausrollen**. Settings changed in the panel apply to every node (replicated
+table `update_settings`); without them the `CLUSTER_UPDATE_*` values apply.
+
+The rollout has **no leader**. Every node sorts all nodes by SHA-256(commit, node id) — the same
+order everywhere, different for every version — and updates itself when every node before it runs
+the new version, is not updated by Pokyh (e.g. a Dokploy node — update it there), or has been
+unreachable for longer than `CLUSTER_UPDATE_SKIP_OFFLINE_MINUTES`. The first node builds from git;
+the others take its build over the cluster channel (SHA-256 checked). A single node simply goes
+first. A failed update stops the rollout there: the node keeps running its previous version and the
+nodes after it wait until an administrator chooses **Erneut versuchen**. **Auf vorherige Version
+zurück** switches one node back.
+
+On a node set up by the installer, the app asks the `updater` service (through files in
+`/opt/pokyh/data/update`; the app has no Docker access): it builds the new image, starts it as the
+other colour next to the running one — it serves HTTP but takes over the cluster and background
+jobs only once named active — waits until it is healthy (`CLUSTER_UPDATE_HEALTH_TIMEOUT_SECONDS`),
+stops the old one gracefully and names the new one active. Caddy and the edge forwarder follow the
+shared name `app`, so no request is dropped. If the new version does not become healthy, it is
+removed and nothing else changes.
+
+The updater's own files (`updater.mjs`, `edge.mjs`, `compose.yml`) — the part that runs with more
+than the app's rights — are taken only from the repository and branch fixed in
+`/opt/pokyh/compose.env` at install time (`POKYH_RUNTIME_REPO`, `POKYH_RUNTIME_BRANCH`), fetched by
+the updater itself and used only if the commit is on that branch; a new `compose.yml` must also pass
+a policy check (no privileged containers, only the expected files mounted, the Docker socket for the
+updater only, no extra ports). A compromised app can therefore never gain more rights through an
+update.
+
+### Moving a Dokploy node onto the Pokyh stack
+
+A node deployed with Dokploy (or any other way) works in the cluster as it is, but is updated where
+it is deployed; the rollout passes over it. To give it automatic updates too:
+
+1. Add a fresh server with the one-line command above (or add one on the same machine's new VM).
+2. Wait until it shows *Online* and the Cluster page shows no pending rows.
+3. Point clients (DNS, your proxy) at the new node, then remove the old node in the panel
+   (**Verbindung entfernen**) and shut it down.
+
+The data never leaves the cluster: the new node received all of it while joining.
 
 ### Adding a node with an invite code
 
@@ -558,7 +629,8 @@ with **certificates on both ends**:
   already encrypted link — and removing a peer revokes it immediately.
 - A connection without a certificate, or with one nobody pinned, is cut off right after the
   handshake, before any HTTP is read — unless a pairing or an install is open, and then it reaches
-  only the endpoints those need (`/pair/*`; `install.sh`, `/provision`, `/provision/bundle`).
+  only the endpoints those need (`/pair/*`; `install.sh`, `/provision`, `/provision/bundle` — the
+  installer's fallback when the public `/setup` does not answer correctly).
 - Outgoing, the peer's certificate is the only trust anchor and its pin is checked again; a
   different certificate ends the connection before any request data is written.
 - Inside, the frame layer keeps running with its own keys, and its handshakes cover both
@@ -577,6 +649,7 @@ with **certificates on both ends**:
 | `CLUSTER_MTLS_URL=https://node1.example.org:4100` | How the other nodes reach it; derived from the host of `CLUSTER_ADVERTISE_URL` (or `PUBLIC_BASE_URL`) when empty. Must reach this server directly, not through a proxy that terminates TLS. |
 | `CLUSTER_MTLS_BIND_ADDRESS` | Interface to listen on (`0.0.0.0`). |
 | `CLUSTER_MTLS_PUBLISH=0.0.0.0:4100` | Docker Compose / Dokploy: publishes the channel port (by default only a random loopback port is published, so nothing is exposed). |
+| `CLUSTER_MTLS_PROXY_PROTOCOL=true` | A forwarder in front of the port (the installer's `edge`) names each client in a PROXY protocol v1 line; accepted only from `CLUSTER_MTLS_PROXY_FROM` (private and loopback ranges by default). Changes nothing about authentication. |
 
 On a Dokploy node: set `CLUSTER_MTLS_PORT=4100`, `CLUSTER_MTLS_PUBLISH=0.0.0.0:4100` and, if the
 domain is proxied (e.g. by Cloudflare), `CLUSTER_MTLS_URL` with a name that resolves to the server

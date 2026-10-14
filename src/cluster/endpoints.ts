@@ -142,6 +142,22 @@ export function isPublicEndpoint(endpoint: Endpoint): boolean {
   return !(lower === '::1' || lower.startsWith('fe80:') || lower.startsWith('fc') || lower.startsWith('fd'));
 }
 
+// The public address an administrator's browser shows the admin panel under
+// (https://host[:port], nothing else; plain http only on this machine, for
+// development). Returns the canonical origin or null.
+export function publicOrigin(value: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(value.trim());
+  } catch {
+    return null;
+  }
+  const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback)) return null;
+  if ((url.pathname !== '/' && url.pathname !== '') || url.search || url.hash || url.username || url.password) return null;
+  return url.origin;
+}
+
 // The command-line form curl needs for this endpoint: the URL to request and,
 // when the server name differs from the host connected to, the --connect-to
 // mapping that sends the request there while presenting the server name.

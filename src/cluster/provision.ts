@@ -1,12 +1,14 @@
 import { createHash, randomUUID } from 'crypto';
 import { existsSync, readFileSync } from 'fs';
 import path from 'path';
-import type { Request, Response } from 'express';
+import express, { Router, type Request, type Response } from 'express';
+import rateLimit from 'express-rate-limit';
+import { isIP } from 'net';
 import { z } from 'zod';
 import { prisma } from '../db';
 import { config } from '../config';
 import { logger } from '../utils/logger';
-import { curlTarget, formatEndpoint, isPublicEndpoint } from './endpoints';
+import { formatEndpoint, publicOrigin } from './endpoints';
 import { ClusterError } from './errors';
 import {
   deriveInstallKeys,
@@ -22,24 +24,34 @@ import { recordEvent, state } from './runtime';
 import { sharedEnvironment } from './sharedEnv';
 import { createPendingPeer, deletePeer, setPeerStatus, unwrap, wrap } from './store';
 import { collectFiles, createTarGz } from './tarball';
+import { loadSettings as loadUpdateSettings } from './updateSettings';
 
 // The one-line node installer, on the node that invites.
 //
-// An administrator asks for a command (admin API). This node opens a pairing
-// window that only the mutually authenticated channel can complete, records
-// the install with its secret in wrapped form, and returns
+// An administrator asks for a command (admin API), giving only a name — and,
+// optionally, the new server's domain or IP. This node opens a pairing window
+// that only the mutually authenticated channel can complete, records the
+// install with its secret in wrapped form, and returns
 //
-//   curl --pinnedpubkey <this node's pin> … install.sh && sha256sum -c … && sh install.sh <token>
+//   curl -fsSL https://<this node's public address>/setup -o pokyh.sh \
+//     && echo '<sha256>  pokyh.sh' | sha256sum -c - && sh pokyh.sh '<key>'
 //
-// On the new server the script (deploy/node/install.sh) sets up Docker, then
-// its bootstrap (deploy/node/bootstrap.mjs) reaches this node over the
-// channel, pinned to this node's certificate, and
+// /setup exists only while an install is open; at any other time it answers
+// 404 like any unknown path. The script is fixed by its hash, so nothing on
+// the way (a CDN, a proxy) can change it. On the new server it sets up Docker
+// and runs its bootstrap (deploy/node/bootstrap.mjs), which — over the public
+// address, or over this node's pinned channel —
 //
-//   POST /provision         proves knowledge of the token and receives this
+//   POST /setup/provision   proves knowledge of the key and receives this
 //                           node's shared configuration, sealed under a key
-//                           only the token's holder can derive — once;
-//   POST /provision/bundle  downloads the running build of this node, whose
+//                           only the key's holder can derive, bound to the
+//                           request — once;
+//   POST /setup/bundle      downloads the running build of this node, whose
 //                           hash came with the sealed configuration.
+//
+// Neither path has to be trusted for these: what matters is the key. The
+// new node then pairs over the channel, both certificates bound into the
+// handshake.
 //
 // The new node then starts and pairs through the window with the one-time
 // secret derived from the token, over the channel, with both certificates
@@ -48,7 +60,8 @@ import { collectFiles, createTarGz } from './tarball';
 
 const APP_ROOT = path.resolve(__dirname, '..', '..');
 const BUNDLE_PREFIX = 'pokyh-app';
-const BUNDLE_ENTRIES = ['dist', 'admin/dist', 'prisma/schema.prisma', 'package.json', 'package-lock.json', 'scripts', 'entrypoint.sh', 'deploy/node'];
+// deploy/relay too: an installed node can set up relays in turn.
+const BUNDLE_ENTRIES = ['dist', 'admin/dist', 'prisma/schema.prisma', 'package.json', 'package-lock.json', 'scripts', 'entrypoint.sh', 'deploy/node', 'deploy/relay'];
 const REQUIRED_FILES = [
   'dist/index.js',
   'admin/dist/index.html',
@@ -102,6 +115,11 @@ function currentBundle(): Bundle {
   return bundle;
 }
 
+// The same build, for nodes updating to this node's version (updates.ts).
+export function ownBuild(): Bundle {
+  return currentBundle();
+}
+
 // The installer with its bootstrap embedded; the same text for everybody,
 // with nothing secret in it.
 export function installScript(): { text: string; sha256: string } {
@@ -121,27 +139,39 @@ export function installScript(): { text: string; sha256: string } {
 // ─── Installs (admin side) ───────────────────────────────────────────────────
 
 let openInstalls = 0;
+let openUntil = 0;
 
+// Open while an install is OPEN or PROVISIONED and not expired — checked
+// against the clock too, so it closes on time even between two refreshes.
 export function installWindowOpen(): boolean {
-  return openInstalls > 0;
+  return openInstalls > 0 && Date.now() < openUntil;
 }
 
 export async function refreshInstallWindows(): Promise<void> {
-  openInstalls = await prisma.clusterInstall.count({
-    where: { status: { in: ['OPEN', 'PROVISIONED'] }, expiresAt: { gt: new Date() } },
-  });
+  const where = { status: { in: ['OPEN', 'PROVISIONED'] }, expiresAt: { gt: new Date() } };
+  const [count, latest] = await Promise.all([
+    prisma.clusterInstall.count({ where }),
+    prisma.clusterInstall.aggregate({ where, _max: { expiresAt: true } }),
+  ]);
+  openInstalls = count;
+  openUntil = latest._max.expiresAt?.getTime() ?? 0;
 }
 
 // Strict on purpose: these end up in the new server's Caddyfile and env file.
 const DOMAIN = /^(?=.{1,253}$)(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))+$/;
+export const SETUP_PATH = '/setup';
 const EMAIL = /^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,190}\.[A-Za-z]{2,24}$/;
 const NODE_NAME = /^[\p{L}\p{N} ._-]{1,120}$/u;
 
 export interface InstallRequest {
-  domain: string;
   name: string;
+  // Optional: the new server's domain (it then serves HTTPS itself) or IP;
+  // empty: its public IP is taken from where its setup comes from.
+  address: string;
   withAi: boolean;
   acmeEmail: string;
+  // This node's public address, as the administrator's browser shows it.
+  origin: string;
   createdBy: string;
 }
 
@@ -149,7 +179,7 @@ export interface CreatedInstall {
   id: string;
   command: string;
   expiresAt: string;
-  domain: string;
+  address: string;
   name: string;
   // This node's certificate pin, as the command pins it.
   pin: string;
@@ -165,12 +195,17 @@ export async function createInstall(input: InstallRequest): Promise<CreatedInsta
   if (!channel) {
     throw new ClusterError('The mutually authenticated channel is not running on this node — set CLUSTER_MTLS_PORT (and CLUSTER_MTLS_URL if this node\'s address cannot be derived) and open that port to the other servers', 409);
   }
-  const domain = input.domain.trim().toLowerCase().replace(/\.$/, '');
-  if (!DOMAIN.test(domain)) throw new ClusterError('Enter the new server\'s domain name (e.g. node2.example.org), without https:// or a port');
-  const acmeEmail = input.acmeEmail.trim();
+  const origin = publicOrigin(input.origin);
+  if (!origin) throw new ClusterError('Open the admin panel under this node\'s public https address to create the command');
+  const name = input.name.trim().slice(0, 120);
+  if (!name) throw new ClusterError('Give the new server a name');
+  if (!NODE_NAME.test(name)) throw new ClusterError('The name may contain letters, digits, spaces, dot, dash and underscore only');
+  const address = input.address.trim().toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '');
+  if (address && !DOMAIN.test(address) && isIP(address) === 0) {
+    throw new ClusterError('The address must be a domain name (node2.example.org) or an IP address — or leave it empty');
+  }
+  const acmeEmail = isIP(address) === 0 && address ? input.acmeEmail.trim() : '';
   if (acmeEmail && !EMAIL.test(acmeEmail)) throw new ClusterError('The e-mail address for the certificate is not valid');
-  const name = input.name.trim().slice(0, 120) || domain.split('.')[0]!;
-  if (!NODE_NAME.test(name)) throw new ClusterError('The node name may contain letters, digits, spaces, dot, dash and underscore only');
 
   const built = installScript();
   currentBundle();
@@ -195,7 +230,8 @@ export async function createInstall(input: InstallRequest): Promise<CreatedInsta
       secretEnc: wrap(secret, SECRET_CONTEXT(id)),
       status: 'OPEN',
       peerId: peer.id,
-      domain,
+      // The new server's domain or IP as entered (empty: detected).
+      domain: address,
       name,
       withAi: input.withAi,
       acmeEmail,
@@ -213,18 +249,15 @@ export async function createInstall(input: InstallRequest): Promise<CreatedInsta
     id,
     secret,
     expiresAt,
+    web: origin,
   });
-  // The new server downloads through a way that works from anywhere; the
-  // bootstrap then tries every way the token lists.
-  const download = channel.endpoints.find(isPublicEndpoint) ?? channel.endpoints[0]!;
-  const target = curlTarget(download, '/cluster/v1/install.sh');
   const command = [
-    `curl -fsSk --proto '=https' --pinnedpubkey ${shellQuote(`sha256//${channel.pin}`)}${target.connectTo ? ` --connect-to ${shellQuote(target.connectTo)}` : ''} -o pokyh-install.sh ${shellQuote(target.url)}`,
-    `echo ${shellQuote(`${built.sha256}  pokyh-install.sh`)} | sha256sum -c -`,
-    `sh pokyh-install.sh ${shellQuote(token)}`,
+    `curl -fsSL --proto '=${origin.startsWith('https:') ? 'https' : 'http,https'}' -o pokyh.sh ${shellQuote(`${origin}${SETUP_PATH}`)}`,
+    `echo ${shellQuote(`${built.sha256}  pokyh.sh`)} | sha256sum -c -`,
+    `sh pokyh.sh ${shellQuote(token)}`,
   ].join(' && ');
-  recordEvent('info', `One-line install for ${domain} created (valid until ${expiresAt.toISOString().slice(11, 16)} UTC)`);
-  return { id, command, expiresAt: expiresAt.toISOString(), domain, name, pin: channel.pin, scriptSha256: built.sha256 };
+  recordEvent('info', `One-line install for ${name} created (valid until ${expiresAt.toISOString().slice(11, 16)} UTC)`);
+  return { id, command, expiresAt: expiresAt.toISOString(), address, name, pin: channel.pin, scriptSha256: built.sha256 };
 }
 
 export async function listInstalls() {
@@ -232,7 +265,7 @@ export async function listInstalls() {
   return rows.map((row) => ({
     id: row.id,
     status: row.status,
-    domain: row.domain,
+    address: row.domain,
     name: row.name,
     withAi: row.withAi,
     failures: row.failures,
@@ -252,7 +285,7 @@ export async function revokeInstall(id: string): Promise<{ peerId: string | null
   const peer = await prisma.clusterPeer.findUnique({ where: { id: row.peerId } });
   if (peer?.status === 'PENDING') await deletePeer(peer.id);
   await refreshInstallWindows();
-  recordEvent('warn', `One-line install for ${row.domain} revoked`);
+  recordEvent('warn', `One-line install for ${row.name || row.domain} revoked`);
   return { peerId: peer?.status === 'PENDING' ? peer.id : null };
 }
 
@@ -334,7 +367,7 @@ async function verifyRequest(req: Request, res: Response, purpose: InstallPurpos
       await prisma.clusterInstall.update({ where: { id }, data: { status: 'LOCKED', secretEnc: null } });
       await setPeerStatus(row.peerId, 'LOCKED').catch(() => {});
       await refreshInstallWindows();
-      recordEvent('error', `One-line install for ${row.domain} locked after repeated wrong proofs`);
+      recordEvent('error', `One-line install for ${row.name || row.domain} locked after repeated wrong proofs`);
     }
     logger.warn('Cluster node install: request with a wrong proof refused', { action: 'cluster_install_rejected', installId: id });
     refuse(res, 403);
@@ -380,6 +413,11 @@ export async function handleProvision(req: Request, res: Response): Promise<void
 
   // The admin login as it is in effect now: the first-run setup changes it
   // without touching the process environment.
+  // Where the new server's setup came from: its public address, unless the
+  // administrator named one.
+  const seen = String(res.locals['clientAddress'] ?? '').replace(/^::ffff:/, '');
+  const domain = row.domain && isIP(row.domain) === 0 ? row.domain : '';
+  const ip = row.domain && isIP(row.domain) !== 0 ? row.domain : isIP(seen) !== 0 ? seen : '';
   const shared = sharedEnvironment({
     ...process.env,
     ADMIN_USERNAME: config.adminUsername || process.env['ADMIN_USERNAME'],
@@ -387,11 +425,15 @@ export async function handleProvision(req: Request, res: Response): Promise<void
     ADMIN_PASSWORD_HASH: config.adminPasswordHash || process.env['ADMIN_PASSWORD_HASH'],
   });
   const built = currentBundle();
+  // Where updates come from; the new server's updater trusts this repository
+  // and branch for its own files (deploy/node/updater.mjs).
+  const updates = await loadUpdateSettings();
   const payload = {
     v: 1,
     t: Date.now(),
-    node: { name: row.name, domain: row.domain, withAi: row.withAi, acmeEmail: row.acmeEmail },
+    node: { name: row.name, domain, address: ip, withAi: row.withAi, acmeEmail: row.acmeEmail },
     env: shared.values,
+    update: { repo: updates.repo, branch: updates.branch },
     bundle: { sha256: built.sha256, bytes: built.data.length },
     cluster: {
       url: channel.url,
@@ -407,7 +449,7 @@ export async function handleProvision(req: Request, res: Response): Promise<void
   if (shared.skipped.length > 0) {
     recordEvent('warn', `Not handed over (value cannot be written safely): ${shared.skipped.slice(0, 5).join(', ')}`);
   }
-  recordEvent('info', `Configuration handed over to the new server ${row.domain}`);
+  recordEvent('info', `Configuration handed over to the new server ${row.name}${ip ? ` (${ip})` : ''}`);
   logger.info('Cluster node install: configuration handed over', { action: 'cluster_install_provisioned', installId: id, sharedSettings: Object.keys(shared.values).length });
   res.setHeader('Cache-Control', 'no-store');
   res.json(sealed);
@@ -423,4 +465,35 @@ export async function handleBundle(req: Request, res: Response): Promise<void> {
     .setHeader('Cache-Control', 'no-store')
     .setHeader('X-Pokyh-Sha256', built.sha256)
     .send(built.data);
+}
+
+// ─── The public setup address ────────────────────────────────────────────────
+// Served on the ordinary API port (and so through whatever proxy or CDN is in
+// front of it), ahead of the API key. While no install is open, every path
+// below it answers 404 — exactly like a path that does not exist.
+
+export function createSetupRouter(): Router {
+  const router = Router();
+  router.use((req: Request, res: Response, next) => {
+    if (!installWindowOpen()) {
+      res.status(404).json({ error: 'Route not found' });
+      return;
+    }
+    res.setHeader('Cache-Control', 'no-store');
+    res.locals['clientAddress'] = req.ip;
+    next();
+  });
+  const limiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 30,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many requests' },
+  });
+  const smallJson = express.json({ limit: '8kb' });
+  router.get('/', limiter, handleInstallScript);
+  router.post('/provision', limiter, smallJson, handleProvision);
+  router.post('/bundle', limiter, smallJson, handleBundle);
+  router.use((_req: Request, res: Response) => { res.status(404).json({ error: 'Route not found' }); });
+  return router;
 }

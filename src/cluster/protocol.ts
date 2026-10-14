@@ -96,6 +96,21 @@ const channelAdvert = z.object({
   endpoints: z.array(z.string().max(300)).max(8).optional(),
 });
 
+// What a node tells the others about its version and updates (updates.ts).
+const commitHash = z.string().regex(/^[0-9a-f]{40}$/);
+export const updateAdvertSchema = z.object({
+  commit: commitHash.nullable(),
+  // Updated by Pokyh's updater (false: e.g. Dokploy).
+  self: z.boolean(),
+  state: z.string().max(20),
+  target: commitHash.nullable(),
+  // The commit an update to failed on the sender; stops the rollout.
+  failed: commitHash.nullable(),
+  // The sender's build, offered to nodes that update after it.
+  build: z.object({ sha256: z.string().regex(/^[0-9a-f]{64}$/), bytes: z.number().int().min(1).max(512 * 1024 * 1024) }).nullable(),
+});
+export type UpdateAdvert = z.infer<typeof updateAdvertSchema>;
+
 export const heartbeatSchema = z.object({
   t: z.number(),
   name: nodeName,
@@ -119,6 +134,8 @@ export const heartbeatSchema = z.object({
   tls: channelAdvert.nullable().optional(),
   // The way the sender currently reaches the receiver (for its status page).
   via: z.string().max(300).nullable().optional(),
+  // Version and update state (older nodes send none).
+  upd: updateAdvertSchema.nullable().optional(),
 });
 export type Heartbeat = z.infer<typeof heartbeatSchema>;
 

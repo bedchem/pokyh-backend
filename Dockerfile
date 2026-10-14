@@ -17,6 +17,11 @@ RUN npm ci
 COPY prisma ./prisma
 COPY src ./src
 COPY tsconfig.json ./
+# The commit this image is built from, recorded in dist/build-info.json for
+# the cluster's update rollout; empty when the builder does not pass it.
+ARG POKYH_COMMIT=""
+ENV POKYH_COMMIT=$POKYH_COMMIT
+COPY scripts/build-info.js ./scripts/build-info.js
 RUN npm run build
 
 # Admin panel build

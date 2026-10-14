@@ -20,6 +20,8 @@ import { createCipheriv, createDecipheriv, createHmac, hkdfSync, randomBytes, ti
 // once, valid for minutes, usable once and never stored in readable form.
 
 export const INSTALL_TOKEN_PREFIX = 'pokyhnode1.';
+// scheme://host[:port] — nothing else (endpoints.publicOrigin's form).
+const WEB_ORIGIN = /^https?:\/\/(\[[0-9a-fA-F:.]+\]|[A-Za-z0-9.-]+)(:\d{1,5})?$/;
 
 const LABEL = 'pokyh-cluster/v1';
 const KEY_BYTES = 32;
@@ -34,6 +36,10 @@ export interface InstallToken {
   url: string;
   // Every way to reach it, in order (written endpoints, endpoints.ts).
   endpoints?: string[];
+  // The public address of the inviting node (its admin panel's origin):
+  // where the new server fetches the installer, its configuration and the
+  // build — all of it protected by the token's keys, not by that path.
+  web?: string;
   pin: string;
   nodeId: string;
   id: string;
@@ -55,6 +61,7 @@ export function encodeInstallToken(token: InstallToken): string {
     s: token.secret.toString('base64url'),
     e: Math.floor(token.expiresAt.getTime() / 1000),
     ...(token.endpoints && token.endpoints.length > 0 ? { x: token.endpoints.slice(0, 8) } : {}),
+    ...(token.web ? { w: token.web } : {}),
   };
   return INSTALL_TOKEN_PREFIX + Buffer.from(JSON.stringify(body), 'utf8').toString('base64url');
 }
@@ -89,7 +96,7 @@ export function decodeInstallToken(text: string, now = Date.now()): DecodedInsta
   } catch {
     return damaged;
   }
-  const { v, a, f, n, i, s, e, x } = body;
+  const { v, a, f, n, i, s, e, x, w } = body;
   if (v !== 1) return { ok: false, error: 'Install token comes from a different Pokyh version' };
   if (typeof a !== 'string' || a.length > 255 || !isChannelUrl(a)) return damaged;
   if (typeof f !== 'string' || !PIN.test(f)) return damaged;
@@ -98,11 +105,16 @@ export function decodeInstallToken(text: string, now = Date.now()): DecodedInsta
   if (typeof s !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(s)) return damaged;
   if (typeof e !== 'number' || !Number.isInteger(e) || e <= 0) return damaged;
   if (x !== undefined && (!Array.isArray(x) || x.length > 8 || !x.every((item) => typeof item === 'string' && item.length <= 300))) return damaged;
+  if (w !== undefined && (typeof w !== 'string' || w.length > 255 || !WEB_ORIGIN.test(w))) return damaged;
   const expiresAt = new Date(e * 1000);
   if (expiresAt.getTime() <= now) return { ok: false, error: 'Install token has expired — create a new one-line command' };
   return {
     ok: true,
-    token: { url: a, pin: f, nodeId: n, id: i, secret: Buffer.from(s, 'base64url'), expiresAt, ...(Array.isArray(x) ? { endpoints: x as string[] } : {}) },
+    token: {
+      url: a, pin: f, nodeId: n, id: i, secret: Buffer.from(s, 'base64url'), expiresAt,
+      ...(Array.isArray(x) ? { endpoints: x as string[] } : {}),
+      ...(typeof w === 'string' ? { web: w } : {}),
+    },
   };
 }
 

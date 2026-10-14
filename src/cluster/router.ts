@@ -89,6 +89,7 @@ export function createClusterRouter(entry: EntryPoint): Router {
       }
     }
     res.locals['clusterChannel'] = context;
+    res.locals['clientAddress'] = address;
     res.setHeader('Cache-Control', 'no-store');
     next();
   });
