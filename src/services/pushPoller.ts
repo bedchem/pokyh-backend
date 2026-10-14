@@ -87,8 +87,12 @@ async function pollSubscription(sub: PushSub) {
   }
 }
 
-async function pollAll() {
-  const subs = await prisma.pushSubscription.findMany();
+// Which node handles a subscription or a due item. On a standalone server
+// always this one; in a cluster each item belongs to one reachable node.
+type Owns = (key: string) => boolean;
+
+async function pollAll(owns: Owns) {
+  const subs = (await prisma.pushSubscription.findMany()).filter((sub) => owns(`push-sub:${sub.id}`));
   if (subs.length === 0) return;
   logger.debug(`[push] Polling ${subs.length} subscriptions`);
   await Promise.allSettled(subs.map(pollSubscription));
@@ -99,12 +103,12 @@ async function sendPushToUser(stableUid: string, payload: { title: string; body:
   await Promise.allSettled(subs.map((sub) => sendPush(sub, payload)));
 }
 
-async function checkDueItems() {
+async function checkDueItems(owns: Owns) {
   const now = new Date();
 
-  const dueTodos = await prisma.todo.findMany({
+  const dueTodos = (await prisma.todo.findMany({
     where: { dueAt: { lte: now }, notifiedAt: null, done: false, archivedAt: null },
-  });
+  })).filter((todo) => owns(`todo:${todo.id}`));
 
   for (const todo of dueTodos) {
     await sendPushToUser(todo.stableUid, {
@@ -116,10 +120,10 @@ async function checkDueItems() {
     logger.debug(`[push] Todo due notification sent: ${todo.id}`);
   }
 
-  const dueReminders = await prisma.reminder.findMany({
+  const dueReminders = (await prisma.reminder.findMany({
     where: { remindAt: { lte: now }, notifiedAt: null, archivedAt: null },
     include: { class: { include: { members: true } } },
-  });
+  })).filter((reminder) => owns(`reminder:${reminder.id}`));
 
   for (const reminder of dueReminders) {
     // Parents have no reminders — never notify them.
@@ -143,16 +147,16 @@ async function checkDueItems() {
 // A poll or due-item pass that fails (database briefly unavailable, WebUntis
 // unreachable) must only skip that pass. Left unhandled, the rejection would
 // take the whole API process down.
-function runSafely(name: string, job: () => Promise<void>, shouldRun: () => boolean): void {
-  if (!shouldRun()) return;
+function runSafely(name: string, job: () => Promise<void>): void {
   job().catch((err) => {
     logger.warn(`[push] ${name} failed: ${err instanceof Error ? err.message : String(err)}`);
   });
 }
 
-// `shouldRun` lets a clustered deployment restrict polling to one node so a
-// notification is never sent once per node.
-export function startPushPoller(shouldRun: () => boolean = () => true) {
+// `owns` shares the work out in a cluster: every subscription and every due
+// item is handled by exactly one of the reachable nodes, so a notification is
+// not sent once per node and the WebUntis polling is spread over all of them.
+export function startPushPoller(owns: Owns = () => true) {
   if (!config.vapidPublicKey || !config.vapidPrivateKey) {
     logger.info('[push] VAPID keys not set — push notifications disabled');
     return;
@@ -169,11 +173,11 @@ export function startPushPoller(shouldRun: () => boolean = () => true) {
     return;
   }
 
-  runSafely('message poll', pollAll, shouldRun);
-  setInterval(() => runSafely('message poll', pollAll, shouldRun), POLL_INTERVAL_MS);
+  runSafely('message poll', () => pollAll(owns));
+  setInterval(() => runSafely('message poll', () => pollAll(owns)), POLL_INTERVAL_MS);
 
-  runSafely('due-item check', checkDueItems, shouldRun);
-  setInterval(() => runSafely('due-item check', checkDueItems, shouldRun), DUE_CHECK_INTERVAL_MS);
+  runSafely('due-item check', () => checkDueItems(owns));
+  setInterval(() => runSafely('due-item check', () => checkDueItems(owns)), DUE_CHECK_INTERVAL_MS);
 
   logger.info('[push] Poller started (messages: 5 min, due items: 1 min)');
 }

@@ -26,7 +26,7 @@ let dishId;
 
 async function triggerCount(node) {
   const rows = await node.db.$queryRawUnsafe(
-    "SELECT COUNT(*) AS c FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = DATABASE() AND TRIGGER_NAME LIKE 'pokyh\\_cl\\_%'",
+    "SELECT COUNT(*) AS c FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = DATABASE() AND TRIGGER_NAME LIKE 'pokyh\\_cx\\_%'",
   );
   return Number(rows[0].c);
 }
@@ -57,7 +57,8 @@ test('a node without peers is a plain standalone server', async () => {
   const status = await cluster.status(a);
   assert.equal(status.running, true);
   assert.deepEqual(status.peers, []);
-  assert.equal(status.node.isLeader, true);
+  assert.equal(status.node.workNodes, 1, 'a standalone node does all background work itself');
+  assert.equal(status.node.exclusiveJobsHere, true);
   assert.equal(await triggerCount(a), 0, 'no trigger may exist before the first peer is added');
 
   const session = await fetch(`${a.url}/cluster/v1/session`, {
@@ -206,45 +207,67 @@ test('reordering one list from several requests at once succeeds every time', as
 
 // ─── Pairing ─────────────────────────────────────────────────────────────────
 
-test('a weak pairing key and a bad address are refused', async () => {
-  const weak = await cluster.admin(a, 'POST', '/cluster/peers', { address: `127.0.0.1:${b.port}`, pairingKey: 'kurz' });
-  assert.equal(weak.status, 400);
-  assert.match(weak.json.error, /at least 16/);
-  const address = await cluster.admin(a, 'POST', '/cluster/peers', { address: 'ftp://nope', pairingKey: 'x'.repeat(10) + 'abcdefghij' });
+test('a damaged invite code and a bad address are refused', async () => {
+  const damaged = await cluster.admin(b, 'POST', '/cluster/join', { code: 'pokyh1.kaputt', ownAddress: `http://127.0.0.1:${b.port}` });
+  assert.equal(damaged.status, 400);
+  assert.match(damaged.json.error, /damaged|incomplete/);
+  const address = await cluster.admin(a, 'POST', '/cluster/invites', { ownAddress: 'ftp://nope' });
   assert.equal(address.status, 400);
   assert.equal((await cluster.status(a)).peers.length, 0);
+  assert.equal((await cluster.status(b)).peers.length, 0);
 });
 
-test('pairing with different keys fails on both sides and locks', async () => {
-  await cluster.pair(a, b, { keyA: 'key-number-one-AAAA-1111', keyB: 'key-number-two-BBBB-2222', addressOfB: `127.0.0.1:${wire.port}` });
+// Replaces the one-time secret in a code by another one of the same shape.
+function withWrongSecret(code) {
+  const body = JSON.parse(Buffer.from(code.slice('pokyh1.'.length), 'base64url').toString('utf8'));
+  body.s = crypto.randomBytes(32).toString('base64url');
+  return `pokyh1.${Buffer.from(JSON.stringify(body)).toString('base64url')}`;
+}
+
+test('an invite code with a wrong secret is refused and locks after repeated attempts', async () => {
+  await cluster.pair(a, b, { tamper: withWrongSecret, addressOfB: `http://127.0.0.1:${wire.port}` });
   await waitFor(async () => {
     const [sa, sb] = await Promise.all([cluster.status(a), cluster.status(b)]);
     return sa.peers[0]?.status === 'LOCKED' && sb.peers[0]?.status === 'LOCKED';
-  }, { timeoutMs: 90_000, label: 'both pairings to lock after repeated wrong keys' });
+  }, { timeoutMs: 90_000, label: 'invite and join to lock after repeated wrong secrets' });
   const [sa, sb] = await Promise.all([cluster.status(a), cluster.status(b)]);
   assert.equal(sa.peers[0].health, null);
-  assert.equal(sb.peers[0].nodeId, null, 'a failed pairing must not reveal or store the other identity');
-  assert.ok(await triggerCount(a) > 0, 'change capture is installed as soon as a peer is configured');
+  assert.equal(sa.peers[0].nodeId, null, 'the inviting node never learns or stores an identity it could not verify');
+  const rows = await b.db.$queryRawUnsafe('SELECT link_key_enc FROM cluster_peers');
+  assert.equal(rows[0].link_key_enc, null, 'no link key without a completed pairing');
+  assert.ok(await triggerCount(a) > 0, 'change capture is installed as soon as an invite exists');
+  // Clean up both entries for the next test.
+  for (const [node, status] of [[a, sa], [b, sb]]) {
+    for (const peer of status.peers) assert.equal((await cluster.admin(node, 'DELETE', `/cluster/peers/${peer.id}`)).status, 200);
+  }
 });
 
-test('pairing with the same key on both sides succeeds', async () => {
-  const key = (await cluster.admin(a, 'POST', '/cluster/pairing-key')).json.pairingKey;
-  assert.match(key, /^([A-Z2-9]{5}-){7}[A-Z2-9]{5}$/);
-  const [sa, sb] = await Promise.all([cluster.status(a), cluster.status(b)]);
-  assert.equal((await cluster.admin(a, 'POST', `/cluster/peers/${sa.peers[0].id}/pair`, { pairingKey: key })).status, 200);
-  assert.equal((await cluster.admin(b, 'POST', `/cluster/peers/${sb.peers[0].id}/pair`, { pairingKey: key })).status, 200);
+test('an invite code links the two nodes, once', async () => {
+  const { code } = await cluster.pair(a, b, { addressOfB: `http://127.0.0.1:${wire.port}` });
+  assert.match(code, /^pokyh1\./);
   await cluster.waitPaired(a, b);
 
-  // The pairing key is gone and no key material is exposed anywhere.
+  // Used once, the code is worthless: a second join with it is refused.
+  const again = await cluster.admin(c, 'POST', '/cluster/join', { code, ownAddress: `http://127.0.0.1:${c.port}` });
+  assert.equal(again.status, 201, 'the join itself is accepted locally …');
+  await waitFor(async () => {
+    const status = await cluster.status(c);
+    return status.peers[0]?.pairing?.message?.includes('no open invite');
+  }, { timeoutMs: 30_000, label: 'the used code to be refused by A' });
+  assert.equal((await cluster.admin(c, 'DELETE', `/cluster/peers/${(await cluster.status(c)).peers[0].id}`)).status, 200);
+
+  // The secret is gone and no key material is exposed anywhere.
+  const secret = JSON.parse(Buffer.from(code.slice('pokyh1.'.length), 'base64url').toString('utf8')).s;
   for (const node of [a, b]) {
     const rows = await node.db.$queryRawUnsafe('SELECT pairing_secret_enc, pairing_state_enc, link_key_enc FROM cluster_peers');
     assert.equal(rows[0].pairing_secret_enc, null);
     assert.equal(rows[0].pairing_state_enc, null);
-    assert.ok(rows[0].link_key_enc && !rows[0].link_key_enc.includes(key));
+    assert.ok(rows[0].link_key_enc && !rows[0].link_key_enc.includes(secret));
     const text = JSON.stringify(await cluster.status(node));
-    assert.equal(text.includes(key), false);
+    assert.equal(text.includes(secret), false);
     assert.equal(text.includes(rows[0].link_key_enc), false);
-    assert.equal(cluster.logText(node).includes(key), false, 'the pairing key must never be logged');
+    assert.equal(cluster.logText(node).includes(secret), false, 'the invite secret must never be logged');
+    assert.equal(cluster.logText(node).includes(code), false, 'the invite code must never be logged');
   }
 });
 
@@ -402,14 +425,14 @@ test('nothing readable crosses the network, and recorded traffic is useless', as
 
 // ─── Three nodes ─────────────────────────────────────────────────────────────
 
-test('a third node paired with only one of them still receives everything', async () => {
+test('a third node invited by one of them receives everything', async () => {
   await cluster.pair(b, c);
   await cluster.waitPaired(b, c);
   await cluster.converged([a, b, c], { timeoutMs: 90_000, label: 'the third node to receive the data' });
 
-  // A change on A reaches C although A and C have never been paired.
+  // A change on A reaches C, directly or through B.
   await cluster.request(a, 'POST', '/users/anna/todos', { token: users.anna.token, body: { title: 'über B weitergereicht' } });
-  await waitFor(async () => (await todosOf(c, users.anna)).some((todo) => todo.title === 'über B weitergereicht'), { timeoutMs: 15_000, label: 'A → B → C' });
+  await waitFor(async () => (await todosOf(c, users.anna)).some((todo) => todo.title === 'über B weitergereicht'), { timeoutMs: 15_000, label: 'A → C' });
 
   const status = await cluster.status(b);
   const seenFromB = cluster.peerOf(status, c);
@@ -417,23 +440,35 @@ test('a third node paired with only one of them still receives everything', asyn
   assert.equal(cluster.peerOf(status, a).warnings.length, 0, JSON.stringify(cluster.peerOf(status, a).warnings));
 });
 
-test('all nodes agree on one leader', async () => {
-  await cluster.pair(a, c);
-  await cluster.waitPaired(a, c);
+test('the mesh links every node with every other by itself, and work is shared without a leader', async () => {
+  // C was invited by B only; B introduces it to A.
+  await cluster.waitPaired(a, c, 120_000);
   await cluster.converged([a, b, c]);
+  assert.ok(cluster.peerOf(await cluster.status(a), c).introducedBy, 'A and C were introduced by a common peer');
   await waitFor(async () => {
     const statuses = await Promise.all([a, b, c].map((node) => cluster.status(node)));
-    const leaders = new Set(statuses.map((status) => status.node.leaderId));
-    return leaders.size === 1 && statuses.filter((status) => status.node.isLeader).length === 1;
-  }, { label: 'a single leader' });
+    const exclusive = statuses.filter((status) => status.node.exclusiveJobsHere).length;
+    return statuses.every((status) => status.node.workNodes === 3) && exclusive >= 1 && exclusive <= 2;
+  }, { label: 'background work to be shared over all three nodes' });
+});
+
+test('the data check finds and repairs a row that slipped through', async () => {
+  await cluster.converged([a, b, c]);
+  const todo = (await todosOf(a, users.anna)).find((entry) => entry.title === 'Vokabeln');
+  // Changed underneath the application with capture silenced: no node is told.
+  cluster.runSql(b, `SET @pokyh_cluster_apply = 1; UPDATE todos SET title = 'verdorben' WHERE id = '${todo.id}';`);
+  await cluster.runSql(a, `SET @pokyh_cluster_apply = 1; UPDATE cluster_row_state SET version = version + 1 WHERE table_name = 'todos' AND pk_hash = SHA2('${todo.id}', 256);`);
+  const peer = cluster.peerOf(await cluster.status(a), b);
+  const check = await cluster.admin(a, 'POST', `/cluster/peers/${peer.id}/verify`);
+  assert.equal(check.status, 200, check.text);
+  assert.ok(check.json.repaired >= 1, 'the differing row was found and sent');
+  await waitFor(async () => (await todosOf(b, users.anna)).some((entry) => entry.id === todo.id && entry.title === 'Vokabeln'), { timeoutMs: 15_000, label: 'B to be repaired' });
+  await cluster.converged([a, b, c]);
 });
 
 // ─── Failure and recovery ────────────────────────────────────────────────────
 
 test('an offline node is detected, the others carry on, and it catches up', async () => {
-  const before = await cluster.status(a);
-  const leaderBefore = before.node.leaderId;
-  const idOfB = cluster.peerOf(before, b).nodeId;
 
   await cluster.stop(b, 'SIGKILL');
   const downAt = Date.now();
@@ -442,27 +477,26 @@ test('an offline node is detected, the others carry on, and it catches up', asyn
   assert.ok(Date.now() - downAt < 20_000);
   assert.ok((await cluster.status(a)).events.some((event) => event.message.includes('offline')));
 
-  // Exactly one of the remaining nodes leads.
+  // Per-item work moves to the remaining two; once-only jobs wait until
+  // every node is reachable again.
   await waitFor(async () => {
     const statuses = await Promise.all([a, c].map((node) => cluster.status(node)));
-    const leaders = new Set(statuses.map((status) => status.node.leaderId));
-    return leaders.size === 1 && !leaders.has(idOfB) && statuses.filter((status) => status.node.isLeader).length === 1;
-  }, { label: 'leadership without B' });
-  if (leaderBefore === idOfB) assert.notEqual((await cluster.status(a)).node.leaderId, idOfB);
+    return statuses.every((status) => status.node.workNodes === 2 && status.node.exclusiveJobsHere === false);
+  }, { label: 'work to be shared without B' });
 
-  // Work continues without B and is queued for it.
+  // Work continues without B, and B's share waits for it.
   for (let i = 0; i < 5; i++) {
     await cluster.request(a, 'POST', '/users/anna/todos', { token: users.anna.token, body: { title: `während B fehlt ${i}` } });
   }
   await cluster.request(c, 'POST', '/users/ben/todos', { token: users.ben.token, body: { title: 'auf C während B fehlt' } });
   await cluster.converged([a, c]);
-  assert.ok(cluster.peerOf(await cluster.status(a), b).queuedRows > 0);
+  assert.ok(cluster.peerOf(await cluster.status(a), b).pendingRows > 0);
 
   await cluster.start(b);
   await cluster.waitPaired(a, b);
   await cluster.converged([a, b, c], { timeoutMs: 60_000, label: 'B to catch up' });
   assert.ok((await todosOf(b, users.anna)).some((todo) => todo.title === 'während B fehlt 4'));
-  assert.equal(cluster.peerOf(await cluster.status(a), b).queuedRows, 0);
+  assert.equal(cluster.peerOf(await cluster.status(a), b).pendingRows, 0);
 });
 
 test('a revoked session is rejected on every node, and stays rejected after a restart', async () => {
@@ -676,7 +710,7 @@ test('changes made while capture was missing are noticed and can be published', 
 
   // Simulate a manual restore: the triggers are gone and a row differs.
   await cluster.stop(a);
-  const triggers = await a.db.$queryRawUnsafe("SELECT TRIGGER_NAME AS name FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = DATABASE() AND TRIGGER_NAME LIKE 'pokyh\\_cl\\_%'");
+  const triggers = await a.db.$queryRawUnsafe("SELECT TRIGGER_NAME AS name FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = DATABASE() AND TRIGGER_NAME LIKE 'pokyh\\_cx\\_%'");
   assert.ok(triggers.length > 0);
   cluster.runSql(a, triggers.map((trigger) => `DROP TRIGGER \`${trigger.name}\`;`).join('\n'));
   await a.db.$executeRawUnsafe("UPDATE todos SET title = 'direkt in der Datenbank geändert' WHERE id = ?", todo.id);
@@ -715,7 +749,7 @@ test('a peer returning after a very long absence is held until an administrator 
   // Nothing flows over the held link in either direction …
   await cluster.request(a, 'POST', '/users/anna/todos', { token: users.anna.token, body: { title: 'während der Sperre' } });
   await sleep(2_000);
-  assert.ok(cluster.peerOf(await cluster.status(a), b).queuedRows > 0);
+  assert.ok(cluster.peerOf(await cluster.status(a), b).pendingRows > 0);
 
   // … until the administrator confirms.
   const refused = await cluster.admin(a, 'POST', `/cluster/peers/${held.id}/resync`, {});
@@ -750,22 +784,32 @@ test('replication pauses with a node whose database schema differs', async () =>
   assert.equal(cluster.peerOf(await cluster.status(b), d).fullTransfer, true, 'the transfer waits instead of being abandoned');
 
   const removed = await cluster.admin(b, 'DELETE', `/cluster/peers/${seen.id}`);
-  assert.equal(removed.status, 204);
+  assert.equal(removed.status, 200);
+  assert.equal((await cluster.admin(b, 'DELETE', `/cluster/peers/${seen.id}`)).status, 200, 'the record of the removed link can be deleted too');
   await cluster.stop(d);
 });
 
 // ─── Removing a node ─────────────────────────────────────────────────────────
 
-test('a removed peer is dropped on both sides', async () => {
+test('a removed link stays removed on both sides', async () => {
   const status = await cluster.status(a);
   const peer = cluster.peerOf(status, c);
-  assert.equal((await cluster.admin(a, 'DELETE', `/cluster/peers/${peer.id}`)).status, 204);
-  assert.equal((await cluster.status(a)).peers.length, 1);
+  const first = await cluster.admin(a, 'DELETE', `/cluster/peers/${peer.id}`);
+  assert.equal(first.status, 200);
+  assert.equal(first.json.deleted, false, 'an active link is first marked as removed');
+  assert.equal(cluster.peerOf(await cluster.status(a), c).status, 'REMOVED');
   await waitFor(async () => cluster.peerOf(await cluster.status(c), a)?.status === 'REMOVED', { label: 'C to learn it was removed' });
 
-  // B is still paired with both, so the three keep converging.
+  // B is still linked with both, so the three keep converging through B —
+  // and the mesh check does not link A and C again behind the admin's back.
   await cluster.request(a, 'POST', '/users/anna/todos', { token: users.anna.token, body: { title: 'nach dem Entfernen' } });
   await cluster.converged([a, b, c]);
+  await sleep(3_000);
+  assert.equal(cluster.peerOf(await cluster.status(a), c).status, 'REMOVED');
+
+  const second = await cluster.admin(a, 'DELETE', `/cluster/peers/${peer.id}`);
+  assert.equal(second.status, 200);
+  assert.equal(second.json.deleted, true);
   assert.equal((await cluster.admin(a, 'DELETE', `/cluster/peers/${peer.id}`)).status, 404);
 });
 

@@ -25,29 +25,29 @@ model User {
   createdAt          DateTime @default(now()) @map("created_at")
   updatedAt          DateTime @updatedAt @map("updated_at")
 
-  todos                  Todo[]
-  classMembers           ClassMember[]
-  refreshTokens          RefreshToken[]
-  pushSubscriptions      PushSubscription[]
+  todos                   Todo[]
+  classMembers            ClassMember[]
+  refreshTokens           RefreshToken[]
+  pushSubscriptions       PushSubscription[]
   // Pokyh Learn is deliberately attached to the existing POKYH identity.  A
   // profile is created lazily on first Learn use, which also marks this account
   // as persistent across the school-year cleanup.
-  learnProfile           LearnProfile?
-  learnCoursesCreated    LearnCourse[]           @relation("LearnCourseCreator")
-  learnCourseAccesses    LearnCourseAccess[]
-  learnEnrollments       LearnEnrollment[]
-  learnVocabularyEntries LearnVocabularyEntry[]  @relation("LearnVocabularyCreator")
-  learnVocabularyReviews LearnVocabularyReview[]
-  learnQuizAttempts      LearnQuizAttempt[]
+  learnProfile            LearnProfile?
+  learnCoursesCreated     LearnCourse[]            @relation("LearnCourseCreator")
+  learnCourseAccesses     LearnCourseAccess[]
+  learnEnrollments        LearnEnrollment[]
+  learnVocabularyEntries  LearnVocabularyEntry[]   @relation("LearnVocabularyCreator")
+  learnVocabularyReviews  LearnVocabularyReview[]
+  learnQuizAttempts       LearnQuizAttempt[]
   // Privacy-preserving, per-day learning aggregates. These retain counts and
   // dates, not answer text, and power the learner's own analytics screen.
-  learnActivityDays      LearnActivityDaily[]
-  learnTeamsCreated      LearnTeam[]             @relation("LearnTeamCreator")
-  learnTeamMemberships   LearnTeamMember[]
+  learnActivityDays       LearnActivityDaily[]
+  learnTeamsCreated       LearnTeam[]              @relation("LearnTeamCreator")
+  learnTeamMemberships    LearnTeamMember[]
   learnSectionCompletions LearnSectionCompletion[]
-  learnAiAccessGrant     LearnAiAccessGrant?
-  learnAiUsageCounters   LearnAiUsageCounter[]
-  learnAiTrainingPrompts LearnAiTrainingPrompt[]
+  learnAiAccessGrant      LearnAiAccessGrant?
+  learnAiUsageCounters    LearnAiUsageCounter[]
+  learnAiTrainingPrompts  LearnAiTrainingPrompt[]
 
   @@map("users")
 }
@@ -491,17 +491,17 @@ model FrontendActivityLog {
 // their shape before persisting them.
 
 model LearnProfile {
-  stableUid        String    @id @map("stable_uid")
-  dailyGoalMinutes Int       @default(15) @map("daily_goal_minutes")
-  timezone         String    @default("") @db.VarChar(80)
-  locale           String    @default("de") @db.VarChar(5)
-  theme            String    @default("system") @db.VarChar(10)
-  privacyNoticeVersion String @default("") @map("privacy_notice_version") @db.VarChar(80)
+  stableUid                   String    @id @map("stable_uid")
+  dailyGoalMinutes            Int       @default(15) @map("daily_goal_minutes")
+  timezone                    String    @default("") @db.VarChar(80)
+  locale                      String    @default("de") @db.VarChar(5)
+  theme                       String    @default("system") @db.VarChar(10)
+  privacyNoticeVersion        String    @default("") @map("privacy_notice_version") @db.VarChar(80)
   privacyNoticeAcknowledgedAt DateTime? @map("privacy_notice_acknowledged_at")
-  dailyStreak      Int       @default(0) @map("daily_streak")
-  lastActiveAt     DateTime? @map("last_active_at")
-  createdAt        DateTime  @default(now()) @map("created_at")
-  updatedAt        DateTime  @updatedAt @map("updated_at")
+  dailyStreak                 Int       @default(0) @map("daily_streak")
+  lastActiveAt                DateTime? @map("last_active_at")
+  createdAt                   DateTime  @default(now()) @map("created_at")
+  updatedAt                   DateTime  @updatedAt @map("updated_at")
 
   user User @relation(fields: [stableUid], references: [stableUid], onDelete: Cascade)
 
@@ -533,15 +533,15 @@ model LearnCourse {
   createdAt     DateTime @default(now()) @map("created_at")
   updatedAt     DateTime @updatedAt @map("updated_at")
 
-  creator      User                   @relation("LearnCourseCreator", fields: [createdBy], references: [stableUid], onDelete: Cascade)
-  team         LearnTeam?             @relation(fields: [teamId], references: [id], onDelete: SetNull)
-  sections     LearnCourseSection[]
-  accessGrants LearnCourseAccess[]
-  enrollments  LearnEnrollment[]
-  vocabulary   LearnVocabularyEntry[]
-  quizAttempts LearnQuizAttempt[]
+  creator            User                     @relation("LearnCourseCreator", fields: [createdBy], references: [stableUid], onDelete: Cascade)
+  team               LearnTeam?               @relation(fields: [teamId], references: [id], onDelete: SetNull)
+  sections           LearnCourseSection[]
+  accessGrants       LearnCourseAccess[]
+  enrollments        LearnEnrollment[]
+  vocabulary         LearnVocabularyEntry[]
+  quizAttempts       LearnQuizAttempt[]
   sectionCompletions LearnSectionCompletion[]
-  activityDays LearnActivityDaily[]
+  activityDays       LearnActivityDaily[]
 
   @@index([createdBy])
   @@index([teamId])
@@ -561,8 +561,8 @@ model LearnCourseSection {
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 
-  course     LearnCourse            @relation(fields: [courseId], references: [id], onDelete: Cascade)
-  vocabulary LearnVocabularyEntry[]
+  course      LearnCourse              @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  vocabulary  LearnVocabularyEntry[]
   completions LearnSectionCompletion[]
 
   @@unique([courseId, sortOrder])
@@ -649,10 +649,10 @@ model LearnVocabularyEntry {
   createdAt          DateTime @default(now()) @map("created_at")
   updatedAt          DateTime @updatedAt @map("updated_at")
 
-  course       LearnCourse             @relation(fields: [courseId], references: [id], onDelete: Cascade)
-  section      LearnCourseSection?     @relation(fields: [sectionId], references: [id], onDelete: SetNull)
-  creator      User                    @relation("LearnVocabularyCreator", fields: [createdBy], references: [stableUid], onDelete: Cascade)
-  reviewStates LearnVocabularyReview[]
+  course            LearnCourse             @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  section           LearnCourseSection?     @relation(fields: [sectionId], references: [id], onDelete: SetNull)
+  creator           User                    @relation("LearnVocabularyCreator", fields: [createdBy], references: [stableUid], onDelete: Cascade)
+  reviewStates      LearnVocabularyReview[]
   aiTrainingPrompts LearnAiTrainingPrompt[]
 
   @@index([courseId, sectionId])
@@ -748,9 +748,9 @@ model LearnTeam {
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 
-  creator User              @relation("LearnTeamCreator", fields: [createdBy], references: [stableUid], onDelete: Cascade)
-  members LearnTeamMember[]
-  courses LearnCourse[]
+  creator       User                    @relation("LearnTeamCreator", fields: [createdBy], references: [stableUid], onDelete: Cascade)
+  members       LearnTeamMember[]
+  courses       LearnCourse[]
   aiAccessGrant LearnAiTeamAccessGrant?
 
   @@index([createdBy])
@@ -779,45 +779,45 @@ model LearnTeamMember {
 // this. LEARN_ALLOWED_ORIGINS is deliberately NOT included: it is a security-
 // boundary value and stays environment-only, never admin-editable at runtime.
 model LearnConfig {
-  id                           Int      @id @default(1)
-  legalGateEnabled             Boolean? @map("legal_gate_enabled")
+  id                                  Int      @id @default(1)
+  legalGateEnabled                    Boolean? @map("legal_gate_enabled")
   // Set via the admin UI but never read back in plaintext by the API —
   // matches docs/legal-readiness.md's requirement to report the legal gate
   // as ready without exposing the approval reference itself.
-  webUntisAuthorizationReference String? @map("webuntis_authorization_reference") @db.VarChar(255)
-  privacyNoticeUrl             String?  @map("privacy_notice_url") @db.VarChar(500)
-  privacyNoticeVersion         String?  @map("privacy_notice_version") @db.VarChar(80)
-  dictionaryEnabled            Boolean? @map("dictionary_enabled")
-  dictionaryProvider           String?  @map("dictionary_provider") @db.VarChar(40)
-  dictionaryBaseUrl            String?  @map("dictionary_base_url") @db.VarChar(500)
-  dictionaryContactEmail       String?  @map("dictionary_contact_email") @db.VarChar(255)
-  dictionaryAllowedPairs       String?  @map("dictionary_allowed_pairs") @db.VarChar(500)
-  dictionaryTimeoutMs          Int?     @map("dictionary_timeout_ms")
-  dictionaryCacheTtlMs         Int?     @map("dictionary_cache_ttl_ms")
-  dictionaryMaxCacheEntries    Int?     @map("dictionary_max_cache_entries")
+  webUntisAuthorizationReference      String?  @map("webuntis_authorization_reference") @db.VarChar(255)
+  privacyNoticeUrl                    String?  @map("privacy_notice_url") @db.VarChar(500)
+  privacyNoticeVersion                String?  @map("privacy_notice_version") @db.VarChar(80)
+  dictionaryEnabled                   Boolean? @map("dictionary_enabled")
+  dictionaryProvider                  String?  @map("dictionary_provider") @db.VarChar(40)
+  dictionaryBaseUrl                   String?  @map("dictionary_base_url") @db.VarChar(500)
+  dictionaryContactEmail              String?  @map("dictionary_contact_email") @db.VarChar(255)
+  dictionaryAllowedPairs              String?  @map("dictionary_allowed_pairs") @db.VarChar(500)
+  dictionaryTimeoutMs                 Int?     @map("dictionary_timeout_ms")
+  dictionaryCacheTtlMs                Int?     @map("dictionary_cache_ttl_ms")
+  dictionaryMaxCacheEntries           Int?     @map("dictionary_max_cache_entries")
   // Free Dictionary API is configured separately from optional translation
   // suggestions. The backend supports its documented English endpoint only.
-  dictionaryValidationEnabled  Boolean? @map("dictionary_validation_enabled")
-  dictionaryValidationProvider String?  @map("dictionary_validation_provider") @db.VarChar(40)
-  dictionaryValidationBaseUrl  String?  @map("dictionary_validation_base_url") @db.VarChar(500)
-  dictionaryValidationTimeoutMs Int?    @map("dictionary_validation_timeout_ms")
-  dictionaryValidationCacheTtlMs Int?   @map("dictionary_validation_cache_ttl_ms")
-  dictionaryValidationMaxCacheEntries Int? @map("dictionary_validation_max_cache_entries")
+  dictionaryValidationEnabled         Boolean? @map("dictionary_validation_enabled")
+  dictionaryValidationProvider        String?  @map("dictionary_validation_provider") @db.VarChar(40)
+  dictionaryValidationBaseUrl         String?  @map("dictionary_validation_base_url") @db.VarChar(500)
+  dictionaryValidationTimeoutMs       Int?     @map("dictionary_validation_timeout_ms")
+  dictionaryValidationCacheTtlMs      Int?     @map("dictionary_validation_cache_ttl_ms")
+  dictionaryValidationMaxCacheEntries Int?     @map("dictionary_validation_max_cache_entries")
   // Adaptive-review policy and pseudonymous analytics retention. The browser
   // never supplies scheduling decisions; these values are applied server-side.
-  reviewInitialIntervalDays Int?        @map("review_initial_interval_days")
-  reviewMaxIntervalDays     Int?        @map("review_max_interval_days")
-  reviewMinimumEase         Float?      @map("review_minimum_ease")
-  reviewMaximumEase         Float?      @map("review_maximum_ease")
-  reviewCorrectEaseStep     Float?      @map("review_correct_ease_step")
-  reviewIncorrectEasePenalty Float?     @map("review_incorrect_ease_penalty")
-  reviewWrongDelayMinutes   Int?        @map("review_wrong_delay_minutes")
-  analyticsRetentionDays    Int?        @map("analytics_retention_days")
-  importMaxCourses             Int?     @map("import_max_courses")
-  importMaxSectionsPerCourse   Int?     @map("import_max_sections_per_course")
-  importMaxVocabularyPerCourse Int?     @map("import_max_vocabulary_per_course")
-  updatedAt                    DateTime @updatedAt @map("updated_at")
-  updatedBy                    String?  @map("updated_by")
+  reviewInitialIntervalDays           Int?     @map("review_initial_interval_days")
+  reviewMaxIntervalDays               Int?     @map("review_max_interval_days")
+  reviewMinimumEase                   Float?   @map("review_minimum_ease")
+  reviewMaximumEase                   Float?   @map("review_maximum_ease")
+  reviewCorrectEaseStep               Float?   @map("review_correct_ease_step")
+  reviewIncorrectEasePenalty          Float?   @map("review_incorrect_ease_penalty")
+  reviewWrongDelayMinutes             Int?     @map("review_wrong_delay_minutes")
+  analyticsRetentionDays              Int?     @map("analytics_retention_days")
+  importMaxCourses                    Int?     @map("import_max_courses")
+  importMaxSectionsPerCourse          Int?     @map("import_max_sections_per_course")
+  importMaxVocabularyPerCourse        Int?     @map("import_max_vocabulary_per_course")
+  updatedAt                           DateTime @updatedAt @map("updated_at")
+  updatedBy                           String?  @map("updated_by")
 
   @@map("learn_config")
 }
@@ -828,27 +828,27 @@ model LearnConfig {
 // receive only the source sentence, so they cannot supply their own answer key
 // or make a grading decision.
 model LearnAiTrainingPrompt {
-  id           String   @id @default(uuid())
-  stableUid    String   @map("stable_uid")
-  entryId      String   @map("entry_id")
-  direction    String   @db.VarChar(20)
-  promptText   String   @map("prompt_text") @db.VarChar(1000)
+  id                String    @id @default(uuid())
+  stableUid         String    @map("stable_uid")
+  entryId           String    @map("entry_id")
+  direction         String    @db.VarChar(20)
+  promptText        String    @map("prompt_text") @db.VarChar(1000)
   // SHA-256 of normalized promptText. Repeated calls for the same learner and
   // word must not recycle an earlier AI sentence.
-  promptFingerprint String? @map("prompt_fingerprint") @db.Char(64)
-  expectedText String   @map("expected_text") @db.VarChar(1000)
-  modelName    String   @map("model_name") @db.VarChar(120)
-  createdAt    DateTime @default(now()) @map("created_at")
-  expiresAt    DateTime @map("expires_at")
-  completedAt  DateTime? @map("completed_at")
-  resultCorrect Boolean? @map("result_correct")
+  promptFingerprint String?   @map("prompt_fingerprint") @db.Char(64)
+  expectedText      String    @map("expected_text") @db.VarChar(1000)
+  modelName         String    @map("model_name") @db.VarChar(120)
+  createdAt         DateTime  @default(now()) @map("created_at")
+  expiresAt         DateTime  @map("expires_at")
+  completedAt       DateTime? @map("completed_at")
+  resultCorrect     Boolean?  @map("result_correct")
 
   user  User                 @relation(fields: [stableUid], references: [stableUid], onDelete: Cascade)
   entry LearnVocabularyEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
 
+  @@unique([stableUid, entryId, promptFingerprint])
   @@index([stableUid, expiresAt])
   @@index([entryId])
-  @@unique([stableUid, entryId, promptFingerprint])
   @@map("learn_ai_training_prompts")
 }
 
@@ -908,24 +908,24 @@ model LearnAiUsageCounter {
 // Admin-editable AI operational policy. A missing row, or a null field on it,
 // falls back to the LEARN_AI_* environment defaults in src/config.ts.
 model LearnAiConfig {
-  id                         Int      @id @default(1)
+  id                               Int      @id @default(1)
   // Global kill-switch, independent of per-user pilot grants — both must
   // allow a request through.
-  enabled                    Boolean? @map("enabled")
-  modelName                  String?  @map("model_name") @db.VarChar(120)
+  enabled                          Boolean? @map("enabled")
+  modelName                        String?  @map("model_name") @db.VarChar(120)
   // num_ctx sent to Ollama. Deliberately kept small by default: RAM for a
   // CPU-quantized model grows sharply with context length (see docs).
-  contextTokens              Int?     @map("context_tokens")
-  numPredictFast             Int?     @map("num_predict_fast")
-  rateLimitMessagesPerHour   Int?     @map("rate_limit_messages_per_hour")
+  contextTokens                    Int?     @map("context_tokens")
+  numPredictFast                   Int?     @map("num_predict_fast")
+  rateLimitMessagesPerHour         Int?     @map("rate_limit_messages_per_hour")
   // The in-app trainer caps outgoing model work before Ollama. This default
   // is intentionally configurable so a larger verified host can serve a
   // whole class without exposing an unbounded inference endpoint.
-  maxConcurrentTrainingGenerations Int? @map("max_concurrent_training_generations")
-  ollamaBaseUrl              String?  @map("ollama_base_url") @db.VarChar(300)
-  ollamaTimeoutMs            Int?     @map("ollama_timeout_ms")
-  updatedAt                  DateTime @updatedAt @map("updated_at")
-  updatedBy                  String?  @map("updated_by")
+  maxConcurrentTrainingGenerations Int?     @map("max_concurrent_training_generations")
+  ollamaBaseUrl                    String?  @map("ollama_base_url") @db.VarChar(300)
+  ollamaTimeoutMs                  Int?     @map("ollama_timeout_ms")
+  updatedAt                        DateTime @updatedAt @map("updated_at")
+  updatedBy                        String?  @map("updated_by")
 
   @@map("learn_ai_config")
 }
@@ -986,25 +986,35 @@ model TokenRevocation {
 
 // Identity of this node — a singleton row (id is always 1).
 model ClusterNode {
-  id        Int      @id @default(1)
-  nodeId    String   @unique @map("node_id") @db.VarChar(36)
-  name      String   @default("") @db.VarChar(120)
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
+  id           Int      @id @default(1)
+  nodeId       String   @unique @map("node_id") @db.VarChar(36)
+  name         String   @default("") @db.VarChar(120)
+  // The address other nodes reach this one at, as last entered when inviting
+  // or joining (CLUSTER_ADVERTISE_URL takes precedence when set).
+  advertiseUrl String   @default("") @map("advertise_url") @db.VarChar(255)
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
 
   @@map("cluster_node")
 }
 
-// A manually configured peer node. `nodeId` is learned during pairing. Key
-// material is stored only in wrapped (AES-256-GCM) form and never returned by
-// any API.
+// A peer node. It comes into being through an invite code (this node invited
+// it: role HOST, or it was introduced to this node by a common peer) or by
+// joining with a code (role JOIN — this node contacts the other). `nodeId` is
+// confirmed during pairing. Key material is stored only in wrapped
+// (AES-256-GCM) form and never returned by any API.
 model ClusterPeer {
   id               String    @id @default(uuid()) @db.VarChar(36)
   nodeId           String?   @unique @map("node_id") @db.VarChar(36)
   name             String    @default("") @db.VarChar(120)
+  // Empty for an invite nobody has used yet: the joining node tells us.
   address          String    @db.VarChar(255)
   // PENDING, ACTIVE, DISABLED, EXPIRED, LOCKED, or REMOVED.
   status           String    @default("PENDING") @db.VarChar(20)
+  // HOST waits to be contacted, JOIN contacts the other node.
+  role             String    @default("JOIN") @db.VarChar(8)
+  // Node id of the common peer that introduced the two nodes, if any.
+  introducedBy     String?   @map("introduced_by") @db.VarChar(36)
   linkKeyEnc       String?   @map("link_key_enc") @db.VarChar(255)
   // Present only while a pairing window is open; wiped on success or expiry.
   pairingSecretEnc String?   @map("pairing_secret_enc") @db.Text
@@ -1015,11 +1025,15 @@ model ClusterPeer {
   resyncRequested  Boolean   @default(false) @map("resync_requested")
   // Progress of a complete transfer to this peer (first pairing, resync): the
   // version registry is walked in key order from this position. Changes made
-  // meanwhile reach the peer through the ordinary queue.
+  // meanwhile reach the peer through the change feed.
   scanActive       Boolean   @default(false) @map("scan_active")
   scanTable        String?   @map("scan_table") @db.VarChar(64)
   scanHash         String?   @map("scan_hash") @db.Char(64)
+  // Read position in this node's change feed: every change up to here has
+  // reached the peer. Written once per delivered package, not per row.
+  sentSeq          BigInt    @default(0) @map("sent_seq") @db.UnsignedBigInt
   lastSyncedAt     DateTime? @map("last_synced_at")
+  lastVerifiedAt   DateTime? @map("last_verified_at")
   createdBy        String?   @map("created_by") @db.VarChar(100)
   createdAt        DateTime  @default(now()) @map("created_at")
   updatedAt        DateTime  @updatedAt @map("updated_at")
@@ -1027,44 +1041,27 @@ model ClusterPeer {
   @@map("cluster_peers")
 }
 
-// The peers that currently receive changes. Kept apart from ClusterPeer so the
-// capture triggers read a table that only changes when a peer is activated or
-// removed, never on routine peer bookkeeping.
-model ClusterTarget {
-  peerId String @id @map("peer_id") @db.VarChar(36)
-
-  @@map("cluster_targets")
-}
-
-// Version and tombstone registry: one row per replicated data row. `version`
-// is a microsecond timestamp that only ever grows for a given row; together
-// with `origin` it decides last-writer-wins.
+// Version and tombstone registry, and at the same time the change feed: one
+// row per replicated data row. `version` is a microsecond timestamp that only
+// ever grows for a given row; together with `origin` it decides
+// last-writer-wins. `seq` is the row's place in the feed — each change moves
+// it to the end — and `via` names the peer a received change came from, so it
+// is not offered straight back.
 model ClusterRowState {
   tableName String   @map("table_name") @db.VarChar(64)
   pkHash    String   @map("pk_hash") @db.Char(64)
   pk        String   @db.VarChar(1024)
   version   BigInt   @db.UnsignedBigInt
   origin    String   @db.VarChar(36)
+  via       String?  @db.VarChar(36)
   deleted   Boolean  @default(false)
   changedAt DateTime @default(now()) @map("changed_at")
+  seq       BigInt   @default(0) @db.UnsignedBigInt
 
   @@id([tableName, pkHash])
   @@index([deleted, changedAt])
+  @@index([seq])
   @@map("cluster_row_state")
-}
-
-// Rows a peer has not confirmed yet. Written in the same transaction as the
-// change itself, removed once the peer acknowledges it.
-model ClusterOutbox {
-  peerId     String   @map("peer_id") @db.VarChar(36)
-  tableName  String   @map("table_name") @db.VarChar(64)
-  pkHash     String   @map("pk_hash") @db.Char(64)
-  gen        Int      @default(0)
-  offerFirst Boolean  @default(false) @map("offer_first")
-  queuedAt   DateTime @default(now()) @map("queued_at")
-
-  @@id([peerId, tableName, pkHash])
-  @@map("cluster_outbox")
 }
 
 // Received changes that cannot be applied yet (parent row not here yet, or a

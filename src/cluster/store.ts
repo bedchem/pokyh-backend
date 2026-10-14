@@ -29,42 +29,28 @@ export function unwrap(wrapped: string, context: string): Buffer {
   return unwrapSecret(kek(), wrapped, context);
 }
 
-type Tx = Prisma.TransactionClient;
-
-// Every writing transaction reads the set of replication targets, and holds
-// that read until it ends. Changing the set therefore has to wait for writes
-// in flight — and while it waits, new writes queue up behind it. A long
-// transaction (an import, a rollover) would turn that into a visible stall,
-// so a change gives up after a few seconds instead; the caller retries.
-async function changingTargets<T>(work: (tx: Tx) => Promise<T>): Promise<T> {
-  return prisma.$transaction(async (tx) => {
-    await tx.$executeRawUnsafe('SET SESSION innodb_lock_wait_timeout = 3');
-    try {
-      return await work(tx);
-    } finally {
-      await tx.$executeRawUnsafe('SET SESSION innodb_lock_wait_timeout = DEFAULT').catch(() => {});
-    }
-  }, { maxWait: 10_000, timeout: 20_000 });
-}
-
-export async function loadOrCreateNode(): Promise<{ nodeId: string; name: string }> {
+export async function loadOrCreateNode(): Promise<{ nodeId: string; name: string; advertiseUrl: string }> {
   const existing = await prisma.clusterNode.findUnique({ where: { id: 1 } });
-  if (existing) return { nodeId: existing.nodeId, name: existing.name || config.cluster.nodeName };
+  if (existing) return { nodeId: existing.nodeId, name: existing.name || config.cluster.nodeName, advertiseUrl: existing.advertiseUrl };
   try {
     const created = await prisma.clusterNode.create({
       data: { id: 1, nodeId: randomUUID(), name: config.cluster.nodeName },
     });
-    return { nodeId: created.nodeId, name: created.name };
+    return { nodeId: created.nodeId, name: created.name, advertiseUrl: created.advertiseUrl };
   } catch (err) {
     // Another start-up path created the row first.
     if (!(err instanceof Prisma.PrismaClientKnownRequestError) || err.code !== 'P2002') throw err;
     const row = await prisma.clusterNode.findUniqueOrThrow({ where: { id: 1 } });
-    return { nodeId: row.nodeId, name: row.name || config.cluster.nodeName };
+    return { nodeId: row.nodeId, name: row.name || config.cluster.nodeName, advertiseUrl: row.advertiseUrl };
   }
 }
 
 export async function renameNode(name: string): Promise<void> {
   await prisma.clusterNode.update({ where: { id: 1 }, data: { name } });
+}
+
+export async function saveAdvertiseUrl(url: string): Promise<void> {
+  await prisma.clusterNode.update({ where: { id: 1 }, data: { advertiseUrl: url } });
 }
 
 export function listPeers(): Promise<ClusterPeer[]> {
@@ -93,109 +79,86 @@ export function pairingSecretOf(peer: ClusterPeer): string | null {
   }
 }
 
+export type PeerRole = 'HOST' | 'JOIN';
+
+function pairingWindowEnd(): Date {
+  return new Date(Date.now() + config.cluster.pairingTtlMinutes * 60_000);
+}
+
+// Opens a pairing window. HOST: this node waits for the other to contact it
+// (an invite of ours, or an introduction where the other node calls us); the
+// address may still be unknown. JOIN: this node contacts the other one at
+// `address`, expecting the node id the invite named.
 export async function createPendingPeer(input: {
+  role: PeerRole;
   address: string;
   name: string;
-  pairingKey: string;
+  secret: string;
+  nodeId?: string | null;
+  introducedBy?: string | null;
   createdBy: string;
 }): Promise<ClusterPeer> {
   const id = randomUUID();
   return prisma.clusterPeer.create({
     data: {
       id,
+      role: input.role,
       address: input.address,
       name: input.name,
+      // A HOST entry learns the node id when the other node proves the key;
+      // until then it must not occupy the id (another entry may hold it).
+      nodeId: input.role === 'JOIN' ? input.nodeId ?? null : null,
+      introducedBy: input.introducedBy ?? null,
       status: 'PENDING',
-      pairingSecretEnc: wrap(Buffer.from(input.pairingKey, 'utf8'), `pairing:${id}`),
-      pairingExpiresAt: new Date(Date.now() + config.cluster.pairingTtlMinutes * 60_000),
+      pairingSecretEnc: wrap(Buffer.from(input.secret, 'utf8'), `pairing:${id}`),
+      pairingExpiresAt: pairingWindowEnd(),
       createdBy: input.createdBy,
     },
   });
 }
 
-// Opens a new pairing window for an existing peer entry (first attempt
-// expired or failed, or the link key is no longer usable).
-export async function reopenPairing(id: string, pairingKey: string): Promise<ClusterPeer> {
-  return changingTargets(async (tx) => {
-    await tx.clusterTarget.deleteMany({ where: { peerId: id } });
-    return tx.clusterPeer.update({
-      where: { id },
-      data: {
-        status: 'PENDING',
-        linkKeyEnc: null,
-        pairingStateEnc: null,
-        pairingSecretEnc: wrap(Buffer.from(pairingKey, 'utf8'), `pairing:${id}`),
-        pairingExpiresAt: new Date(Date.now() + config.cluster.pairingTtlMinutes * 60_000),
-        pairingFailures: 0,
-        scanActive: false,
-        scanTable: null,
-        scanHash: null,
-      },
-    });
+// Completes a pairing: stores the wrapped link key and forgets the pairing
+// key. The peer receives everything through a complete transfer; changes from
+// `feedFrom` on reach it through the change feed.
+export async function activatePeer(id: string, input: { nodeId: string; name: string; linkKey: Buffer; address?: string; feedFrom: bigint }): Promise<ClusterPeer> {
+  const current = await prisma.clusterPeer.findUniqueOrThrow({ where: { id } });
+  return prisma.clusterPeer.update({
+    where: { id },
+    data: {
+      nodeId: input.nodeId,
+      name: current.name || input.name.slice(0, 120),
+      ...(input.address ? { address: input.address } : {}),
+      status: 'ACTIVE',
+      linkKeyEnc: wrap(input.linkKey, `link:${id}`),
+      pairingSecretEnc: null,
+      pairingStateEnc: null,
+      pairingExpiresAt: null,
+      pairingFailures: 0,
+      lastSyncedAt: new Date(),
+      scanActive: true,
+      scanTable: null,
+      scanHash: null,
+      sentSeq: input.feedFrom,
+    },
   });
 }
 
-// Completes a pairing: stores the wrapped link key, forgets the pairing key
-// and starts routing changes to the peer — all in one transaction, so a peer
-// is never a replication target without a usable key or the other way round.
-export async function activatePeer(id: string, input: { nodeId: string; name: string; linkKey: Buffer }): Promise<ClusterPeer> {
-  return changingTargets(async (tx) => {
-    const current = await tx.clusterPeer.findUniqueOrThrow({ where: { id } });
-    const peer = await tx.clusterPeer.update({
-      where: { id },
-      data: {
-        nodeId: input.nodeId,
-        name: current.name || input.name.slice(0, 120),
-        status: 'ACTIVE',
-        linkKeyEnc: wrap(input.linkKey, `link:${id}`),
-        pairingSecretEnc: null,
-        pairingStateEnc: null,
-        pairingExpiresAt: null,
-        pairingFailures: 0,
-        lastSyncedAt: new Date(),
-        // The peer receives everything this node holds. Because it becomes a
-        // target in this same transaction — which waits for every write in
-        // flight — nothing can fall between "already there when the transfer
-        // started" and "queued because it changed afterwards".
-        scanActive: true,
-        scanTable: null,
-        scanHash: null,
-      },
-    });
-    await tx.clusterTarget.upsert({ where: { peerId: id }, create: { peerId: id }, update: {} });
-    return peer;
-  });
-}
-
-export async function setPeerStatus(id: string, status: PeerStatus): Promise<void> {
-  await changingTargets(async (tx) => {
-    const peer = await tx.clusterPeer.update({
-      where: { id },
-      data: {
-        status,
-        // Re-activating a link starts a complete transfer: changes made while
-        // it was off were not queued for it.
-        ...(status === 'ACTIVE'
-          ? { scanActive: true, scanTable: null, scanHash: null }
-          : { pairingSecretEnc: null, pairingStateEnc: null, pairingExpiresAt: null, scanActive: false }),
-      },
-    });
-    if (status === 'ACTIVE' && peer.linkKeyEnc) {
-      await tx.clusterTarget.upsert({ where: { peerId: id }, create: { peerId: id }, update: {} });
-    } else {
-      await tx.clusterTarget.deleteMany({ where: { peerId: id } });
-    }
+// `feedFrom` is required when a link is switched on again: changes made while
+// it was off reach the peer through a complete transfer.
+export async function setPeerStatus(id: string, status: PeerStatus, feedFrom?: bigint): Promise<void> {
+  await prisma.clusterPeer.update({
+    where: { id },
+    data: {
+      status,
+      ...(status === 'ACTIVE'
+        ? { scanActive: true, scanTable: null, scanHash: null, ...(feedFrom !== undefined ? { sentSeq: feedFrom } : {}) }
+        : { pairingSecretEnc: null, pairingStateEnc: null, pairingExpiresAt: null, scanActive: false }),
+    },
   });
 }
 
 export async function deletePeer(id: string): Promise<void> {
-  await changingTargets(async (tx) => {
-    await tx.clusterTarget.deleteMany({ where: { peerId: id } });
-    await tx.clusterPeer.deleteMany({ where: { id } });
-  });
-  // Once the peer is no longer a target nobody adds to its queue any more,
-  // so the queue can be dropped without competing with writers.
-  await prisma.clusterOutbox.deleteMany({ where: { peerId: id } });
+  await prisma.clusterPeer.deleteMany({ where: { id } });
 }
 
 export async function notePairingFailure(id: string): Promise<void> {

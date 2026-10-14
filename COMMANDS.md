@@ -88,8 +88,9 @@ npm run test:cluster
 
 ## Cluster
 
-Nodes are linked in the admin panel under **Cluster**: enter the other node's
-address and the same pairing key on both nodes. See README.md → "Cluster".
+Nodes are linked in the admin panel under **Cluster**: create an invite code on
+any member (**Node einladen**) and use it on the new node (**Beitreten**). See
+README.md → "Cluster".
 
 ```bash
 # Status of this node and its peers (admin token required)

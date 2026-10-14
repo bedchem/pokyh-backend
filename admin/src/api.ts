@@ -574,23 +574,24 @@ export const adminApi = {
   getCluster: (): Promise<ClusterStatus> =>
     request<ClusterStatus>('GET', '/api/admin/cluster'),
 
-  generatePairingKey: (): Promise<{ pairingKey: string }> =>
-    request<{ pairingKey: string }>('POST', '/api/admin/cluster/pairing-key'),
+  // The code is shown once and never stored in the panel.
+  createClusterInvite: (ownAddress: string): Promise<{ id: string; code: string; expiresAt: string }> =>
+    request<{ id: string; code: string; expiresAt: string }>('POST', '/api/admin/cluster/invites', { ownAddress }),
 
-  addClusterPeer: (data: { address: string; name?: string; pairingKey: string }): Promise<{ id: string }> =>
-    request<{ id: string }>('POST', '/api/admin/cluster/peers', data),
+  joinCluster: (code: string, ownAddress: string): Promise<{ id: string }> =>
+    request<{ id: string }>('POST', '/api/admin/cluster/join', { code, ownAddress }),
 
   updateClusterPeer: (id: string, data: { address?: string; name?: string; enabled?: boolean }): Promise<{ ok: boolean }> =>
     request<{ ok: boolean }>('PATCH', `/api/admin/cluster/peers/${id}`, data),
 
-  pairClusterPeer: (id: string, pairingKey: string): Promise<{ ok: boolean }> =>
-    request<{ ok: boolean }>('POST', `/api/admin/cluster/peers/${id}/pair`, { pairingKey }),
-
   resyncClusterPeer: (id: string, acceptStale = false): Promise<{ ok: boolean }> =>
     request<{ ok: boolean }>('POST', `/api/admin/cluster/peers/${id}/resync`, { acceptStale }),
 
-  removeClusterPeer: (id: string): Promise<void> =>
-    request<void>('DELETE', `/api/admin/cluster/peers/${id}`),
+  verifyClusterPeer: (id: string): Promise<{ repaired: number }> =>
+    request<{ repaired: number }>('POST', `/api/admin/cluster/peers/${id}/verify`),
+
+  removeClusterPeer: (id: string): Promise<{ deleted: boolean }> =>
+    request<{ deleted: boolean }>('DELETE', `/api/admin/cluster/peers/${id}`),
 
   rebuildCluster: (): Promise<{ rows: number }> =>
     request<{ rows: number }>('POST', '/api/admin/cluster/rebuild', { confirmation: 'REBUILD' }),

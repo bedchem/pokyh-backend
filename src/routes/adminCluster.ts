@@ -5,21 +5,21 @@ import { writeLimiter } from '../middleware/rateLimiter';
 import { logger } from '../utils/logger';
 import {
   ClusterError,
-  addPeer,
   clusterStatus,
-  newPairingKey,
+  createInvite,
+  joinCluster,
   rebuildFromThisNode,
   removePeer,
-  repairPeer,
   resyncPeer,
   setNodeName,
   updatePeer,
+  verifyNow,
 } from '../cluster';
 
 // ─── Cluster administration: /api/admin/cluster ──────────────────────────────
-// Adding a node is a two-sided, manual act: an administrator enters the other
-// node's address and the same pairing key on both nodes. Nothing here ever
-// returns key material — a pairing key is accepted, used once and discarded.
+// A node joins with a one-time invite code created on any member. The code is
+// returned exactly once, to the administrator who created it, and is never
+// logged; nothing here ever returns stored key material.
 
 const router = Router();
 
@@ -27,8 +27,8 @@ function actor(req: Request): string {
   return req.adminUser?.username ?? 'admin';
 }
 
-// Cluster operations report expected failures (bad address, weak key, peer
-// not found) with their own status code and message.
+// Cluster operations report expected failures (bad address, expired code,
+// peer not found) with their own status code and message.
 async function guarded(res: Response, action: () => Promise<void>): Promise<void> {
   try {
     await action();
@@ -42,35 +42,38 @@ async function guarded(res: Response, action: () => Promise<void>): Promise<void
 }
 
 const peerIdSchema = z.string().uuid();
+const addressSchema = z.string().trim().min(1).max(255);
 
 router.get('/', requireAdmin, async (_req: Request, res: Response): Promise<void> => {
   res.setHeader('Cache-Control', 'no-store');
   res.json(await clusterStatus());
 });
 
-// A strong pairing key to copy to the other node. It is not stored here.
-router.post('/pairing-key', requireAdmin, writeLimiter, async (_req: Request, res: Response): Promise<void> => {
-  res.setHeader('Cache-Control', 'no-store');
-  res.json({ pairingKey: newPairingKey() });
-});
+const inviteSchema = z.object({ ownAddress: addressSchema });
 
-const addPeerSchema = z.object({
-  address: z.string().trim().min(1).max(255),
-  name: z.string().trim().max(120).optional(),
-  pairingKey: z.string().min(1).max(512),
-});
-
-router.post('/peers', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
-  const body = addPeerSchema.parse(req.body);
+router.post('/invites', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+  const body = inviteSchema.parse(req.body);
   await guarded(res, async () => {
-    const peer = await addPeer({ ...body, createdBy: actor(req) });
-    logger.info('Admin action: cluster peer added', { action: 'cluster_peer_added', adminUsername: actor(req), peerId: peer.id });
+    const invite = await createInvite({ ownAddress: body.ownAddress, createdBy: actor(req) });
+    logger.info('Admin action: cluster invite created', { action: 'cluster_invite_created', adminUsername: actor(req), peerId: invite.id });
+    res.setHeader('Cache-Control', 'no-store');
+    res.status(201).json(invite);
+  });
+});
+
+const joinSchema = z.object({ code: z.string().trim().min(10).max(2048), ownAddress: addressSchema });
+
+router.post('/join', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+  const body = joinSchema.parse(req.body);
+  await guarded(res, async () => {
+    const peer = await joinCluster({ code: body.code, ownAddress: body.ownAddress, createdBy: actor(req) });
+    logger.info('Admin action: cluster join started', { action: 'cluster_join_started', adminUsername: actor(req), peerId: peer.id });
     res.status(201).json(peer);
   });
 });
 
 const updatePeerSchema = z.object({
-  address: z.string().trim().min(1).max(255).optional(),
+  address: addressSchema.optional(),
   name: z.string().trim().max(120).optional(),
   enabled: z.boolean().optional(),
 });
@@ -83,19 +86,6 @@ router.patch('/peers/:id', requireAdmin, writeLimiter, async (req: Request, res:
     logger.info('Admin action: cluster peer updated', {
       action: 'cluster_peer_updated', adminUsername: actor(req), peerId: id, fields: Object.keys(body),
     });
-    res.json({ ok: true });
-  });
-});
-
-const pairSchema = z.object({ pairingKey: z.string().min(1).max(512) });
-
-// Opens a new pairing window for an existing peer entry.
-router.post('/peers/:id/pair', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
-  const id = peerIdSchema.parse(req.params['id']);
-  const body = pairSchema.parse(req.body);
-  await guarded(res, async () => {
-    await repairPeer(id, body.pairingKey);
-    logger.info('Admin action: cluster pairing reopened', { action: 'cluster_pairing_reopened', adminUsername: actor(req), peerId: id });
     res.json({ ok: true });
   });
 });
@@ -114,12 +104,21 @@ router.post('/peers/:id/resync', requireAdmin, writeLimiter, async (req: Request
   });
 });
 
+router.post('/peers/:id/verify', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+  const id = peerIdSchema.parse(req.params['id']);
+  await guarded(res, async () => {
+    const result = await verifyNow(id);
+    logger.info('Admin action: cluster data check run', { action: 'cluster_verify_run', adminUsername: actor(req), peerId: id, repaired: result.repaired });
+    res.json(result);
+  });
+});
+
 router.delete('/peers/:id', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
   const id = peerIdSchema.parse(req.params['id']);
   await guarded(res, async () => {
-    await removePeer(id);
-    logger.info('Admin action: cluster peer removed', { action: 'cluster_peer_removed', adminUsername: actor(req), peerId: id });
-    res.status(204).send();
+    const result = await removePeer(id);
+    logger.info('Admin action: cluster peer removed', { action: 'cluster_peer_removed', adminUsername: actor(req), peerId: id, deleted: result.deleted });
+    res.json(result);
   });
 });
 

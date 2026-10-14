@@ -1,4 +1,4 @@
-import { ReactNode, useState } from 'react';
+import { ReactNode, useLayoutEffect, useRef, useState } from 'react';
 
 // Small diagrams that share the dashboard chart's manners: soft sky and amber,
 // no gridlines, and the inverted tooltip card for the value under the pointer.
@@ -21,17 +21,41 @@ interface BarsProps {
   ariaLabel: string;
 }
 
+// Least distance between two axis labels, centre to centre.
+const MIN_LABEL_GAP = 64;
+
 // Vertical bars that grow from the baseline; the latest one is in full colour.
 export function Bars({ values, labels, titles, unit, height = 132, color = '#4f96dc', tickEvery = 1, format, ariaLabel }: BarsProps) {
   const [hovered, setHovered] = useState<number | null>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const [width, setWidth] = useState(0);
   const peak = Math.max(1, ...values);
   const active = hovered ?? values.length - 1;
   const show = format ?? ((v: number) => v.toLocaleString('de-AT'));
 
+  useLayoutEffect(() => {
+    const el = rootRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver(([entry]) => { if (entry) setWidth(Math.round(entry.contentRect.width)); });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [values.length === 0]);
+
   if (values.length === 0) return <p className="py-6 text-[14px] text-ink-3">Noch keine Daten.</p>;
 
+  // On a narrow screen only every so many bars keeps its label, so the
+  // labels never run into each other.
+  const slotPx = width > 0 ? width / values.length : MIN_LABEL_GAP;
+  const every = tickEvery * Math.max(1, Math.ceil(MIN_LABEL_GAP / Math.max(slotPx * tickEvery, 1)));
+  const activeIsTick = active % every === 0;
+  const labelShown = (i: number) => {
+    if (i === active) return true;
+    if (i % every !== 0) return false;
+    return activeIsTick || Math.abs(i - active) * slotPx >= MIN_LABEL_GAP - 8;
+  };
+
   return (
-    <div className="bars" role="img" aria-label={ariaLabel} onPointerLeave={() => setHovered(null)}>
+    <div ref={rootRef} className="bars" role="img" aria-label={ariaLabel} onPointerLeave={() => setHovered(null)}>
       <div className="bars-plot" style={{ height }}>
         {values.map((value, i) => (
           <div
@@ -61,7 +85,7 @@ export function Bars({ values, labels, titles, unit, height = 132, color = '#4f9
       <div className="bars-axis" aria-hidden="true">
         {labels.map((label, i) => (
           <span key={i} className="bars-slot">
-            {(i % tickEvery === 0 || i === active) && (
+            {labelShown(i) && (
               <span className="chart-x" data-on={i === active}>{label}</span>
             )}
           </span>

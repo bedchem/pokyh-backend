@@ -10,7 +10,7 @@ const PAIRING_KEY = 'correct horse battery staple 42';
 // side derived so tests can compare and tamper.
 async function pair(keyA, keyB) {
   const ephA = c.generateEphemeral();
-  const init = { from: 'node-a', name: 'A', salt: c.randomToken(16), e: ephA.publicKey, n: c.randomToken(16) };
+  const init = { from: 'node-a', name: 'A', addr: 'https://node-a.example.org', salt: c.randomToken(16), e: ephA.publicKey, n: c.randomToken(16) };
   const mac = c.pairInitMac(await c.derivePairingPsk(keyA, init.salt), init);
 
   const pskB = await c.derivePairingPsk(keyB, init.salt);
@@ -50,6 +50,14 @@ test('the pairing salt changes the stretched key', async () => {
   const b = await c.derivePairingPsk(PAIRING_KEY, Buffer.alloc(16, 2));
   assert.notDeepEqual(a, b);
   assert.deepEqual(a, await c.derivePairingPsk(`  ${PAIRING_KEY}  `, Buffer.alloc(16, 1)));
+});
+
+test('the joining node\'s address is covered by the pairing proof', async () => {
+  const { init } = await pair(PAIRING_KEY, PAIRING_KEY);
+  const psk = await c.derivePairingPsk(PAIRING_KEY, init.salt);
+  const genuine = c.pairInitMac(psk, init);
+  const redirected = c.pairInitMac(psk, { ...init, addr: 'https://attacker.example.org' });
+  assert.equal(c.safeEqual(genuine, redirected), false, 'a changed address no longer matches the proof');
 });
 
 test('an altered pairing message breaks the confirmation', async () => {

@@ -76,6 +76,15 @@ export const NAV_GROUPS: NavGroup[] = [
 
 export const NAV_ITEMS: NavEntry[] = NAV_GROUPS.flatMap((g) => g.items);
 
+// The tabs of the bottom bar on small screens; everything else is one tap
+// away under "Mehr".
+export const DOCK_TABS: NavEntry[] = [
+  { to: '/dashboard', label: 'Dashboard',  icon: LayoutDashboard },
+  { to: '/users',     label: 'Users',      icon: Users },
+  { to: '/classes',   label: 'Classes',    icon: Building2 },
+  { to: '/dishes',    label: 'Speiseplan', icon: UtensilsCrossed },
+];
+
 // The longest matching prefix wins, so /learn/courses lights up "Learn-Kurse"
 // alone and an unlisted child such as /learn/teams falls back to "Learn".
 export function activeNavPath(pathname: string): string | null {

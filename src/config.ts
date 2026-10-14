@@ -361,15 +361,54 @@ export const config = {
     // Source of the key that wraps stored link keys. When unset it is derived
     // from JWT_SECRET, so nothing new has to be provisioned for a first setup.
     secret: strEnv('CLUSTER_SECRET', ''),
+    // The address other nodes reach this one at (https://node1.example.org,
+    // http://10.0.0.5:4100). Prefills the invite and join forms; optional.
+    advertiseUrl: strEnv('CLUSTER_ADVERTISE_URL', ''),
+
+    // Where the node-to-node channel is served. Both can be on at once:
+    //   CLUSTER_PUBLIC_PATH  /cluster/v1 on the ordinary API port, for nodes
+    //                        that reach each other through a reverse proxy;
+    //   CLUSTER_PORT         a separate listener that serves nothing but the
+    //                        channel (0 = off), bound to CLUSTER_BIND_ADDRESS.
+    // CLUSTER_ALLOWLIST (IPs and CIDR ranges, comma separated) restricts both
+    // to the listed addresses; behind a proxy the address is the one
+    // TRUST_PROXY lets through. Every frame is end-to-end encrypted either way.
+    publicPath: boolEnv('CLUSTER_PUBLIC_PATH', true),
+    port: boundedIntEnv('CLUSTER_PORT', 0, 0, 65_535),
+    bindAddress: strEnv('CLUSTER_BIND_ADDRESS', '0.0.0.0'),
+    allowlist: (process.env['CLUSTER_ALLOWLIST'] ?? '')
+      .split(',')
+      .map((entry) => entry.trim())
+      .filter(Boolean),
+    // A node joining through one member is introduced to all the others, so
+    // every node ends up linked directly with every other.
+    autoMesh: boolEnv('CLUSTER_AUTO_MESH', true),
+
     heartbeatIntervalMs: boundedIntEnv('CLUSTER_HEARTBEAT_INTERVAL_MS', 5_000, 500, 60_000),
     requestTimeoutMs: boundedIntEnv('CLUSTER_REQUEST_TIMEOUT_MS', 4_000, 500, 60_000),
     syncTimeoutMs: boundedIntEnv('CLUSTER_SYNC_TIMEOUT_MS', 60_000, 5_000, 600_000),
     suspectAfterFailures: boundedIntEnv('CLUSTER_SUSPECT_AFTER_FAILURES', 2, 1, 20),
     offlineAfterFailures: boundedIntEnv('CLUSTER_OFFLINE_AFTER_FAILURES', 4, 2, 100),
-    syncIntervalMs: boundedIntEnv('CLUSTER_SYNC_INTERVAL_MS', 1_000, 100, 60_000),
-    batchSize: boundedIntEnv('CLUSTER_BATCH_SIZE', 200, 10, 1_000),
+    // How often the change feed is looked at. Only reads, on an index.
+    syncIntervalMs: boundedIntEnv('CLUSTER_SYNC_INTERVAL_MS', 250, 100, 60_000),
+    // Adaptive batching: a change goes out once nothing new arrived for
+    // BATCH_IDLE_MS; under steady load changes are collected for at most
+    // BATCH_MAX_DELAY_MS (or until a batch is full) and sent as one
+    // compressed package.
+    batchIdleMs: boundedIntEnv('CLUSTER_BATCH_IDLE_MS', 500, 0, 10_000),
+    batchMaxDelayMs: boundedIntEnv('CLUSTER_BATCH_MAX_DELAY_MS', 2_000, 0, 60_000),
+    batchSize: boundedIntEnv('CLUSTER_BATCH_SIZE', 500, 10, 2_000),
     maxMessageBytes: boundedIntEnv('CLUSTER_MAX_MESSAGE_BYTES', 16 * 1024 * 1024, 1024 * 1024, 64 * 1024 * 1024),
-    pairingTtlMinutes: boundedIntEnv('CLUSTER_PAIRING_TTL_MINUTES', 30, 1, 24 * 60),
+    // Longest a writing transaction may stay open between recording a change
+    // and committing it (the longest in this code base, the school-year
+    // rollover, may take 180 s). The change feed re-reads this span, so a late
+    // commit is never skipped; the data check covers anything beyond it.
+    commitHorizonMs: boundedIntEnv('CLUSTER_COMMIT_HORIZON_MS', 300_000, 5_000, 3_600_000),
+    // The nodes compare checksums of their complete data this often and
+    // repair whatever differs.
+    verifyIntervalMinutes: boundedIntEnv('CLUSTER_VERIFY_INTERVAL_MINUTES', 15, 1, 24 * 60),
+    // An invite code is valid this long, once.
+    pairingTtlMinutes: boundedIntEnv('CLUSTER_PAIRING_TTL_MINUTES', 15, 1, 24 * 60),
     pairingMaxFailures: boundedIntEnv('CLUSTER_PAIRING_MAX_FAILURES', 5, 1, 100),
     // LWW conflict resolution compares clocks; a larger measured difference is
     // reported as a warning in the cluster status.

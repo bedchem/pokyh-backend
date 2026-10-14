@@ -1,9 +1,9 @@
-import { spawn } from 'child_process';
+import { spawnPrismaCli } from '../utils/prismaCli';
 import { prisma } from '../db';
 import { config } from '../config';
 import { logger } from '../utils/logger';
 import type { Catalog } from './catalog';
-import { OUTBOX_TABLE, STATE_TABLE, TRIGGER_PREFIX, backfillSql, q, triggerDefinitions } from './sqlgen';
+import { LEGACY_TABLES, LEGACY_TRIGGER_PREFIX, STATE_TABLE, TRIGGER_NAME, TRIGGER_PREFIX, backfillSql, q, triggerDefinitions } from './sqlgen';
 
 // Change capture: installs the per-table triggers and keeps the version
 // registry complete.
@@ -23,9 +23,8 @@ import { OUTBOX_TABLE, STATE_TABLE, TRIGGER_PREFIX, backfillSql, q, triggerDefin
 // appear on the command line.
 function runSqlScript(script: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    const child = spawn(
-      'npx',
-      ['prisma', 'db', 'execute', '--stdin', '--schema', 'prisma/schema.prisma'],
+    const child = spawnPrismaCli(
+      ['db', 'execute', '--stdin', '--schema', 'prisma/schema.prisma'],
       { cwd: process.cwd(), env: process.env, stdio: ['pipe', 'pipe', 'pipe'] },
     );
     let output = '';
@@ -48,7 +47,7 @@ async function existingTriggerNames(): Promise<Set<string>> {
   const rows = await prisma.$queryRawUnsafe<Array<{ TRIGGER_NAME: string }>>(
     'SELECT TRIGGER_NAME FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = DATABASE()',
   );
-  return new Set(rows.map((row) => row.TRIGGER_NAME).filter((name) => name.startsWith(TRIGGER_PREFIX)));
+  return new Set(rows.map((row) => row.TRIGGER_NAME).filter((name) => name.startsWith(TRIGGER_PREFIX) || name.startsWith(LEGACY_TRIGGER_PREFIX)));
 }
 
 export interface TriggerReport {
@@ -87,7 +86,7 @@ export async function ensureTriggers(catalog: Catalog, nodeId: string, trackedBe
   // current or of an outdated definition.
   const covered = new Set<string>();
   for (const name of existing) {
-    const match = /^pokyh_cl_[0-9a-f]{8}_[iud]_(.+)$/.exec(name);
+    const match = TRIGGER_NAME.exec(name);
     if (match) covered.add(match[1]!);
   }
   const uncovered = [...new Set(missing.map((trigger) => trigger.table))]
@@ -128,11 +127,75 @@ export async function backfillVersions(catalog: Catalog, nodeId: string, mode: '
 // queued here: the sender walks the version registry from the beginning and
 // offers each row by key and version, and the peer asks for what it lacks. A
 // peer that already holds the data therefore transfers almost nothing.
-export async function startFullTransfer(peerRowId: string): Promise<void> {
+// `feedFrom` moves the peer's position in the change feed as well: whatever
+// changes from there on reaches it through the feed, everything older through
+// the walk.
+export async function startFullTransfer(peerRowId: string, feedFrom?: bigint): Promise<void> {
   await prisma.clusterPeer.updateMany({
     where: { id: peerRowId },
-    data: { scanActive: true, scanTable: null, scanHash: null },
+    data: { scanActive: true, scanTable: null, scanHash: null, ...(feedFrom !== undefined ? { sentSeq: feedFrom } : {}) },
   });
+}
+
+// The previous design queued every change once per peer, through triggers
+// with another name prefix. Those triggers are replaced by ensureTriggers;
+// on a node without peers they are simply dropped. The queue tables go once
+// no trigger refers to them any more.
+export async function retireLegacyCapture(): Promise<void> {
+  const legacy = [...await existingTriggerNames()].filter((name) => name.startsWith(LEGACY_TRIGGER_PREFIX));
+  if (legacy.length > 0) {
+    await runSqlScript(legacy.map((name) => `DROP TRIGGER IF EXISTS ${q(name)};`).join('\n'));
+  }
+  const remaining = [...await existingTriggerNames()].filter((name) => name.startsWith(LEGACY_TRIGGER_PREFIX));
+  if (remaining.length > 0) return;
+  const tables = await prisma.$queryRawUnsafe<Array<{ TABLE_NAME: string }>>(
+    `SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN (${LEGACY_TABLES.map(() => '?').join(', ')})`,
+    ...LEGACY_TABLES,
+  );
+  for (const { TABLE_NAME } of tables) {
+    await prisma.$executeRawUnsafe(`DROP TABLE IF EXISTS ${q(TABLE_NAME)}`);
+  }
+  if (legacy.length > 0 || tables.length > 0) {
+    logger.info('Cluster bookkeeping of the previous design removed', {
+      action: 'cluster_legacy_removed',
+      triggers: legacy.length,
+      tables: tables.length,
+    });
+  }
+}
+
+// The newest position in the change feed, and the counter the database would
+// hand out next. The counter only grows while the database server's clock does
+// not jump back between two of its restarts; `repairFeedOrder` handles that.
+export async function feedHead(): Promise<{ max: bigint; next: bigint }> {
+  const rows = await prisma.$queryRawUnsafe<Array<{ max: bigint | null; next: bigint }>>(
+    `SELECT (SELECT MAX(\`seq\`) FROM ${q(STATE_TABLE)}) AS \`max\`, UUID_SHORT() AS \`next\``,
+  );
+  return { max: BigInt(rows[0]?.max ?? 0), next: BigInt(rows[0]?.next ?? 0) };
+}
+
+// When the database hands out positions below ones already used (its clock
+// was set back before it restarted), new changes would sort before old ones
+// and peers reading from their saved positions would skip them. The rows
+// ahead of the counter are taken out of the feed (position 0) and every peer
+// gets a complete transfer, which covers them; it declines by version what it
+// already holds, so little actually travels.
+export async function repairFeedOrder(): Promise<number> {
+  const head = await feedHead();
+  if (head.max < head.next) return 0;
+  let moved = 0;
+  for (;;) {
+    const count = await prisma.$executeRawUnsafe(
+      `UPDATE ${q(STATE_TABLE)} SET \`seq\` = 0 WHERE \`seq\` >= ? LIMIT ${CHUNK}`,
+      head.next,
+    );
+    moved += Number(count) || 0;
+    if (!count) break;
+  }
+  const peers = await prisma.clusterPeer.findMany({ where: { status: 'ACTIVE' }, select: { id: true } });
+  for (const peer of peers) await startFullTransfer(peer.id, 0n);
+  logger.warn('Cluster change feed reset after the database clock went back', { action: 'cluster_feed_reset', rows: moved });
+  return moved;
 }
 
 const CHUNK = 1_000;
@@ -176,27 +239,29 @@ async function clearUnlocked(table: string, keyColumns: string[]): Promise<numbe
 // fresh version, and a complete transfer to every peer starts. Used after a
 // database restore, where the data changed underneath the triggers.
 export async function rebuildVersions(catalog: Catalog, nodeId: string): Promise<number> {
-  await clearUnlocked(OUTBOX_TABLE, ['peer_id', 'table_name', 'pk_hash']);
   await prisma.clusterDeferred.deleteMany();
   await clearUnlocked(STATE_TABLE, ['table_name', 'pk_hash']);
   const registered = await backfillVersions(catalog, nodeId, 'now');
-  const targets = await prisma.clusterTarget.findMany({ select: { peerId: true } });
-  for (const target of targets) await startFullTransfer(target.peerId);
-  logger.info('Cluster versions rebuilt', { action: 'cluster_versions_rebuilt', rows: registered, peers: targets.length });
+  const peers = await prisma.clusterPeer.findMany({ where: { status: 'ACTIVE' }, select: { id: true } });
+  for (const peer of peers) await startFullTransfer(peer.id, 0n);
+  logger.info('Cluster versions rebuilt', { action: 'cluster_versions_rebuilt', rows: registered, peers: peers.length });
   return registered;
 }
 
 // Removes version records of rows deleted long ago. Until then the record is
-// what tells a returning peer that the row was deleted on purpose.
+// what tells a returning peer that the row was deleted on purpose. A record
+// some active peer has not read from the feed yet always stays.
 export async function pruneTombstones(): Promise<number> {
   const cutoff = new Date(Date.now() - config.cluster.tombstoneRetentionDays * 24 * 60 * 60 * 1000);
+  const peers = await prisma.clusterPeer.findMany({ where: { status: 'ACTIVE' }, select: { sentSeq: true } });
+  const delivered = peers.reduce<bigint | null>((min, peer) => (min === null || peer.sentSeq < min ? peer.sentSeq : min), null);
   return prisma.$transaction(async (tx) => {
     const rows = await tx.$queryRawUnsafe<Array<{ table_name: string; pk_hash: string }>>(
       `SELECT s.\`table_name\`, s.\`pk_hash\` FROM ${q(STATE_TABLE)} s `
       + 'WHERE s.`deleted` = 1 AND s.`changed_at` < ? '
-      + `AND NOT EXISTS (SELECT 1 FROM ${q(OUTBOX_TABLE)} o WHERE o.\`table_name\` = s.\`table_name\` AND o.\`pk_hash\` = s.\`pk_hash\`) `
-      + `LIMIT ${CHUNK} FOR UPDATE OF s SKIP LOCKED`,
-      cutoff,
+      + (delivered !== null ? 'AND s.`seq` <= ? ' : '')
+      + `LIMIT ${CHUNK} FOR UPDATE SKIP LOCKED`,
+      cutoff, ...(delivered !== null ? [delivered] : []),
     );
     if (rows.length === 0) return 0;
     for (const row of rows) {

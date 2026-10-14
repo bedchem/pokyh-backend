@@ -31,10 +31,15 @@ const nodeId = z.string().regex(/^[A-Za-z0-9-]{8,36}$/);
 const nodeName = z.string().max(120);
 const mac = fixedBytes(32);
 
+const address = z.string().min(1).max(255);
+
 export const pairInitSchema = z.object({
-  v: z.literal(1),
+  v: z.literal(2),
   from: nodeId,
   name: nodeName,
+  // Where the initiator can be reached; the responder stores it as the
+  // peer's address. Covered by the MAC, so it cannot be swapped in transit.
+  addr: address,
   salt: fixedBytes(PAIRING_SALT_BYTES),
   e: fixedBytes(X25519_PUBLIC_BYTES),
   n: fixedBytes(HANDSHAKE_NONCE_BYTES),
@@ -55,7 +60,7 @@ export const pairConfirmSchema = z.object({
 });
 
 export const sessionInitSchema = z.object({
-  v: z.literal(1),
+  v: z.literal(2),
   from: nodeId,
   to: nodeId,
   e: fixedBytes(X25519_PUBLIC_BYTES),
@@ -82,12 +87,18 @@ export const heartbeatSchema = z.object({
   name: nodeName,
   schema: z.string().max(64),
   appVersion: z.string().max(40),
-  leader: z.string().max(36),
   captureReady: z.boolean(),
-  // Rows this node still has queued for the receiver.
+  // Rows this node still has to deliver to the receiver.
   pending: z.boolean(),
   secrets: z.object({ jwt: z.string().max(64), apiKey: z.string().max(64), serverKey: z.string().max(64) }),
-  peers: z.array(z.object({ id: nodeId, health: z.string().max(12) })).max(64),
+  // The sender's links and the pairings it has open, so nodes can see which
+  // pairs of them are not linked yet (see mesh.ts).
+  peers: z.array(z.object({ id: nodeId, health: z.string().max(12), address: z.string().max(255) })).max(64),
+  pairing: z.array(nodeId).max(64),
+  // Nodes the sender refuses to link with (removed or switched off by an
+  // administrator), and the address it can be reached at.
+  blocked: z.array(nodeId).max(64),
+  addr: z.string().max(255),
 });
 export type Heartbeat = z.infer<typeof heartbeatSchema>;
 
@@ -122,3 +133,37 @@ export const pushSchema = z.object({
 
 // One letter per pushed item, in order: applied, stale, deferred, rejected.
 export type ItemResult = 'a' | 's' | 'd' | 'r';
+
+// A common peer asks the receiver to pair with another node (mesh.ts).
+// HOST: wait for that node to call; JOIN: call it at `addr`.
+export const introduceSchema = z.object({
+  node: nodeId,
+  name: nodeName,
+  addr: z.string().max(255),
+  role: z.union([z.literal('HOST'), z.literal('JOIN')]),
+  secret: z.string().min(32).max(128),
+});
+
+// Data checks (verify.ts). A digest summarises rows per group: count and an
+// XOR of per-row hashes, so two nodes compare thousands of rows with a few
+// numbers and descend only into groups that differ.
+export const digestRequestSchema = z.object({
+  t: tableName.nullable(),
+  p: z.string().regex(/^[0-9a-f]{0,6}$/),
+  // Tombstones older than this version are left out on both sides: they may
+  // already be pruned on one of them.
+  floor: version,
+});
+export const digestReplySchema = z.object({
+  groups: z.array(z.tuple([z.string().max(64), z.number().int().nonnegative(), z.string().regex(/^[0-9]{1,20}$/)])).max(4096),
+});
+export const rowsRequestSchema = z.object({
+  t: tableName,
+  p: z.string().regex(/^[0-9a-f]{1,6}$/),
+  floor: version,
+});
+export const rowsReplySchema = z.object({
+  // [key hash, version, origin, deleted]
+  rows: z.array(z.tuple([pkHash, version, nodeId, z.union([z.literal(0), z.literal(1)])])).max(20_000),
+  truncated: z.boolean(),
+});

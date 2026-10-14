@@ -82,7 +82,9 @@ export function PageHeader({ title, subtitle, children }: { title: ReactNode; su
         <h1 className="text-[30px] font-semibold leading-[1.15] tracking-[-0.02em] sm:text-[36px]">{title}</h1>
         {subtitle && <p className="mt-2 max-w-[62ch] text-[15px] text-ink-3">{subtitle}</p>}
       </div>
-      {children && <div className="flex flex-shrink-0 flex-wrap items-center gap-2.5">{children}</div>}
+      {/* Wraps onto its own line when it does not fit beside the title, and
+          then wraps its own buttons rather than running off the screen. */}
+      {children && <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2.5">{children}</div>}
     </header>
   );
 }
@@ -315,6 +317,47 @@ export function Pager({ page, pages, onChange }: { page: number; pages: number; 
   );
 }
 
+// ─── Tables on small screens ────────────────────────────────────────────────
+
+// Gives every cell of the .tbl tables inside `root` its column name as
+// data-label, so a table stacked into cards on a phone can still say what each
+// value is. Follows re-renders; columns whose header is only a screen-reader
+// label (an actions column) stay unlabelled.
+export function useTableLabels(root: React.RefObject<HTMLElement | null>) {
+  useEffect(() => {
+    const el = root.current;
+    if (!el) return;
+    let frame = 0;
+    const label = () => {
+      frame = 0;
+      el.querySelectorAll<HTMLTableElement>('table.tbl').forEach((table) => {
+        const heads = [...table.querySelectorAll<HTMLTableCellElement>('thead th')].flatMap((th) => {
+          const text = th.querySelector('.sr-only') ? '' : (th.textContent ?? '').trim();
+          return Array.from({ length: th.colSpan || 1 }, () => text);
+        });
+        table.querySelectorAll<HTMLTableRowElement>('tbody > tr').forEach((row) => {
+          let column = 0;
+          for (const cell of row.cells) {
+            const text = cell.colSpan === 1 ? heads[column] ?? '' : '';
+            if (text && cell.dataset.label !== text) cell.dataset.label = text;
+            else if (!text && cell.dataset.label !== undefined) delete cell.dataset.label;
+            column += cell.colSpan;
+          }
+        });
+      });
+    };
+    const schedule = () => { if (!frame) frame = requestAnimationFrame(label); };
+    // Only structure changes are watched, so setting the labels never retriggers it.
+    const observer = new MutationObserver(schedule);
+    observer.observe(el, { childList: true, subtree: true });
+    schedule();
+    return () => {
+      observer.disconnect();
+      cancelAnimationFrame(frame);
+    };
+  }, [root]);
+}
+
 // ─── Expanding content ──────────────────────────────────────────────────────
 
 // Opens and closes its children by animating to their natural height. The
@@ -385,7 +428,7 @@ export function Dialog({ title, subtitle, onClose, children, width = 460 }: Dial
 
   return createPortal(
     <div
-      className="animate-fadeIn fixed inset-0 z-[80] flex items-start justify-center overflow-y-auto p-4 pt-[9vh]"
+      className="animate-fadeIn fixed inset-0 z-[80] flex items-start justify-center overflow-y-auto overflow-x-hidden overscroll-contain p-4 pt-[9vh]"
       style={{ background: 'var(--scrim)' }}
       onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
@@ -394,7 +437,7 @@ export function Dialog({ title, subtitle, onClose, children, width = 460 }: Dial
         role="dialog"
         aria-modal="true"
         aria-label={title}
-        className="animate-scaleIn w-full rounded-[28px] bg-raise p-7 sm:p-8"
+        className="animate-scaleIn w-full min-w-0 rounded-[28px] bg-raise p-6 sm:p-8"
         style={{ maxWidth: width, boxShadow: '0 44px 70px -40px rgb(0 0 0 / 0.45)' }}
       >
         <div className="flex items-start justify-between gap-4">

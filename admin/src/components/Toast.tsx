@@ -28,7 +28,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     <ToastContext.Provider value={{ showToast }}>
       {children}
       <div
-        className="fixed z-[200] flex flex-col gap-2 pointer-events-none
+        className="toast-stack fixed z-[200] flex flex-col gap-2 pointer-events-none
           bottom-4 left-4 right-4
           sm:top-5 sm:right-5 sm:bottom-auto sm:left-auto sm:w-auto"
       >
@@ -39,7 +39,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
             className="toast-item pointer-events-auto flex items-center gap-3 rounded-[16px] bg-tip py-3 pl-4 pr-3"
             style={{
               boxShadow: '0 18px 30px -18px rgb(0 0 0 / 0.55)',
-              minWidth: '260px',
+              minWidth: 'min(260px, 100%)',
               maxWidth: '360px',
             }}
           >

@@ -175,11 +175,21 @@
 
   html {
     -webkit-tap-highlight-color: transparent;
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
     text-rendering: optimizeLegibility;
     font-feature-settings: 'kern' 1, 'liga' 1;
   }
 
+  /* The app scrolls inside its own panes; the document itself never moves
+     sideways, not even when something inside is too wide. */
+  html, body {
+    overflow-x: hidden;
+    overscroll-behavior-x: none;
+  }
+
   body {
+    overflow-wrap: break-word;
     background: var(--canvas);
     color: var(--ink);
     font-family: Poppins, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Arial, sans-serif;
@@ -197,6 +207,17 @@
   }
 
   select option { background: var(--sheet); color: var(--ink); }
+
+  /* Touch browsers zoom into any field set below 16px when it is focused, and
+     the zoomed page then slides sideways. At 16px they leave the page alone. */
+  @media (pointer: coarse) {
+    input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="file"]),
+    textarea,
+    select { font-size: 16px !important; }
+  }
+
+  /* Long identifiers (ids, addresses, keys) break instead of widening the page. */
+  .font-mono { overflow-wrap: anywhere; }
 
   ::selection {
     background: var(--sky-wash);
@@ -229,7 +250,175 @@
 /* Every scrolling area paints its own opaque ground. Without one the browser
    cannot scroll it on the compositor on ordinary-density screens and repaints
    the whole area on each frame, which is what makes scrolling stutter. */
-.sheet main, .dash-main, .dash-rail, .side-scroll { background: var(--sheet); }
+.sheet main, .dash-main, .dash-rail, .side-scroll, .more-body { background: var(--sheet); }
+
+/* Pages only ever scroll vertically. Whatever is still wider than the screen
+   (an unbroken string from the database, say) is cut at the page edge instead
+   of making the whole page slide sideways; tables scroll inside their own box. */
+.app-main > * { overflow-x: clip; }
+
+/* ─── Small screens: bottom bar and the "Mehr" sheet ─────────── */
+
+:root { --dock-h: 64px; }
+
+@media (max-width: 1023.98px) {
+  /* The page ends where the bar begins, so nothing ever hides behind it. */
+  .shell { padding-bottom: calc(var(--dock-h) + env(safe-area-inset-bottom)); }
+  .app-main { padding-top: env(safe-area-inset-top); }
+}
+
+.dock {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 45;
+  padding: 0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  background: var(--sheet);
+  border-top: 1px solid var(--line);
+}
+.dock-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(var(--tabs, 5), minmax(0, 1fr));
+  max-width: 640px;
+  height: var(--dock-h);
+  margin: 0 auto;
+}
+/* One marker that travels along the top edge, as in the sidebar. */
+.dock-marker {
+  position: absolute;
+  top: -1px;
+  left: 0;
+  display: flex;
+  justify-content: center;
+  width: calc(100% / var(--tabs, 5));
+  pointer-events: none;
+  transition: transform 0.5s var(--glide);
+}
+.dock-marker::after {
+  content: '';
+  width: 28px;
+  height: 3px;
+  border-radius: 0 0 3px 3px;
+  background: var(--ink);
+}
+.dock-tab {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-width: 0;
+  color: var(--ink-3);
+  font-size: 11px;
+  letter-spacing: 0.01em;
+  transition: color 0.25s var(--glide);
+}
+.dock-tab svg { flex-shrink: 0; }
+.dock-tab[data-on="true"] { color: var(--ink); }
+.dock-tab[data-on="true"] .dock-label { font-weight: 500; }
+.dock-tab:focus-visible { outline-offset: -6px; border-radius: 14px; }
+.dock-label { max-width: 100%; padding: 0 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (hover: hover) {
+  .dock-tab:hover { color: var(--ink); }
+}
+
+.more-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: var(--scrim);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.35s ease;
+}
+.more-scrim[data-open="true"] { opacity: 1; pointer-events: auto; }
+.more-sheet {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 61;
+  display: flex;
+  flex-direction: column;
+  max-width: 640px;
+  max-height: min(86dvh, 780px);
+  margin: 0 auto;
+  overflow: hidden;
+  border-radius: 28px 28px 0 0;
+  background: var(--sheet);
+  box-shadow: 0 -30px 60px -40px rgb(0 0 0 / 0.45);
+  transform: translateY(104%);
+  visibility: hidden;
+  transition: transform 0.5s var(--glide), visibility 0s linear 0.5s;
+}
+.more-sheet[data-open="true"] {
+  transform: translateY(0);
+  visibility: visible;
+  transition: transform 0.5s var(--glide), visibility 0s;
+}
+.more-sheet[data-dragging="true"] { transition: none; }
+.more-head { flex-shrink: 0; touch-action: none; cursor: grab; }
+.more-head:active { cursor: grabbing; }
+.more-grip { display: block; width: 38px; height: 5px; margin: 10px auto 4px; border-radius: 999px; background: var(--well-3); }
+.more-body {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  padding: 2px 16px calc(18px + env(safe-area-inset-bottom));
+}
+.more-body::-webkit-scrollbar { display: none; }
+.more-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+@media (min-width: 520px) {
+  .more-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+.more-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 84px;
+  padding: 12px 6px;
+  border-radius: 18px;
+  background: var(--well);
+  color: var(--ink-2);
+  font-size: 12.5px;
+  line-height: 1.25;
+  text-align: center;
+  overflow-wrap: anywhere;
+  transition: background-color 0.25s ease, color 0.25s ease;
+}
+.more-item svg { flex-shrink: 0; color: var(--ink-3); transition: color 0.25s ease; }
+.more-item:active { background: var(--well-2); }
+.more-item[aria-current="page"] { background: var(--ink); color: var(--sheet); }
+.more-item[aria-current="page"] svg { color: var(--sheet); }
+.more-item:focus-visible { outline-offset: 2px; border-radius: 18px; }
+.more-row {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+  height: 52px;
+  padding: 0 6px;
+  border-radius: 14px;
+  font-size: 14.5px;
+  color: var(--ink-2);
+  text-align: left;
+  transition: color 0.25s var(--glide);
+}
+.more-row svg { flex-shrink: 0; color: var(--ink-3); transition: color 0.25s var(--glide); }
+@media (hover: hover) {
+  .more-item:hover:not([aria-current="page"]) { background: var(--well-2); color: var(--ink); }
+  .more-row:hover, .more-row:hover svg { color: var(--ink); }
+}
+
+/* Toasts sit above the bar where they rise from the bottom edge. */
+@media (max-width: 639.98px) {
+  body:has(.dock) .toast-stack { bottom: calc(var(--dock-h) + env(safe-area-inset-bottom) + 12px); }
+}
 
 /* Sidebar navigation: plain rows, no pills. The active row is carried by
    weight and ink alone, plus one marker that travels along the edge. */
@@ -451,7 +640,7 @@
 
 /* Two columns from xl up: the working column and the activity rail, each
    scrolling on its own so the hairline between them runs the full height. */
-.dash-main { padding: 32px 20px 48px; }
+.dash-main { padding: 28px 16px 48px; }
 .dash-rail { border-top: 1px solid var(--line); padding-bottom: 20px; }
 .dash-profile {
   margin: 14px;
@@ -680,8 +869,9 @@
 }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
-/* Round icon actions take their colour from a tone when hovered or switched on. */
-.icon-btn { color: var(--ink-2); }
+/* Round icon actions take their colour from a tone when hovered or switched on.
+   Positioned, so the label above belongs to its own button. */
+.icon-btn { position: relative; color: var(--ink-2); }
 .icon-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 .icon-btn[data-tone="sky"]    { --tone-wash: var(--sky-wash);    --tone-deep: var(--sky-deep); }
 .icon-btn[data-tone="mint"]   { --tone-wash: var(--mint-wash);   --tone-deep: var(--mint-deep); }
@@ -816,8 +1006,54 @@
 .tbl tbody tr[data-clickable] td:first-child { transition: color 0.2s ease; }
 .tbl tbody tr[data-clickable]:hover td:first-child { color: var(--sky-deep); }
 .tbl .row-actions { display: flex; justify-content: flex-end; gap: 6px; }
-/* Room on both sides for the hover shape, which is wider than the table. */
-.tbl-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; margin-left: -12px; margin-right: -12px; padding-left: 12px; padding-right: 12px; }
+/* Room on both sides for the hover shape, which is wider than the table.
+   Positioned, so that absolutely placed bits inside (screen-reader labels,
+   tooltips) scroll with the table instead of stretching the page. */
+.tbl-scroll { position: relative; overflow-x: auto; overscroll-behavior-x: contain; -webkit-overflow-scrolling: touch; margin-left: -12px; margin-right: -12px; padding-left: 12px; padding-right: 12px; }
+
+/* On a phone a table becomes a stack of cards: no sideways scrolling, every
+   cell readable, actions in reach. The identity cell (the first one, or the
+   one marked data-primary) takes the full width on top; the others follow
+   with their column name above them (set from the header by useTableLabels). */
+@media (max-width: 639.98px) {
+  .tbl-scroll { overflow-x: visible; margin-left: 0; margin-right: 0; padding-left: 0; padding-right: 0; }
+  .tbl, .tbl > tbody { display: block; width: 100%; }
+  .tbl > thead { display: none; }
+  .tbl > tbody > tr {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 10px 20px;
+    padding: 14px 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .tbl > tbody > tr:last-child { border-bottom: 0; }
+  .tbl > tbody > tr > td:not(.hidden) {
+    display: block;
+    min-width: 0;
+    max-width: 100%;
+    padding: 0;
+    border: 0;
+    font-size: 14px;
+  }
+  .tbl > tbody > tr > td:first-child,
+  .tbl > tbody > tr > td[data-primary],
+  .tbl > tbody > tr > td[colspan] { flex: 1 1 100%; }
+  .tbl > tbody > tr > td[data-primary] { order: -1; }
+  .tbl > tbody > tr:has(> td[data-primary]) > td:first-child { flex: 0 1 auto; }
+  .tbl > tbody > tr > td:last-child:not(:first-child):not([colspan]) { margin-left: auto; }
+  .tbl > tbody > tr > td[data-label]:not(:first-child):not([data-primary])::before {
+    content: attr(data-label);
+    display: block;
+    margin-bottom: 4px;
+    font-size: 11.5px;
+    font-weight: 400;
+    letter-spacing: 0.01em;
+    color: var(--ink-3);
+    white-space: nowrap;
+  }
+  .tbl .row-actions { flex-wrap: wrap; }
+}
 
 /* A quoted message, as in the activity feed. */
 .comment-bubble {
@@ -987,7 +1223,10 @@ a.text-sky-deep:hover { background-size: 100% 1px; text-decoration: none; }
   right: 0;
   bottom: calc(100% + 9px);
   z-index: 40;
-  max-width: 260px;
+  /* Grows leftwards from the button's right edge and wraps a long label, so
+     it never reaches past the button on the right. */
+  width: max-content;
+  max-width: min(260px, 70vw);
   padding: 7px 11px;
   border-radius: 9px;
   background: var(--tip);
@@ -995,7 +1234,8 @@ a.text-sky-deep:hover { background-size: 100% 1px; text-decoration: none; }
   font-size: 12px;
   font-weight: 400;
   line-height: 1.35;
-  white-space: nowrap;
+  text-align: left;
+  white-space: normal;
   pointer-events: none;
   opacity: 0;
   transform: translateY(4px);
@@ -1003,6 +1243,11 @@ a.text-sky-deep:hover { background-size: 100% 1px; text-decoration: none; }
 }
 .icon-btn[data-tip]:hover:not(:disabled)::after,
 .icon-btn[data-tip]:focus-visible::after { opacity: 1; transform: translateY(0); transition-delay: 0.12s; }
+/* A touch screen has no hover: the label would stick after a tap. The
+   button keeps it as its accessible name. */
+@media (hover: none) {
+  .icon-btn[data-tip]::after { display: none; }
+}
 
 /* Rows answer a hover with an even tint. The tint is its own rounded shape
    that reaches a little past the row on both sides, so it is never cut off at

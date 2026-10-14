@@ -23,8 +23,9 @@ import {
 //
 // Two handshakes build on them:
 //
-//   Pairing  — run once per peer. Both operators enter the same pairing key.
-//              It is stretched with scrypt and a fresh random salt into a
+//   Pairing  — run once per peer, with the one-time secret of an invite code
+//              (or of an introduction by a common peer). It is stretched with
+//              scrypt and a fresh random salt into a
 //              pre-shared key that authenticates an ephemeral X25519
 //              exchange. The result is a random-looking 256-bit link key; the
 //              pairing key itself is discarded afterwards.
@@ -39,7 +40,7 @@ import {
 // Every message inside a session is sealed with AES-256-GCM under a
 // direction-specific key and a strictly unique counter nonce.
 
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 const LABEL = 'pokyh-cluster/v1';
 
 const KEY_BYTES = 32;
@@ -208,6 +209,7 @@ export function sharedSecret(privateKey: KeyObject, peerPublic: Buffer): Buffer 
 export interface PairInit {
   from: string;
   name: string;
+  addr: string;
   salt: Buffer;
   e: Buffer;
   n: Buffer;
@@ -221,7 +223,7 @@ export interface PairAccept {
 }
 
 function pairInitTranscript(init: PairInit): Buffer {
-  return encodeFields(['pair-init', String(PROTOCOL_VERSION), init.from, init.name, init.salt, init.e, init.n]);
+  return encodeFields(['pair-init', String(PROTOCOL_VERSION), init.from, init.name, init.addr, init.salt, init.e, init.n]);
 }
 
 // Proves, before the responder commits any state, that the initiator knows the

@@ -17,6 +17,7 @@ import {
   sharedSecret,
   HANDSHAKE_NONCE_BYTES,
 } from './crypto';
+import { packPayload, unpackPayload } from './framing';
 import { CLUSTER_PATH, b64, sessionAcceptSchema, sessionInitSchema } from './protocol';
 import { peerByNodeId, state, type ClientSession, type PeerRuntime } from './runtime';
 
@@ -26,7 +27,10 @@ import { peerByNodeId, state, type ClientSession, type PeerRuntime } from './run
 // exchange and then sends sealed frames over plain HTTP POST requests. The
 // HTTP layer only moves opaque bytes: confidentiality, integrity, peer
 // authentication and replay protection all come from the frame layer, so the
-// channel does not depend on TLS being available between two IP addresses.
+// channel does not depend on TLS being available between two IP addresses —
+// and gains a second, independent layer where it runs through an HTTPS
+// reverse proxy. Each call's content is compressed and padded (framing.ts)
+// before it is sealed.
 
 export class RpcError extends Error {
   constructor(public readonly code: string, message?: string) {
@@ -47,6 +51,8 @@ const SESSION_MAX_AGE_MS = 60 * 60 * 1000;
 const SESSION_IDLE_MS = 15 * 60 * 1000;
 const MAX_SERVER_SESSIONS_PER_PEER = 4;
 const MAX_FRAMES_PER_SESSION = 1n << 40n;
+// A sealed frame: the padded package plus the authentication tag.
+export const MAX_FRAME_BYTES = config.cluster.maxMessageBytes + 2 * 65_536;
 
 // ─── Client side ─────────────────────────────────────────────────────────────
 
@@ -79,7 +85,7 @@ export async function openSession(baseUrl: string, peerNodeId: string, linkKey: 
   const ephemeral = generateEphemeral();
   const init = { from: state.nodeId, to: peerNodeId, e: ephemeral.publicKey, n: randomToken(HANDSHAKE_NONCE_BYTES) };
   const reply = await postJson(baseUrl, '/session', {
-    v: 1,
+    v: 2,
     from: init.from,
     to: init.to,
     e: b64(init.e),
@@ -120,12 +126,13 @@ function ensureSession(peer: PeerRuntime): Promise<ClientSession> {
 export async function rpc<T>(peer: PeerRuntime, method: string, params: unknown, timeoutMs = config.cluster.requestTimeoutMs): Promise<T> {
   const plaintext = Buffer.from(JSON.stringify({ m: method, p: params }), 'utf8');
   if (plaintext.length > config.cluster.maxMessageBytes) throw new RpcError('too_large', 'message exceeds the configured size limit');
+  const packed = await packPayload(plaintext);
 
   for (let attempt = 0; attempt < 2; attempt++) {
     const session = await ensureSession(peer);
     const counter = session.counter;
     session.counter += 1n;
-    const body = encodeRequest(session.sid, counter, sealFrame(session.c2s, 'c2s', session.sid, counter, plaintext));
+    const body = encodeRequest(session.sid, counter, sealFrame(session.c2s, 'c2s', session.sid, counter, packed));
     const res = await fetch(`${peer.baseUrl}${CLUSTER_PATH}/rpc`, {
       method: 'POST',
       headers: { 'content-type': 'application/octet-stream' },
@@ -141,8 +148,9 @@ export async function rpc<T>(peer: PeerRuntime, method: string, params: unknown,
     }
     if (res.status !== 200) throw new RpcError('http', `peer answered HTTP ${res.status}`);
     const declared = Number(res.headers.get('content-length') ?? '0');
-    if (declared > config.cluster.maxMessageBytes + 4096) throw new RpcError('too_large', 'answer exceeds the configured size limit');
+    if (declared > MAX_FRAME_BYTES) throw new RpcError('too_large', 'answer exceeds the configured size limit');
     const sealed = Buffer.from(await res.arrayBuffer());
+    if (sealed.length > MAX_FRAME_BYTES) throw new RpcError('too_large', 'answer exceeds the configured size limit');
     let opened: Buffer;
     try {
       opened = openFrame(session.s2c, 's2c', session.sid, counter, sealed);
@@ -150,7 +158,10 @@ export async function rpc<T>(peer: PeerRuntime, method: string, params: unknown,
       if (peer.session === session) peer.session = null;
       throw new RpcError('integrity', 'answer failed authentication');
     }
-    const reply = JSON.parse(opened.toString('utf8')) as { ok: boolean; r?: T; e?: string; msg?: string };
+    const content = await unpackPayload(opened, config.cluster.maxMessageBytes).catch(() => {
+      throw new RpcError('integrity', 'answer could not be unpacked');
+    });
+    const reply = JSON.parse(content.toString('utf8')) as { ok: boolean; r?: T; e?: string; msg?: string };
     if (!reply.ok) throw new RpcError(reply.e ?? 'remote', reply.msg ?? 'peer reported an error');
     return reply.r as T;
   }
@@ -234,7 +245,8 @@ export async function handleRpc(req: Request, res: Response): Promise<void> {
 
   let reply: { ok: true; r: unknown } | { ok: false; e: string; msg: string };
   try {
-    const call = JSON.parse(plaintext.toString('utf8')) as { m?: unknown; p?: unknown };
+    const content = await unpackPayload(plaintext, config.cluster.maxMessageBytes);
+    const call = JSON.parse(content.toString('utf8')) as { m?: unknown; p?: unknown };
     if (typeof call.m !== 'string' || !rpcHandler) throw new RpcError('bad_request', 'malformed call');
     reply = { ok: true, r: await rpcHandler(peer, call.m, call.p) };
   } catch (err) {
@@ -249,7 +261,8 @@ export async function handleRpc(req: Request, res: Response): Promise<void> {
     reply = { ok: false, e: code, msg: err instanceof RpcError ? err.message : 'internal error' };
   }
 
-  const sealed = sealFrame(session.s2c, 's2c', session.sid, decoded.counter, Buffer.from(JSON.stringify(reply), 'utf8'));
+  const packed = await packPayload(Buffer.from(JSON.stringify(reply), 'utf8'));
+  const sealed = sealFrame(session.s2c, 's2c', session.sid, decoded.counter, packed);
   res.status(200).type('application/octet-stream').send(sealed);
 }
 

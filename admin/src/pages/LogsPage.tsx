@@ -230,7 +230,7 @@ function AllRequestsTab({ methodFilter, statusFilter, pathFilter, usernameFilter
                           {new Date(log.createdAt).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
                         </td>
                         <td className="px-4 py-3"><Badge text={log.method} style={ms} /></td>
-                        <td className="px-4 py-3 max-w-xs">
+                        <td data-primary className="px-4 py-3 max-w-xs">
                           <span className="text-[12px] font-mono truncate block" style={{ color: 'rgb(var(--ink-rgb) / 0.78)' }}>{log.path}</span>
                           {log.error && <span className="text-[11px] truncate block mt-0.5" style={{ color: 'var(--rose-deep)' }}>{log.error}</span>}
                         </td>
@@ -422,7 +422,7 @@ function ByUserTab({ initialUsername }: { initialUsername?: string }) {
                     onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = ''; }}>
                     <td className="px-4 py-3 text-[11px] whitespace-nowrap" style={{ color: 'rgb(var(--ink-rgb) / 0.54)' }}>{relativeTime(log.createdAt)}</td>
                     <td className="px-4 py-3"><Badge text={log.method} style={methodStyle(log.method)} /></td>
-                    <td className="px-4 py-3 max-w-xs">
+                    <td data-primary className="px-4 py-3 max-w-xs">
                       <span className="text-[12px] font-mono truncate block" style={{ color: 'rgb(var(--ink-rgb) / 0.78)' }}>{log.path}</span>
                       {log.error && <span className="text-[11px] truncate block mt-0.5" style={{ color: 'var(--rose-deep)' }}>{log.error}</span>}
                     </td>
@@ -781,7 +781,7 @@ function FrontendActivityTab({ autoRefresh }: { autoRefresh: boolean }) {
                             {label}
                           </span>
                         </td>
-                        <td className="px-4 py-3 max-w-xs">
+                        <td data-primary className="px-4 py-3 max-w-xs">
                           <span className="text-[12px] font-mono truncate block" style={{ color: 'rgb(var(--ink-rgb) / 0.78)' }}>{log.page ?? '—'}</span>
                         </td>
                         <td className="px-4 py-3 hidden md:table-cell max-w-xs">

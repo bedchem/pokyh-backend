@@ -10,9 +10,8 @@ import type { ItemResult, WireItem, WireTableBatch } from './protocol';
 import { nowMicros, recordEvent, state, type PeerRuntime } from './runtime';
 import {
   APPLY_FLAG,
-  OUTBOX_TABLE,
+  FEED_SEQ,
   STATE_TABLE,
-  TARGETS_TABLE,
   computePkHash,
   deleteSql,
   insertSql,
@@ -24,17 +23,21 @@ import {
 
 // Applies changes received from a peer to the local database.
 //
-// Every change is applied in its own short transaction on a dedicated
-// database connection. That connection carries a session flag which keeps the
-// capture triggers silent, so an applied change is not mistaken for a local
-// one; the version registry and the forwarding queue are written explicitly
-// here, in the same transaction as the row itself.
+// Changes are applied on a dedicated database connection. That connection
+// carries a session flag which keeps the capture triggers silent, so an
+// applied change is not mistaken for a local one; the version record is
+// written explicitly here, in the same transaction as the row itself, and its
+// new place in the change feed passes the change on to the other peers.
 //
-// One transaction per row is deliberate. It takes its locks in the same order
-// as any local write to that row does (the row, its version record, its queue
-// entries) and holds none of them while waiting for another row, so applying
-// received changes can never end up in a lock cycle with a request that edits
-// several rows at once.
+// A received package is first applied as a whole, in one transaction: one
+// commit — one flush to disk — for hundreds of rows instead of one per row.
+// That transaction never waits for a lock: it takes every row lock up front
+// with NOWAIT, so it cannot end up in a lock cycle with a request that edits
+// several rows at once. Should anything in the package need more than a plain
+// write (a missing parent, a unique value held by another row, a lock in use),
+// it is rolled back untouched and the package goes through the careful path:
+// one short transaction per row, which takes its locks in the same order as
+// any local write to that row does and holds none while waiting for another.
 //
 // Rules, in order:
 //   1. Last writer wins. A change is applied only if its (version, origin) is
@@ -58,7 +61,9 @@ function getApplyClient(): PrismaClient {
     // set on the connection that executes the transaction.
     const url = new URL(config.databaseUrl);
     url.searchParams.set('connection_limit', '1');
-    applyClient = new PrismaClient({ datasources: { db: { url: url.toString() } }, log: ['error'] });
+    // Every failure here is expected and handled (a package falls back to
+    // the careful path, a row is set aside); none needs a log line of its own.
+    applyClient = new PrismaClient({ datasources: { db: { url: url.toString() } }, log: [] });
   }
   return applyClient;
 }
@@ -70,9 +75,12 @@ export async function closeApplier(): Promise<void> {
   await client.$disconnect().catch(() => {});
 }
 
-function applyTx<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
+// `lockWaitSeconds` bounds how long a statement may wait for a lock (the
+// package path waits for none; see above).
+function applyTx<T>(fn: (tx: Tx) => Promise<T>, lockWaitSeconds = 50): Promise<T> {
   return getApplyClient().$transaction(async (tx) => {
     await tx.$executeRawUnsafe(`SET ${APPLY_FLAG} = 1`);
+    await tx.$executeRawUnsafe(`SET SESSION innodb_lock_wait_timeout = ${Math.max(1, Math.floor(lockWaitSeconds))}`);
     return fn(tx);
   }, { isolationLevel: 'ReadCommitted', maxWait: 15_000, timeout: 60_000 });
 }
@@ -169,37 +177,19 @@ async function readVersion(db: Tx | typeof prisma, table: string, hash: string):
   return rows[0] ? { version: BigInt(rows[0].version), origin: rows[0].origin } : null;
 }
 
-async function writeVersion(tx: Tx, table: string, hash: string, key: string[], version: bigint, origin: string, deleted: boolean): Promise<void> {
+// Stores a row's version and moves it to the end of the change feed, which
+// passes the change on to every other peer: a node that is not linked with
+// the origin still receives it, and peers that already hold it decline the
+// offer. `via` is the peer it came from (null for a change made here), so it
+// is not offered straight back.
+async function writeVersion(tx: Tx, table: string, hash: string, key: string[], version: bigint, origin: string, deleted: boolean, via: string | null): Promise<void> {
   await tx.$executeRawUnsafe(
-    `INSERT INTO ${q(STATE_TABLE)} (\`table_name\`, \`pk_hash\`, \`pk\`, \`version\`, \`origin\`, \`deleted\`, \`changed_at\`) `
-    + 'VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP(3)) '
-    + 'ON DUPLICATE KEY UPDATE `version` = VALUES(`version`), `origin` = VALUES(`origin`), `deleted` = VALUES(`deleted`), '
-    + '`pk` = VALUES(`pk`), `changed_at` = VALUES(`changed_at`)',
-    table, hash, JSON.stringify(key), version, origin, deleted ? 1 : 0,
+    `INSERT INTO ${q(STATE_TABLE)} (\`table_name\`, \`pk_hash\`, \`pk\`, \`version\`, \`origin\`, \`via\`, \`deleted\`, \`changed_at\`, \`seq\`) `
+    + `VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP(3), ${FEED_SEQ}) `
+    + 'ON DUPLICATE KEY UPDATE `version` = VALUES(`version`), `origin` = VALUES(`origin`), `via` = VALUES(`via`), '
+    + '`deleted` = VALUES(`deleted`), `pk` = VALUES(`pk`), `changed_at` = VALUES(`changed_at`), `seq` = VALUES(`seq`)',
+    table, hash, JSON.stringify(key), version, origin, via, deleted ? 1 : 0,
   );
-}
-
-// Forwards a row to the other peers. A change received from one peer is
-// offered onwards, so a node that is not directly paired with the origin
-// still receives it; peers that already hold it simply decline the offer.
-async function enqueue(tx: Tx, table: string, hash: string, excludePeerRowIds: string[]): Promise<void> {
-  const exclusion = excludePeerRowIds.length > 0
-    ? ` WHERE \`peer_id\` NOT IN (${excludePeerRowIds.map(() => '?').join(', ')})`
-    : '';
-  await tx.$executeRawUnsafe(
-    `INSERT INTO ${q(OUTBOX_TABLE)} (\`peer_id\`, \`table_name\`, \`pk_hash\`, \`gen\`, \`offer_first\`, \`queued_at\`) `
-    + `SELECT \`peer_id\`, ?, ?, 0, 1, CURRENT_TIMESTAMP(3) FROM ${q(TARGETS_TABLE)}${exclusion} `
-    + 'ON DUPLICATE KEY UPDATE `gen` = `gen` + 1, `queued_at` = VALUES(`queued_at`)',
-    table, hash, ...excludePeerRowIds,
-  );
-}
-
-function forwardExclusions(item: WorkItem): string[] {
-  const exclude = new Set<string>();
-  for (const peer of state.peers.values()) {
-    if (peer.nodeId === item.fromPeer || peer.nodeId === item.origin) exclude.add(peer.rowId);
-  }
-  return [...exclude];
 }
 
 // ─── Unique-value collisions ─────────────────────────────────────────────────
@@ -311,8 +301,7 @@ async function attemptWithin(tx: Tx, item: WorkItem): Promise<AttemptResult> {
   } catch (err) {
     throw new Abort(classifyWriteError(err));
   }
-  await writeVersion(tx, item.table.name, item.hash, item.key, item.version, item.origin, item.deleted);
-  await enqueue(tx, item.table.name, item.hash, forwardExclusions(item));
+  await writeVersion(tx, item.table.name, item.hash, item.key, item.version, item.origin, item.deleted, item.fromPeer);
   return {
     outcome: { kind: 'applied' },
     effect: { table: item.table.name, before: existing[0] ?? null, after: rowObject(item) },
@@ -326,6 +315,66 @@ async function attempt(item: WorkItem): Promise<AttemptResult> {
     if (err instanceof Abort) return { outcome: err.outcome, effect: null };
     return { outcome: classifyWriteError(err), effect: null };
   }
+}
+
+// ─── Applying a whole package at once ────────────────────────────────────────
+
+const LOCK_NOWAIT = 3572;
+
+class Fallback extends Error {
+  constructor() {
+    super('package needs the careful path');
+    this.name = 'Fallback';
+  }
+}
+
+// Applies every item in one transaction, or nothing. Returns null when the
+// package has to go through the careful path instead (see the top of the
+// file); the transaction is then rolled back without a trace.
+async function applyPackage(items: WorkItem[]): Promise<{ results: Map<WorkItem, ItemResult>; effects: Effect[] } | null> {
+  const results = new Map<WorkItem, ItemResult>();
+  const effects: Effect[] = [];
+  try {
+    await applyTx(async (tx) => {
+      // Every row lock is taken first, without waiting: once they are all
+      // held, nothing below can be blocked by a local writer on these rows.
+      const existing = new Map<WorkItem, Record<string, unknown> | null>();
+      for (const item of items) {
+        try {
+          const rows = await tx.$queryRawUnsafe<Array<Record<string, unknown>>>(`${selectByPkSql(item.table, true)} NOWAIT`, ...item.key);
+          existing.set(item, rows[0] ?? null);
+        } catch (err) {
+          if (mysqlErrorCode(err) === LOCK_NOWAIT) throw new Fallback();
+          throw err;
+        }
+      }
+      for (const item of items) {
+        const local = await readVersion(tx, item.table.name, item.hash);
+        if (!isNewer({ version: item.version, origin: item.origin }, local)) {
+          results.set(item, 's');
+          continue;
+        }
+        if (!item.deleted && await findCollision(tx, item)) throw new Fallback();
+        try {
+          await writeRow(tx, item, existing.get(item) !== null);
+        } catch {
+          // A missing parent, a unique value taken meanwhile, a lock: the
+          // careful path knows how to handle each of these.
+          throw new Fallback();
+        }
+        await writeVersion(tx, item.table.name, item.hash, item.key, item.version, item.origin, item.deleted, item.fromPeer);
+        results.set(item, 'a');
+        effects.push({ table: item.table.name, before: existing.get(item) ?? null, after: rowObject(item) });
+      }
+    }, 1);
+  } catch (err) {
+    if (err instanceof Fallback) return null;
+    const code = mysqlErrorCode(err);
+    // Lock waits, deadlocks and the like: try again row by row.
+    if (code !== null) return null;
+    throw err;
+  }
+  return { results, effects };
 }
 
 // ─── Applying a set of mutually colliding changes together ───────────────────
@@ -385,8 +434,7 @@ async function applyGroup(group: WorkItem[]): Promise<{ applied: boolean; effect
       }
       for (const item of group) {
         await writeRow(tx, item, existing.get(item.hash) !== null);
-        await writeVersion(tx, item.table.name, item.hash, item.key, item.version, item.origin, item.deleted);
-        await enqueue(tx, item.table.name, item.hash, forwardExclusions(item));
+        await writeVersion(tx, item.table.name, item.hash, item.key, item.version, item.origin, item.deleted, item.fromPeer);
         effects.push({ table: item.table.name, before: existing.get(item.hash) ?? null, after: rowObject(item) });
       }
       return true;
@@ -480,19 +528,16 @@ async function resolveDuplicate(item: WorkItem, index: UniqueIndex, otherKey: st
           item.values![position] = replacement;
           await writeRow(tx, item, existing.length > 0);
           const adjusted = item.version + 1n > nowMicros() ? item.version + 1n : nowMicros();
-          await writeVersion(tx, table.name, item.hash, item.key, adjusted, state.nodeId, false);
-          await enqueue(tx, table.name, item.hash, []);
+          await writeVersion(tx, table.name, item.hash, item.key, adjusted, state.nodeId, false, null);
         } else {
           const otherVersion = await readVersion(tx, table.name, otherHash);
           await tx.$executeRawUnsafe(
             `UPDATE ${q(table.name)} SET ${q(repair.column)} = ? WHERE ${pkWhere(table)}`, replacement, ...otherKey,
           );
           const base = (otherVersion?.version ?? 0n) + 1n;
-          await writeVersion(tx, table.name, otherHash, otherKey, base > nowMicros() ? base : nowMicros(), state.nodeId, false);
-          await enqueue(tx, table.name, otherHash, []);
+          await writeVersion(tx, table.name, otherHash, otherKey, base > nowMicros() ? base : nowMicros(), state.nodeId, false, null);
           await writeRow(tx, item, existing.length > 0);
-          await writeVersion(tx, table.name, item.hash, item.key, item.version, item.origin, false);
-          await enqueue(tx, table.name, item.hash, forwardExclusions(item));
+          await writeVersion(tx, table.name, item.hash, item.key, item.version, item.origin, false, item.fromPeer);
         }
         effects.push({ table: table.name, before: existing[0] ?? null, after: rowObject(item) });
         return true;
@@ -514,8 +559,7 @@ async function resolveDuplicate(item: WorkItem, index: UniqueIndex, otherKey: st
         // just above its own, and that record is sent to every peer —
         // including the sender, which removes its copy.
         if (existing.length > 0) await tx.$executeRawUnsafe(deleteSql(table), ...item.key);
-        await writeVersion(tx, table.name, item.hash, item.key, item.version + 1n, state.nodeId, true);
-        await enqueue(tx, table.name, item.hash, []);
+        await writeVersion(tx, table.name, item.hash, item.key, item.version + 1n, state.nodeId, true, null);
         effects.push({ table: table.name, before: existing[0] ?? null, after: null });
         return true;
       }
@@ -525,13 +569,11 @@ async function resolveDuplicate(item: WorkItem, index: UniqueIndex, otherKey: st
       const other = await tx.$queryRawUnsafe<Array<Record<string, unknown>>>(selectByPkSql(table, true), ...otherKey);
       const otherVersion = await readVersion(tx, table.name, otherHash);
       if (other.length > 0) await tx.$executeRawUnsafe(deleteSql(table), ...otherKey);
-      await writeVersion(tx, table.name, otherHash, otherKey, (otherVersion?.version ?? 0n) + 1n, state.nodeId, true);
-      await enqueue(tx, table.name, otherHash, []);
+      await writeVersion(tx, table.name, otherHash, otherKey, (otherVersion?.version ?? 0n) + 1n, state.nodeId, true, null);
       effects.push({ table: table.name, before: other[0] ?? null, after: null });
 
       await writeRow(tx, item, existing.length > 0);
-      await writeVersion(tx, table.name, item.hash, item.key, item.version, item.origin, false);
-      await enqueue(tx, table.name, item.hash, forwardExclusions(item));
+      await writeVersion(tx, table.name, item.hash, item.key, item.version, item.origin, false, item.fromPeer);
       effects.push({ table: table.name, before: existing[0] ?? null, after: rowObject(item) });
       return true;
     });
@@ -609,8 +651,6 @@ function senderHasNothingMore(item: WorkItem): boolean {
 // ─── Processing a set of changes ─────────────────────────────────────────────
 
 async function processItems(items: WorkItem[]): Promise<Map<WorkItem, ItemResult>> {
-  const results = new Map<WorkItem, ItemResult>();
-  const effects: Effect[] = [];
   // Nothing set aside and nothing loaded from there: no clean-up needed below.
   const anySetAside = items.some((item) => item.deferred !== null) || (await prisma.clusterDeferred.count()) > 0;
 
@@ -621,6 +661,24 @@ async function processItems(items: WorkItem[]): Promise<Map<WorkItem, ItemResult
     if (a.deleted !== b.deleted) return a.deleted ? -1 : 1;
     return a.deleted ? b.table.rank - a.table.rank : a.table.rank - b.table.rank;
   });
+
+  // The usual case: the whole package in one transaction.
+  if (ordered.length > 0 && !ordered.some((item) => item.deferred !== null)) {
+    const done = await applyPackage(ordered);
+    if (done) {
+      if (anySetAside) {
+        for (const [item, result] of done.results) {
+          if (result === 'a' || result === 's') await clearDeferred(item);
+        }
+      }
+      for (const effect of done.effects) queueEffect(effect.table, effect.before, effect.after);
+      flushEffects();
+      return done.results;
+    }
+  }
+
+  const results = new Map<WorkItem, ItemResult>();
+  const effects: Effect[] = [];
 
   const colliding: Array<{ item: WorkItem; index: UniqueIndex; otherKey: string[] }> = [];
   const waiting: Array<{ item: WorkItem; reason: string; detail: string }> = [];

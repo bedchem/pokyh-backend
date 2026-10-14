@@ -5,7 +5,7 @@ import cors from 'cors';
 import cookieParser from 'cookie-parser';
 import morgan from 'morgan';
 import path from 'path';
-import { spawn } from 'child_process';
+import { spawnPrismaCli } from './utils/prismaCli';
 import { ZodError } from 'zod';
 import { Prisma } from '@prisma/client';
 import { config } from './config';
@@ -31,9 +31,10 @@ import { learningDayKey } from './services/learnAnalytics';
 import { closeLearnCache } from './services/learnCache';
 import { withWwwOriginAlias } from './utils/cors';
 import { loadTokenRevocations } from './utils/revokedTokens';
-import { isClusterLeader } from './cluster/hooks';
+import { mayRunExclusiveJob, ownsClusterWork } from './cluster/hooks';
 import { CLUSTER_PATH } from './cluster/protocol';
-import { clusterRouter } from './cluster/router';
+import { createClusterRouter } from './cluster/router';
+import { startClusterListener, stopClusterListener } from './cluster/listener';
 import { startCluster, stopCluster } from './cluster';
 
 const app = express();
@@ -121,8 +122,10 @@ app.use(
 // ─── Node-to-node replication channel ────────────────────────────────────────
 // Mounted ahead of the body parsers, request log and rate limiter: it carries
 // encrypted binary frames between paired nodes and authenticates them itself.
-// It answers 404 for everything while no peer is configured.
-app.use(CLUSTER_PATH, clusterRouter);
+// Served here only with CLUSTER_PUBLIC_PATH (nodes behind a reverse proxy);
+// CLUSTER_PORT serves it on a listener of its own. Answers 404 for everything
+// while the cluster layer is not running.
+if (config.cluster.publicPath) app.use(CLUSTER_PATH, createClusterRouter('public'));
 
 // ─── Body parsing ────────────────────────────────────────────────────────────
 
@@ -274,7 +277,7 @@ const SESSION_CLEANUP_INTERVAL = config.sessionCleanupIntervalMs;
 
 async function cleanupExpiredSessions() {
   // Replicated data: in a cluster one node cleaning up is enough.
-  if (!isClusterLeader()) return;
+  if (!ownsClusterWork('job:session-cleanup')) return;
   const cutoff = new Date(Date.now() - 12 * 60 * 60 * 1000);
   const { count } = await prisma.refreshToken.deleteMany({
     where: {
@@ -298,7 +301,7 @@ async function cleanupExpiredRequestLogs() {
 }
 
 async function cleanupExpiredLearnAnalytics() {
-  if (!isClusterLeader()) return;
+  if (!ownsClusterWork('job:learn-analytics-cleanup')) return;
   const learnCfg = await getLearnConfig();
   const cutoff = new Date(Date.now() - learnCfg.analyticsRetentionDays * 24 * 60 * 60 * 1000);
   // Activity rows contain a user-local calendar key. UTC gives a stable,
@@ -347,18 +350,19 @@ function startBackgroundJobs() {
     }
   };
 
-  // In a cluster, jobs whose effect must happen exactly once (sending a
-  // notification, archiving, the school-year rollover) run on one node only.
-  // On a standalone server `isClusterLeader` is always true.
+  // In a cluster there is no leader: notifications and polling are shared out
+  // per item over the reachable nodes, and jobs whose effect must happen
+  // exactly once (archiving, the school-year rollover) run on one node only
+  // while every node is reachable. On a standalone server every check is true.
 
   // Archive expired todos/reminders (>24h) — server-only, admin-viewable.
-  startJob('archiver', () => startArchiver(isClusterLeader));
+  startJob('archiver', () => startArchiver(() => mayRunExclusiveJob('archiver')));
 
   // Push notification poller (no-op if VAPID keys not configured)
-  startJob('push poller', () => startPushPoller(isClusterLeader));
+  startJob('push poller', () => startPushPoller(ownsClusterWork));
 
   // School year rollover: on August 1st, snapshot non-admin users/classes/todos/reminders
-  startJob('school-year archiver', () => startSchoolYearArchiver(isClusterLeader));
+  startJob('school-year archiver', () => startSchoolYearArchiver(() => mayRunExclusiveJob('school-year-rollover')));
 
   // Scheduled full-database backups (mysqldump, gzip), retained for the
   // configured number of days and pruned automatically after each run.
@@ -389,7 +393,7 @@ function pushSchema(): Promise<boolean> {
   return new Promise((resolve) => {
     // No --accept-data-loss: db push then refuses any destructive change
     // (safe — only additive schema updates are applied automatically).
-    const child = spawn('npx', ['prisma', 'db', 'push', '--skip-generate'], {
+    const child = spawnPrismaCli(['db', 'push', '--skip-generate'], {
       cwd: process.cwd(),
       env: process.env,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -479,6 +483,8 @@ function start() {
   // Listen immediately — startup never waits on the database.
   // Bind to 0.0.0.0 so the server is reachable on every network interface
   // (LAN/containers), not just loopback.
+  // The node-to-node channel's own port, when CLUSTER_PORT is set.
+  startClusterListener();
   server = app.listen(config.port, '0.0.0.0', () => {
     logger.info(`Server running on port ${config.port} (${config.nodeEnv})`);
     logger.info(`API: http://localhost:${config.port}`);
@@ -535,6 +541,7 @@ async function shutdown(signal: string) {
     });
   }
 
+  await stopClusterListener().catch(() => {});
   await stopCluster().catch(() => {});
   await closeLearnCache().catch(() => {});
   await prisma.$disconnect().catch(() => {});

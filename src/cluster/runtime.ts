@@ -28,9 +28,60 @@ export interface RemoteView {
   name: string | null;
   schema: string | null;
   appVersion: string | null;
-  leader: string | null;
   captureReady: boolean | null;
-  peers: Array<{ id: string; health: string }>;
+  // The peers the other node is linked with, and the ones it is pairing with.
+  peers: Array<{ id: string; health: string; address: string }>;
+  pairing: string[];
+  blocked: string[];
+  // The address the other node announces for itself.
+  addr: string;
+}
+
+// Where a peer stands in this node's change feed. The durable part
+// (`cursor`, cluster_peers.sent_seq) only ever moves to positions whose
+// changes are all committed and delivered; the rest lives in memory and is
+// rebuilt after a restart by offering instead of sending.
+export interface FeedProgress {
+  cursor: bigint;
+  // Furthest position read so far; reading continues from here.
+  readTo: bigint;
+  // Rows delivered beyond the cursor, by table|hash → version, so the regular
+  // re-read of the recent span does not send them again.
+  sent: Map<string, { version: bigint; seq: bigint }>;
+  // When the oldest change not yet sent was first seen, and when the newest
+  // change in the feed appeared.
+  pendingSince: number | null;
+  lastNewAt: number;
+  lastHead: bigint;
+  // A sweep in progress (replicator.ts), and when the last one finished.
+  sweep: { pos: bigint; until: bigint; stable: bigint } | null;
+  lastSweepAt: number;
+  lastPersistAt: number;
+  // When the peer was last told that nothing further is waiting for it.
+  drainAnnouncedAt: number;
+}
+
+export function newFeedProgress(cursor: bigint): FeedProgress {
+  return {
+    cursor,
+    readTo: cursor,
+    sent: new Map(),
+    pendingSince: null,
+    lastNewAt: Date.now(),
+    lastHead: 0n,
+    sweep: null,
+    lastSweepAt: 0,
+    lastPersistAt: 0,
+    drainAnnouncedAt: 0,
+  };
+}
+
+export interface VerifyState {
+  running: boolean;
+  lastAt: number | null;
+  // Rows that differed and were offered to the peer in the last check.
+  repaired: number;
+  lastError: string | null;
 }
 
 export interface PeerRuntime {
@@ -66,6 +117,10 @@ export interface PeerRuntime {
   // Set when the peer was out of contact for longer than deleted rows are
   // remembered; replication then waits for an administrator's decision.
   stale: boolean;
+  // A complete transfer to the peer is under way (cluster_peers.scan_active).
+  transferActive: boolean;
+  feed: FeedProgress;
+  verify: VerifyState;
 }
 
 export interface ClusterEvent {
@@ -80,6 +135,8 @@ export const state = {
   paused: false,
   nodeId: '',
   nodeName: '',
+  // Saved address of this node (see pairing.advertisedAddress).
+  advertiseUrl: '',
   catalog: null as Catalog | null,
   // True once the capture triggers are verified to be in place.
   captureReady: false,
@@ -87,6 +144,9 @@ export const state = {
   // Set when writes may have happened while no capture trigger was installed.
   captureGap: false,
   peers: new Map<string, PeerRuntime>(),
+  // Feed position at start-up. Rows recorded up to here may have reached a
+  // peer before the restart, so they are offered by version, not sent.
+  startupSeq: 0n,
   serverSessions: new Map<string, ServerSession>(),
   events: [] as ClusterEvent[],
 };
@@ -106,7 +166,7 @@ export function peerByNodeId(nodeId: string): PeerRuntime | undefined {
 }
 
 export function emptyRemoteView(): RemoteView {
-  return { name: null, schema: null, appVersion: null, leader: null, captureReady: null, peers: [] };
+  return { name: null, schema: null, appVersion: null, captureReady: null, peers: [], pairing: [], blocked: [], addr: '' };
 }
 
 export function nowMicros(): bigint {

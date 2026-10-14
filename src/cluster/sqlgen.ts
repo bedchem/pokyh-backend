@@ -34,10 +34,12 @@ const STRING_TYPES = new Set([
   'char', 'varchar', 'tinytext', 'text', 'mediumtext', 'longtext', 'enum', 'set',
 ]);
 
-// Bookkeeping tables, written by the capture triggers.
+// The bookkeeping table the capture triggers write: one row per replicated
+// data row, holding its version and its position in the change feed.
 export const STATE_TABLE = 'cluster_row_state';
-export const OUTBOX_TABLE = 'cluster_outbox';
-export const TARGETS_TABLE = 'cluster_targets';
+// Tables of the previous design (one queue entry per change and peer). They
+// are no longer written and are removed once no trigger refers to them.
+export const LEGACY_TABLES = ['cluster_outbox', 'cluster_targets'] as const;
 // Set on the dedicated connection that applies changes received from a peer;
 // the triggers stay silent for it so an applied change is not captured again
 // as if it had been made locally.
@@ -76,16 +78,22 @@ function unchangedExpr(column: SqlColumn): string {
   return `OLD.${name} <=> NEW.${name}`;
 }
 
+// The position of a change in this node's change feed. UUID_SHORT() is a
+// server-wide counter that only grows (seeded from the server start time), so
+// it orders changes without a counter row that every writer would contend for.
+export const FEED_SEQ = 'UUID_SHORT()';
+
+// One statement per change: the row's version record is created or moved to
+// the end of the feed. Nothing is written per peer — each peer keeps a read
+// position in the feed instead — so a change costs the same single small write
+// however many nodes there are.
 function recordStatements(table: SqlTable, ref: 'NEW' | 'OLD', nodeId: string, deleted: 0 | 1): string {
   const hash = pkHashExpr(ref, table.pk);
   return [
-    `INSERT INTO ${q(STATE_TABLE)} (\`table_name\`, \`pk_hash\`, \`pk\`, \`version\`, \`origin\`, \`deleted\`, \`changed_at\`)`,
-    `  VALUES ('${table.name}', ${hash}, ${pkJsonExpr(ref, table.pk)}, ${MICROS_NOW}, '${nodeId}', ${deleted}, CURRENT_TIMESTAMP(3))`,
-    '  ON DUPLICATE KEY UPDATE `version` = GREATEST(`version` + 1, VALUES(`version`)), `origin` = VALUES(`origin`),',
-    '    `deleted` = VALUES(`deleted`), `pk` = VALUES(`pk`), `changed_at` = VALUES(`changed_at`);',
-    `INSERT INTO ${q(OUTBOX_TABLE)} (\`peer_id\`, \`table_name\`, \`pk_hash\`, \`gen\`, \`offer_first\`, \`queued_at\`)`,
-    `  SELECT \`peer_id\`, '${table.name}', ${hash}, 0, 0, CURRENT_TIMESTAMP(3) FROM ${q(TARGETS_TABLE)}`,
-    '  ON DUPLICATE KEY UPDATE `gen` = `gen` + 1, `offer_first` = 0, `queued_at` = VALUES(`queued_at`);',
+    `INSERT INTO ${q(STATE_TABLE)} (\`table_name\`, \`pk_hash\`, \`pk\`, \`version\`, \`origin\`, \`via\`, \`deleted\`, \`changed_at\`, \`seq\`)`,
+    `  VALUES ('${table.name}', ${hash}, ${pkJsonExpr(ref, table.pk)}, ${MICROS_NOW}, '${nodeId}', NULL, ${deleted}, CURRENT_TIMESTAMP(3), ${FEED_SEQ})`,
+    '  ON DUPLICATE KEY UPDATE `version` = GREATEST(`version` + 1, VALUES(`version`)), `origin` = VALUES(`origin`), `via` = NULL,',
+    '    `deleted` = VALUES(`deleted`), `pk` = VALUES(`pk`), `changed_at` = VALUES(`changed_at`), `seq` = VALUES(`seq`);',
   ].join('\n');
 }
 
@@ -98,8 +106,8 @@ export interface TriggerDefinition {
 const NODE_ID = /^[A-Za-z0-9-]{1,36}$/;
 
 // The three capture triggers of one table. Each records, inside the writing
-// transaction itself, a new version for the affected row and one outbox entry
-// per peer. The trigger name carries a hash of its own definition, so a
+// transaction itself, a new version for the affected row and its new place in
+// the change feed. The trigger name carries a hash of its own definition, so a
 // changed definition (new column, different node identity) yields a new name:
 // the new trigger is created first and the old one dropped afterwards, which
 // leaves no moment in which a write could go unrecorded.
@@ -142,7 +150,7 @@ export function triggerDefinitions(table: SqlTable, nodeId: string): TriggerDefi
 
   const build = (kind: 'i' | 'u' | 'd', event: string, body: string): TriggerDefinition => {
     const digest = createHash('sha256').update(`${event}\n${table.name}\n${body}`).digest('hex').slice(0, 8);
-    const name = `pokyh_cl_${digest}_${kind}_${table.name}`.slice(0, 64);
+    const name = `${TRIGGER_PREFIX}${digest}_${kind}_${table.name}`.slice(0, 64);
     return {
       name,
       table: table.name,
@@ -157,7 +165,10 @@ export function triggerDefinitions(table: SqlTable, nodeId: string): TriggerDefi
   ];
 }
 
-export const TRIGGER_PREFIX = 'pokyh_cl_';
+export const TRIGGER_PREFIX = 'pokyh_cx_';
+// Triggers of the previous design; they write the legacy queue tables.
+export const LEGACY_TRIGGER_PREFIX = 'pokyh_cl_';
+export const TRIGGER_NAME = /^pokyh_c[lx]_[0-9a-f]{8}_[iud]_(.+)$/;
 
 // Columns that, when present, give an existing row a meaningful age.
 const VERSION_SOURCE_COLUMNS = ['updated_at', 'created_at', 'joined_at', 'granted_at', 'completed_at', 'revoked_at'];
@@ -180,8 +191,8 @@ export function backfillSql(table: SqlTable, mode: 'history' | 'now'): string {
     : `GREATEST(1, COALESCE(TIMESTAMPDIFF(MICROSECOND, '1970-01-01 00:00:00', COALESCE(${sources.join(', ')})), 1))`;
   const hash = pkHashExpr('t', table.pk);
   return [
-    `INSERT IGNORE INTO ${q(STATE_TABLE)} (\`table_name\`, \`pk_hash\`, \`pk\`, \`version\`, \`origin\`, \`deleted\`)`,
-    `SELECT '${table.name}', ${hash}, ${pkJsonExpr('t', table.pk)}, ${version}, ?, 0 FROM ${q(table.name)} t`,
+    `INSERT IGNORE INTO ${q(STATE_TABLE)} (\`table_name\`, \`pk_hash\`, \`pk\`, \`version\`, \`origin\`, \`deleted\`, \`seq\`)`,
+    `SELECT '${table.name}', ${hash}, ${pkJsonExpr('t', table.pk)}, ${version}, ?, 0, ${FEED_SEQ} FROM ${q(table.name)} t`,
     `LEFT JOIN ${q(STATE_TABLE)} s ON s.\`table_name\` = '${table.name}' AND s.\`pk_hash\` = ${hash}`,
     'WHERE s.`pk_hash` IS NULL',
   ].join('\n');

@@ -3,11 +3,11 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { LogOut, Menu, Moon, Sun, X } from 'lucide-react';
 import gsap from 'gsap';
 import { useAuth } from '../hooks/useAuth';
-import { usePulse, type Pulse } from '../hooks/usePulse';
 import { prefersReducedMotion } from '../motion';
-import { NAV_GROUPS, activeNavPath } from '../nav';
+import { DOCK_TABS, NAV_GROUPS, activeNavPath } from '../nav';
 import { toggleTheme, useTheme } from '../theme';
-import { useLiveConnection, useLiveStatus } from '../live';
+import { useLiveConnection } from '../live';
+import { useTableLabels } from './kit';
 
 export function Mark({ size = 26 }: { size?: number }) {
   return (
@@ -29,21 +29,33 @@ export function Wordmark() {
   );
 }
 
+// The new theme grows out of the icon, also when triggered by keyboard.
+function toggleThemeFrom(button: HTMLElement) {
+  const icon = (button.querySelector('.theme-icon') ?? button).getBoundingClientRect();
+  toggleTheme({ x: icon.left + icon.width / 2, y: icon.top + icon.height / 2 });
+}
+
+function ThemeIcon({ theme }: { theme: 'light' | 'dark' }) {
+  return (
+    <span className="theme-icon">
+      <Sun size={20} strokeWidth={1.6} data-shown={theme === 'dark'} />
+      <Moon size={20} strokeWidth={1.6} data-shown={theme === 'light'} />
+    </span>
+  );
+}
+
 // The sidebar rows only stagger in once per page load, not on every remount.
 let sidebarIntroPlayed = false;
 
 interface SidebarProps {
   username: string;
-  pulse: Pulse;
   onLogout: () => void;
-  intro?: boolean;
 }
 
-function Sidebar({ username, pulse, onLogout, intro = false }: SidebarProps) {
+function Sidebar({ username, onLogout }: SidebarProps) {
   const { pathname } = useLocation();
   const active = activeNavPath(pathname);
   const theme = useTheme();
-  const live = useLiveStatus();
   const listRef = useRef<HTMLDivElement>(null);
   // Where the marker sits, or null while there is no active row to sit beside.
   const [markerY, setMarkerY] = useState<number | null>(null);
@@ -81,7 +93,8 @@ function Sidebar({ username, pulse, onLogout, intro = false }: SidebarProps) {
 
   useLayoutEffect(() => {
     const list = listRef.current;
-    if (!intro || sidebarIntroPlayed || !list || prefersReducedMotion()) return;
+    // Only where the sidebar is actually shown; below lg the dock takes over.
+    if (sidebarIntroPlayed || !list || list.offsetHeight === 0 || prefersReducedMotion()) return;
     const ctx = gsap.context(() => {
       gsap.from('[data-nav], [data-nav-title]', {
         autoAlpha: 0,
@@ -93,9 +106,7 @@ function Sidebar({ username, pulse, onLogout, intro = false }: SidebarProps) {
       });
     }, list);
     return () => ctx.revert();
-  }, [intro]);
-
-  const pulseLabel = pulse.state === 'up' ? 'Server bereit' : pulse.state === 'down' ? 'Server nicht bereit' : 'Server';
+  }, []);
 
   return (
     <div className="flex h-full flex-col">
@@ -134,29 +145,13 @@ function Sidebar({ username, pulse, onLogout, intro = false }: SidebarProps) {
       </nav>
 
       <div className="flex-shrink-0 pb-5 pt-1">
-        <div className="side-link" data-static title="Bereitschaft von Server und Datenbank">
-          <span className="flex w-5 flex-shrink-0 justify-center">
-            <span className="live-dot" data-state={pulse.state} />
-          </span>
-          <span className="flex-1 truncate">{pulseLabel}</span>
-          <span className="tabular text-[12px] text-ink-3" title={live ? 'Änderungen erscheinen sofort' : undefined}>
-            {live ? 'live' : pulse.ms !== null ? `${pulse.ms} ms` : ''}
-          </span>
-        </div>
         <button
           type="button"
           className="side-link w-full text-left"
           aria-pressed={theme === 'dark'}
-          onClick={(e) => {
-            // The new theme grows out of the icon, also when triggered by keyboard.
-            const icon = e.currentTarget.firstElementChild!.getBoundingClientRect();
-            toggleTheme({ x: icon.left + icon.width / 2, y: icon.top + icon.height / 2 });
-          }}
+          onClick={(e) => toggleThemeFrom(e.currentTarget)}
         >
-          <span className="theme-icon">
-            <Sun size={20} strokeWidth={1.6} data-shown={theme === 'dark'} />
-            <Moon size={20} strokeWidth={1.6} data-shown={theme === 'light'} />
-          </span>
+          <ThemeIcon theme={theme} />
           <span className="flex-1">{theme === 'dark' ? 'Helles Design' : 'Dunkles Design'}</span>
         </button>
         <button type="button" onClick={onLogout} className="side-link w-full text-left">
@@ -166,6 +161,179 @@ function Sidebar({ username, pulse, onLogout, intro = false }: SidebarProps) {
         </button>
       </div>
     </div>
+  );
+}
+
+// ─── Small screens: bottom bar and the "Mehr" sheet ─────────────────────────
+
+interface DockProps {
+  moreOpen: boolean;
+  onMore: () => void;
+  // Tapping the tab of the page already shown takes that page back to its top.
+  onReselect: () => void;
+  moreRef: React.RefObject<HTMLButtonElement | null>;
+}
+
+function Dock({ moreOpen, onMore, onReselect, moreRef }: DockProps) {
+  const { pathname } = useLocation();
+  const active = activeNavPath(pathname);
+  const tabIndex = DOCK_TABS.findIndex((tab) => tab.to === active);
+  // Pages without a tab of their own live under "Mehr", so that one lights up.
+  const current = moreOpen || tabIndex < 0 ? DOCK_TABS.length : tabIndex;
+
+  return (
+    <nav className="dock lg:hidden" aria-label="Hauptnavigation">
+      <div className="dock-row" style={{ ['--tabs' as string]: DOCK_TABS.length + 1 }}>
+        <span className="dock-marker" style={{ transform: `translateX(${current * 100}%)` }} aria-hidden="true" />
+        {DOCK_TABS.map(({ to, label, icon: Icon }, index) => (
+          <Link
+            key={to}
+            to={to}
+            className="dock-tab"
+            data-on={current === index}
+            aria-current={active === to ? 'page' : undefined}
+            onClick={() => { if (active === to && !moreOpen) onReselect(); }}
+          >
+            <Icon size={22} strokeWidth={1.6} />
+            <span className="dock-label">{label}</span>
+          </Link>
+        ))}
+        <button
+          ref={moreRef}
+          type="button"
+          className="dock-tab"
+          data-on={current === DOCK_TABS.length}
+          aria-haspopup="dialog"
+          aria-expanded={moreOpen}
+          onClick={onMore}
+        >
+          <Menu size={22} strokeWidth={1.6} />
+          <span className="dock-label">Mehr</span>
+        </button>
+      </div>
+    </nav>
+  );
+}
+
+interface MoreSheetProps {
+  open: boolean;
+  onClose: () => void;
+  username: string;
+  onLogout: () => void;
+}
+
+const DRAG_CLOSE_PX = 90;
+
+function MoreSheet({ open, onClose, username, onLogout }: MoreSheetProps) {
+  const { pathname } = useLocation();
+  const active = activeNavPath(pathname);
+  const theme = useTheme();
+  const closeRef = useRef<HTMLButtonElement>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  // Pulling the sheet down by its handle follows the finger; far enough closes it.
+  const drag = useRef<{ startY: number; id: number } | null>(null);
+  const [dragY, setDragY] = useState(0);
+  const [dragging, setDragging] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    setDragY(0);
+    setDragging(false);
+    bodyRef.current?.scrollTo(0, 0);
+    // After the sheet became visible, otherwise the focus would scroll it.
+    const timer = window.setTimeout(() => closeRef.current?.focus({ preventScroll: true }), 60);
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [open, onClose]);
+
+  const onPointerDown = (e: React.PointerEvent) => {
+    if (e.button !== 0 || (e.target as HTMLElement).closest('button')) return;
+    drag.current = { startY: e.clientY, id: e.pointerId };
+    e.currentTarget.setPointerCapture(e.pointerId);
+    setDragging(true);
+  };
+  const onPointerMove = (e: React.PointerEvent) => {
+    if (!drag.current || drag.current.id !== e.pointerId) return;
+    setDragY(Math.max(0, e.clientY - drag.current.startY));
+  };
+  const onPointerEnd = (e: React.PointerEvent) => {
+    if (!drag.current || drag.current.id !== e.pointerId) return;
+    const pulled = e.clientY - drag.current.startY;
+    drag.current = null;
+    setDragging(false);
+    // The release animates from where the finger let go, either way.
+    setDragY(0);
+    if (pulled > DRAG_CLOSE_PX) onClose();
+  };
+
+  return (
+    <>
+      <div className="more-scrim lg:hidden" data-open={open} onClick={onClose} aria-hidden="true" />
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Alle Bereiche"
+        className="more-sheet lg:hidden"
+        data-open={open}
+        data-dragging={dragging}
+        style={dragY > 0 ? { transform: `translateY(${dragY}px)` } : undefined}
+        inert={!open}
+      >
+        <div
+          className="more-head"
+          onPointerDown={onPointerDown}
+          onPointerMove={onPointerMove}
+          onPointerUp={onPointerEnd}
+          onPointerCancel={onPointerEnd}
+        >
+          <span className="more-grip" aria-hidden="true" />
+          <div className="flex items-center justify-between gap-4 px-5 pb-3 pt-2">
+            <Wordmark />
+            <button ref={closeRef} type="button" className="orb h-10 w-10" onClick={onClose} aria-label="Schließen">
+              <X size={18} strokeWidth={1.7} />
+            </button>
+          </div>
+        </div>
+
+        <div ref={bodyRef} className="more-body">
+          {NAV_GROUPS.map((group) => (
+            <section key={group.title} className="mt-4 first:mt-1">
+              <h2 className="px-1 pb-2.5 text-[11px] font-medium uppercase tracking-[0.12em] text-ink-4">{group.title}</h2>
+              <div className="more-grid">
+                {group.items.map(({ to, label, icon: Icon }) => (
+                  <Link
+                    key={to}
+                    to={to}
+                    className="more-item"
+                    aria-current={active === to ? 'page' : undefined}
+                    onClick={onClose}
+                  >
+                    <Icon size={22} strokeWidth={1.6} />
+                    <span>{label}</span>
+                  </Link>
+                ))}
+              </div>
+            </section>
+          ))}
+
+          <div className="mt-6 flex flex-col border-t border-line pt-3">
+            <button type="button" className="more-row" aria-pressed={theme === 'dark'} onClick={(e) => toggleThemeFrom(e.currentTarget)}>
+              <ThemeIcon theme={theme} />
+              <span className="flex-1">{theme === 'dark' ? 'Helles Design' : 'Dunkles Design'}</span>
+            </button>
+            <button type="button" className="more-row" onClick={onLogout}>
+              <LogOut size={20} strokeWidth={1.6} />
+              <span className="flex-1">Abmelden</span>
+              <span className="max-w-[45%] truncate text-[12.5px] text-ink-3">{username}</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </>
   );
 }
 
@@ -179,88 +347,63 @@ export function Layout({ children, bleed = false }: LayoutProps) {
   const { logout, username } = useAuth();
   const navigate = useNavigate();
   const { pathname } = useLocation();
-  const [menuOpen, setMenuOpen] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
   const mainRef = useRef<HTMLElement>(null);
-  const pulse = usePulse();
+  const moreRef = useRef<HTMLButtonElement>(null);
   useLiveConnection();
+  useTableLabels(mainRef);
 
   function handleLogout() {
     logout();
     navigate('/login');
   }
 
+  const closeMore = useCallback(() => {
+    setMoreOpen((wasOpen) => {
+      if (wasOpen) moreRef.current?.focus({ preventScroll: true });
+      return false;
+    });
+  }, []);
+
   useEffect(() => {
-    setMenuOpen(false);
+    setMoreOpen(false);
     mainRef.current?.scrollTo(0, 0);
   }, [pathname]);
 
+  // The sheet belongs to small screens; growing past them closes it.
   useEffect(() => {
-    if (!menuOpen) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setMenuOpen(false); };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [menuOpen]);
+    if (!moreOpen) return;
+    const wide = window.matchMedia('(min-width: 1024px)');
+    const onChange = () => { if (wide.matches) setMoreOpen(false); };
+    wide.addEventListener('change', onChange);
+    return () => wide.removeEventListener('change', onChange);
+  }, [moreOpen]);
 
   return (
     <div className="shell">
       <div className="sheet">
         <aside className="hidden w-[248px] flex-shrink-0 border-r border-line lg:block">
-          <Sidebar username={username} pulse={pulse} onLogout={handleLogout} intro />
-        </aside>
-
-        {/* Drawer below lg */}
-        <div
-          className="fixed inset-0 z-40 lg:hidden"
-          style={{
-            background: 'var(--scrim)',
-            opacity: menuOpen ? 1 : 0,
-            pointerEvents: menuOpen ? 'auto' : 'none',
-            transition: 'opacity 0.35s ease',
-          }}
-          onClick={() => setMenuOpen(false)}
-          aria-hidden="true"
-        />
-        <aside
-          className="fixed inset-y-0 left-0 z-50 w-[272px] bg-sheet lg:hidden"
-          style={{
-            transform: menuOpen ? 'translateX(0)' : 'translateX(-104%)',
-            transition: 'transform 0.55s var(--glide)',
-            visibility: menuOpen ? 'visible' : 'hidden',
-            transitionProperty: 'transform, visibility',
-          }}
-          aria-hidden={!menuOpen}
-        >
-          <button
-            type="button"
-            className="orb absolute right-4 top-[30px] h-10 w-10"
-            onClick={() => setMenuOpen(false)}
-            aria-label="Menü schließen"
-          >
-            <X size={18} strokeWidth={1.7} />
-          </button>
-          <Sidebar username={username} pulse={pulse} onLogout={handleLogout} />
+          <Sidebar username={username} onLogout={handleLogout} />
         </aside>
 
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-          <header className="flex h-[64px] flex-shrink-0 items-center justify-between border-b border-line px-4 lg:hidden">
-            <button type="button" className="orb h-10 w-10" onClick={() => setMenuOpen(true)} aria-label="Menü öffnen">
-              <Menu size={18} strokeWidth={1.7} />
-            </button>
-            <Wordmark />
-            <button type="button" className="orb h-10 w-10" onClick={handleLogout} aria-label="Abmelden" title="Abmelden">
-              <LogOut size={17} strokeWidth={1.7} />
-            </button>
-          </header>
-
-          <main ref={mainRef} className="scroll-touch scrollbar-thin min-h-0 flex-1 overflow-y-auto">
+          <main ref={mainRef} className="app-main scroll-touch scrollbar-thin min-h-0 flex-1 overflow-y-auto">
             {bleed ? children : (
-              <div key={pathname} className="page-in mx-auto max-w-[1340px] px-5 pb-14 pt-8 sm:px-8 lg:pt-[50px] xl:px-14">
+              <div key={pathname} className="page-in mx-auto max-w-[1340px] px-4 pb-14 pt-7 sm:px-8 sm:pt-8 lg:pt-[50px] xl:px-14">
                 {children}
               </div>
             )}
           </main>
         </div>
       </div>
+
+      <Dock
+        moreOpen={moreOpen}
+        moreRef={moreRef}
+        onMore={() => setMoreOpen((open) => !open)}
+        onReselect={() => mainRef.current?.scrollTo({ top: 0, behavior: prefersReducedMotion() ? 'auto' : 'smooth' })}
+      />
+      <MoreSheet open={moreOpen} onClose={closeMore} username={username} onLogout={handleLogout} />
     </div>
   );
 }

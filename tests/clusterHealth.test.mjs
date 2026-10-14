@@ -21,12 +21,32 @@ test('thresholds that overlap still pass through SUSPECT', () => {
   assert.equal(health.healthAfter(4, tight), 'OFFLINE');
 });
 
-test('all nodes that see the same reachable set pick the same leader', () => {
-  assert.equal(health.electLeader('b', ['c', 'a']), 'a');
-  assert.equal(health.electLeader('a', ['c', 'b']), 'a');
-  assert.equal(health.electLeader('c', ['a', 'b']), 'a');
-  assert.equal(health.electLeader('b', ['c']), 'b', 'the next node takes over when the leader is unreachable');
-  assert.equal(health.electLeader('b', []), 'b', 'a standalone node leads itself');
+test('every node that sees the same set of nodes gives a piece of work to the same owner', () => {
+  const nodes = ['node-a', 'node-b', 'node-c'];
+  for (let i = 0; i < 200; i++) {
+    const key = `todo:${i}`;
+    const owner = health.rendezvousOwner(key, nodes);
+    assert.ok(nodes.includes(owner));
+    assert.equal(health.rendezvousOwner(key, [...nodes].reverse()), owner, 'the order nodes are listed in does not matter');
+  }
+  assert.equal(health.rendezvousOwner('x', ['only']), 'only', 'a standalone node owns everything');
+  assert.equal(health.rendezvousOwner('x', []), null);
+});
+
+test('work spreads over the nodes and only a lost node\'s share moves', () => {
+  const nodes = ['node-a', 'node-b', 'node-c'];
+  const counts = new Map(nodes.map((node) => [node, 0]));
+  let moved = 0;
+  for (let i = 0; i < 3000; i++) {
+    const key = `push-sub:${i}`;
+    const owner = health.rendezvousOwner(key, nodes);
+    counts.set(owner, counts.get(owner) + 1);
+    const without = health.rendezvousOwner(key, ['node-a', 'node-c']);
+    if (owner !== 'node-b') assert.equal(without, owner, 'work of the nodes that stay does not move');
+    else moved++;
+  }
+  for (const count of counts.values()) assert.ok(count > 800 && count < 1200, `share ${count} of 3000 is roughly a third`);
+  assert.equal(moved, counts.get('node-b'));
 });
 
 test('clock difference is estimated around the midpoint of the exchange', () => {

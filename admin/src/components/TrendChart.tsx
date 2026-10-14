@@ -29,6 +29,8 @@ const PAD_RIGHT = 10;
 const PAD_TOP = 14;
 const PLOT_HEIGHT = 178;
 const TIP_WIDTH = 164;
+// Least distance between two axis labels, centre to centre.
+const MIN_LABEL_GAP = 76;
 
 function niceStep(raw: number): number {
   if (raw <= 1) return 1;
@@ -172,9 +174,10 @@ export function TrendChart({ labels, titles, series, tickEvery = 1, restIndex, d
   const tipOnLeft = activeX + 16 + TIP_WIDTH > width;
   const tipX = tipOnLeft ? activeX - 16 - TIP_WIDTH : activeX + 16;
   const tipY = Math.min(Math.max(Math.min(...activeYs) - 30, 0), baseline - tipHeight + 6);
-  // Thin the axis out on narrow charts so neighbouring labels never touch.
+  // Thin the axis out on narrow charts: a phone shows about four labels, with
+  // clear air between them, instead of a row of numbers that touch.
   const stepPx = count > 1 ? plotWidth / (count - 1) : plotWidth;
-  const every = tickEvery * Math.max(1, Math.ceil(58 / Math.max(stepPx * tickEvery, 1)));
+  const every = tickEvery * Math.max(1, Math.ceil(MIN_LABEL_GAP / Math.max(stepPx * tickEvery, 1)));
   const activeIsTick = active % every === 0;
 
   return (
@@ -264,7 +267,7 @@ export function TrendChart({ labels, titles, series, tickEvery = 1, restIndex, d
             {labels.map((label, i) => {
               const isActive = i === active;
               const isTick = i % every === 0;
-              const crowded = !activeIsTick && !isActive && Math.abs(geometry.xAt(i) - activeX) < 46;
+              const crowded = !activeIsTick && !isActive && Math.abs(geometry.xAt(i) - activeX) < MIN_LABEL_GAP - 10;
               if (!isActive && (!isTick || crowded)) return null;
               return (
                 <span

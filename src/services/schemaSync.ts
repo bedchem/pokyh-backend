@@ -1,4 +1,4 @@
-import { spawn } from 'child_process';
+import { spawnPrismaCli } from '../utils/prismaCli';
 import { prisma } from '../db';
 import { config } from '../config';
 import { logger } from '../utils/logger';
@@ -20,10 +20,9 @@ import { logger } from '../utils/logger';
 // Run `prisma migrate diff` and return the generated SQL (live DB → schema).
 function generateDiffSql(): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawn(
-      'npx',
+    const child = spawnPrismaCli(
       [
-        'prisma', 'migrate', 'diff',
+        'migrate', 'diff',
         '--from-url', config.databaseUrl,
         '--to-schema-datamodel', 'prisma/schema.prisma',
         '--script',

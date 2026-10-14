@@ -32,11 +32,12 @@ test('three capture triggers are generated per table', () => {
   assert.equal(triggers.length, 3);
   assert.deepEqual(triggers.map((t) => t.sql.match(/AFTER (\w+) ON `todos`/)[1]), ['INSERT', 'UPDATE', 'DELETE']);
   for (const trigger of triggers) {
-    assert.match(trigger.name, /^pokyh_cl_[0-9a-f]{8}_[iud]_todos$/);
+    assert.match(trigger.name, /^pokyh_cx_[0-9a-f]{8}_[iud]_todos$/);
     assert.ok(trigger.name.length <= 64);
     assert.match(trigger.sql, /@pokyh_cluster_apply IS NULL/, 'applied changes must not be captured again');
     assert.match(trigger.sql, /INSERT INTO `cluster_row_state`/);
-    assert.match(trigger.sql, /FROM `cluster_targets`/);
+    assert.match(trigger.sql, /UUID_SHORT\(\)/, 'every change takes the next place in the change feed');
+    assert.doesNotMatch(trigger.sql, /cluster_outbox|cluster_targets/, 'nothing is written per peer');
     assert.ok(trigger.sql.includes(`'${NODE}'`));
   }
 });
@@ -51,9 +52,23 @@ test('an update is captured only when a value really changed, compared byte for 
 test('a primary-key change is recorded as a removal of the old key', () => {
   const update = sql.triggerDefinitions(members, NODE)[1].sql;
   assert.match(update, /CAST\(OLD\.`class_id` AS CHAR CHARACTER SET utf8mb4\), CAST\(OLD\.`stable_uid` AS CHAR CHARACTER SET utf8mb4\)/);
-  const tombstoneIndex = update.indexOf("'" + NODE + "', 1,");
-  const liveIndex = update.indexOf("'" + NODE + "', 0,");
+  const tombstoneIndex = update.indexOf("'" + NODE + "', NULL, 1,");
+  const liveIndex = update.indexOf("'" + NODE + "', NULL, 0,");
   assert.ok(tombstoneIndex > 0 && liveIndex > tombstoneIndex, 'the old key is removed before the new one is recorded');
+});
+
+test('a change is one statement: the version record moves to the end of the feed', () => {
+  for (const trigger of sql.triggerDefinitions(todos, NODE)) {
+    const statements = trigger.sql.split(';').filter((part) => /INSERT INTO/.test(part));
+    assert.ok(statements.length >= 1);
+    for (const statement of statements) {
+      assert.match(statement, /ON DUPLICATE KEY UPDATE[\s\S]*`seq` = VALUES\(`seq`\)/);
+      assert.match(statement, /`via` = NULL/, 'a local change is offered to every peer');
+    }
+  }
+  assert.equal(sql.triggerDefinitions(todos, NODE)[0].sql.match(/INSERT INTO/g).length, 1, 'an insert costs exactly one bookkeeping write');
+  assert.match('pokyh_cl_0123abcd_u_todos', sql.TRIGGER_NAME, 'triggers of the previous design are recognised');
+  assert.match('pokyh_cx_0123abcd_d_todos', sql.TRIGGER_NAME);
 });
 
 test('trigger names follow their definition', () => {
@@ -88,8 +103,8 @@ test('backfill takes a row age from its timestamps, or the present after a resto
   assert.match(history, /COALESCE\(t\.`created_at`\)/);
   assert.equal((history.match(/\?/g) ?? []).length, 1);
   assert.match(sql.backfillSql(members, 'history'), /COALESCE\(t\.`joined_at`\)/);
-  assert.match(sql.backfillSql({ ...todos, columns: [{ name: 'id', dataType: 'varchar' }] }, 'history'), /, 1, \?, 0 FROM `todos` t/);
-  assert.match(sql.backfillSql(todos, 'now'), /UTC_TIMESTAMP\(6\)\), \?, 0 FROM `todos` t/);
+  assert.match(sql.backfillSql({ ...todos, columns: [{ name: 'id', dataType: 'varchar' }] }, 'history'), /, 1, \?, 0, UUID_SHORT\(\) FROM `todos` t/);
+  assert.match(sql.backfillSql(todos, 'now'), /UTC_TIMESTAMP\(6\)\), \?, 0, UUID_SHORT\(\) FROM `todos` t/);
 });
 
 test('backfill only touches rows that have no version yet', () => {

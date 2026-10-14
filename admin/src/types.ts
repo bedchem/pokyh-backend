@@ -758,18 +758,21 @@ export interface ClusterPeer {
   name: string;
   address: string;
   status: ClusterPeerState;
+  // HOST: this node invited (or was asked to wait for) the other; JOIN: this node joined.
+  role: 'HOST' | 'JOIN';
+  introducedBy: string | null;
   health: ClusterPeerHealth | null;
-  isLeader: boolean;
   lastSeenAt: string | null;
   latencyMs: number | null;
   clockSkewMs: number | null;
-  queuedRows: number;
+  pendingRows: number;
   fullTransfer: boolean;
   rowsSent: number;
   rowsReceived: number;
   lastSyncAt: string | null;
   lastError: string | null;
   schemaMatch: boolean | null;
+  verify: { lastAt: string | null; repaired: number; running: boolean; error: string | null } | null;
   pairing: { expiresAt: string | null; failures: number; message: string } | null;
   knownPeers: Array<{ id: string; health: string }>;
   warnings: string[];
@@ -783,8 +786,8 @@ export interface ClusterStatus {
   node: {
     id: string;
     name: string;
-    isLeader: boolean;
-    leaderId: string;
+    advertiseUrl: string;
+    advertiseFromEnv: boolean;
     schema: string | null;
     replicatedTables: number;
     captureReady: boolean;
@@ -792,6 +795,19 @@ export interface ClusterStatus {
     captureGap: boolean;
     deferredChanges: number;
     uptimeSeconds: number;
+    workNodes: number;
+    exclusiveJobsHere: boolean;
+    verifyIntervalMinutes: number;
+    inviteMinutes: number;
+  };
+  channel: {
+    publicPath: boolean;
+    port: number;
+    bindAddress: string;
+    listening: boolean;
+    allowlistEntries: number;
+    autoMesh: boolean;
+    warnings: string[];
   };
   peers: ClusterPeer[];
   events: Array<{ at: string; level: 'info' | 'warn' | 'error'; message: string }>;

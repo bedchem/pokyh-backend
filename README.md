@@ -299,8 +299,8 @@ so additive schema changes are applied on every deploy.
 | Learn              | `/learn/*`                                        | Additive learning API; API key, then per-resource bearer authorization |
 | Learn sign-in      | `/auth/learn-login`                               | API-key-gated WebUntis verification for the Learn BFF only; production legal gate must be ready before verification |
 | Admin              | `/api/admin/*`                                    | JWT + admin only (no API key)           |
-| Cluster admin      | `/api/admin/cluster`                              | Peers, pairing, status — see [Cluster](#cluster-multi-node-replication) |
-| Cluster channel    | `/cluster/v1/*`                                   | Node-to-node only; encrypted frames, own authentication, 404 while no peer is configured |
+| Cluster admin      | `/api/admin/cluster`                              | Invites, joining, peers, status — see [Cluster](#cluster-multi-node-replication) |
+| Cluster channel    | `/cluster/v1/*`                                   | Node-to-node only (API port with `CLUSTER_PUBLIC_PATH`, or `CLUSTER_PORT`); encrypted frames, own authentication, optional IP allowlist |
 | Setup              | `/api/setup`                                      | First-run wizard                        |
 | Health             | `/health`                                         | Liveness probe                          |
 | Readiness          | `/readyz`                                         | DB-aware readiness probe for Compose/load balancers |
@@ -327,8 +327,9 @@ Started once the DB is reachable (`src/index.ts` → `startBackgroundJobs`):
   users, classes, to-dos and reminders into the `school_years` archive tables and clears the live
   tables so the new year starts fresh. Idempotent; configurable month/day.
 
-In a [cluster](#cluster-multi-node-replication) these four run on one node only (the leader), so a
-notification is never sent once per node. Backups and request-log cleanup stay per node.
+In a [cluster](#cluster-multi-node-replication) there is no leader: notifications and polling are
+shared out per item over the reachable nodes, and archiving and the rollover run on one node only
+while every node is reachable. Backups and request-log cleanup stay per node.
 
 ---
 
@@ -441,58 +442,87 @@ secrets must still never be passed to logger calls.
 ## Cluster (multi-node replication)
 
 Several backend nodes — each with its **own** MySQL database — can be linked so that they hold
-the same data. A change made through any node reaches the others within about a second, nodes
-watch each other, and a node that was offline catches up by itself when it returns. The feature is
-dormant until the first peer is added: a standalone server installs no trigger and behaves exactly
-as before.
+the same data. There is **no leader**: every node accepts reads and writes, every node holds all
+data, and the nodes keep checking each other. A change made through any node reaches the others
+within about a second, a node that was offline catches up by itself when it returns, and a client
+can be served by whichever node is nearest or least busy. The feature is dormant until the first
+invite: a standalone server installs no trigger and behaves exactly as before.
 
 ### Adding a node
 
-Admin panel → **Cluster** on **both** nodes:
+1. On any existing node: admin panel → **Cluster** → **Node einladen**. Enter the address the new
+   node will reach this one at (prefilled from `CLUSTER_ADVERTISE_URL`, otherwise from the address
+   the panel is open under) and create the code.
+2. On the new node: **Cluster** → **Beitreten**, paste the code and enter the new node's own
+   address (how the others reach it).
+3. The new node contacts the inviting one, both prove they know the code's one-time secret and
+   agree on a link key; both then show the other as *Online* and the initial transfer starts.
 
-1. On node A enter node B's address (IP or host, optional port — default `4000`) and a pairing
-   key. *Erzeugen* creates a strong one; any key of at least 16 characters is accepted.
-2. On node B enter node A's address and **the same** pairing key.
-3. The nodes find each other, verify that both know the key and agree on a link key. Both sides
-   then show the peer as *Online* and the initial transfer starts. The pairing key is discarded;
-   an unused pairing window closes after `CLUSTER_PAIRING_TTL_MINUTES` and locks after repeated
-   wrong keys.
+An invite code is valid once and for `CLUSTER_PAIRING_TTL_MINUTES` (15 by default), and locks
+after `CLUSTER_PAIRING_MAX_FAILURES` wrong attempts. Whoever holds a valid code can join and
+receives all data — pass it on only over a channel you trust.
 
-For more than two nodes, pair each new node with at least one existing node; changes are passed
-on, so every node receives everything. Pairing every node with every other is still recommended,
-because it keeps replication going when one node is down.
+With `CLUSTER_AUTO_MESH` (on by default) a node invited by one member is introduced to all the
+others automatically, so every node ends up linked directly with every other. The mesh also heals
+itself: whenever a node is linked with two peers that are not linked with each other, it introduces
+them. A link an administrator removed or switched off is never re-created by the mesh.
 
-Requirements: the nodes must reach each other's API port in both directions; they must run the
-same version (replication with a peer pauses while the database schemas differ, e.g. during a
-rolling upgrade); their clocks must be synchronised (NTP); and the database account must be
-allowed to create triggers (the bundled Compose stack qualifies). For clients to move freely
-between nodes, give all nodes the same `JWT_SECRET`, `REFRESH_TOKEN_SECRET`, `API_KEY` and
-`SERVER_KEY` — the Cluster page warns when they differ. Routing clients to a healthy node (DNS,
-load balancer) is outside this repository.
+Requirements: the nodes must reach each other in both directions (see *Network* below); they must
+run the same version (replication with a peer pauses while the database schemas differ, e.g. during
+a rolling upgrade); their clocks must be synchronised (NTP); and the database account must be
+allowed to create triggers (the bundled Compose stack qualifies). For clients to move freely between
+nodes, give all nodes the same `JWT_SECRET`, `REFRESH_TOKEN_SECRET`, `API_KEY` and `SERVER_KEY` —
+the nodes compare fingerprints of them (never the values) and the Cluster page warns when they
+differ. Routing clients to a node (GeoDNS, load balancer) is outside this repository; for
+read-your-own-writes, route a client to the same node for the duration of its session.
+
+### Network
+
+The node-to-node channel (`/cluster/v1`) can be served in two places, switched in `.env` and shown
+on the Cluster page:
+
+| Setting | Effect |
+|---------|--------|
+| `CLUSTER_PUBLIC_PATH=true` (default) | Served on the ordinary API port — for nodes that reach each other through a reverse proxy (`https://node1.example.org`). |
+| `CLUSTER_PORT=4100`, `CLUSTER_BIND_ADDRESS` | A listener of its own that serves nothing but the channel (`http://10.0.0.5:4100`), to be opened only to the other nodes. With Docker Compose, publish the port as well (`ports: - "4100:4100"`). |
+| `CLUSTER_ALLOWLIST=203.0.113.10,10.0.0.0/8` | Only these addresses (IPs or CIDR ranges) may use the channel, on both entry points. Behind a reverse proxy the address is the one `TRUST_PROXY` lets through. |
+
+Both entry points can be on at the same time. `CLUSTER_ADVERTISE_URL` is the address the other
+nodes should use for this one.
 
 ### What protects the link
 
-- **Pairing**: the pairing key is stretched with scrypt and a random salt, and authenticates an
-  ephemeral X25519 key exchange with confirmation on both sides. The result is a 256-bit link key
-  that never travels over the network.
+- **Pairing**: the invite's 256-bit one-time secret is stretched with scrypt and a random salt and
+  authenticates an ephemeral X25519 key exchange with confirmation on both sides. The joining node
+  checks that the node named in the code answers; the joining node's own address is covered by the
+  proof, so it cannot be swapped in transit. The result is a 256-bit link key that never travels
+  over the network.
 - **Every connection**: a fresh ephemeral X25519 exchange, authenticated with the link key —
   recorded traffic stays unreadable even if a link key leaks later.
-- **Every message**: AES-256-GCM with separate keys per direction and a unique counter; altered,
-  replayed or foreign messages are rejected.
+- **Every message**: compressed, padded to a fixed size step (so its length says little about its
+  content), then sealed with AES-256-GCM under separate keys per direction and a unique counter;
+  altered, replayed or foreign messages are rejected. Through an HTTPS reverse proxy TLS adds a
+  second, independent layer.
+- **Who may connect**: optionally only the addresses in `CLUSTER_ALLOWLIST`, on a port of its own.
 - **At rest**: link keys are stored encrypted (key derived from `CLUSTER_SECRET`, or from
-  `JWT_SECRET` when unset) and are never logged or returned by any API.
+  `JWT_SECRET` when unset) and are never logged or returned by any API; neither is an invite code.
 
-The channel does not depend on TLS, so it also works between bare IP addresses. It protects the
-data in transit and makes sure only paired nodes take part; it cannot protect against a node that
-is itself compromised, or against someone who obtains the pairing key while a pairing is open. A
-paired node receives the complete data set — only pair nodes you control.
+The channel protects the data in transit and makes sure only linked nodes take part; it cannot
+protect against a node that is itself compromised, or against someone who obtains a valid invite
+code. A linked node receives the complete data set — only link nodes you control.
 
 ### How data is kept consistent
 
 - Triggers record each change in the same transaction as the change itself, whatever wrote it
-  (API, raw SQL, the CLI scripts). Replicated: every table except `request_logs`,
-  `frontend_activity_logs`, `backup_config` and the `cluster_*` bookkeeping tables (plus
-  `CLUSTER_EXCLUDE_TABLES`).
+  (API, raw SQL, the CLI scripts): one small write per change — the row's version record moves to
+  the end of the change feed. Nothing is written per peer; each peer has a read position in the
+  feed that is stored about every 30 seconds, not per row. Replicated: every table except
+  `request_logs`, `frontend_activity_logs`, `backup_config` and the `cluster_*` bookkeeping tables
+  (plus `CLUSTER_EXCLUDE_TABLES`).
+- Changes are sent in adaptive batches: right away when it is quiet (after
+  `CLUSTER_BATCH_IDLE_MS`), collected for at most `CLUSTER_BATCH_MAX_DELAY_MS` under load. A
+  received package is applied in one transaction (one disk flush for hundreds of rows) and falls
+  back to row-by-row handling when anything in it needs more than a plain write.
 - Rows travel in their current state. If the same row was changed on two nodes, the **later
   change wins** on every node. Deleting a parent removes its dependants everywhere.
 - The same unique value created independently on two nodes (the same account, for instance): the
@@ -501,15 +531,29 @@ paired node receives the complete data set — only pair nodes you control.
 - Counters that are incremented on several nodes at once keep the later node's total.
 - Live updates (SSE), the menu cache and session revocations follow replicated changes, so a
   client connected to one node sees a change made through another.
+- **Self-check**: every `CLUSTER_VERIFY_INTERVAL_MINUTES` (15) each node compares checksums of all
+  its version records with each peer, descends only into groups that differ, and sends whatever
+  the peer holds in an older version. Anything that slipped through is repaired by itself; the
+  Cluster page shows the last check and offers *Jetzt prüfen*.
+
+### Background work without a leader
+
+Work done per item — push notifications, WebUntis message polling, idempotent clean-ups — belongs
+to exactly one of the nodes that can currently be reached, chosen by hashing the item (rendezvous
+hashing). It spreads evenly over all nodes, and when a node goes away only its share moves, each
+item to the next node. While nodes cannot see each other, each side carries on, so a notification
+may then go out twice rather than not at all.
+
+Work that must happen once and only once — archiving and the school-year rollover — runs on one
+node, and only while every linked node is reachable, so two separated halves can never both run it.
 
 ### Failure handling
 
 Each node sends its peers an authenticated heartbeat every `CLUSTER_HEARTBEAT_INTERVAL_MS`. After
 `CLUSTER_SUSPECT_AFTER_FAILURES` missed answers a peer is shown as *Antwortet nicht*, after
 `CLUSTER_OFFLINE_AFTER_FAILURES` as *Offline*; both are logged (`cluster_peer_suspect`,
-`cluster_peer_offline`, `cluster_peer_online`). Changes are queued for an offline peer and
-delivered when it is back. The leader — the node that runs the once-only background jobs — is the
-reachable node with the smallest id; when it goes offline the next one takes over.
+`cluster_peer_offline`, `cluster_peer_online`). Changes for an offline peer simply stay in the feed
+and are delivered when it is back.
 
 A peer that was out of contact for longer than `CLUSTER_TOMBSTONE_RETENTION_DAYS` may still hold
 rows that were deleted in the meantime. Replication with it is put on hold until an administrator
@@ -534,10 +578,12 @@ reports that changes went unrecorded and offers to publish this node's data to a
 
 ### Verifying
 
-`npm run test:cluster` starts a throw-away MySQL container and three backend processes and runs
-the whole life cycle against them: pairing, initial transfer, live replication, node failure and
-recovery, conflicting changes on separated nodes, replayed and tampered traffic, backup restore.
-It needs Docker and does not touch a local `.env` or database.
+`npm test` covers the pure parts (trigger SQL, crypto, framing, invite codes, allowlist, work
+distribution). `npm run test:cluster` starts a throw-away MySQL container and three backend
+processes and runs the whole life cycle against them: invite and join, auto-mesh, initial transfer,
+live replication, the self-check, node failure and recovery, conflicting changes on separated
+nodes, replayed and tampered traffic, backup restore. It needs Docker (or `CLUSTER_E2E_MYSQL_URL`
+pointing at a throw-away MySQL server) and does not touch a local `.env` or database.
 
 ---
 
@@ -588,7 +634,7 @@ Dockerfile · docker-compose.yml · entrypoint.sh
 | **422** on `/auth/login`                  | Body validation failed — `klasseId` may be `0` (no class); the schema accepts that, but check the logged Zod error. |
 | Prisma **"property does not exist"**      | Run `npx prisma generate` after schema changes.                                    |
 | DB unreachable on boot                    | Non-fatal — the server retries with backoff. Check `DATABASE_URL` and the MySQL healthcheck. |
-| Cluster peer stays *Kopplung läuft*       | The other node has no open pairing for this node yet, the address is not reachable in one direction, or the keys differ (the entry then locks — enter the key again on both nodes). |
+| Cluster join stays *Tritt bei…*           | The invite was already used or has expired (create a new one), the inviting node's address is not reachable from the new node, or the new node's own address is not reachable from the inviting node. Wrong codes lock the invite after a few attempts. |
 | Cluster page: capture could not be set up | The database account may not create triggers. Grant `TRIGGER` on the database (with binary logging and a non-`SUPER` account also set `log_bin_trust_function_creators=1`). |
 | Cluster peer *Online* but nothing arrives | Check the warnings on the Cluster page: different schema (finish the upgrade on both nodes) or a peer on hold after a very long absence. |
 

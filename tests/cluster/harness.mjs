@@ -124,8 +124,9 @@ export class Cluster {
     await this.adminDb.$executeRawUnsafe(`CREATE DATABASE \`${database}\``);
     const dir = path.join(this.root, name);
     mkdirSync(dir, { recursive: true });
-    symlinkSync(path.join(REPO, 'prisma'), path.join(dir, 'prisma'));
-    symlinkSync(path.join(REPO, 'node_modules'), path.join(dir, 'node_modules'));
+    const linkType = process.platform === 'win32' ? 'junction' : 'dir';
+    symlinkSync(path.join(REPO, 'prisma'), path.join(dir, 'prisma'), linkType);
+    symlinkSync(path.join(REPO, 'node_modules'), path.join(dir, 'node_modules'), linkType);
     writeFileSync(path.join(dir, 'package.json'), '{"name":"pokyh-cluster-e2e-node","private":true}\n');
     this.installClientShims(dir);
 
@@ -302,14 +303,16 @@ child.on('exit', (code) => process.exit(code === null ? 1 : code));
     return status.peers.find((peer) => peer.address.endsWith(`:${other.port}`) || (other.proxyPort && peer.address.endsWith(`:${other.proxyPort}`)));
   }
 
-  // Pairs two nodes the way an operator does: the other node's address and
-  // the same key, entered on both. `addressOfB` lets a test route A's traffic
-  // to B through a recording proxy.
-  async pair(a, b, { keyA, keyB, addressOfB } = {}) {
-    const generated = (await this.admin(a, 'POST', '/cluster/pairing-key')).json.pairingKey;
-    const first = await this.admin(a, 'POST', '/cluster/peers', { address: addressOfB ?? `127.0.0.1:${b.port}`, name: `node-${b.name}`, pairingKey: keyA ?? generated });
-    const second = await this.admin(b, 'POST', '/cluster/peers', { address: `127.0.0.1:${a.port}`, name: `node-${a.name}`, pairingKey: keyB ?? generated });
-    return { first, second, key: generated };
+  // Links two nodes the way an operator does: an invite code created on A,
+  // used on B. `addressOfB` is the address B announces for itself, which
+  // lets a test route A's traffic to B through a recording proxy;
+  // `tamper` changes the code before B uses it.
+  async pair(a, b, { addressOfB, tamper } = {}) {
+    const invite = await this.admin(a, 'POST', '/cluster/invites', { ownAddress: `http://127.0.0.1:${a.port}` });
+    if (invite.status !== 201) throw new Error(`invite on ${a.name}: HTTP ${invite.status} ${invite.text}`);
+    const code = tamper ? tamper(invite.json.code) : invite.json.code;
+    const join = await this.admin(b, 'POST', '/cluster/join', { code, ownAddress: addressOfB ?? `http://127.0.0.1:${b.port}` });
+    return { invite, join, code: invite.json.code };
   }
 
   async waitPaired(a, b, timeoutMs = 60_000) {
@@ -367,7 +370,7 @@ child.on('exit', (code) => process.exit(code === null ? 1 : code));
       for (const other of nodes) {
         const peer = other === node ? null : this.peerOf(status, other);
         if (peer?.status === 'ACTIVE' && peer.fullTransfer) return `${node.name} is still transferring everything to ${peer.name}`;
-        if (peer?.status === 'ACTIVE' && peer.queuedRows > 0) return `${node.name} still has ${peer.queuedRows} row(s) queued for ${peer.name}`;
+        if (peer?.status === 'ACTIVE' && peer.pendingRows > 0) return `${node.name} still has ${peer.pendingRows} change(s) waiting for ${peer.name}`;
       }
     }
     return null;
@@ -394,7 +397,7 @@ child.on('exit', (code) => process.exit(code === null ? 1 : code));
   // Runs SQL that the application's own database client cannot send (trigger
   // DDL), the same way the server itself does.
   runSql(node, sql) {
-    execFileSync(path.join(REPO, 'node_modules', '.bin', 'prisma'), ['db', 'execute', '--stdin', '--url', node.databaseUrl], {
+    execFileSync(process.execPath, [path.join(REPO, 'node_modules', 'prisma', 'build', 'index.js'), 'db', 'execute', '--stdin', '--url', node.databaseUrl], {
       input: sql,
       cwd: node.dir,
       stdio: ['pipe', 'pipe', 'pipe'],
