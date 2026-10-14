@@ -332,7 +332,8 @@ export const config = {
   usageAnalytics: {
     // Visits are counted per calendar day and hour in this IANA timezone.
     timezone: strEnv('ANALYTICS_TIMEZONE', 'Europe/Rome'),
-    retentionDays: boundedIntEnv('USAGE_ANALYTICS_RETENTION_DAYS', 365, 30, 1_095),
+    // The Analytics page looks back 90 days at most, so nothing older is kept.
+    retentionDays: boundedIntEnv('USAGE_ANALYTICS_RETENTION_DAYS', 90, 30, 365),
   },
 
   // ── Archiving of expired todos/reminders ───────────────────────────────────

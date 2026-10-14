@@ -49,6 +49,7 @@ model User {
   learnAiUsageCounters    LearnAiUsageCounter[]
   learnAiTrainingPrompts  LearnAiTrainingPrompt[]
   usageSessions           UsageSession[]
+  privacyConsent          PrivacyConsent?
 
   @@map("users")
 }
@@ -487,7 +488,8 @@ model FrontendActivityLog {
 
 // ─── Usage analytics ─────────────────────────────────────────────────────────
 // One row per visit to Pokyh, kept current by a foreground heartbeat from the
-// web app and the iOS and Android apps (POST /usage/ping). It holds only what
+// web app and the iOS and Android apps (POST /usage/ping) — only for accounts
+// that consented to the usage statistics (PrivacyConsent). It holds only what
 // the admin Analytics page aggregates: the kind of device and client, how long
 // Pokyh was in the foreground and how many screens were opened. No IP address, user
 // agent, page path or content is stored. A deleted account's rows lose their
@@ -519,6 +521,27 @@ model UsageSession {
   @@index([stableUid, dayKey])
   @@index([lastSeenAt])
   @@map("usage_sessions")
+}
+
+// ─── Privacy notice and usage-statistics consent ─────────────────────────────
+// Which version of the privacy notice an account last acknowledged at sign-in,
+// and its choice on the usage statistics — an opt-in, never preset, revocable
+// in the profile. Kept as proof (GDPR Art. 7(1)) and deleted with the account.
+// See src/routes/privacy.ts.
+model PrivacyConsent {
+  stableUid      String    @id @map("stable_uid")
+  // "" while only a consent choice was recorded and no notice acknowledged.
+  noticeVersion  String    @map("notice_version") @db.VarChar(32)
+  acknowledgedAt DateTime  @map("acknowledged_at")
+  usageStats     Boolean   @default(false) @map("usage_stats")
+  // When the current usage-statistics choice was made (given or withdrawn).
+  usageStatsAt   DateTime? @map("usage_stats_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  user User @relation(fields: [stableUid], references: [stableUid], onDelete: Cascade)
+
+  @@index([usageStats])
+  @@map("privacy_consents")
 }
 
 // ─── Pokyh Learn ─────────────────────────────────────────────────────────────

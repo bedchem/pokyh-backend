@@ -23,6 +23,8 @@ interface TrendChartProps {
   // Changing this replays the draw-in (a new range, not a data refresh).
   drawKey: string;
   ariaLabel: string;
+  // Makes a point clickable (pointer or Enter), e.g. to list who is behind it.
+  onSelect?: (index: number) => void;
 }
 
 const GUTTER = 46;
@@ -82,7 +84,7 @@ function monotonePath(points: Array<[number, number]>): string {
   return d;
 }
 
-export function TrendChart({ labels, titles, series, tickEvery = 1, restIndex, drawKey, ariaLabel }: TrendChartProps) {
+export function TrendChart({ labels, titles, series, tickEvery = 1, restIndex, drawKey, ariaLabel, onSelect }: TrendChartProps) {
   const gradientId = useId().replace(/:/g, '');
   const rootRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -192,7 +194,7 @@ export function TrendChart({ labels, titles, series, tickEvery = 1, restIndex, d
     <div
       ref={rootRef}
       className="chart"
-      style={{ height: baseline + 44 }}
+      style={{ height: baseline + 44, cursor: onSelect ? 'pointer' : undefined }}
       role="img"
       aria-label={ariaLabel}
       tabIndex={0}
@@ -200,7 +202,14 @@ export function TrendChart({ labels, titles, series, tickEvery = 1, restIndex, d
       onPointerDown={(e) => setHovered(indexFromPointer(e.clientX))}
       onPointerLeave={() => setHovered(null)}
       onBlur={() => setHovered(null)}
-      onKeyDown={onKeyDown}
+      onClick={onSelect ? (e) => onSelect(indexFromPointer(e.clientX)) : undefined}
+      onKeyDown={(e) => {
+        if (onSelect && e.key === 'Enter') {
+          onSelect(active);
+          return;
+        }
+        onKeyDown(e);
+      }}
     >
       {ready && (
         <>

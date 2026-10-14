@@ -1,6 +1,10 @@
 import { ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import {
   AlertTriangle,
+  ArrowDown,
+  ArrowUp,
+  ChevronRight,
   BookOpen,
   CalendarDays,
   ChartNoAxesColumn,
@@ -8,7 +12,6 @@ import {
   Flame,
   Globe,
   Hourglass,
-  Info,
   Layers,
   Medal,
   MessagesSquare,
@@ -31,8 +34,8 @@ import { useLive, useLiveStatus } from '../live';
 import { useTheme, type Theme } from '../theme';
 import { TrendChart, type TrendSeries } from '../components/TrendChart';
 import { Bars, RankBars, Ring, SplitBar } from '../components/charts';
-import { Delta, Empty, Figures, IconButton, Notice, PageHeader, Section, Segmented, TONES, Tag, useTableLabels, type Tone } from '../components/kit';
-import type { AdminAnalytics, AnalyticsRange, UsagePlatform } from '../types';
+import { Avatar, Delta, Dialog, Empty, Figures, IconButton, Notice, PageHeader, SearchField, Section, Segmented, Spinner, TONES, Tag, useTableLabels, type Tone } from '../components/kit';
+import type { AdminAnalytics, AnalyticsBreakdown, AnalyticsDish, AnalyticsPeople, AnalyticsPerson, AnalyticsRange, BreakdownKind, PeopleFilters, UsagePlatform } from '../types';
 
 // ─── Vocabulary ─────────────────────────────────────────────────────────────
 
@@ -112,6 +115,18 @@ function shortDay(dayKey: string, days: number): string {
   return days > 31 ? `${d.getDate()}.${d.getMonth() + 1}.` : String(d.getDate()).padStart(2, '0');
 }
 
+function lastSeen(iso: string): string {
+  const then = new Date(iso);
+  const minutes = Math.floor((Date.now() - then.getTime()) / 60000);
+  if (minutes < 3) return 'gerade eben';
+  if (minutes < 60) return `vor ${minutes} Min.`;
+  if (then.toDateString() === new Date().toDateString()) return `heute, ${then.toLocaleTimeString('de-AT', { hour: '2-digit', minute: '2-digit' })}`;
+  const days = Math.floor(minutes / 1440);
+  if (days <= 1) return 'gestern';
+  if (days < 30) return `vor ${days} Tagen`;
+  return then.toLocaleDateString('de-AT', { day: 'numeric', month: 'short' });
+}
+
 function hourSpan(hour: number): string {
   return `${String(hour).padStart(2, '0')}–${String((hour + 1) % 24).padStart(2, '0')} Uhr`;
 }
@@ -123,6 +138,8 @@ interface Fact {
   tone: Tone;
   value: string;
   label: string;
+  // Opens the list of who is behind the fact.
+  open?: () => void;
 }
 
 // Short statements with one number each, three to a row on wide screens.
@@ -130,17 +147,26 @@ function FactGrid({ facts, columns = 3 }: { facts: Fact[]; columns?: 2 | 3 }) {
   if (facts.length === 0) return <p className="mt-6 text-[14px] text-ink-3">Noch keine Daten in diesem Zeitraum.</p>;
   return (
     <ul className={`mt-7 grid gap-x-10 gap-y-7 sm:grid-cols-2 ${columns === 3 ? '2xl:grid-cols-3' : ''}`}>
-      {facts.map((fact, i) => (
-        <li key={fact.label} className="animate-fadeInUp flex min-w-0 items-start gap-4" style={{ animationDelay: `${i * 35}ms` }}>
-          <span className="orb h-11 w-11 flex-shrink-0" style={{ background: TONES[fact.tone].wash, color: TONES[fact.tone].deep }}>
-            <fact.icon size={18} strokeWidth={1.6} />
-          </span>
-          <div className="min-w-0">
-            <div className="truncate text-[17px] font-semibold leading-snug" title={fact.value}>{fact.value}</div>
-            <div className="mt-0.5 text-[13.5px] leading-snug text-ink-3">{fact.label}</div>
-          </div>
-        </li>
-      ))}
+      {facts.map((fact, i) => {
+        const body = (
+          <>
+            <span className="orb h-11 w-11 flex-shrink-0" style={{ background: TONES[fact.tone].wash, color: TONES[fact.tone].deep }}>
+              <fact.icon size={18} strokeWidth={1.6} />
+            </span>
+            <span className="block min-w-0">
+              <span className="fact-value block truncate text-[17px] font-semibold leading-snug" title={fact.value}>{fact.value}</span>
+              <span className="mt-0.5 block text-[13.5px] leading-snug text-ink-3">{fact.label}</span>
+            </span>
+          </>
+        );
+        return (
+          <li key={fact.label} className="animate-fadeInUp min-w-0" style={{ animationDelay: `${i * 35}ms` }}>
+            {fact.open
+              ? <button type="button" className="fact-link flex w-full min-w-0 items-start gap-4 text-left" onClick={fact.open}>{body}</button>
+              : <div className="flex min-w-0 items-start gap-4">{body}</div>}
+          </li>
+        );
+      })}
     </ul>
   );
 }
@@ -158,13 +184,24 @@ function Legend({ items }: { items: Array<{ label: string; color: string }> }) {
   );
 }
 
-function Ledger({ items, columns = 3 }: { items: Array<{ label: string; value: string; hint?: string }>; columns?: 2 | 3 }) {
+interface LedgerItem {
+  label: string;
+  value: string;
+  hint?: string;
+  open?: () => void;
+}
+
+function Ledger({ items, columns = 3 }: { items: LedgerItem[]; columns?: 2 | 3 }) {
   return (
     <dl className={`grid grid-cols-2 gap-x-8 gap-y-6 ${columns === 3 ? 'sm:grid-cols-3' : ''}`}>
       {items.map((item) => (
         <div key={item.label} className="min-w-0">
           <dt className="truncate text-[13.5px] text-ink-3" title={item.hint ?? item.label}>{item.label}</dt>
-          <dd className="tabular mt-0.5 text-[19px] font-semibold">{item.value}</dd>
+          <dd className="tabular mt-0.5 text-[19px] font-semibold">
+            {item.open
+              ? <button type="button" className="ledger-link" onClick={item.open}><span className="ledger-value">{item.value}</span></button>
+              : item.value}
+          </dd>
         </div>
       ))}
     </dl>
@@ -178,6 +215,361 @@ function Explain({ children }: { children: ReactNode }) {
 
 function Pair({ children }: { children: ReactNode }) {
   return <div className="grid gap-x-16 gap-y-14 xl:grid-cols-2">{children}</div>;
+}
+
+// ─── Popups: what is behind a figure ────────────────────────────────────────
+// Three kinds, all alike: a search, a table sorted by a click on its header.
+
+interface Sort<K extends string> {
+  key: K;
+  desc: boolean;
+}
+
+interface Column<K extends string> {
+  key: K;
+  label: string;
+  // Numbers sit on the right and sort largest first.
+  numeric?: boolean;
+}
+
+function nextSort<K extends string>(current: Sort<K>, key: K, numeric: boolean): Sort<K> {
+  return current.key === key ? { key, desc: !current.desc } : { key, desc: numeric };
+}
+
+function SortHeader<K extends string>({ columns, sort, onSort }: { columns: Column<K>[]; sort: Sort<K>; onSort: (column: Column<K>) => void }) {
+  return (
+    <thead>
+      <tr>
+        {columns.map((column) => {
+          const on = sort.key === column.key;
+          return (
+            <th
+              key={column.key}
+              aria-sort={on ? (sort.desc ? 'descending' : 'ascending') : 'none'}
+              style={column.numeric ? { textAlign: 'right' } : undefined}
+            >
+              <button type="button" className="sort-btn" data-on={on} onClick={() => onSort(column)}>
+                {column.label}
+                {on && (sort.desc ? <ArrowDown size={12} strokeWidth={2} /> : <ArrowUp size={12} strokeWidth={2} />)}
+              </button>
+            </th>
+          );
+        })}
+      </tr>
+    </thead>
+  );
+}
+
+// The common frame: search, a scrolling table, states for loading and errors.
+function PopupBody({ error, loading, empty, search, onSearch, placeholder, footer, children }: {
+  error: string | null;
+  loading: boolean;
+  empty: boolean;
+  search: string;
+  onSearch: (next: string) => void;
+  placeholder: string;
+  footer?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <>
+      <SearchField value={search} onChange={onSearch} placeholder={placeholder} />
+      <div className="scrollbar-thin -mx-2 mt-4 max-h-[60vh] overflow-y-auto px-2">
+        {error ? (
+          <p className="py-10 text-center text-[14px] text-ink-3">{error}</p>
+        ) : loading ? (
+          <div className="flex justify-center py-12"><Spinner size={20} /></div>
+        ) : empty ? (
+          <p className="py-10 text-center text-[14px] text-ink-3">{search ? 'Kein Treffer.' : 'Nichts in diesem Zeitraum.'}</p>
+        ) : children}
+      </div>
+      {footer && <p className="mt-4 text-[12.5px] text-ink-3">{footer}</p>}
+    </>
+  );
+}
+
+// Loads a popup's data once per input and keeps it while it is open.
+function usePopupData<T>(load: () => Promise<T>, key: string) {
+  const [data, setData] = useState<T | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const latest = useRef(load);
+  latest.current = load;
+  useEffect(() => {
+    let alive = true;
+    setData(null);
+    setError(null);
+    latest.current()
+      .then((next) => { if (alive) setData(next); })
+      .catch((err) => { if (alive) setError(err instanceof Error ? err.message : 'Die Liste konnte nicht geladen werden.'); });
+    return () => { alive = false; };
+  }, [key]);
+  return { data, error };
+}
+
+// ── Who ─────────────────────────────────────────────────────────────────────
+
+// Accounts are only named with their consent to the usage statistics; the
+// rest of a figure is said in one line under the list.
+function peopleFooter(result: AnalyticsPeople): string | undefined {
+  const parts: string[] = [];
+  if (result.total > result.people.length) parts.push(`Gezeigt werden ${de(result.people.length)} von ${de(result.total)} Konten.`);
+  if (result.hidden > 0) parts.push(`${de(result.hidden)} weitere ${result.hidden === 1 ? 'Konto' : 'Konten'} ohne Einwilligung zur Nutzungsstatistik ${result.hidden === 1 ? 'wird' : 'werden'} nicht einzeln gezeigt.`);
+  return parts.length > 0 ? parts.join(' ') : undefined;
+}
+
+type SortKey = 'username' | 'seconds' | 'visits' | 'activeDays' | 'lastSeenAt';
+
+const COLUMNS: Column<SortKey>[] = [
+  { key: 'username', label: 'Konto' },
+  { key: 'seconds', label: 'Zeit', numeric: true },
+  { key: 'visits', label: 'Besuche', numeric: true },
+  { key: 'activeDays', label: 'Tage', numeric: true },
+  { key: 'lastSeenAt', label: 'Zuletzt', numeric: true },
+];
+
+interface PeopleView {
+  title: string;
+  filters: PeopleFilters;
+  sort: SortKey;
+  // A range of its own (e.g. "last 7 days" whatever the page shows).
+  days?: AnalyticsRange;
+  search?: string;
+}
+
+function compare(a: AnalyticsPerson, b: AnalyticsPerson, key: SortKey): number {
+  if (key === 'username') return a.username.localeCompare(b.username, 'de');
+  if (key === 'lastSeenAt') return (a.lastSeenAt ?? '').localeCompare(b.lastSeenAt ?? '');
+  return a[key] - b[key];
+}
+
+function PeopleDialog({ view, days, colors, onClose }: { view: PeopleView; days: AnalyticsRange; colors: Record<UsagePlatform, string>; onClose: () => void }) {
+  const range = view.days ?? days;
+  const [query, setQuery] = useState(view.search ?? '');
+  const [sort, setSort] = useState<Sort<SortKey>>({ key: view.sort, desc: view.sort !== 'username' });
+  const tableRef = useRef<HTMLDivElement>(null);
+  useTableLabels(tableRef);
+  const { data: result, error } = usePopupData<AnalyticsPeople>(
+    () => adminApi.analyticsPeople(range, view.filters),
+    `${range}|${JSON.stringify(view.filters)}`,
+  );
+
+  const shown = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const people = (result?.people ?? []).filter((p) => !q || [p.username, p.klasse, p.detail].some((v) => v.toLowerCase().includes(q)));
+    return [...people].sort((a, b) => {
+      const order = compare(a, b, sort.key);
+      return (sort.desc ? -order : order) || a.username.localeCompare(b.username, 'de');
+    });
+  }, [result, query, sort]);
+  const totalSeconds = shown.reduce((sum, p) => sum + p.seconds, 0);
+
+  const subtitle = result
+    ? [`${de(result.total)} ${result.total === 1 ? 'Konto' : 'Konten'}`, `letzte ${range} Tage`, totalSeconds > 0 ? `zusammen ${hours(totalSeconds)}` : null].filter(Boolean).join(' · ')
+    : `Letzte ${range} Tage`;
+
+  return (
+    <Dialog title={view.title} subtitle={subtitle} onClose={onClose} width={820}>
+      <PopupBody
+        error={error}
+        loading={!result}
+        empty={shown.length === 0}
+        search={query}
+        onSearch={setQuery}
+        placeholder="Name, Klasse oder Version suchen"
+        footer={result ? peopleFooter(result) : undefined}
+      >
+        <div ref={tableRef} className="tbl-scroll">
+          <table className="tbl">
+            <SortHeader columns={COLUMNS} sort={sort} onSort={(column) => setSort((current) => nextSort(current, column.key, Boolean(column.numeric)))} />
+            <tbody>
+              {shown.map((p) => (
+                <tr key={p.stableUid}>
+                  <td data-primary>
+                    <div className="flex min-w-0 items-center gap-3">
+                      <Avatar name={p.username} size={34} />
+                      <div className="min-w-0">
+                        <Link to="/users" state={{ search: p.username }} className="block truncate font-medium hover:underline">{p.username}</Link>
+                        <div className="flex min-w-0 items-center gap-2 text-[12.5px] text-ink-3">
+                          {p.platforms.map((platform) => (
+                            <i key={platform} className="h-[7px] w-[7px] flex-shrink-0 rounded-full" style={{ background: colors[platform] }} title={PLATFORM_LABEL[platform]} />
+                          ))}
+                          <span className="truncate">
+                            {[
+                              p.role === 'parent' ? 'Elternteil' : p.klasse || 'ohne Klasse',
+                              p.detail,
+                              p.lastSeenAt ? null : `Konto seit ${new Date(p.createdAt).toLocaleDateString('de-AT', { day: 'numeric', month: 'short', year: 'numeric' })}`,
+                            ].filter(Boolean).join(' · ')}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  </td>
+                  <td className="tabular whitespace-nowrap text-right">{p.seconds > 0 ? duration(p.seconds) : '–'}</td>
+                  <td className="tabular text-right text-ink-2">{p.visits > 0 ? de(p.visits) : p.lastSeenAt ? 'Log' : '–'}</td>
+                  <td className="tabular text-right text-ink-2">{p.activeDays > 0 ? de(p.activeDays) : '–'}</td>
+                  <td className="whitespace-nowrap text-right text-ink-2">{p.lastSeenAt ? lastSeen(p.lastSeenAt) : '–'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </PopupBody>
+    </Dialog>
+  );
+}
+
+// ── Which dishes ────────────────────────────────────────────────────────────
+
+type DishSort = 'name' | 'starCount' | 'ratings' | 'avgStars' | 'comments';
+
+interface DishesView {
+  title: string;
+  sort: DishSort;
+  // Only dishes rated with this many stars, with their count of them.
+  stars?: number;
+}
+
+function dishValue(dish: AnalyticsDish, key: DishSort, stars?: number): number | string {
+  if (key === 'name') return dish.name;
+  if (key === 'starCount') return stars ? dish.stars[stars - 1] ?? 0 : 0;
+  if (key === 'avgStars') return dish.avgStars ?? -1;
+  return dish[key];
+}
+
+function DishesDialog({ view, onClose }: { view: DishesView; onClose: () => void }) {
+  const [query, setQuery] = useState('');
+  const [sort, setSort] = useState<Sort<DishSort>>({ key: view.sort, desc: view.sort !== 'name' });
+  const tableRef = useRef<HTMLDivElement>(null);
+  useTableLabels(tableRef);
+  const { data, error } = usePopupData(() => adminApi.analyticsDishes(), 'dishes');
+  const { stars } = view;
+
+  const columns: Column<DishSort>[] = [
+    { key: 'name', label: 'Gericht' },
+    ...(stars ? [{ key: 'starCount' as const, label: `${stars} ★`, numeric: true }] : []),
+    { key: 'ratings', label: 'Bewertungen', numeric: true },
+    { key: 'avgStars', label: 'Ø', numeric: true },
+    { key: 'comments', label: 'Kommentare', numeric: true },
+  ];
+
+  const shown = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const dishes = (data?.dishes ?? [])
+      .filter((d) => !stars || (d.stars[stars - 1] ?? 0) > 0)
+      .filter((d) => !q || d.name.toLowerCase().includes(q));
+    return [...dishes].sort((a, b) => {
+      const x = dishValue(a, sort.key, stars);
+      const y = dishValue(b, sort.key, stars);
+      const order = typeof x === 'string' ? x.localeCompare(String(y), 'de') : x - (y as number);
+      return (sort.desc ? -order : order) || a.name.localeCompare(b.name, 'de');
+    });
+  }, [data, query, sort, stars]);
+
+  return (
+    <Dialog
+      title={view.title}
+      subtitle={data ? `${de(shown.length)} ${shown.length === 1 ? 'Gericht' : 'Gerichte'} · alle Bewertungen` : 'Alle Bewertungen'}
+      onClose={onClose}
+      width={760}
+    >
+      <PopupBody error={error} loading={!data} empty={shown.length === 0} search={query} onSearch={setQuery} placeholder="Gericht suchen">
+        <div ref={tableRef} className="tbl-scroll">
+          <table className="tbl">
+            <SortHeader columns={columns} sort={sort} onSort={(column) => setSort((current) => nextSort(current, column.key, Boolean(column.numeric)))} />
+            <tbody>
+              {shown.map((d) => (
+                <tr key={d.key}>
+                  <td data-primary>
+                    <div className="min-w-0">
+                      <div className="truncate font-medium">{d.name}</div>
+                      <div className="truncate text-[12.5px] text-ink-3">
+                        zuletzt {dayDate(d.lastServed).toLocaleDateString('de-AT', { day: 'numeric', month: 'short', year: 'numeric' })} · {de(d.served)}× auf dem Plan
+                      </div>
+                    </div>
+                  </td>
+                  {stars && (
+                    <td className="tabular whitespace-nowrap text-right">
+                      {de(d.stars[stars - 1] ?? 0)}
+                      <span className="ml-1.5 text-[12.5px] text-ink-3">{percent(d.stars[stars - 1] ?? 0, d.ratings)}</span>
+                    </td>
+                  )}
+                  <td className="tabular text-right text-ink-2">{de(d.ratings)}</td>
+                  <td className="tabular whitespace-nowrap text-right text-ink-2">{d.avgStars === null ? '–' : `${de(d.avgStars, 1)} ★`}</td>
+                  <td className="tabular text-right text-ink-2">{de(d.comments)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </PopupBody>
+    </Dialog>
+  );
+}
+
+// ── What a figure is made of ────────────────────────────────────────────────
+
+interface BreakdownView {
+  title: string;
+  kind: BreakdownKind;
+  // Header of the first column ("Klasse") and of the count ("Todos").
+  labelHeader: string;
+  valueHeader: string;
+}
+
+function BreakdownDialog({ view, days, onClose }: { view: BreakdownView; days: AnalyticsRange; onClose: () => void }) {
+  const [query, setQuery] = useState('');
+  const [sort, setSort] = useState<Sort<'label' | 'value'>>({ key: 'value', desc: true });
+  const tableRef = useRef<HTMLDivElement>(null);
+  useTableLabels(tableRef);
+  const { data, error } = usePopupData<AnalyticsBreakdown>(() => adminApi.analyticsBreakdown(view.kind, days), `${view.kind}|${days}`);
+  const peak = Math.max(1, ...(data?.items ?? []).map((item) => item.value));
+
+  const shown = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const items = (data?.items ?? []).filter((item) => !q || item.label.toLowerCase().includes(q));
+    return [...items].sort((a, b) => {
+      const order = sort.key === 'label' ? a.label.localeCompare(b.label, 'de') : a.value - b.value;
+      return (sort.desc ? -order : order) || a.label.localeCompare(b.label, 'de');
+    });
+  }, [data, query, sort]);
+
+  const columns: Column<'label' | 'value'>[] = [
+    { key: 'label', label: view.labelHeader },
+    { key: 'value', label: view.valueHeader, numeric: true },
+  ];
+
+  return (
+    <Dialog
+      title={view.title}
+      subtitle={data ? `${de(data.total)} ${view.valueHeader} · letzte ${days} Tage` : `Letzte ${days} Tage`}
+      onClose={onClose}
+      width={640}
+    >
+      <PopupBody error={error} loading={!data} empty={shown.length === 0} search={query} onSearch={setQuery} placeholder={`${view.labelHeader} suchen`}>
+        <div ref={tableRef} className="tbl-scroll">
+          <table className="tbl">
+            <SortHeader columns={columns} sort={sort} onSort={(column) => setSort((current) => nextSort(current, column.key, Boolean(column.numeric)))} />
+            <tbody>
+              {shown.map((item) => (
+                <tr key={item.label}>
+                  <td data-primary>
+                    <div className="min-w-0">
+                      <div className="truncate font-medium" title={item.label}>{item.label}</div>
+                      {item.note && <div className="truncate text-[12.5px] text-ink-3">{item.note}</div>}
+                      <div className="rank-track mt-2 max-w-[320px]">
+                        <span className="rank-fill" style={{ width: `${Math.max((item.value / peak) * 100, 2)}%`, background: NEUTRAL }} />
+                      </div>
+                    </div>
+                  </td>
+                  <td className="tabular text-right">{de(item.value)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </PopupBody>
+    </Dialog>
+  );
 }
 
 function Skeleton() {
@@ -207,6 +599,12 @@ export function AnalyticsPage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [metric, setMetric] = useState<Metric>('users');
+  const [popup, setPopup] = useState<
+    | { type: 'people'; view: PeopleView }
+    | { type: 'dishes'; view: DishesView }
+    | { type: 'breakdown'; view: BreakdownView }
+    | null
+  >(null);
   const tableRef = useRef<HTMLDivElement>(null);
   useTableLabels(tableRef);
   // While the admin stream is connected every change reaches the page at once.
@@ -216,6 +614,15 @@ export function AnalyticsPage() {
     setTabState(next);
     try { localStorage.setItem(TAB_KEY, next); } catch { /* remembered for this visit only */ }
   };
+
+  // Opens what is behind a figure: who, which dishes, or what it is made of.
+  const show = (title: string, filters: PeopleFilters, sort: SortKey = 'seconds', extra: Pick<PeopleView, 'days' | 'search'> = {}) =>
+    setPopup({ type: 'people', view: { title, filters, sort, ...extra } });
+  const showDishes = (title: string, sort: DishSort, stars?: number) => setPopup({ type: 'dishes', view: { title, sort, stars } });
+  const showBreakdown = (title: string, kind: BreakdownKind, labelHeader: string, valueHeader: string) =>
+    setPopup({ type: 'breakdown', view: { title, kind, labelHeader, valueHeader } });
+  const showPlatform = (platform: UsagePlatform, search?: string) =>
+    show(`${PLATFORM_LABEL[platform]}: wer nutzt sie?`, { platform }, 'lastSeenAt', { search });
 
   const load = useCallback(async (fresh = false) => {
     try {
@@ -287,6 +694,7 @@ export function AnalyticsPage() {
   const { platforms, time, engagement, accounts, features, mensa, live } = data;
   const hasVisits = time.sessions > 0;
   const rangeLabel = `letzte ${data.days} Tage`;
+  const todayKey = data.axis[data.axis.length - 1]!;
   const loadedAt = new Date(data.generatedAt).toLocaleTimeString('de-AT', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
   const platformSum = PLATFORM_ORDER.reduce((s, p) => s + platforms.byPlatform[p], 0);
   const shownPlatforms = PLATFORM_ORDER.filter((p) => p !== 'other' || platforms.byPlatform.other > 0 || time.byPlatform.other.sessions > 0);
@@ -295,36 +703,39 @@ export function AnalyticsPage() {
   const busiestDay = data.daily.reduce<AdminAnalytics['daily'][number] | null>((best, d) => (d.users > (best?.users ?? 0) ? d : best), null);
   const peakHour = data.hours.reduce<AdminAnalytics['hours'][number] | null>((best, h) => (h.sessions > (best?.sessions ?? 0) ? h : best), null);
   const favouriteDay = data.weekdays.reduce<AdminAnalytics['weekdays'][number] | null>((best, w) => (w.avgUsers > (best?.avgUsers ?? 0) ? w : best), null);
-  const sumHours = (from: number, to: number) => data.hours.filter((h) => (from <= to ? h.hour >= from && h.hour < to : h.hour >= from || h.hour < to)).reduce((s, h) => s + h.sessions, 0);
+  const hourList = (from: number, to: number) => Array.from({ length: 24 }, (_, h) => h).filter((h) => (from <= to ? h >= from && h < to : h >= from || h < to));
+  const sumHours = (from: number, to: number) => hourList(from, to).reduce((s, h) => s + (data.hours[h]?.sessions ?? 0), 0);
   const weekendSeconds = data.weekdays.filter((w) => w.weekday >= 5).reduce((s, w) => s + w.seconds, 0);
   const topPlatform = PLATFORM_ORDER.reduce<UsagePlatform | null>((best, p) => (platforms.byPlatform[p] > (best ? platforms.byPlatform[best] : 0) ? p : best), null);
   const lengthPeak = time.lengthBands.reduce((best, b, i, all) => (b.sessions > (all[best]?.sessions ?? 0) ? i : best), 0);
 
   const highlights: Fact[] = [];
-  if (hasVisits) highlights.push({ icon: Hourglass, tone: 'sky', value: hours(time.totalSeconds), label: 'insgesamt auf Pokyh verbracht' });
-  if (busiestDay && busiestDay.users > 0) highlights.push({ icon: Trophy, tone: 'amber', value: `${de(busiestDay.users)} Nutzer`, label: `Rekordtag: ${longDay(busiestDay.dayKey)}` });
-  if (peakHour && peakHour.sessions > 0) highlights.push({ icon: Flame, tone: 'rose', value: hourSpan(peakHour.hour), label: `Stoßzeit — ${percent(peakHour.sessions, time.sessions)} aller Sitzungen starten hier` });
-  if (topPlatform && platformSum > 0) highlights.push({ icon: Medal, tone: 'violet', value: `${PLATFORM_LABEL[topPlatform]} vorn`, label: `${percent(platforms.byPlatform[topPlatform], platformSum)} der Plattform-Nutzungen` });
-  if (favouriteDay && favouriteDay.avgUsers > 0) highlights.push({ icon: CalendarDays, tone: 'mint', value: WEEKDAYS[favouriteDay.weekday]!, label: `Lieblingstag mit Ø ${de(favouriteDay.avgUsers, 1)} aktiven Nutzern` });
-  if (engagement.loyalUsers > 0) highlights.push({ icon: Repeat, tone: 'mint', value: `${de(engagement.loyalUsers)} Stammnutzer`, label: 'an mindestens jedem zweiten Tag aktiv' });
+  if (hasVisits) highlights.push({ icon: Hourglass, tone: 'sky', value: hours(time.totalSeconds), label: 'insgesamt auf Pokyh verbracht', open: () => show('Zeit in Pokyh', {}, 'seconds') });
+  if (busiestDay && busiestDay.users > 0) highlights.push({ icon: Trophy, tone: 'amber', value: `${de(busiestDay.users)} Nutzer`, label: `Rekordtag: ${longDay(busiestDay.dayKey)}`, open: () => show(`Aktiv am ${longDay(busiestDay.dayKey)}`, { day: busiestDay.dayKey }) });
+  if (peakHour && peakHour.sessions > 0) highlights.push({ icon: Flame, tone: 'rose', value: hourSpan(peakHour.hour), label: `Stoßzeit — ${percent(peakHour.sessions, time.sessions)} aller Sitzungen starten hier`, open: () => show(`Sitzungen ${hourSpan(peakHour.hour)}`, { hours: [peakHour.hour] }, 'visits') });
+  if (topPlatform && platformSum > 0) highlights.push({ icon: Medal, tone: 'violet', value: `${PLATFORM_LABEL[topPlatform]} vorn`, label: `${percent(platforms.byPlatform[topPlatform], platformSum)} der Plattform-Nutzungen`, open: () => showPlatform(topPlatform) });
+  if (favouriteDay && favouriteDay.avgUsers > 0) highlights.push({ icon: CalendarDays, tone: 'mint', value: WEEKDAYS[favouriteDay.weekday]!, label: `Lieblingstag mit Ø ${de(favouriteDay.avgUsers, 1)} aktiven Nutzern`, open: () => show(`Aktiv an ${WEEKDAYS[favouriteDay.weekday]}en`, { weekdays: [favouriteDay.weekday] }, 'visits') });
+  if (engagement.loyalUsers > 0) highlights.push({ icon: Repeat, tone: 'mint', value: `${de(engagement.loyalUsers)} Stammnutzer`, label: 'an mindestens jedem zweiten Tag aktiv', open: () => show('Stammnutzer', { segment: 'loyal' }, 'activeDays') });
   if (time.longestSessionSeconds > 0) highlights.push({ icon: Timer, tone: 'sky', value: duration(time.longestSessionSeconds), label: 'längste einzelne Sitzung' });
-  if (platforms.multiPlatform > 0) highlights.push({ icon: Layers, tone: 'violet', value: `${de(platforms.multiPlatform)} Nutzer`, label: `nutzen mehrere Plattformen (${percent(platforms.multiPlatform, platforms.total)})` });
-  if (mensa.topRated) highlights.push({ icon: UtensilsCrossed, tone: 'amber', value: mensa.topRated.name, label: `Mensa-Liebling: Ø ${de(mensa.topRated.avg, 1)} ★` });
+  if (platforms.multiPlatform > 0) highlights.push({ icon: Layers, tone: 'violet', value: `${de(platforms.multiPlatform)} Nutzer`, label: `nutzen mehrere Plattformen (${percent(platforms.multiPlatform, platforms.total)})`, open: () => show('Auf mehreren Plattformen', { segment: 'multi' }) });
+  if (mensa.topRated) highlights.push({ icon: UtensilsCrossed, tone: 'amber', value: mensa.topRated.name, label: `Mensa-Liebling: Ø ${de(mensa.topRated.avg, 1)} ★`, open: () => showDishes('Gerichte nach Bewertung', 'avgStars') });
+
+  const learnByCourse = () => showBreakdown('Pokyh Learn nach Kurs', 'learn', 'Kurs', 'Antworten');
 
   const habits: Fact[] = hasVisits ? [
-    { icon: Moon, tone: 'violet', value: percent(sumHours(22, 5), time.sessions), label: 'Nachteulen — Sitzungen zwischen 22 und 5 Uhr' },
-    { icon: Sunrise, tone: 'amber', value: percent(sumHours(5, 7), time.sessions), label: 'Frühaufsteher — Sitzungen zwischen 5 und 7 Uhr' },
-    { icon: BookOpen, tone: 'mint', value: percent(sumHours(8, 13), time.sessions), label: 'der Sitzungen in der Schulzeit (8–13 Uhr)' },
-    { icon: CalendarDays, tone: 'ink', value: percent(weekendSeconds, time.totalSeconds), label: 'der Nutzungszeit liegt am Wochenende' },
+    { icon: Moon, tone: 'violet', value: percent(sumHours(22, 5), time.sessions), label: 'Nachteulen — Sitzungen zwischen 22 und 5 Uhr', open: () => show('Nachteulen (22–5 Uhr)', { hours: hourList(22, 5) }, 'visits') },
+    { icon: Sunrise, tone: 'amber', value: percent(sumHours(5, 7), time.sessions), label: 'Frühaufsteher — Sitzungen zwischen 5 und 7 Uhr', open: () => show('Frühaufsteher (5–7 Uhr)', { hours: hourList(5, 7) }, 'visits') },
+    { icon: BookOpen, tone: 'mint', value: percent(sumHours(8, 13), time.sessions), label: 'der Sitzungen in der Schulzeit (8–13 Uhr)', open: () => show('In der Schulzeit (8–13 Uhr)', { hours: hourList(8, 13) }, 'visits') },
+    { icon: CalendarDays, tone: 'ink', value: percent(weekendSeconds, time.totalSeconds), label: 'der Nutzungszeit liegt am Wochenende', open: () => show('Am Wochenende', { weekdays: [5, 6] }) },
     { icon: Sparkles, tone: 'sky', value: de(time.screensPerSession, 1), label: 'Bildschirme werden pro Sitzung geöffnet' },
-    { icon: Repeat, tone: 'mint', value: de(time.sessionsPerUserDay, 1), label: 'Sitzungen pro Nutzer und aktivem Tag' },
+    { icon: Repeat, tone: 'mint', value: de(time.sessionsPerUserDay, 1), label: 'Sitzungen pro Nutzer und aktivem Tag', open: () => show('Sitzungen', {}, 'visits') },
   ] : [];
 
   return (
     <div>
       <PageHeader
         title="Analytics"
-        subtitle="Wie Pokyh genutzt wird — iPhone-App, Android-App und Web im Vergleich. Nur Gesamtzahlen, keine Einzelpersonen."
+        subtitle="Wie Pokyh genutzt wird — iPhone-App, Android-App und Web im Vergleich. Ein Klick auf eine Zahl zeigt, wer dahintersteht."
       >
         <Segmented
           label="Zeitraum"
@@ -347,6 +758,9 @@ export function AnalyticsPage() {
         <span className="text-ink-3" title={`Zuletzt geladen um ${loadedAt}`}>
           · {streaming ? 'Live-Stand' : `Stand ${loadedAt.slice(0, 5)}`}
         </span>
+        <span className="text-ink-3" title="Nutzungszeiten und Personenlisten gibt es nur von Konten, die der Nutzungsstatistik zugestimmt haben.">
+          · {de(accounts.usageConsents)} {accounts.usageConsents === 1 ? 'Konto' : 'Konten'} mit Einwilligung
+        </span>
       </div>
 
       <div style={{ opacity: loading ? 0.55 : 1, transition: 'opacity 0.25s ease' }}>
@@ -358,38 +772,43 @@ export function AnalyticsPage() {
               value: platforms.byPlatform.ios,
               icon: Smartphone,
               note: <Delta>{percent(platforms.byPlatform.ios, platforms.total)} der Nutzer</Delta>,
+              onClick: () => showPlatform('ios'),
             },
             {
               label: 'Android-App',
               value: platforms.byPlatform.android,
               icon: Smartphone,
               note: <Delta>{percent(platforms.byPlatform.android, platforms.total)} der Nutzer</Delta>,
+              onClick: () => showPlatform('android'),
             },
             {
               label: 'Web',
               value: platforms.byPlatform.web,
               icon: Globe,
               note: <Delta>{percent(platforms.byPlatform.web, platforms.total)} der Nutzer</Delta>,
+              onClick: () => showPlatform('web'),
             },
             {
               label: 'Ø Zeit pro Tag',
               value: hasVisits ? duration(time.avgDailySecondsPerUser) : '–',
               icon: Clock,
               note: <Delta>je aktivem Nutzer</Delta>,
+              onClick: hasVisits ? () => show('Zeit in Pokyh', {}, 'seconds') : undefined,
             },
           ]}
         />
         <Figures
           className="-mt-px"
           items={[
-            { label: 'Aktiv heute', value: engagement.dau, icon: Users, note: <Delta>Nutzer</Delta> },
-            { label: 'Letzte 7 Tage', value: engagement.wau, icon: CalendarDays, note: <Delta>Nutzer</Delta> },
-            { label: 'Letzte 30 Tage', value: engagement.mau, icon: ChartNoAxesColumn, note: <Delta>Nutzer</Delta> },
+            { label: 'Aktiv heute', value: engagement.dau, icon: Users, note: <Delta>Nutzer</Delta>, onClick: () => show('Heute aktiv', { day: todayKey }, 'lastSeenAt') },
+            { label: 'Letzte 7 Tage', value: engagement.wau, icon: CalendarDays, note: <Delta>Nutzer</Delta>, onClick: () => show('Aktiv in den letzten 7 Tagen', {}, 'seconds', { days: 7 }) },
+            { label: 'Letzte 30 Tage', value: engagement.mau, icon: ChartNoAxesColumn, note: <Delta>Nutzer</Delta>, onClick: () => show('Aktiv in den letzten 30 Tagen', {}, 'seconds', { days: 30 }) },
             {
               label: 'Ø Sitzung',
               value: hasVisits ? duration(time.avgSessionSeconds) : '–',
               icon: Timer,
               note: hasVisits ? <Delta>Median {duration(time.medianSessionSeconds)}</Delta> : undefined,
+              onClick: hasVisits ? () => show('Sitzungen', {}, 'visits') : undefined,
             },
           ]}
         />
@@ -435,6 +854,10 @@ export function AnalyticsPage() {
                       series={trend.series}
                       tickEvery={trend.tickEvery}
                       drawKey={`${metric}-${data.days}`}
+                      onSelect={(i) => {
+                        const dayKey = data.daily[i]?.dayKey;
+                        if (dayKey) show(`Aktiv am ${longDay(dayKey)}`, { day: dayKey }, metric === 'sessions' ? 'visits' : 'seconds');
+                      }}
                       ariaLabel={metric === 'users'
                         ? `Aktive Nutzer je Tag und Plattform, letzte ${data.days} Tage`
                         : metric === 'time'
@@ -443,9 +866,9 @@ export function AnalyticsPage() {
                     />
                   </div>
                   <Explain>
-                    {metric === 'users' && 'Wie viele verschiedene Konten an einem Tag Pokyh geöffnet haben — getrennt nach iPhone-App, Android-App und Web.'}
-                    {metric === 'time' && 'Durchschnittliche Vordergrundzeit pro aktivem Konto und Tag.'}
-                    {metric === 'sessions' && 'Wie oft Pokyh pro Tag geöffnet wurde. Nach 30 Minuten im Hintergrund zählt das nächste Öffnen als neue Sitzung.'}
+                    {metric === 'users' && 'Verschiedene Konten pro Tag. Klick auf einen Tag zeigt, wer aktiv war.'}
+                    {metric === 'time' && 'Ø Zeit pro aktivem Konto und Tag.'}
+                    {metric === 'sessions' && 'Wie oft Pokyh pro Tag geöffnet wurde.'}
                   </Explain>
                 </Section>
               )}
@@ -475,13 +898,26 @@ export function AnalyticsPage() {
                           <th style={{ textAlign: 'right' }}>Sitzungen</th>
                           <th style={{ textAlign: 'right' }}>Ø Sitzung</th>
                           <th style={{ textAlign: 'right' }}>Zeit gesamt</th>
+                          <th><span className="sr-only">Nutzer anzeigen</span></th>
                         </tr>
                       </thead>
                       <tbody>
                         {shownPlatforms.map((p) => {
                           const t = time.byPlatform[p];
                           return (
-                            <tr key={p}>
+                            <tr
+                              key={p}
+                              data-clickable
+                              tabIndex={0}
+                              aria-label={`${PLATFORM_LABEL[p]}: wer nutzt sie?`}
+                              onClick={() => showPlatform(p)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter' || e.key === ' ') {
+                                  e.preventDefault();
+                                  showPlatform(p);
+                                }
+                              }}
+                            >
                               <td data-primary>
                                 <span className="flex items-center gap-[10px] font-medium">
                                   <i className="h-[7px] w-[7px] flex-shrink-0 rounded-full" style={{ background: colors[p] }} />
@@ -492,16 +928,14 @@ export function AnalyticsPage() {
                               <td className="tabular text-right text-ink-2">{de(t.sessions)}</td>
                               <td className="tabular text-right text-ink-2">{t.sessions > 0 ? duration(t.seconds / t.sessions) : '–'}</td>
                               <td className="tabular text-right text-ink-2">{t.seconds > 0 ? hours(t.seconds) : '–'}</td>
+                              <td className="text-ink-3"><ChevronRight size={16} strokeWidth={1.7} /></td>
                             </tr>
                           );
                         })}
                       </tbody>
                     </table>
                   </div>
-                  <Explain>
-                    Ein Konto, das z. B. die iPhone-App und die Website nutzt, zählt bei beiden.
-                    {platforms.multiPlatform > 0 && ` Das trifft auf ${de(platforms.multiPlatform)} Konten zu.`}
-                  </Explain>
+                  <Explain>Klick auf eine Plattform zeigt, wer sie nutzt.</Explain>
                 </Section>
 
                 <Section title="Web im Detail" meta={`${de(platforms.byPlatform.web)} Nutzer`}>
@@ -509,6 +943,7 @@ export function AnalyticsPage() {
                     <RankBars
                       color={colors.web}
                       unit=" Nutzer"
+                      onSelect={(item) => showPlatform('web', WEB_SEARCH[item.label])}
                       items={[
                         { label: 'Am Computer', value: platforms.web.desktop },
                         { label: 'Am Handy oder Tablet', value: platforms.web.mobile },
@@ -517,10 +952,7 @@ export function AnalyticsPage() {
                       ]}
                     />
                   </div>
-                  <Explain>
-                    Alles, was im Browser läuft, zählt als Web — auch auf iPhone und Android. Ob als Web-App installiert
-                    oder im Tab geöffnet, wissen nur die aktualisierten Web-Besuche.
-                  </Explain>
+                  <Explain>Alles im Browser zählt als Web, auch am Handy.</Explain>
                 </Section>
               </Pair>
 
@@ -534,6 +966,7 @@ export function AnalyticsPage() {
                           <RankBars
                             color={colors[p]}
                             items={versions.map((v) => ({ label: v.version, value: v.users }))}
+                            onSelect={(item) => showPlatform(p, item.label)}
                             empty="Noch keine Version gemeldet."
                           />
                         </div>
@@ -559,6 +992,7 @@ export function AnalyticsPage() {
                         tickEvery={3}
                         color={NEUTRAL}
                         ariaLabel="Sitzungen nach Startstunde"
+                        onSelect={(hour) => show(`Sitzungen ${hourSpan(hour)}`, { hours: [hour] }, 'visits')}
                       />
                     </div>
                     {peakHour && <Explain>Am meisten los ist {hourSpan(peakHour.hour)}.</Explain>}
@@ -573,6 +1007,7 @@ export function AnalyticsPage() {
                         color={NEUTRAL}
                         format={(v) => de(v, 1)}
                         ariaLabel="Durchschnittlich aktive Nutzer je Wochentag"
+                        onSelect={(weekday) => show(`Aktiv an ${WEEKDAYS[weekday]}en`, { weekdays: [weekday] }, 'visits')}
                       />
                     </div>
                     {favouriteDay && <Explain>Stärkster Tag: {WEEKDAYS[favouriteDay.weekday]}.</Explain>}
@@ -588,12 +1023,10 @@ export function AnalyticsPage() {
                         unit="Sitzungen"
                         color={NEUTRAL}
                         ariaLabel="Sitzungen nach Länge"
+                        onSelect={(band) => show(`Sitzungen von ${time.lengthBands[band]?.label ?? ''}`, { band }, 'visits')}
                       />
                     </div>
-                    <Explain>
-                      Die meisten Besuche dauern {time.lengthBands[lengthPeak]?.label} — die Hälfte aller Sitzungen ist
-                      kürzer als {duration(time.medianSessionSeconds)}
-                    </Explain>
+                    <Explain>Am häufigsten: {time.lengthBands[lengthPeak]?.label}</Explain>
                   </Section>
                   <Section title="Treue" meta={rangeLabel}>
                     <div className="mt-8 flex flex-wrap items-center gap-x-10 gap-y-8">
@@ -607,17 +1040,15 @@ export function AnalyticsPage() {
                         <Ledger
                           columns={2}
                           items={[
-                            { label: 'Neu', value: de(engagement.newUsers), hint: 'Konto im Zeitraum erstellt' },
-                            { label: 'Wiederkehrend', value: de(engagement.returningUsers) },
-                            { label: 'Stammnutzer', value: de(engagement.loyalUsers), hint: 'an mindestens jedem zweiten Tag aktiv' },
-                            { label: 'Ø aktive Tage', value: de(engagement.activeDaysPerUser, 1) },
+                            { label: 'Neu', value: de(engagement.newUsers), hint: 'Konto im Zeitraum erstellt', open: () => show('Neu im Zeitraum', { segment: 'new' }, 'lastSeenAt') },
+                            { label: 'Wiederkehrend', value: de(engagement.returningUsers), open: () => show('Wiederkehrend', { segment: 'returning' }) },
+                            { label: 'Stammnutzer', value: de(engagement.loyalUsers), hint: 'an mindestens jedem zweiten Tag aktiv', open: () => show('Stammnutzer', { segment: 'loyal' }, 'activeDays') },
+                            { label: 'Ø aktive Tage', value: de(engagement.activeDaysPerUser, 1), open: () => show('Aktive Tage', {}, 'activeDays') },
                           ]}
                         />
                       </div>
                     </div>
-                    <Explain>
-                      „Täglich da": wie viele der Nutzer der letzten 30 Tage an einem durchschnittlichen Tag Pokyh öffnen (DAU/MAU).
-                    </Explain>
+                    <Explain>Anteil der Monatsnutzer, die an einem Tag Pokyh öffnen.</Explain>
                   </Section>
                 </Pair>
 
@@ -636,6 +1067,7 @@ export function AnalyticsPage() {
                 <Section title="Was erstellt wird" meta={rangeLabel}>
                   <div className="mt-8">
                     <RankBars
+                      onSelect={(item) => FEATURE_POPUPS[item.label]?.({ showBreakdown, showDishes })}
                       items={[
                         { label: 'Todos', value: features.todos, note: features.todos > 0 ? `${percent(features.todosDone, features.todos)} erledigt` : undefined },
                         { label: 'Erinnerungen', value: features.reminders },
@@ -660,15 +1092,16 @@ export function AnalyticsPage() {
                       color={NEUTRAL}
                       height={110}
                       ariaLabel="Mensa-Bewertungen nach Sternen"
+                      onSelect={(i) => showDishes(`Gerichte mit ${i + 1} ${i === 0 ? 'Stern' : 'Sternen'}`, 'starCount', i + 1)}
                     />
                   </div>
                   <FactGrid
                     columns={2}
                     facts={[
-                      ...(features.avgStars !== null ? [{ icon: Star, tone: 'amber' as Tone, value: `Ø ${de(features.avgStars, 2)} ★`, label: 'durchschnittliche Bewertung' }] : []),
-                      ...(mensa.topRated ? [{ icon: Medal, tone: 'amber' as Tone, value: mensa.topRated.name, label: `Liebling: Ø ${de(mensa.topRated.avg, 1)} ★ (${de(mensa.topRated.ratings)}×)` }] : []),
-                      ...(mensa.mostRated ? [{ icon: UtensilsCrossed, tone: 'sky' as Tone, value: mensa.mostRated.name, label: `meistbewertet (${de(mensa.mostRated.ratings)}×)` }] : []),
-                      ...(mensa.mostCommented ? [{ icon: MessagesSquare, tone: 'rose' as Tone, value: mensa.mostCommented.name, label: `meistdiskutiert (${de(mensa.mostCommented.comments)} Kommentare)` }] : []),
+                      ...(features.avgStars !== null ? [{ icon: Star, tone: 'amber' as Tone, value: `Ø ${de(features.avgStars, 2)} ★`, label: 'durchschnittliche Bewertung', open: () => showDishes('Gerichte nach Bewertung', 'avgStars') }] : []),
+                      ...(mensa.topRated ? [{ icon: Medal, tone: 'amber' as Tone, value: mensa.topRated.name, label: `Liebling: Ø ${de(mensa.topRated.avg, 1)} ★ (${de(mensa.topRated.ratings)}×)`, open: () => showDishes('Gerichte nach Bewertung', 'avgStars') }] : []),
+                      ...(mensa.mostRated ? [{ icon: UtensilsCrossed, tone: 'sky' as Tone, value: mensa.mostRated.name, label: `meistbewertet (${de(mensa.mostRated.ratings)}×)`, open: () => showDishes('Meistbewertete Gerichte', 'ratings') }] : []),
+                      ...(mensa.mostCommented ? [{ icon: MessagesSquare, tone: 'rose' as Tone, value: mensa.mostCommented.name, label: `meistdiskutiert (${de(mensa.mostCommented.comments)} Kommentare)`, open: () => showDishes('Meistdiskutierte Gerichte', 'comments') }] : []),
                     ]}
                   />
                 </Section>
@@ -677,9 +1110,13 @@ export function AnalyticsPage() {
               <Pair>
                 <Section title="Web-Seiten" meta={`${de(features.pageViews)} Aufrufe`}>
                   <div className="mt-8">
-                    <RankBars items={data.pages.map((p) => ({ label: p.page, value: p.views }))} empty="Noch keine Seitenaufrufe." />
+                    <RankBars
+                      items={data.pages.map((p) => ({ label: p.page, value: p.views }))}
+                      onSelect={(item) => show(`Seite ${item.label}`, { page: item.label }, 'seconds')}
+                      empty="Noch keine Seitenaufrufe."
+                    />
                   </div>
-                  <Explain>Meistbesuchte Seiten der Website; Sprachvarianten (/de, /it …) sind zusammengefasst.</Explain>
+                  <Explain>Klick auf eine Seite zeigt, wer sie aufgerufen hat.</Explain>
                 </Section>
                 <Section title="Pokyh Learn" meta={rangeLabel}>
                   <div className="mt-8">
@@ -687,10 +1124,10 @@ export function AnalyticsPage() {
                       <Ledger
                         columns={2}
                         items={[
-                          { label: 'Lernende', value: de(features.learnLearners) },
-                          { label: 'Antworten', value: de(features.learnAnswers) },
-                          { label: 'Davon richtig', value: percent(features.learnCorrect, features.learnAnswers) },
-                          { label: 'Lernzeit', value: `${de(features.learnMinutes)} Min.` },
+                          { label: 'Lernende', value: de(features.learnLearners), open: learnByCourse },
+                          { label: 'Antworten', value: de(features.learnAnswers), open: learnByCourse },
+                          { label: 'Davon richtig', value: percent(features.learnCorrect, features.learnAnswers), open: learnByCourse },
+                          { label: 'Lernzeit', value: `${de(features.learnMinutes)} Min.`, open: learnByCourse },
                         ]}
                       />
                     ) : (
@@ -709,8 +1146,8 @@ export function AnalyticsPage() {
                   <Ledger
                     items={[
                       { label: 'Konten gesamt', value: de(accounts.total) },
-                      { label: 'Aktiv im Zeitraum', value: percent(platforms.total, accounts.total) },
-                      { label: 'Ohne Aktivität', value: de(Math.max(0, accounts.total - platforms.total)) },
+                      { label: 'Aktiv im Zeitraum', value: percent(platforms.total, accounts.total), open: () => show('Aktiv im Zeitraum', {}, 'seconds') },
+                      { label: 'Ohne Aktivität', value: de(Math.max(0, accounts.total - platforms.total)), open: () => show('Ohne Aktivität im Zeitraum', { segment: 'inactive' }, 'username') },
                       { label: 'Schüler:innen', value: de(accounts.students) },
                       { label: 'Eltern', value: de(accounts.parents) },
                       { label: 'Mit WebUntis', value: de(accounts.untis) },
@@ -730,40 +1167,57 @@ export function AnalyticsPage() {
                   height={96}
                   color={NEUTRAL}
                   ariaLabel={`Neue Konten je Tag, letzte ${data.days} Tage`}
+                  onSelect={(i) => {
+                    const dayKey = data.daily[i]?.dayKey;
+                    if (dayKey) show(`Neu am ${longDay(dayKey)}`, { created: dayKey }, 'username');
+                  }}
                 />
               </Section>
-              <Section title="Aktivste Klassen" meta="aktiv von gesamt">
+              <Section title="Aktivste Klassen" meta="nach Zeit in Pokyh">
                 <div className="mt-8">
                   <RankBars
-                    items={data.classes.map((c) => ({ label: c.name, value: c.active, note: `von ${de(c.members)} (${percent(c.active, c.members)})` }))}
-                    empty="Noch keine Klassen mit Aktivität."
+                    unit=" Std."
+                    items={data.classes.map((c) => ({
+                      label: c.name,
+                      value: Math.round(c.seconds / 360) / 10,
+                      note: `${de(c.users)} Nutzer · Ø ${duration(c.seconds / Math.max(c.users, 1))}`,
+                    }))}
+                    onSelect={(item) => show(`Klasse ${item.label}`, { klasse: item.label }, 'seconds')}
+                    empty="Noch keine Nutzungszeiten von Klassen."
                   />
                 </div>
-                <Explain>Schüler:innen-Konten einer Klasse, die im Zeitraum Pokyh genutzt haben.</Explain>
               </Section>
             </Pair>
           )}
         </div>
       </div>
 
-      <div className="mt-[64px] flex max-w-[86ch] items-start gap-2.5 border-t border-line pt-6 text-[12.5px] leading-relaxed text-ink-3">
-        <Info size={14} strokeWidth={1.7} className="mt-[2px] flex-shrink-0" />
-        <div className="flex flex-col gap-2">
-          <p>
-            <strong className="font-medium text-ink-2">So wird gezählt:</strong> iPhone-App und Android-App sind nur die
-            nativen Apps. Alles im Browser — am Computer oder am Handy, im Tab oder als installierte Web-App — zählt als Web.
-          </p>
-          <p>
-            <strong className="font-medium text-ink-2">Quellen:</strong> Zeiten, Sitzungen und Tageszeiten messen die Apps selbst,
-            solange Pokyh im Vordergrund ist; diese Besuche werden {de(platforms.visitRetentionDays)} Tage aufbewahrt.
-            Damit auch noch nicht aktualisierte App-Versionen mitzählen, fließen zusätzlich die Server-Logs ein — die werden
-            laut Datenschutzerklärung nach {de(platforms.requestLogRetentionDays)} Tagen gelöscht
-            und reichen deshalb nicht weiter zurück.
-          </p>
-          <p>Tage und Stunden in {data.timezone}. Es werden nur Gesamtzahlen angezeigt.</p>
-        </div>
-      </div>
-
+      {popup?.type === 'people' && <PeopleDialog view={popup.view} days={days} colors={colors} onClose={() => setPopup(null)} />}
+      {popup?.type === 'dishes' && <DishesDialog view={popup.view} onClose={() => setPopup(null)} />}
+      {popup?.type === 'breakdown' && <BreakdownDialog view={popup.view} days={days} onClose={() => setPopup(null)} />}
     </div>
   );
 }
+
+// "Was erstellt wird" rows → the popup that breaks them down.
+type Openers = {
+  showBreakdown: (title: string, kind: BreakdownKind, labelHeader: string, valueHeader: string) => void;
+  showDishes: (title: string, sort: DishSort, stars?: number) => void;
+};
+const FEATURE_POPUPS: Record<string, (open: Openers) => void> = {
+  'Todos': ({ showBreakdown }) => showBreakdown('Todos nach Klasse', 'todos', 'Klasse', 'Todos'),
+  'Erinnerungen': ({ showBreakdown }) => showBreakdown('Erinnerungen nach Klasse', 'reminders', 'Klasse', 'Erinnerungen'),
+  'Kommentare zu Erinnerungen': ({ showBreakdown }) => showBreakdown('Kommentare nach Klasse', 'reminderComments', 'Klasse', 'Kommentare'),
+  'Mensa-Bewertungen': ({ showDishes }) => showDishes('Bewertete Gerichte', 'ratings'),
+  'Mensa-Kommentare': ({ showDishes }) => showDishes('Kommentierte Gerichte', 'comments'),
+  'Learn-Antworten': ({ showBreakdown }) => showBreakdown('Pokyh Learn nach Kurs', 'learn', 'Kurs', 'Antworten'),
+  'Downloads': ({ showBreakdown }) => showBreakdown('Downloads nach Datei', 'downloads', 'Datei', 'Downloads'),
+};
+
+// "Web im Detail" rows → the search that narrows the web list to them.
+const WEB_SEARCH: Record<string, string> = {
+  'Am Computer': 'Computer',
+  'Am Handy oder Tablet': 'Handy',
+  'Als Web-App installiert (PWA)': 'Web-App',
+  'Im Browser-Tab': 'Browser',
+};

@@ -14,6 +14,7 @@ import { adminRouter } from './admin';
 import { subjectImagesRouter } from './subjectImages';
 import { activityLogRouter } from './activityLog';
 import { usageRouter } from './usage';
+import { privacyRouter } from './privacy';
 import { pushRouter } from './push';
 import { learnRouter } from './learn';
 import { learnAiRouter } from './learnAi';
@@ -75,6 +76,8 @@ router.use('/subject-images', subjectImagesRouter);
 router.use('/activity-log', activityLogRouter);
 // Foreground heartbeat behind the admin Analytics page (device kind and time only)
 router.use('/usage', usageRouter);
+// Privacy notice acknowledgement and the usage-statistics consent
+router.use('/privacy', privacyRouter);
 // Push notification registration
 router.use('/push', pushRouter);
 // Announcement popups (admin-authored, shown in the web and Android apps)

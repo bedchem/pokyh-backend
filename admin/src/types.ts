@@ -973,6 +973,8 @@ export interface AdminAnalytics {
     admins: number;
     classes: number;
     oldestDays: number;
+    // Accounts that consented to the usage statistics.
+    usageConsents: number;
   };
   features: {
     todos: number;
@@ -995,7 +997,77 @@ export interface AdminAnalytics {
     mostCommented: { name: string; comments: number } | null;
     starBands: number[];
   };
-  classes: Array<{ name: string; active: number; members: number }>;
+  classes: Array<{ name: string; seconds: number; users: number; sessions: number }>;
   appVersions: Array<{ platform: UsagePlatform; version: string; users: number }>;
   pages: Array<{ page: string; views: number; users: number }>;
+}
+
+// GET /api/admin/analytics/people — the accounts behind a figure.
+export interface PeopleFilters {
+  platform?: UsagePlatform;
+  // One local day, YYYY-MM-DD.
+  day?: string;
+  hours?: number[];
+  // 0 = Monday … 6 = Sunday.
+  weekdays?: number[];
+  klasse?: string;
+  segment?: 'loyal' | 'multi' | 'new' | 'returning' | 'inactive';
+  // A website page as the page list shows it ("/timetable").
+  page?: string;
+  // Accounts created on this local day, YYYY-MM-DD.
+  created?: string;
+  // Session-length band, the index into time.lengthBands.
+  band?: number;
+}
+
+export interface AnalyticsPerson {
+  stableUid: string;
+  username: string;
+  klasse: string;
+  role: string;
+  createdAt: string;
+  seconds: number;
+  // 0 when the account shows up only in the server logs.
+  visits: number;
+  activeDays: number;
+  lastSeenAt: string | null;
+  platforms: UsagePlatform[];
+  // With a platform filter: app version, or for the web device and how it was opened.
+  detail: string;
+}
+
+export interface AnalyticsPeople {
+  days: number;
+  total: number;
+  // Matching accounts without usage-statistics consent: counted, never named.
+  hidden: number;
+  people: AnalyticsPerson[];
+}
+
+// GET /api/admin/analytics/breakdown — what a "created" figure is made of.
+export type BreakdownKind = 'todos' | 'reminders' | 'reminderComments' | 'downloads' | 'learn';
+
+export interface AnalyticsBreakdown {
+  kind: BreakdownKind;
+  days: number;
+  total: number;
+  items: Array<{ label: string; value: number; note: string }>;
+}
+
+// GET /api/admin/analytics/dishes — every rated or commented dish.
+export interface AnalyticsDish {
+  key: string;
+  name: string;
+  lastServed: string;
+  served: number;
+  ratings: number;
+  avgStars: number | null;
+  // Ratings with 1 … 5 stars.
+  stars: number[];
+  comments: number;
+}
+
+export interface AnalyticsDishes {
+  total: number;
+  dishes: AnalyticsDish[];
 }

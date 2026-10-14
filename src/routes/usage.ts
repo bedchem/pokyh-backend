@@ -6,6 +6,7 @@ import { prisma } from '../db';
 import { config } from '../config';
 import { optionalAuth } from '../middleware/auth';
 import { logger } from '../utils/logger';
+import { hasUsageConsent } from '../services/privacyConsent';
 import {
   USAGE_CLIENTS,
   USAGE_DEVICES,
@@ -19,9 +20,11 @@ import {
 //
 // The web app and the iOS and Android apps call this when a visit starts,
 // about once a minute while Pokyh is in the foreground, and once more when it
-// goes to the background. Each call carries the foreground seconds and opened screens
-// since the previous one; the server adds them to that visit's single row.
-// Nothing else is kept: no IP address, user agent, path or content.
+// goes to the background. Each call carries the foreground seconds and opened
+// screens since the previous one; the server adds them to that visit's single
+// row. Nothing else is kept: no IP address, user agent, path or content — and
+// nothing at all for an account that has not consented to the usage
+// statistics (or for no account), whatever the client sends.
 
 const router = Router();
 
@@ -108,6 +111,12 @@ router.post('/ping', optionalAuth, limiter, async (req: Request, res: Response):
 
   const ping = parsed.data;
   const stableUid = req.user?.stableUid ?? null;
+  // Measured only with consent. The answer is the same either way, so a
+  // client learns nothing from it and simply keeps going.
+  if (!stableUid || !(await hasUsageConsent(stableUid).catch(() => false))) {
+    res.status(204).send();
+    return;
+  }
   const device: UsageDevice = ping.device ?? classifyUserAgent(req.headers['user-agent'])?.device ?? 'other';
   const now = new Date();
 

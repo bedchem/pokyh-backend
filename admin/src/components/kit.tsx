@@ -94,9 +94,11 @@ export interface Figure {
   value: number | string;
   icon: LucideIcon;
   note?: ReactNode;
-  // Makes the whole figure a link to where it can be acted on.
+  // Makes the whole figure a link to where it can be acted on…
   to?: string;
   state?: unknown;
+  // …or a button that opens more about it on the same page.
+  onClick?: () => void;
 }
 
 // A row of figures between two hairlines; it reflows by its own width.
@@ -106,7 +108,7 @@ export function Figures({ items, className = '' }: { items: Figure[]; className?
       <div data-rule className="h-px bg-line" />
       <div className="strip py-[27px]">
         <div className="strip-grid" style={{ ['--n' as string]: items.length }}>
-          {items.map(({ label, value, icon: Icon, note, to, state }) => {
+          {items.map(({ label, value, icon: Icon, note, to, state, onClick }) => {
             const body = (
               <>
                 <span className="orb h-12 w-12"><Icon size={20} strokeWidth={1.6} /></span>
@@ -121,9 +123,9 @@ export function Figures({ items, className = '' }: { items: Figure[]; className?
                 </span>
               </>
             );
-            return to
-              ? <Link key={label} to={to} state={state} data-cell className="strip-cell strip-link">{body}</Link>
-              : <div key={label} data-cell className="strip-cell">{body}</div>;
+            if (to) return <Link key={label} to={to} state={state} data-cell className="strip-cell strip-link">{body}</Link>;
+            if (onClick) return <button key={label} type="button" onClick={onClick} data-cell className="strip-cell strip-link text-left">{body}</button>;
+            return <div key={label} data-cell className="strip-cell">{body}</div>;
           })}
         </div>
       </div>
