@@ -33,6 +33,7 @@ function nameDeFrom(v: unknown): string {
 // on network/parse failure — the migration then just skips those rows.
 async function fetchSourceIdNameMap(): Promise<Map<string, string>> {
   const map = new Map<string, string>();
+  if (!config.mensaImportUrl) return map;
   try {
     const raw = await fetchUrl(config.mensaImportUrl);
     const parsed = JSON.parse(raw) as Record<string, unknown>;

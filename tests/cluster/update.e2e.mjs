@@ -30,6 +30,8 @@ let refsRequests = 0;
 const nodes = [];
 const updaters = new Map();
 let edgeServer;
+// Set when the tests are over: stand-in updaters restart nothing any more.
+let stopping = false;
 
 // ─── The git host ────────────────────────────────────────────────────────────
 
@@ -119,6 +121,8 @@ function standInUpdater(node, outcome, { paused = false } = {}) {
     if (request.id === lastId) return;
     lastId = request.id;
     state.busy = true;
+    let finish;
+    state.inFlight = new Promise((resolve) => { finish = resolve; });
     try {
       if (request.source === 'bundle') {
         const file = path.join(node.updateDir, `bundle-${request.sha256}.tgz`);
@@ -135,10 +139,13 @@ function standInUpdater(node, outcome, { paused = false } = {}) {
       }
       status({ ...base, state: 'done', message: 'Running the new version as green' });
       setCommit(node.appDir, request.commit);
+      if (stopping) return;
       await cluster.stop(node);
+      if (stopping) return;
       await cluster.start(node);
     } finally {
       state.busy = false;
+      finish();
     }
   }, 300);
   updaters.set(node.name, state);
@@ -157,7 +164,9 @@ before(async () => {
 }, { timeout: 600_000 });
 
 after(async () => {
+  stopping = true;
   for (const state of updaters.values()) clearInterval(state.timer);
+  await Promise.all([...updaters.values()].map((state) => state.inFlight?.catch(() => {})));
   edgeServer?.close();
   git?.server.close();
   await cluster.teardown();
@@ -244,7 +253,14 @@ test('new nodes on an older version catch up one after the other, with the build
 
 test('a failed update stops the rollout where it happened, until an administrator decides', async () => {
   const [n1, n2, n3] = nodes;
-  const ids = await Promise.all(nodes.map(async (node) => (await cluster.status(node)).node.id));
+  // A node that just restarted into its new version answers before its
+  // cluster layer runs (no id yet): wait for all of them.
+  let ids = [];
+  await waitFor(async () => {
+    const all = await Promise.all(nodes.map((node) => cluster.status(node).catch(() => null)));
+    ids = all.map((status) => (status?.running ? status.node.id : ''));
+    return ids.every(Boolean);
+  }, { timeoutMs: 60_000, label: 'every node to run its cluster layer' });
   // Who goes first for V3, computed the way every node does.
   const rank = (id) => createHash('sha256').update(`${V3}:${id}`).digest('hex');
   const order = [...ids].sort((x, y) => (rank(x) < rank(y) ? -1 : 1)).map((id) => nodes[ids.indexOf(id)]);
@@ -258,7 +274,15 @@ test('a failed update stops the rollout where it happened, until an administrato
   const failed = await updates(first);
   assert.equal(failed.self.failed, V3);
   assert.equal(failed.self.commit, V2, 'still on its previous version');
-  await waitFor(async () => (await updates(second)).decision?.action === 'blocked', { timeoutMs: 60_000, label: 'the next node to stop' });
+  try {
+    await waitFor(async () => (await updates(second)).decision?.action === 'blocked', { timeoutMs: 60_000, label: 'the next node to stop' });
+  } catch (err) {
+    const views = await Promise.all(nodes.map(async (node) => {
+      const view = await updates(node);
+      return `${node.name}: commit ${view.self.commit?.slice(0, 7)} state ${view.self.state} failed ${view.self.failed?.slice(0, 7)} decision ${view.decision?.action} [${view.decision?.order.map((entry) => `${entry.name}:${entry.state}`).join(', ')}]`;
+    }));
+    throw new Error(`${err.message}\n${views.join('\n')}\nrequests: ${nodes.map((node) => `${node.name}=${updaters.get(node.name).requests.map((r) => r.commit.slice(0, 1)).join('')}`).join(' ')}`);
+  }
   await sleep(20_000);
   assert.equal(updaters.get(second.name).requests.length, counts.get(second.name), 'the second node did not update');
   assert.equal(updaters.get(third.name).requests.length, counts.get(third.name), 'the third node did not update');

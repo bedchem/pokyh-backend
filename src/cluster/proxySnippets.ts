@@ -145,3 +145,92 @@ function caddy(route: ProxyRoute): string {
 export function proxySnippets(route: ProxyRoute): ProxySnippets {
   return { nginx: nginx(route), haproxy: haproxy(route), traefik: traefik(route), caddy: caddy(route) };
 }
+
+// ─── Through the web proxy, by path ──────────────────────────────────────────
+// For a way of kind "proxy-path": the proxy serves the API's public name with
+// its own certificate, as it does anyway, and passes one path prefix on —
+// prefix removed — to this node's cluster entry (its API port with
+// CLUSTER_PUBLIC_PATH, or CLUSTER_PORT). Plain HTTP behind the proxy is fine:
+// what travels there is sealed end to end.
+
+export interface PathRoute {
+  // The way as the other nodes use it: https://api.example.org/cluster-node/a
+  url: string;
+  // Where the proxy passes it: host:port as the proxy reaches the node.
+  backend: string;
+  // The largest request and answer the cluster sends, and how long one may take.
+  maxBodyBytes: number;
+  timeoutSeconds: number;
+}
+
+export function validPathRoute(route: PathRoute): boolean {
+  return BACKEND.test(route.backend) && Number.isInteger(route.maxBodyBytes) && route.maxBodyBytes > 0
+    && Number.isInteger(route.timeoutSeconds) && route.timeoutSeconds > 0;
+}
+
+export function pathSnippets(route: PathRoute): ProxySnippets {
+  const url = new URL(route.url);
+  const host = url.hostname;
+  const prefix = url.pathname === '/' ? '' : url.pathname;
+  const location = `${prefix}/cluster/`;
+  const megabytes = Math.ceil(route.maxBodyBytes / (1024 * 1024)) + 1;
+  const nginxConf = [
+    `# Inside the existing "server { server_name ${host}; … }" block (http, TLS as for the API).`,
+    `location ${location} {`,
+    `    proxy_pass http://${route.backend}/cluster/;`,
+    '    proxy_http_version 1.1;',
+    '    proxy_set_header Host $host;',
+    '    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;',
+    '    proxy_set_header X-Forwarded-Proto $scheme;',
+    `    client_max_body_size ${megabytes}m;`,
+    '    proxy_request_buffering off;',
+    `    proxy_read_timeout ${route.timeoutSeconds}s;`,
+    `    proxy_send_timeout ${route.timeoutSeconds}s;`,
+    '}',
+  ].join('\n');
+  const haproxyConf = [
+    '# In the frontend that serves the API over HTTPS (mode http).',
+    `acl pokyh_cluster_path path_beg ${location}`,
+    'use_backend pokyh_cluster if pokyh_cluster_path',
+    '',
+    'backend pokyh_cluster',
+    '    mode http',
+    `    timeout server ${route.timeoutSeconds}s`,
+    ...(prefix ? [`    http-request replace-path ^${prefix.replace(/[.]/g, '\\.')}(/cluster/.*) \\1`] : []),
+    `    server node ${route.backend}`,
+  ].join('\n');
+  const traefikConf = [
+    '# Dynamic configuration (file provider). The certificate of the API name',
+    '# is used as for the API itself.',
+    'http:',
+    '  routers:',
+    '    pokyh-cluster:',
+    '      entryPoints: [websecure]',
+    `      rule: "Host(\`${host}\`) && PathPrefix(\`${location}\`)"`,
+    ...(prefix ? ['      middlewares: [pokyh-cluster-strip]'] : []),
+    '      service: pokyh-cluster',
+    '      tls: {}',
+    ...(prefix ? ['  middlewares:', '    pokyh-cluster-strip:', '      stripPrefix:', `        prefixes: ["${prefix}"]`] : []),
+    '  services:',
+    '    pokyh-cluster:',
+    '      loadBalancer:',
+    '        servers:',
+    `          - url: "http://${route.backend}"`,
+  ].join('\n');
+  const caddyConf = [
+    `# Inside the existing "${host} { … }" site block.`,
+    `${prefix ? 'handle_path' : 'handle'} ${prefix}/cluster/* {`,
+    ...(prefix ? ['\trewrite * /cluster{path}'] : []),
+    '\trequest_body {',
+    `\t\tmax_size ${megabytes}MB`,
+    '\t}',
+    `\treverse_proxy ${route.backend} {`,
+    '\t\ttransport http {',
+    `\t\t\tread_timeout ${route.timeoutSeconds}s`,
+    `\t\t\twrite_timeout ${route.timeoutSeconds}s`,
+    '\t\t}',
+    '\t}',
+    '}',
+  ].join('\n');
+  return { nginx: nginxConf, haproxy: haproxyConf, traefik: traefikConf, caddy: caddyConf };
+}

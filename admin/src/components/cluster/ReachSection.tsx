@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
-import { AlertTriangle, ArrowDown, ArrowUp, Check, Copy, KeyRound, Plus, Radio, Route, Save, ShieldCheck, Terminal, Trash2, Undo2 } from 'lucide-react';
+import { AlertTriangle, ArrowDown, ArrowUp, Check, Copy, KeyRound, Plus, Radio, Route, Save, ShieldCheck, Stethoscope, Terminal, Trash2, Undo2 } from 'lucide-react';
 import { adminApi } from '../../api';
 import { useToast } from '../Toast';
 import { Dialog, FieldLabel, FormSection, IconButton, Notice, Segmented, Spinner, Status, Tag } from '../kit';
-import { Explained, ToggleField } from './explain';
-import type { ClusterReach, ClusterRelay, ProxySnippets, ReachEntry, ReachKind } from '../../types';
+import { Explained, InfoTip, ToggleField } from './explain';
+import type { ClusterReach, ClusterRelay, ProxySnippets, ReachEntry, ReachKind, WayTestResult } from '../../types';
 
 // How the other nodes reach this one, and the relays of the cluster. Every
 // way ends at this node's pinned certificate: proxies and relays only carry
@@ -14,12 +14,21 @@ const KIND_LABEL: Record<ReachKind, string> = {
   direct: 'Direkt',
   'proxy-port': 'Proxy · eigener Port',
   'proxy-sni': 'Proxy · 443 (SNI)',
+  'proxy-path': 'Proxy · API-Pfad',
 };
 
 const KIND_HINT: Record<ReachKind, { endpoint: string; placeholder: string }> = {
   direct: { endpoint: 'Adresse, unter der die anderen diese Node direkt erreichen (öffentliche IP, WireGuard-/Tailscale-IP).', placeholder: 'https://10.8.0.2:4100' },
   'proxy-port': { endpoint: 'Adresse des Proxys mit eigenem Port, der TCP unverändert an diese Node durchreicht.', placeholder: 'https://vps.example.org:4100' },
   'proxy-sni': { endpoint: 'Name unter deiner Cluster-Domain, der auf den Proxy zeigt; der Proxy reicht ihn auf 443 anhand des Namens (SNI) durch.', placeholder: 'https://node1.cluster.example.org:443' },
+  'proxy-path': { endpoint: 'Die öffentliche Adresse deiner API plus ein Pfad nur für diese Node. Dein Proxy leitet diesen Pfad (ohne Präfix) an den Cluster-Eingang dieser Node weiter.', placeholder: 'https://api.example.org/cluster-node/homelab' },
+};
+
+const BACKEND_PLACEHOLDER: Record<ReachKind, string> = {
+  direct: '',
+  'proxy-port': '10.8.0.2:4100',
+  'proxy-sni': '10.8.0.2:4100',
+  'proxy-path': '10.8.0.2:4000',
 };
 
 type Draft = Pick<ReachEntry, 'kind' | 'endpoint' | 'enabled' | 'backend'> & { id?: string; snippets?: ProxySnippets | null };
@@ -39,18 +48,26 @@ async function copyText(text: string, showToast: (message: string, kind: 'succes
   }
 }
 
-function SnippetsDialog({ title, snippets, sni, onClose }: { title: string; snippets: ProxySnippets; sni: boolean; onClose: () => void }) {
+function SnippetsDialog({ title, snippets, sni, path = false, onClose }: { title: string; snippets: ProxySnippets; sni: boolean; path?: boolean; onClose: () => void }) {
   const { showToast } = useToast();
   const [tab, setTab] = useState<keyof ProxySnippets>('nginx');
   const [copied, setCopied] = useState(false);
   return (
     <Dialog title={title} subtitle="Für deinen Proxy auf dem VPS." onClose={onClose} width={680}>
       <div className="flex flex-col gap-4">
+        {path ? (
+          <Notice tone="sky" icon={ShieldCheck}>
+            Dein Proxy bedient den Pfad wie den Rest der API — mit seinem Zertifikat — und reicht ihn ohne Präfix an diese Node weiter.
+            Was darüber läuft, ist Ende-zu-Ende verschlüsselt und mit dem Link-Schlüssel authentifiziert; der Proxy sieht nur
+            verschlüsselte Nachrichten. Größe und Zeitlimits sind auf die Cluster-Einstellungen abgestimmt.
+          </Notice>
+        ) : (
         <Notice tone="sky" icon={ShieldCheck}>
           Der Proxy muss die Verbindung <strong>unverändert durchreichen</strong> — TLS darf er <strong>nicht</strong> beenden (kein Zertifikat,
           kein HTTP). {sni ? 'Er erkennt Cluster-Verkehr am Servernamen (SNI) im ersten Paket und schickt ihn weiter; alles andere geht wie bisher an deine Websites.' : 'Alles, was an diesem Port ankommt, geht weiter.'}
           {' '}Dein eigener Proxy braucht genau diese Fähigkeit (bei nginx: stream + ssl_preread, bei Traefik: TCP mit passthrough).
         </Notice>
+        )}
         <Segmented
           label="Proxy"
           value={tab}
@@ -180,7 +197,9 @@ export function ReachSection({ running }: { running: boolean }) {
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [busyRelay, setBusyRelay] = useState<string | null>(null);
-  const [dialog, setDialog] = useState<'add-relay' | 'setup-relay' | { title: string; snippets: ProxySnippets; sni: boolean } | null>(null);
+  const [dialog, setDialog] = useState<'add-relay' | 'setup-relay' | { title: string; snippets: ProxySnippets; sni: boolean; path?: boolean } | null>(null);
+  // Results of "Weg testen", by address.
+  const [tests, setTests] = useState<Record<string, WayTestResult | 'running'>>({});
 
   const load = useCallback(async () => {
     if (!running) return;
@@ -218,8 +237,20 @@ export function ReachSection({ running }: { running: boolean }) {
   }
 
   function add(kind: ReachKind) {
-    setDraft((list) => [...list, { kind, endpoint: '', enabled: true, backend: '' }]);
+    // A way without certificate pinning is switched on deliberately.
+    setDraft((list) => [...list, { kind, endpoint: '', enabled: kind !== 'proxy-path', backend: '' }]);
     setDirty(true);
+  }
+
+  async function testWay(kind: ReachKind, endpoint: string) {
+    const key = `${kind} ${endpoint}`;
+    setTests((all) => ({ ...all, [key]: 'running' }));
+    try {
+      const result = await adminApi.testClusterWay(kind, endpoint.trim());
+      setTests((all) => ({ ...all, [key]: result }));
+    } catch (err) {
+      setTests((all) => ({ ...all, [key]: { ok: false, ms: 0, message: err instanceof Error ? err.message : 'Test fehlgeschlagen' } }));
+    }
   }
 
   async function save() {
@@ -261,7 +292,11 @@ export function ReachSection({ running }: { running: boolean }) {
           Alle Wege, auf denen die anderen Nodes diese erreichen — der Reihe nach probiert, bis einer klappt. <b>Direkt</b>: öffentliche IP
           oder VPN-Adresse (WireGuard/Tailscale) mit Port 4100. <b>Proxy · eigener Port</b>: dein VPS reicht einen Port unverändert durch.
           <b>Proxy · 443 (SNI)</b>: dein VPS-Proxy erkennt Cluster-Verkehr am Namen und reicht ihn durch, alles andere geht an deine Websites.
-          Jeder Weg endet an dem gepinnten Zertifikat dieser Node — ein Proxy sieht nur verschlüsselte Bytes.
+          Jeder dieser Wege endet an dem gepinnten Zertifikat dieser Node — ein Proxy sieht nur verschlüsselte Bytes.<br /><br />
+          <b>Proxy · API-Pfad</b> (schaltbar, standardmäßig aus): über die öffentliche Adresse deiner API, z. B. api.example.org/cluster-node/name — dein
+          Proxy beendet dort TLS wie für die API und reicht den Pfad an den Cluster-Eingang dieser Node weiter. Die Nachrichten bleiben
+          Ende-zu-Ende verschlüsselt und gegenseitig authentifiziert, nur das Zertifikats-Pinning fehlt. Deshalb nehmen die anderen Nodes
+          diesen Weg nur, wenn alle gepinnten Wege ausfallen.
         </>}>Erreichbarkeit dieser Node</Explained>}
         hint="Wie die anderen Nodes diese erreichen — in dieser Reihenfolge probiert, bei Ausfall automatisch der nächste Weg. Egal welcher Weg: Ende-zu-Ende geschützt durch die gepinnten Zertifikate; Proxy und Relay sehen nur verschlüsselte Bytes."
       >
@@ -297,6 +332,30 @@ export function ReachSection({ running }: { running: boolean }) {
               )}
             </div>
 
+            {(reach.pathWays.length > 0 || reach.pathEnvInvalid.length > 0) && (
+              <div>
+                <div className="mb-2 flex items-center gap-1.5 text-[13px] text-ink-3">
+                  Über deinen Web-Proxy (nur wenn alle Wege oben ausfallen)
+                  <InfoTip>Diese Wege bieten die anderen Nodes erst an, wenn kein gepinnter Weg mehr funktioniert. Sie kommen am Cluster-Eingang des API-Ports an ({reach.pathEntry.apiPort ? `Port ${reach.pathEntry.apiPortNumber}, Pfad /cluster` : 'aus — CLUSTER_PUBLIC_PATH=false'}){reach.pathEntry.clusterPort > 0 ? ` oder am eigenen Cluster-Port ${reach.pathEntry.clusterPort}` : ''}.</InfoTip>
+                </div>
+                {reach.pathEnvInvalid.length > 0 && (
+                  <Notice tone="rose" icon={AlertTriangle}>Unbrauchbar in CLUSTER_PATH_ENDPOINTS: {reach.pathEnvInvalid.join(', ')}</Notice>
+                )}
+                <ol className="flex flex-col gap-1.5">
+                  {reach.pathWays.map((way) => (
+                    <li key={way} className="flex flex-wrap items-center gap-2 text-[13px]">
+                      <Tag tone="amber">Web-Proxy</Tag>
+                      <span className="min-w-0 break-all font-mono text-[12.5px] text-ink-2">{way}</span>
+                      {reach.pathEnv.includes(way) && <Tag>aus .env</Tag>}
+                    </li>
+                  ))}
+                </ol>
+                {!reach.pathEntry.apiPort && reach.pathEntry.clusterPort === 0 && (
+                  <div className="mt-2"><Notice tone="amber" icon={AlertTriangle}>Kein Eingang für diesen Weg: CLUSTER_PUBLIC_PATH ist aus und CLUSTER_PORT nicht gesetzt.</Notice></div>
+                )}
+              </div>
+            )}
+
             <div className="flex flex-col gap-4">
               {draft.map((entry, index) => (
                 <div key={entry.id ?? `new-${index}`} className="flex flex-col gap-3 rounded-[18px] bg-well p-4">
@@ -318,18 +377,45 @@ export function ReachSection({ running }: { running: boolean }) {
                     <input value={entry.endpoint} onChange={(e) => change(index, { endpoint: e.target.value })} spellCheck={false} autoCapitalize="off"
                       className="field h-11 w-full px-4 font-mono text-[13px]" placeholder={KIND_HINT[entry.kind].placeholder} />
                   </FieldLabel>
+                  {entry.kind === 'proxy-path' && (
+                    <Notice tone="amber" icon={AlertTriangle}>
+                      Ohne Zertifikats-Pinning: Nachrichten bleiben Ende-zu-Ende verschlüsselt und authentifiziert, aber dein Proxy beendet TLS.
+                      Die anderen Nodes nehmen diesen Weg nur, wenn alle gepinnten Wege ausfallen. Erst einschalten, wenn „Weg testen“ grün ist.
+                    </Notice>
+                  )}
                   {entry.kind !== 'direct' && (
-                    <FieldLabel label="Ziel hinter dem Proxy (optional)" hint="Diese Node, wie der Proxy sie erreicht — z. B. ihre WireGuard-IP und der Cluster-Port. Damit zeigt das Panel die passende Proxy-Konfiguration.">
+                    <FieldLabel
+                      label="Ziel hinter dem Proxy (optional)"
+                      hint={entry.kind === 'proxy-path'
+                        ? `Diese Node, wie dein Proxy sie erreicht — z. B. ihre WireGuard-IP und der API-Port (${reach.pathEntry.apiPortNumber}${reach.pathEntry.clusterPort > 0 ? ` oder der Cluster-Port ${reach.pathEntry.clusterPort}` : ''}). Damit zeigt das Panel die passende Proxy-Konfiguration.`
+                        : 'Diese Node, wie der Proxy sie erreicht — z. B. ihre WireGuard-IP und der Cluster-Port. Damit zeigt das Panel die passende Proxy-Konfiguration.'}
+                    >
                       <input value={entry.backend} onChange={(e) => change(index, { backend: e.target.value })} spellCheck={false} autoCapitalize="off"
-                        className="field h-11 w-full px-4 font-mono text-[13px]" placeholder="10.8.0.2:4100" />
+                        className="field h-11 w-full px-4 font-mono text-[13px]" placeholder={BACKEND_PLACEHOLDER[entry.kind]} />
                     </FieldLabel>
                   )}
-                  {entry.snippets && !dirty && (
-                    <button type="button" className="btn btn-quiet btn-sm self-start"
-                      onClick={() => setDialog({ title: `Proxy-Konfiguration · ${KIND_LABEL[entry.kind]}`, snippets: entry.snippets!, sni: entry.kind === 'proxy-sni' })}>
-                      <Terminal size={15} strokeWidth={1.7} /> Proxy-Konfiguration anzeigen
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button type="button" className="btn btn-quiet btn-sm" disabled={!entry.endpoint.trim() || tests[`${entry.kind} ${entry.endpoint.trim()}`] === 'running'}
+                      onClick={() => void testWay(entry.kind, entry.endpoint)}>
+                      {tests[`${entry.kind} ${entry.endpoint.trim()}`] === 'running' ? <Spinner /> : <Stethoscope size={15} strokeWidth={1.7} />} Weg testen
                     </button>
-                  )}
+                    <InfoTip>Diese Node verbindet sich selbst über genau diesen Weg (durch Proxy, Relay, VPN …) und prüft, ob sie bei sich ankommt — am eigenen Zertifikat bzw. an einer Antwort, die nur sie geben kann. So siehst du sofort, ob dein Proxy richtig weiterleitet.</InfoTip>
+                    {entry.snippets && !dirty && (
+                      <button type="button" className="btn btn-quiet btn-sm"
+                        onClick={() => setDialog({ title: `Proxy-Konfiguration · ${KIND_LABEL[entry.kind]}`, snippets: entry.snippets!, sni: entry.kind === 'proxy-sni', path: entry.kind === 'proxy-path' })}>
+                        <Terminal size={15} strokeWidth={1.7} /> Proxy-Konfiguration anzeigen
+                      </button>
+                    )}
+                  </div>
+                  {(() => {
+                    const result = tests[`${entry.kind} ${entry.endpoint.trim()}`];
+                    if (!result || result === 'running') return null;
+                    return (
+                      <div className={`text-[12.5px] ${result.ok ? 'text-mint-deep' : 'text-rose-deep'}`}>
+                        {result.ok ? '✓' : '✗'} {result.message}{result.ms > 0 ? ` · ${result.ms} ms` : ''}
+                      </div>
+                    );
+                  })()}
                 </div>
               ))}
               <div className="flex flex-wrap gap-2">
@@ -437,7 +523,7 @@ export function ReachSection({ running }: { running: boolean }) {
 
       {dialog === 'add-relay' && <AddRelayDialog onClose={() => setDialog(null)} onAdded={() => void load()} />}
       {dialog === 'setup-relay' && <RelaySetupDialog onClose={() => setDialog(null)} />}
-      {dialog && typeof dialog === 'object' && <SnippetsDialog title={dialog.title} snippets={dialog.snippets} sni={dialog.sni} onClose={() => setDialog(null)} />}
+      {dialog && typeof dialog === 'object' && <SnippetsDialog title={dialog.title} snippets={dialog.snippets} sni={dialog.sni} path={dialog.path} onClose={() => setDialog(null)} />}
     </>
   );
 }

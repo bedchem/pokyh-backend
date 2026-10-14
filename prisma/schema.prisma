@@ -50,6 +50,7 @@ model User {
   learnAiTrainingPrompts  LearnAiTrainingPrompt[]
   usageSessions           UsageSession[]
   privacyConsent          PrivacyConsent?
+  popupTargets            PopupTargetUser[]
 
   @@map("users")
 }
@@ -1024,8 +1025,40 @@ model Popup {
   createdAt   DateTime  @default(now()) @map("created_at")
   updatedAt   DateTime  @updatedAt @map("updated_at")
 
+  // Meant for chosen people only (both empty: everybody the platform and
+  // audience allow) — see src/routes/popups.ts.
+  targetUsers   PopupTargetUser[]
+  targetClasses PopupTargetClass[]
+
   @@index([enabled, platform])
   @@map("popups")
+}
+
+// A user a popup is meant for. Goes with the popup and with the account.
+model PopupTargetUser {
+  popupId   String @map("popup_id")
+  stableUid String @map("stable_uid")
+
+  popup Popup @relation(fields: [popupId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [stableUid], references: [stableUid], onDelete: Cascade)
+
+  @@id([popupId, stableUid])
+  @@index([stableUid])
+  @@map("popup_target_users")
+}
+
+// A class (WebUntis class id, as users sign in with) a popup is meant for.
+// The name is kept as chosen, for the admin panel.
+model PopupTargetClass {
+  popupId    String @map("popup_id")
+  klasseId   Int    @map("klasse_id")
+  klasseName String @default("") @map("klasse_name") @db.VarChar(100)
+
+  popup Popup @relation(fields: [popupId], references: [id], onDelete: Cascade)
+
+  @@id([popupId, klasseId])
+  @@index([klasseId])
+  @@map("popup_target_classes")
 }
 
 // ─── Session revocation ──────────────────────────────────────────────────────
@@ -1059,6 +1092,13 @@ model ClusterNode {
   // The ways to reach this node set in the admin panel (JSON; see
   // src/cluster/reach.ts), in addition to CLUSTER_MTLS_URL/_ENDPOINTS.
   reachConfig  String?  @map("reach_config") @db.Text
+  // What the cluster exchanges (src/cluster/scopeRules.ts), as this node last
+  // set or took over: Pokyh Learn yes/no, when, on which node, by whom.
+  // Unset: CLUSTER_REPLICATE_LEARN.
+  scopeLearn   Boolean? @map("scope_learn")
+  scopeVersion BigInt   @default(0) @map("scope_version")
+  scopeBy      String?  @map("scope_by") @db.VarChar(36)
+  scopeActor   String?  @map("scope_actor") @db.VarChar(100)
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
@@ -1111,6 +1151,9 @@ model ClusterPeer {
   // Every way the peer announced to reach its channel, in its order of
   // preference (JSON array of endpoints; channelUrl is the first).
   channelEndpoints String?   @map("channel_endpoints") @db.Text
+  // The ways through the peer's own web proxy it offers (JSON array of
+  // URLs; unpinned, used only when the channel fails — src/cluster/reach.ts).
+  pathWays         String?   @map("path_ways") @db.Text
   // Set once both directions have worked over the mutually authenticated
   // channel: from then on the peer is only accepted there (no downgrade).
   tlsLocked        Boolean   @default(false) @map("tls_locked")
@@ -1182,6 +1225,9 @@ model ClusterInstall {
   name          String    @default("") @db.VarChar(120)
   withAi        Boolean   @default(false) @map("with_ai")
   acmeEmail     String    @default("") @map("acme_email") @db.VarChar(254)
+  // How the new server is reached: web mode, ports, addresses, allowed
+  // sources (JSON, src/cluster/installOptions.ts).
+  options       String?   @db.Text
   failures      Int       @default(0)
   expiresAt     DateTime  @map("expires_at")
   provisionedAt DateTime? @map("provisioned_at")

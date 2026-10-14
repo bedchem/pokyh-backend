@@ -444,6 +444,19 @@ export const config = {
       // requests when checking CI; public repositories work without one.
       githubToken: strEnv('CLUSTER_UPDATE_GITHUB_TOKEN', ''),
     },
+    // Exchange Pokyh Learn (tables learn_*) with the other nodes. The same for
+    // every node; changed in the admin panel it travels with the heartbeat.
+    replicateLearn: boolEnv('CLUSTER_REPLICATE_LEARN', true),
+    // Ways through this node's own web proxy on the API's address, comma
+    // separated (https://api.example.org/cluster-node/a): no certificate
+    // pinning there, so used by the others only when every pinned way fails.
+    pathEndpoints: strEnv('CLUSTER_PATH_ENDPOINTS', ''),
+    // After the channel to a peer failed, how long calls take another way
+    // before the channel is tried again.
+    channelRetrySeconds: boundedIntEnv('CLUSTER_CHANNEL_RETRY_SECONDS', 60, 5, 3600),
+    // The port a relay listens on locally when nothing else says so (the
+    // relay installer's --port default), for the proxy configuration shown.
+    relayDefaultPort: boundedIntEnv('CLUSTER_RELAY_DEFAULT_PORT', 4100, 1, 65_535),
     // How long a one-line install command can be started after it was made.
     installTtlMinutes: boundedIntEnv('CLUSTER_INSTALL_TTL_MINUTES', 30, 5, 24 * 60),
     // Set by the installer on the node it sets up: where that node finds its
@@ -499,7 +512,8 @@ export const config = {
 
   // ── Misc tunables (no hardcoded values) ────────────────────────────────────
   sseHeartbeatMs: intEnv('SSE_HEARTBEAT_MS', 30 * 1000),
-  mensaImportUrl: strEnv('MENSA_IMPORT_URL', 'https://mensa.plattnericus.dev/mensa.json'),
+  // The menu source (a mensa.json) for the dish import; no built-in default.
+  mensaImportUrl: strEnv('MENSA_IMPORT_URL', ''),
   // Absolute base for self-hosted asset URLs (e.g. uploaded dish images). When
   // empty, a relative path is stored instead. No hardcoded domain.
   publicBaseUrl: (process.env['PUBLIC_BASE_URL'] ?? '').replace(/\/$/, ''),

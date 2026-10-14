@@ -40,7 +40,10 @@ function samplePayload(t, overrides = {}) {
   return {
     v: 1,
     t: Date.now(),
-    node: { name: 'Graz 2', domain: 'node2.example.org', withAi: false, acmeEmail: 'ops@example.org' },
+    node: {
+      name: 'Graz 2', domain: 'node2.example.org', withAi: false, acmeEmail: 'ops@example.org',
+      web: 'domain', apiPort: 0, apiBind: '', apiFrom: [], clusterPort: 4100, clusterBind: '', clusterFrom: [],
+    },
     env: { JWT_SECRET: 'j'.repeat(40), API_KEY: 'k'.repeat(30), ADMIN_PASSWORD_HASH: '$2b$12$abc$def' },
     bundle: { sha256: 'a'.repeat(64), bytes: 1234 },
     cluster: { url: t.url, nodeId: t.nodeId, name: 'Graz', cert: node.certPem, pairingUntil: Math.floor(Date.now() / 1000) + 3600 },
@@ -193,9 +196,9 @@ test('the new node\'s env file has its own secrets, the shared ones, and nothing
 test('a configuration that does not fit is refused before anything is written', () => {
   const t = sampleToken();
   const refuse = (overrides, pattern) => assert.throws(() => bootstrap.validatePayload(samplePayload(t, overrides), t), pattern);
-  refuse({ node: { name: 'x\nNODE_OPTIONS=evil', domain: 'node2.example.org', withAi: false, acmeEmail: '' } }, /name/);
-  refuse({ node: { name: 'x', domain: 'node2.example.org\n', withAi: false, acmeEmail: '' } }, /domain/);
-  refuse({ node: { name: 'x', domain: 'node2.example.org', withAi: false, acmeEmail: 'a}@b.cd' } }, /e-mail/);
+  refuse({ node: { name: 'x\nNODE_OPTIONS=evil', domain: 'node2.example.org', withAi: false, acmeEmail: '', web: 'domain', apiPort: 0, apiBind: '', apiFrom: [], clusterPort: 4100, clusterBind: '', clusterFrom: [] } }, /name/);
+  refuse({ node: { name: 'x', domain: 'node2.example.org\n', withAi: false, acmeEmail: '', web: 'domain', apiPort: 0, apiBind: '', apiFrom: [], clusterPort: 4100, clusterBind: '', clusterFrom: [] } }, /domain/);
+  refuse({ node: { name: 'x', domain: 'node2.example.org', withAi: false, acmeEmail: 'a}@b.cd', web: 'domain', apiPort: 0, apiBind: '', apiFrom: [], clusterPort: 4100, clusterBind: '', clusterFrom: [] } }, /e-mail/);
   refuse({ env: { CORS_ORIGIN: 'a\nb' } }, /setting/);
   refuse({ env: { 'lower case': 'x' } }, /setting/);
   refuse({ bundle: { sha256: 'xyz', bytes: 1 } }, /hash/);
@@ -218,8 +221,10 @@ test('the Caddyfile, compose settings and AI sizing follow the choices', () => {
   assert.equal(bootstrap.aiPlan({ withAi: true, memKb: 8 * 1024 * 1024, cpus: 8 }).enabled, false, 'too little memory');
   const big = bootstrap.aiPlan({ withAi: true, memKb: 32 * 1024 * 1024, cpus: 8 });
   assert.deepEqual([big.enabled, big.memLimit, big.cpus], [true, '10g', '4']);
-  assert.match(bootstrap.renderComposeEnv({ ai: big, web: true }), /^COMPOSE_PROFILES=blue,web,ai$/m);
-  const plain = bootstrap.renderComposeEnv({ ai: { enabled: false }, web: false, runtime: { repo: 'https://github.com/bedchem/pokyh-backend', branch: 'main' } });
+  const withDomain = { web: 'domain', clusterPort: 4100, clusterBind: '', apiPort: 0, apiBind: '' };
+  const without = { web: 'none', clusterPort: 4100, clusterBind: '', apiPort: 0, apiBind: '' };
+  assert.match(bootstrap.renderComposeEnv({ ai: big, node: withDomain }), /^COMPOSE_PROFILES=blue,web,ai$/m);
+  const plain = bootstrap.renderComposeEnv({ ai: { enabled: false }, node: without, runtime: { repo: 'https://github.com/bedchem/pokyh-backend', branch: 'main' } });
   assert.match(plain, /^COMPOSE_PROFILES=blue$/m, 'no domain: no Caddy');
   assert.match(plain, /^POKYH_RUNTIME_REPO=https:\/\/github\.com\/bedchem\/pokyh-backend$/m);
   assert.match(plain, /^POKYH_RUNTIME_BRANCH=main$/m);
@@ -342,14 +347,14 @@ test('the token carries every way to the inviting node, and the bootstrap reads 
 // ─── Address: domain, IP, or detected ───────────────────────────────────────
 
 test('the token names the inviting node\'s public address, and the bootstrap reads it', () => {
-  const t = sampleToken({ web: 'https://api.pokyh.com' });
+  const t = sampleToken({ web: 'https://api.example.org' });
   const encoded = token.encodeInstallToken(t);
-  assert.equal(token.decodeInstallToken(encoded).token.web, 'https://api.pokyh.com');
-  assert.equal(bootstrap.decodeToken(encoded).web, 'https://api.pokyh.com');
+  assert.equal(token.decodeInstallToken(encoded).token.web, 'https://api.example.org');
+  assert.equal(bootstrap.decodeToken(encoded).web, 'https://api.example.org');
   assert.equal(bootstrap.decodeToken(token.encodeInstallToken(sampleToken())).web, null, 'older tokens: channel only');
   const body = JSON.parse(Buffer.from(encoded.slice(11), 'base64url').toString());
   const encode = (value) => `pokyhnode1.${Buffer.from(JSON.stringify(value)).toString('base64url')}`;
-  for (const bad of ['https://api.pokyh.com/setup', 'javascript:alert(1)', 'https://a b', 42]) {
+  for (const bad of ['https://api.example.org/setup', 'javascript:alert(1)', 'https://a b', 42]) {
     assert.equal(token.decodeInstallToken(encode({ ...body, w: bad })).ok, false, String(bad));
     assert.throws(() => bootstrap.decodeToken(encode({ ...body, w: bad })), /damaged/, String(bad));
   }
@@ -357,7 +362,7 @@ test('the token names the inviting node\'s public address, and the bootstrap rea
 
 test('a node without a domain is reached at its IP and serves no web of its own', () => {
   const t = sampleToken();
-  const ipOnly = samplePayload(t, { node: { name: 'Homelab', domain: '', address: '203.0.113.20', withAi: false, acmeEmail: '' } });
+  const ipOnly = samplePayload(t, { node: { name: 'Homelab', domain: '', address: '203.0.113.20', withAi: false, acmeEmail: '', web: 'none', apiPort: 0, apiBind: '', apiFrom: [], clusterPort: 4100, clusterBind: '', clusterFrom: [] } });
   assert.doesNotThrow(() => bootstrap.validatePayload(ipOnly, t));
   const env = Object.fromEntries(bootstrap.buildEnvFile({ payload: ipOnly, secrets: { mysqlRootPassword: 'pw', clusterSecret: 'cs' }, generatedAt: 'now' })
     .split('\n').filter((line) => /^[A-Z]/.test(line)).map((line) => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)]));
@@ -367,7 +372,7 @@ test('a node without a domain is reached at its IP and serves no web of its own'
   assert.equal(env.POKYH_ACTIVATION_FILE, '/app/data/update/active');
   assert.equal(bootstrap.channelHost({ domain: '', address: '2001:db8::5' }), '[2001:db8::5]');
   assert.equal(bootstrap.channelHost({ domain: '', address: '' }), '', 'unknown: reached through relays only');
-  assert.throws(() => bootstrap.validatePayload(samplePayload(t, { node: { name: 'x', domain: '', address: 'not-an-ip', withAi: false, acmeEmail: '' } }), t), /address/);
+  assert.throws(() => bootstrap.validatePayload(samplePayload(t, { node: { name: 'x', domain: '', address: 'not-an-ip', withAi: false, acmeEmail: '', web: 'none', apiPort: 0, apiBind: '', apiFrom: [], clusterPort: 4100, clusterBind: '', clusterFrom: [] } }), t), /address/);
   assert.throws(() => bootstrap.validatePayload(samplePayload(t, { update: { repo: 'http://evil.example/x/y', branch: 'main' } }), t), /update/);
   assert.throws(() => bootstrap.validatePayload(samplePayload(t, { update: { repo: '', branch: '../x' } }), t), /update/);
 });

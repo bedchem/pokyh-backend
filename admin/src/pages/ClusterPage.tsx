@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
-  AlertTriangle, Check, Copy, Hourglass, KeyRound, LogIn, Network, Plus, Power, RefreshCw, Save, Server, ShieldCheck, Terminal, Trash2, UserPlus, Wifi, X,
+  AlertTriangle, Check, Copy, Database, Hourglass, KeyRound, LogIn, Network, Plus, Power, RefreshCw, Save, Server, ShieldCheck, Terminal, Trash2, UserPlus, Wifi, X,
 } from 'lucide-react';
 import { adminApi } from '../api';
 import { useToast } from '../components/Toast';
 import { useAutoRefresh } from '../hooks/useAutoRefresh';
-import { Delta, Dialog, Empty, FieldLabel, Figures, FormSection, IconButton, Notice, PageHeader, Section, Spinner, Status, Tag, type Tone } from '../components/kit';
+import { Collapse, Delta, Dialog, Empty, FieldLabel, Figures, FormSection, IconButton, Notice, PageHeader, Section, Segmented, Spinner, Status, Tag, type Tone } from '../components/kit';
 import { Explained, InfoTip, ToggleField } from '../components/cluster/explain';
 import { UpdatesSection } from '../components/cluster/UpdatesSection';
-import type { ClusterInstall, ClusterPeer, ClusterStatus, CreatedClusterInstall } from '../types';
+import type { ClusterInstall, ClusterPeer, ClusterStatus, CreatedClusterInstall, InstallWebMode } from '../types';
 import { ReachSection } from '../components/cluster/ReachSection';
 
 function badgeFor(peer: ClusterPeer): { label: string; tone: Tone } {
@@ -159,6 +159,16 @@ function InstallDialog({ data, onClose, onCreated }: { data: ClusterStatus | nul
   const [address, setAddress] = useState('');
   const [acmeEmail, setAcmeEmail] = useState('');
   const [withAi, setWithAi] = useState(Boolean(data?.node.aiEnabled));
+  // How the new server is reached: web access, ports, addresses, sources.
+  const [web, setWeb] = useState<InstallWebMode>('none');
+  const [webTouched, setWebTouched] = useState(false);
+  const [apiPort, setApiPort] = useState(String(data?.node.apiPort ?? ''));
+  const [apiBind, setApiBind] = useState('');
+  const [apiFrom, setApiFrom] = useState('');
+  const [clusterPort, setClusterPort] = useState(String(data?.node.clusterPort ?? ''));
+  const [clusterBind, setClusterBind] = useState('');
+  const [clusterFrom, setClusterFrom] = useState('');
+  const [advanced, setAdvanced] = useState(false);
   const [busy, setBusy] = useState(false);
   const [created, setCreated] = useState<CreatedClusterInstall | null>(null);
   const [count, setCount] = useState(0);
@@ -172,6 +182,9 @@ function InstallDialog({ data, onClose, onCreated }: { data: ClusterStatus | nul
   const trimmed = address.trim().replace(/\.$/, '');
   const isDomain = trimmed !== '' && DOMAIN_LIKE.test(trimmed) && !IPV4_LIKE.test(trimmed);
   const minutes = data?.node.installMinutes ?? 30;
+  // Until chosen by hand: own HTTPS when a domain is entered, else none.
+  const webMode: InstallWebMode = webTouched ? web : isDomain ? 'domain' : 'none';
+  const webProblem = webMode === 'domain' && !isDomain ? 'Für eigenes HTTPS die Domain des neuen Servers als Adresse eintragen.' : null;
 
   async function create() {
     setBusy(true);
@@ -179,9 +192,14 @@ function InstallDialog({ data, onClose, onCreated }: { data: ClusterStatus | nul
       const res = await adminApi.createClusterInstall({
         name: name.trim(),
         address: trimmed || undefined,
-        acmeEmail: isDomain ? acmeEmail.trim() || undefined : undefined,
+        acmeEmail: webMode === 'domain' ? acmeEmail.trim() || undefined : undefined,
         withAi,
         origin,
+        web: webMode,
+        ...(webMode === 'proxy' ? { apiPort: Number(apiPort), apiBind: apiBind.trim(), apiFrom: apiFrom.trim() } : {}),
+        clusterPort: Number(clusterPort),
+        clusterBind: clusterBind.trim(),
+        clusterFrom: clusterFrom.trim(),
       });
       setCreated(res);
       setCount((value) => value + 1);
@@ -250,12 +268,66 @@ function InstallDialog({ data, onClose, onCreated }: { data: ClusterStatus | nul
             <input value={address} onChange={(e) => setAddress(e.target.value)} spellCheck={false} autoCapitalize="off" autoCorrect="off"
               className="field h-12 w-full px-4 font-mono text-[13.5px]" placeholder="leer, node2.example.org oder 203.0.113.20" />
           </FieldLabel>
-          {isDomain && (
+          <div className="flex flex-col gap-2">
+            <span className="flex items-center gap-1.5 text-[13px] text-ink-2">
+              Web-Zugang
+              <InfoTip>
+                Wie Apps und Browser diesen Server erreichen.<br /><br />
+                <b>Keiner</b>: Er hat keine eigene Web-Adresse; deine bestehende API-Adresse bleibt, wie sie sind.<br /><br />
+                <b>Eigene Domain</b>: Er bedient seine Domain selbst mit HTTPS (Let’s Encrypt, Ports 80 und 443).<br /><br />
+                <b>Hinter meinem Proxy</b>: Er stellt die API auf einem Port deiner Wahl bereit — nur für die Adresse(n) deines Proxys freigegeben
+                (z. B. über WireGuard). Dein Proxy macht TLS und verteilt die Anfragen; die echte Client-IP kommt trotzdem an.
+              </InfoTip>
+            </span>
+            <Segmented
+              label="Web-Zugang"
+              value={webMode}
+              onChange={(next) => { setWeb(next); setWebTouched(true); }}
+              options={[
+                { value: 'none', label: 'Keiner' },
+                { value: 'domain', label: 'Eigene Domain' },
+                { value: 'proxy', label: 'Hinter meinem Proxy' },
+              ]}
+            />
+            {webProblem && <span className="text-[12.5px] text-rose-deep">{webProblem}</span>}
+          </div>
+          {webMode === 'domain' && isDomain && (
             <FieldLabel label={<Explained tip="Let’s Encrypt schickt an diese Adresse nur Warnungen, falls ein Zertifikat nicht erneuert werden kann. Leer lassen geht auch.">E-Mail für Let’s Encrypt (optional)</Explained>}>
               <input value={acmeEmail} onChange={(e) => setAcmeEmail(e.target.value)} spellCheck={false} autoCapitalize="off"
                 className="field h-12 w-full px-4 text-[14px]" placeholder="ops@example.org" />
             </FieldLabel>
           )}
+          {webMode === 'proxy' && (
+            <div className="grid gap-4 rounded-[16px] bg-well p-4 sm:grid-cols-2">
+              <FieldLabel label={<Explained tip="Auf diesem Port nimmt der neue Server die Anfragen deines Proxys entgegen (HTTP; TLS macht dein Proxy).">API-Port</Explained>}>
+                <input value={apiPort} onChange={(e) => setApiPort(e.target.value.replace(/\D/g, ''))} inputMode="numeric" className="field h-11 w-full px-4 font-mono text-[13.5px]" />
+              </FieldLabel>
+              <FieldLabel label={<Explained tip="IP-Adresse(n) oder Netz(e) deines Proxys, z. B. seine WireGuard-IP 10.8.0.1 oder 10.8.0.0/24. Nur von dort lässt die Firewall den API-Port zu, und nur diesen Adressen glaubt der Server die weitergereichte Client-IP. Leer: von überall (nicht empfohlen).">Nur erreichbar von</Explained>}>
+                <input value={apiFrom} onChange={(e) => setApiFrom(e.target.value)} spellCheck={false} className="field h-11 w-full px-4 font-mono text-[13.5px]" placeholder="10.8.0.1" />
+              </FieldLabel>
+              <FieldLabel className="sm:col-span-2" label={<Explained tip="Nur auf dieser Adresse des neuen Servers lauschen, z. B. seiner WireGuard-IP. Leer: auf allen Adressen (die Firewall begrenzt trotzdem).">Auf Adresse (optional)</Explained>}>
+                <input value={apiBind} onChange={(e) => setApiBind(e.target.value)} spellCheck={false} className="field h-11 w-full px-4 font-mono text-[13.5px]" placeholder="leer = alle, z. B. 10.8.0.5" />
+              </FieldLabel>
+            </div>
+          )}
+          <div>
+            <button type="button" className="btn btn-quiet btn-sm" onClick={() => setAdvanced((value) => !value)} aria-expanded={advanced}>
+              {advanced ? 'Cluster-Port ausblenden' : `Cluster-Port: ${clusterPort || '—'}${clusterFrom.trim() ? ', nur von gewählten Adressen' : ''} — ändern`}
+            </button>
+            <Collapse open={advanced}>
+              <div className="mt-3 grid gap-4 rounded-[16px] bg-well p-4 sm:grid-cols-2">
+                <FieldLabel label={<Explained tip="Über diesen Port reden die Nodes miteinander (gegenseitig per Zertifikat gesichert). Standard: wie bei dieser Node.">Cluster-Port</Explained>}>
+                  <input value={clusterPort} onChange={(e) => setClusterPort(e.target.value.replace(/\D/g, ''))} inputMode="numeric" className="field h-11 w-full px-4 font-mono text-[13.5px]" />
+                </FieldLabel>
+                <FieldLabel label={<Explained tip="Nur diese Adressen dürfen den Cluster-Port erreichen, z. B. dein VPN-Netz 10.8.0.0/24 und deine Relays. Leer: von überall — jede Verbindung muss sich trotzdem mit einem gepinnten Zertifikat ausweisen.">Nur erreichbar von (optional)</Explained>}>
+                  <input value={clusterFrom} onChange={(e) => setClusterFrom(e.target.value)} spellCheck={false} className="field h-11 w-full px-4 font-mono text-[13.5px]" placeholder="leer = alle, z. B. 10.8.0.0/24" />
+                </FieldLabel>
+                <FieldLabel className="sm:col-span-2" label={<Explained tip="Nur auf dieser Adresse des neuen Servers lauschen, z. B. seiner WireGuard-IP. Leer: auf allen Adressen.">Auf Adresse (optional)</Explained>}>
+                  <input value={clusterBind} onChange={(e) => setClusterBind(e.target.value)} spellCheck={false} className="field h-11 w-full px-4 font-mono text-[13.5px]" placeholder="leer = alle" />
+                </FieldLabel>
+              </div>
+            </Collapse>
+          </div>
           <ToggleField
             checked={withAi}
             onChange={setWithAi}
@@ -275,7 +347,7 @@ function InstallDialog({ data, onClose, onCreated }: { data: ClusterStatus | nul
             </span>
             <span><span className="font-mono">/setup</span> ist nur offen, während du Server hinzufügst — sonst 404.</span>
           </div>
-          <button type="button" onClick={() => void create()} disabled={busy || !name.trim() || !channelReady || !originOk} className="btn btn-primary w-full sm:w-auto sm:self-start">
+          <button type="button" onClick={() => void create()} disabled={busy || !name.trim() || !channelReady || !originOk || Boolean(webProblem) || !clusterPort || (webMode === 'proxy' && !apiPort)} className="btn btn-primary w-full sm:w-auto sm:self-start">
             {busy ? <Spinner /> : <Terminal size={16} strokeWidth={1.7} />}
             {busy ? 'Erzeuge…' : 'Einzeiler erzeugen'}
           </button>
@@ -305,8 +377,11 @@ function InstallDialog({ data, onClose, onCreated }: { data: ClusterStatus | nul
           </Notice>
           <Notice tone="sky" icon={ShieldCheck}>
             Der Installer richtet Docker ein, härtet den Server (automatische Sicherheitsupdates, Firewall nur für SSH und Pokyh) und startet
-            die Node. Am neuen Server muss Port 4100 (Cluster) erreichbar sein{created.address && DOMAIN_LIKE.test(created.address) && !IPV4_LIKE.test(created.address) ? ', dazu 80 und 443 für HTTPS' : ''} —
-            steht er hinter NAT, verbindet er sich über ein Relay. Die Firewall-Härtung lässt sich mit <code>POKYH_HARDEN=0</code> vor dem Befehl abschalten.
+            die Node. Am neuen Server muss Port {created.options.clusterPort} (Cluster) erreichbar sein
+            {created.options.clusterFrom.length > 0 ? ` — nur von ${created.options.clusterFrom.join(', ')}` : ''}
+            {created.options.web === 'domain' ? ', dazu 80 und 443 für HTTPS' : ''}
+            {created.options.web === 'proxy' ? `, dazu Port ${created.options.apiPort} für deinen Proxy${created.options.apiFrom.length > 0 ? ` (nur von ${created.options.apiFrom.join(', ')})` : ''}` : ''}.
+            Steht er hinter NAT, verbindet er sich über ein Relay. Die Firewall-Härtung lässt sich mit <code>POKYH_HARDEN=0</code> vor dem Befehl abschalten.
           </Notice>
         </div>
       )}
@@ -566,7 +641,8 @@ export function ClusterPage() {
                       {peer.tls && <div className="mt-0.5 flex items-center gap-1.5 font-mono text-[11.5px] text-ink-3" title={`sha256//${peer.tls.pin}`}><KeyRound size={12} strokeWidth={1.7} /> sha256//{peer.tls.pin.slice(0, 16)}…</div>}
                       <div className="mt-2 flex flex-wrap gap-1.5">
                         {peer.introducedBy ? <Tag tone="violet">automatisch vorgestellt</Tag> : peer.role === 'HOST' ? <Tag>eingeladen</Tag> : <Tag>beigetreten</Tag>}
-                        {peer.tls?.locked && <Tag tone="mint">mTLS · gepinnt</Tag>}
+                        {peer.tls?.locked && !peer.onPath && <Tag tone="mint">mTLS · gepinnt</Tag>}
+                        {peer.onPath && <Tag tone="amber">über Web-Proxy (ohne Pinning)</Tag>}
                         {peer.tls && !peer.tls.locked && <Tag tone="sky">{peer.tls.active ? 'wechselt auf mTLS' : 'mTLS gepinnt, noch nicht erreichbar'}</Tag>}
                         {peer.fullTransfer && <Tag tone="amber">vollständiger Abgleich läuft</Tag>}
                         {peer.verify?.running && <Tag tone="sky">Selbstcheck läuft</Tag>}
@@ -696,6 +772,8 @@ export function ClusterPage() {
 
         <ReachSection running={Boolean(data?.running)} />
 
+        <ScopeSection data={data} onChanged={() => void load()} />
+
         <UpdatesSection running={Boolean(data?.running)} />
 
         <FormSection icon={Server} title={<Explained tip="Die Node, deren Admin-Panel du gerade offen hast. Hintergrundjobs (z. B. Erinnerungen) werden auf alle erreichbaren Nodes verteilt; einmalige Jobs laufen nur auf einer, damit nichts doppelt passiert.">Diese Node</Explained>} hint="Der Name, unter dem diese Node bei den anderen erscheint.">
@@ -751,5 +829,67 @@ export function ClusterPage() {
       {dialog === 'invite' && <InviteDialog data={data} onClose={() => setDialog(null)} onCreated={() => void load()} />}
       {dialog === 'join' && <JoinDialog data={data} onClose={() => setDialog(null)} onJoined={() => void load()} />}
     </div>
+  );
+}
+
+// What the nodes exchange — the same for all of them. Changing it here
+// reaches every other node within a heartbeat.
+function ScopeSection({ data, onChanged }: { data: ClusterStatus | null; onChanged: () => void }) {
+  const { showToast } = useToast();
+  const [busy, setBusy] = useState(false);
+  if (!data?.running) return null;
+  const scope = data.scope;
+
+  async function setLearn(learn: boolean) {
+    const question = learn
+      ? 'Pokyh Learn wieder mit allen Nodes abgleichen? Die Learn-Daten aller Nodes werden zusammengeführt — bei derselben Zeile gewinnt die neuere Änderung.'
+      : 'Pokyh Learn nicht mehr abgleichen? Danach behält jede Node ihre eigenen Learn-Daten (Kurse, Vokabeln, Fortschritt). Sinnvoll nur, wenn dein Proxy Learn-Nutzer immer zur selben Node schickt.';
+    if (!window.confirm(question)) return;
+    setBusy(true);
+    try {
+      await adminApi.setClusterScope(learn);
+      showToast(learn ? 'Learn wird wieder abgeglichen — die anderen Nodes übernehmen es sofort' : 'Learn wird nicht mehr abgeglichen — gilt sofort für alle Nodes', 'success');
+      onChanged();
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Speichern fehlgeschlagen', 'error');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <FormSection
+      icon={Database}
+      title={<Explained tip={<>
+        Was die Nodes untereinander abgleichen. Pokyh selbst (Benutzer, Todos, Klassen, Speiseplan, Popups …) wird immer abgeglichen.
+        <b> Pokyh Learn</b> (Kurse, Vokabeln, Lernfortschritt, Teams, KI-Einstellungen) kann draußen bleiben — dann hat jede Node ihre eigenen
+        Learn-Daten. Die Einstellung gilt für alle Nodes gleich; wird sie hier geändert, übernehmen die anderen sie mit dem nächsten Herzschlag.
+        Wieder eingeschaltet, werden die Learn-Daten aller Nodes zusammengeführt (neuere Änderung gewinnt). Änderungen werden auch im
+        ausgeschalteten Zustand weiter erfasst, damit dabei nichts verloren geht.
+      </>}>Was wird abgeglichen</Explained>}
+      hint="Gilt für alle Nodes gleich."
+    >
+      <div className="flex max-w-[620px] flex-col gap-4">
+        <ToggleField
+          checked={scope.learn}
+          disabled={busy}
+          onChange={(next) => void setLearn(next)}
+          label="Pokyh Learn mit allen Nodes abgleichen"
+          hint={`${scope.learnTables} Learn-Tabellen · ${scope.source === 'env' ? 'Standard aus CLUSTER_REPLICATE_LEARN' : `geändert ${scope.changedAt ? new Date(scope.changedAt).toLocaleString('de-DE') : ''}${scope.changedBy ? ` von ${scope.changedBy}` : ''}`}`}
+          tip="An: Learn-Daten sind auf jeder Node gleich, Schüler können jede Node benutzen. Aus: jede Node hat ihre eigenen Learn-Daten — dann sollte dein Proxy Learn-Anfragen (z. B. /learn) immer an dieselbe Node schicken."
+        />
+        {!scope.learn && (
+          <Notice tone="amber" icon={AlertTriangle}>
+            Learn wird nicht abgeglichen: Jede Node hat ihre eigenen Kurse, Vokabeln und Fortschritte. Schicke Learn-Anfragen in deinem Proxy
+            immer an dieselbe Node, sonst sehen Schüler je nach Node andere Daten.
+          </Notice>
+        )}
+        {scope.differing.length > 0 && (
+          <Notice tone="sky" icon={RefreshCw}>
+            Wird gerade übernommen von: {scope.differing.join(', ')} — bis dahin pausiert der Abgleich mit diesen Nodes kurz.
+          </Notice>
+        )}
+      </div>
+    </FormSection>
   );
 }

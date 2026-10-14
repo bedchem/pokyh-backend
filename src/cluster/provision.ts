@@ -25,6 +25,7 @@ import { sharedEnvironment } from './sharedEnv';
 import { createPendingPeer, deletePeer, setPeerStatus, unwrap, wrap } from './store';
 import { collectFiles, createTarGz } from './tarball';
 import { loadSettings as loadUpdateSettings } from './updateSettings';
+import { normalizeInstallOptions, type InstallOptions, type InstallOptionsInput } from './installOptions';
 
 // The one-line node installer, on the node that invites.
 //
@@ -172,6 +173,8 @@ export interface InstallRequest {
   acmeEmail: string;
   // This node's public address, as the administrator's browser shows it.
   origin: string;
+  // Web access, ports, addresses, allowed sources (installOptions.ts).
+  options: InstallOptionsInput;
   createdBy: string;
 }
 
@@ -181,6 +184,7 @@ export interface CreatedInstall {
   expiresAt: string;
   address: string;
   name: string;
+  options: InstallOptions;
   // This node's certificate pin, as the command pins it.
   pin: string;
   scriptSha256: string;
@@ -204,7 +208,16 @@ export async function createInstall(input: InstallRequest): Promise<CreatedInsta
   if (address && !DOMAIN.test(address) && isIP(address) === 0) {
     throw new ClusterError('The address must be a domain name (node2.example.org) or an IP address — or leave it empty');
   }
-  const acmeEmail = isIP(address) === 0 && address ? input.acmeEmail.trim() : '';
+  let options: InstallOptions;
+  try {
+    options = normalizeInstallOptions(input.options, {
+      addressIsDomain: address !== '' && isIP(address) === 0,
+      defaults: { clusterPort: config.cluster.mtlsPort, apiPort: config.port },
+    });
+  } catch (err) {
+    throw new ClusterError(err instanceof Error ? err.message : String(err));
+  }
+  const acmeEmail = options.web === 'domain' ? input.acmeEmail.trim() : '';
   if (acmeEmail && !EMAIL.test(acmeEmail)) throw new ClusterError('The e-mail address for the certificate is not valid');
 
   const built = installScript();
@@ -235,6 +248,7 @@ export async function createInstall(input: InstallRequest): Promise<CreatedInsta
       name,
       withAi: input.withAi,
       acmeEmail,
+      options: JSON.stringify(options),
       expiresAt,
       createdBy: input.createdBy,
     },
@@ -257,7 +271,7 @@ export async function createInstall(input: InstallRequest): Promise<CreatedInsta
     `sh pokyh.sh ${shellQuote(token)}`,
   ].join(' && ');
   recordEvent('info', `One-line install for ${name} created (valid until ${expiresAt.toISOString().slice(11, 16)} UTC)`);
-  return { id, command, expiresAt: expiresAt.toISOString(), address, name, pin: channel.pin, scriptSha256: built.sha256 };
+  return { id, command, expiresAt: expiresAt.toISOString(), address, name, pin: channel.pin, scriptSha256: built.sha256, options };
 }
 
 export async function listInstalls() {
@@ -268,6 +282,7 @@ export async function listInstalls() {
     address: row.domain,
     name: row.name,
     withAi: row.withAi,
+    web: storedOptions(row.options)?.web ?? (row.domain && isIP(row.domain) === 0 ? 'domain' : 'none'),
     failures: row.failures,
     expiresAt: row.expiresAt.toISOString(),
     provisionedAt: row.provisionedAt?.toISOString() ?? null,
@@ -431,7 +446,15 @@ export async function handleProvision(req: Request, res: Response): Promise<void
   const payload = {
     v: 1,
     t: Date.now(),
-    node: { name: row.name, domain, address: ip, withAi: row.withAi, acmeEmail: row.acmeEmail },
+    node: {
+      name: row.name,
+      domain,
+      address: ip,
+      withAi: row.withAi,
+      acmeEmail: row.acmeEmail,
+      // Installs created before the options existed: as then.
+      ...(storedOptions(row.options) ?? { web: domain ? 'domain' : 'none', apiPort: 0, apiBind: '', apiFrom: [], clusterPort: config.cluster.mtlsPort, clusterBind: '', clusterFrom: [] }),
+    },
     env: shared.values,
     update: { repo: updates.repo, branch: updates.branch },
     bundle: { sha256: built.sha256, bytes: built.data.length },
@@ -465,6 +488,15 @@ export async function handleBundle(req: Request, res: Response): Promise<void> {
     .setHeader('Cache-Control', 'no-store')
     .setHeader('X-Pokyh-Sha256', built.sha256)
     .send(built.data);
+}
+
+function storedOptions(text: string | null): InstallOptions | null {
+  if (!text) return null;
+  try {
+    return JSON.parse(text) as InstallOptions;
+  } catch {
+    return null;
+  }
 }
 
 // ─── The public setup address ────────────────────────────────────────────────

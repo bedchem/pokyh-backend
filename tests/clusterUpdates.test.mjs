@@ -67,6 +67,7 @@ function roundTrip(port, payload) {
 test('the edge passes connections on unchanged, after a PROXY line naming the client', async () => {
   const received = [];
   const target = net.createServer((socket) => {
+    socket.on('error', () => {});
     const chunks = [];
     socket.on('data', (chunk) => chunks.push(chunk));
     socket.on('end', () => {
@@ -113,7 +114,11 @@ test('the edge closes the connection when no app container accepts it', async ()
 });
 
 test('an address that went away does not hold the edge up', async () => {
-  const target = net.createServer((socket) => socket.end('ok'));
+  const target = net.createServer((socket) => {
+    // The edge may close the losing attempts at once: a reset here is expected.
+    socket.on('error', () => {});
+    socket.end('ok');
+  });
   const port = await listen(target);
   try {
     // 192.0.2.1 (TEST-NET) never answers: the next address is tried in
@@ -307,11 +312,11 @@ test('the updater changes only the settings it owns in compose.env', () => {
 // ─── The public setup address ────────────────────────────────────────────────
 
 test('only a plain https origin (or loopback http) is a public address', () => {
-  assert.equal(endpoints.publicOrigin('https://api.pokyh.com'), 'https://api.pokyh.com');
-  assert.equal(endpoints.publicOrigin('https://api.pokyh.com/'), 'https://api.pokyh.com');
-  assert.equal(endpoints.publicOrigin('https://api.pokyh.com:8443'), 'https://api.pokyh.com:8443');
+  assert.equal(endpoints.publicOrigin('https://api.example.org'), 'https://api.example.org');
+  assert.equal(endpoints.publicOrigin('https://api.example.org/'), 'https://api.example.org');
+  assert.equal(endpoints.publicOrigin('https://api.example.org:8443'), 'https://api.example.org:8443');
   assert.equal(endpoints.publicOrigin('http://127.0.0.1:4000'), 'http://127.0.0.1:4000');
-  for (const bad of ['http://api.pokyh.com', 'https://api.pokyh.com/admin', 'https://a@api.pokyh.com', 'https://api.pokyh.com/?x', 'ftp://x', 'nonsense']) {
+  for (const bad of ['http://api.example.org', 'https://api.example.org/admin', 'https://a@api.example.org', 'https://api.example.org/?x', 'ftp://x', 'nonsense']) {
     assert.equal(endpoints.publicOrigin(bad), null, bad);
   }
 });

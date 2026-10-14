@@ -14,8 +14,10 @@
 # requests only to a colour whose /readyz answers, the edge forwarder of the
 # cluster channel to whichever accepts; so the switch drops no request.
 #
-# Reachable from outside: the cluster channel (edge, default 4100: mutual
-# TLS, pinned certificates) and, with a domain, 80/443 (Caddy). The API port,
+# Reachable from outside, on the ports and addresses chosen when the install
+# command was made (compose.env): the cluster channel (edge: mutual TLS,
+# pinned certificates), and either 80/443 (Caddy, own domain, profile "web")
+# or the API port for the administrator's proxy (gateway, profile "gateway").
 # MySQL, Redis and Ollama are reachable only inside their Docker networks.
 
 name: ${COMPOSE_PROJECT_NAME:-pokyh}
@@ -212,6 +214,33 @@ services:
     security_opt:
       - no-new-privileges:true
     network_mode: bridge
+
+  # Behind the administrator's own proxy (profile "gateway"): plain HTTP on
+  # the chosen port and address, passed to whichever colour is healthy. The
+  # proxy does TLS; the firewall lets only its addresses in.
+  gateway:
+    image: caddy:2.8.4-alpine
+    profiles: ["gateway"]
+    restart: unless-stopped
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
+    ports:
+      - "${POKYH_API_BIND:-0.0.0.0}:${POKYH_API_PORT:-4000}:8080"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    read_only: true
+    tmpfs:
+      - /data
+      - /config
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - edge
 
   # The AI vocabulary trainer's model runtime; only with profile "ai".
   ollama:

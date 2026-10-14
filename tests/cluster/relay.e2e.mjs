@@ -69,7 +69,7 @@ async function reach(node) {
 }
 
 function tokenOf(command) {
-  return /sh pokyh-install\.sh '(pokyhnode1\.[A-Za-z0-9_-]+)'/.exec(command)[1];
+  return /sh pokyh\.sh '(pokyhnode1\.[A-Za-z0-9_-]+)'/.exec(command)[1];
 }
 
 function parseEnv(file) {
@@ -167,7 +167,9 @@ test('a forged relay key is never used', async () => {
 });
 
 test('curl reaches the homelab through the relay with the server name, pinned', async () => {
-  const created = await cluster.admin(a, 'POST', '/cluster/node-installs', { domain: 'node-b.example.org', name: 'Node B' });
+  // The homelab's public address does not answer here (nothing listens on
+  // port 1): the new server has to take the pinned channel through the relay.
+  const created = await cluster.admin(a, 'POST', '/cluster/node-installs', { name: 'Node B', address: 'node-b.example.org', origin: 'http://127.0.0.1:1' });
   assert.equal(created.status, 201, created.text);
   const relayWay = (await reach(a)).effective.find((way) => way.includes('?sni='));
   const route = new URL(relayWay).searchParams.get('sni');
@@ -187,6 +189,7 @@ test('a server installed through the relay joins, and the relay setting reaches 
     env: { PATH: process.env.PATH ?? '', POKYH_OUT: out, POKYH_APP_UID: String(process.getuid()), POKYH_MEM_KB: '16000000', POKYH_CPUS: '4' },
   });
   assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stdout, /cannot be reached.* — trying the cluster channel/, 'the public address does not answer');
   assert.match(result.stdout, new RegExp(`Connected to https://127\\.0\\.0\\.1:${relayPort}`), 'the dead way was passed over, the relay used');
   const appDir = path.join(out, 'app');
   mkdirSync(appDir);

@@ -11,7 +11,10 @@ import type { UpdateAdvert } from './protocol';
 // 'tls': over the mutually authenticated channel (mtls.ts), with the session
 // bound to the certificates of that connection; 'plain': over the public
 // path or CLUSTER_PORT, protected by the frame layer alone.
-export type Channel = 'tls' | 'plain';
+// 'tls': the mutually authenticated channel; 'plain': the peer's API address
+// (links not yet locked to the channel); 'path': a way through the peer's
+// web proxy that the peer offers (reach.ts), used once the channel fails.
+export type Channel = 'tls' | 'plain' | 'path';
 
 export interface ClientSession {
   channel: Channel;
@@ -62,6 +65,8 @@ export interface RemoteView {
   via: string | null;
   // Its version and update state (updates.ts); null from older nodes.
   update: UpdateAdvert | null;
+  // Whether it exchanges Pokyh Learn (null: an older node, which does).
+  learn: boolean | null;
 }
 
 // Where a peer stands in this node's change feed. The durable part
@@ -141,6 +146,10 @@ export interface PeerRuntime {
   tlsOutOk: boolean;
   tlsInOk: boolean;
   tlsRetryAt: number;
+  // The ways through the peer's web proxy it offers (newest advert, stored),
+  // and the one that worked last.
+  paths: string[];
+  pathActive: string | null;
   syncing: boolean;
   lastSyncAt: number | null;
   lastSyncError: string | null;
@@ -173,7 +182,10 @@ export const state = {
   nodeName: '',
   // Saved address of this node (see pairing.advertisedAddress).
   advertiseUrl: '',
+  // What is exchanged with the peers (restricted to the replication scope,
+  // scopeRules.ts) — and everything that is captured, a superset.
   catalog: null as Catalog | null,
+  captureCatalog: null as Catalog | null,
   // True once the capture triggers are verified to be in place.
   captureReady: false,
   captureError: null as string | null,
@@ -202,7 +214,7 @@ export function peerByNodeId(nodeId: string): PeerRuntime | undefined {
 }
 
 export function emptyRemoteView(): RemoteView {
-  return { name: null, schema: null, appVersion: null, captureReady: null, peers: [], pairing: [], blocked: [], addr: '', via: null, update: null };
+  return { name: null, schema: null, appVersion: null, captureReady: null, peers: [], pairing: [], blocked: [], addr: '', via: null, update: null, learn: null };
 }
 
 export function nowMicros(): bigint {

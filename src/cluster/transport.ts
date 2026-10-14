@@ -21,6 +21,7 @@ import type { ChannelBinding } from './crypto';
 import { packPayload, unpackPayload } from './framing';
 import { TlsChannelError, ownIdentity, postPinnedJson, requestPinned, type ClientCertificate, type PinnedTarget } from './mtls';
 import { CLUSTER_PATH, b64, sessionAcceptSchema, sessionInitSchema } from './protocol';
+import { ownPathWays } from './reach';
 import { peerByNodeId, state, type Channel, type ClientSession, type PeerRuntime } from './runtime';
 
 // The encrypted request/response channel between two paired nodes.
@@ -36,7 +37,10 @@ import { peerByNodeId, state, type Channel, type ClientSession, type PeerRuntime
 // certificates of the connection — a second, independent layer. Until both
 // directions have worked there once, a failed attempt falls back to the
 // other path for a while; after that the link is locked to the channel and
-// nothing else is accepted from that peer or tried towards it.
+// nothing else is accepted from that peer or tried towards it — except the
+// ways through a node's web proxy that node explicitly offers (reach.ts,
+// "proxy-path"): tried only while the channel fails, without certificate
+// binding, but with the same end-to-end encryption and authentication.
 
 export class RpcError extends Error {
   constructor(public readonly code: string, message?: string) {
@@ -75,7 +79,7 @@ export function channelContextOf(res: Response): ChannelContext {
   return (res.locals['clusterChannel'] as ChannelContext | undefined) ?? { entry: 'public', client: null };
 }
 
-const TLS_RETRY_MS = 60_000;
+const TLS_RETRY_MS = config.cluster.channelRetrySeconds * 1000;
 
 export function pinnedTargetOf(peer: PeerRuntime): PinnedTarget | null {
   if (!peer.tls) return null;
@@ -93,8 +97,30 @@ export function pinAccepted(peer: PeerRuntime, pin: string): boolean {
 
 function channelFor(peer: PeerRuntime): Channel {
   if (!peer.tls) return 'plain';
-  if (peer.tlsLocked) return 'tls';
-  return Date.now() >= peer.tlsRetryAt ? 'tls' : 'plain';
+  if (Date.now() >= peer.tlsRetryAt) return 'tls';
+  if (!peer.tlsLocked) return 'plain';
+  return peer.paths.length > 0 ? 'path' : 'tls';
+}
+
+// The ways through the peer's web proxy, the one that worked last first.
+function pathOrder(peer: PeerRuntime): string[] {
+  return peer.pathActive && peer.paths.includes(peer.pathActive)
+    ? [peer.pathActive, ...peer.paths.filter((way) => way !== peer.pathActive)]
+    : [...peer.paths];
+}
+
+async function openPathSession(peer: PeerRuntime): Promise<ClientSession> {
+  const failures: string[] = [];
+  for (const way of pathOrder(peer)) {
+    try {
+      const session = await openSession({ baseUrl: way, nodeId: peer.nodeId, linkKey: peer.linkKey, tls: null });
+      peer.pathActive = way;
+      return { ...session, channel: 'path' };
+    } catch (err) {
+      failures.push(`${way}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  throw new RpcError('handshake', `no way through the web proxy works (${failures.join('; ') || 'none offered'})`);
 }
 
 function fallBack(peer: PeerRuntime, err: unknown): void {
@@ -186,12 +212,15 @@ function ensureSession(peer: PeerRuntime, channel: Channel): Promise<ClientSessi
   }
   peer.session = null;
   if (!peer.handshake || peer.handshake.channel !== channel) {
-    const promise = openSession({
-      baseUrl: peer.baseUrl,
-      nodeId: peer.nodeId,
-      linkKey: peer.linkKey,
-      tls: channel === 'tls' ? pinnedTargetOf(peer) : null,
-    }).then((session) => {
+    const opening = channel === 'path'
+      ? openPathSession(peer)
+      : openSession({
+        baseUrl: peer.baseUrl,
+        nodeId: peer.nodeId,
+        linkKey: peer.linkKey,
+        tls: channel === 'tls' ? pinnedTargetOf(peer) : null,
+      });
+    const promise = opening.then((session) => {
       peer.session = session;
       return session;
     });
@@ -216,7 +245,9 @@ async function send(peer: PeerRuntime, channel: Channel, body: Buffer, timeoutMs
       throw err;
     }
   }
-  const res = await fetch(`${peer.baseUrl}${CLUSTER_PATH}/rpc`, {
+  const base = channel === 'path' ? peer.pathActive : peer.baseUrl;
+  if (!base) throw new RpcError('session', 'no way through the web proxy is in use');
+  const res = await fetch(`${base}${CLUSTER_PATH}/rpc`, {
     method: 'POST',
     headers: { 'content-type': 'application/octet-stream' },
     body: new Uint8Array(body),
@@ -250,11 +281,19 @@ export async function rpc<T>(peer: PeerRuntime, method: string, params: unknown,
       answer = await send(peer, channel, body, timeoutMs);
     } catch (err) {
       // Not locked to the channel yet: whatever went wrong there, the call
-      // goes the other way and the channel is tried again later.
-      if (channel === 'tls' && !peer.tlsLocked && !(err instanceof RpcError && err.code === 'too_large')) {
-        fallBack(peer, err);
-        channel = 'plain';
-        continue;
+      // goes the other way and the channel is tried again later. Locked: only
+      // a way through the peer's web proxy it offers, if any.
+      if (channel === 'tls' && !(err instanceof RpcError && err.code === 'too_large')) {
+        if (!peer.tlsLocked) {
+          fallBack(peer, err);
+          channel = 'plain';
+          continue;
+        }
+        if (peer.paths.length > 0) {
+          fallBack(peer, err);
+          channel = 'path';
+          continue;
+        }
       }
       throw err;
     }
@@ -309,7 +348,9 @@ export function handleSession(req: Request, res: Response): void {
     const own = ownIdentity();
     if (body.v !== 3 || !own || !context.client || !pinAccepted(peer, context.client.pin)) { refuse(res, 403); return; }
     binding = { client: context.client.pin, server: own.pin };
-  } else if (body.v !== 2 || peer.tlsLocked) {
+  } else if (body.v !== 2 || (peer.tlsLocked && ownPathWays().length === 0)) {
+    // A locked link comes in here only through a way this node offers
+    // through its web proxy.
     refuse(res, 403);
     return;
   }
@@ -412,6 +453,21 @@ export function dropSessionsOf(peerRowId: string): void {
   for (const [key, session] of state.serverSessions) {
     if (session.peerRowId === peerRowId) state.serverSessions.delete(key);
   }
+}
+
+// Once this node no longer offers a way through its web proxy, sessions that
+// locked links opened that way end at once (not when they age out).
+export function dropUnpinnedSessionsOfLockedPeers(): number {
+  let dropped = 0;
+  for (const [key, session] of state.serverSessions) {
+    if (session.channelPin !== null) continue;
+    const peer = state.peers.get(session.peerRowId);
+    if (peer?.tlsLocked) {
+      state.serverSessions.delete(key);
+      dropped += 1;
+    }
+  }
+  return dropped;
 }
 
 export function sweepSessions(): void {

@@ -729,9 +729,24 @@ export interface AdminPopup {
   enabled: boolean;
   revision: number;
   status: PopupStatus;
+  // Empty both: everybody the platform and audience allow.
+  targetUsers: PopupTargetUser[];
+  targetClasses: Array<{ id: number; name: string }>;
   createdBy: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface PopupTargetUser {
+  stableUid: string;
+  username: string;
+  klasseName: string;
+}
+
+export interface PopupTargetClass {
+  id: number;
+  name: string;
+  users: number;
 }
 
 export interface PopupInput {
@@ -745,6 +760,8 @@ export interface PopupInput {
   endsAt: string | null;
   enabled: boolean;
   resetSeen?: boolean;
+  targetUsers: string[];
+  targetClasses: number[];
 }
 
 // ── Cluster (multi-node replication) ─────────────────────────────────────────
@@ -777,6 +794,10 @@ export interface ClusterPeer {
   knownPeers: Array<{ id: string; health: string }>;
   // The peer's pinned certificate on the mutually authenticated channel.
   tls: { pin: string; url: string | null; locked: boolean; active: boolean } | null;
+  // Ways through the peer's web proxy, and whether calls use one right now.
+  pathWays: string[];
+  onPath: boolean;
+  pathActive: string | null;
   warnings: string[];
   createdAt: string;
 }
@@ -788,6 +809,7 @@ export interface ClusterInstall {
   status: ClusterInstallState;
   // The new server's domain or IP as entered; empty: detected on install.
   address: string;
+  web: InstallWebMode;
   name: string;
   withAi: boolean;
   failures: number;
@@ -797,20 +819,43 @@ export interface ClusterInstall {
   createdAt: string;
 }
 
+export type InstallWebMode = 'none' | 'domain' | 'proxy';
+
+export interface InstallOptions {
+  web: InstallWebMode;
+  apiPort: number;
+  apiBind: string;
+  apiFrom: string[];
+  clusterPort: number;
+  clusterBind: string;
+  clusterFrom: string[];
+}
+
 export interface CreatedClusterInstall {
   id: string;
   command: string;
   expiresAt: string;
   address: string;
+  options: InstallOptions;
   name: string;
   pin: string;
   scriptSha256: string;
+}
+
+export interface ClusterScope {
+  learn: boolean;
+  source: 'env' | 'panel';
+  changedAt: string | null;
+  changedBy: string | null;
+  learnTables: number;
+  differing: string[];
 }
 
 export interface ClusterStatus {
   enabled: boolean;
   running: boolean;
   paused: boolean;
+  scope: ClusterScope;
   node: {
     id: string;
     name: string;
@@ -829,6 +874,8 @@ export interface ClusterStatus {
     inviteMinutes: number;
     installMinutes: number;
     aiEnabled: boolean;
+    apiPort: number;
+    clusterPort: number;
   };
   channel: {
     publicPath: boolean;
@@ -853,7 +900,13 @@ export interface ClusterStatus {
 
 // ── Cluster: how a node is reached, relays ──────────────────────────────────
 
-export type ReachKind = 'direct' | 'proxy-port' | 'proxy-sni';
+export type ReachKind = 'direct' | 'proxy-port' | 'proxy-sni' | 'proxy-path';
+
+export interface WayTestResult {
+  ok: boolean;
+  ms: number;
+  message: string;
+}
 
 export interface ProxySnippets {
   nginx: string;
@@ -946,6 +999,11 @@ export interface ClusterReach {
   relayLabel: string;
   relays: ClusterRelay[];
   peers: Array<{ id: string; name: string; outgoing: string | null; incoming: string | null }>;
+  // Ways through this node's web proxy (unpinned), and where they arrive.
+  pathWays: string[];
+  pathEnv: string[];
+  pathEnvInvalid: string[];
+  pathEntry: { apiPort: boolean; apiPortNumber: number; clusterPort: number };
 }
 
 // ─── Analytics (GET /api/admin/analytics) ───────────────────────────────────

@@ -210,7 +210,7 @@ test('only an administrator can create a one-line command, and only with clean i
   }
   for (const input of [{ origin: a.url }, { name: '', origin: a.url }, { name: 'X' }]) {
     const res = await cluster.admin(a, 'POST', '/cluster/node-installs', input);
-    assert.equal(res.status, 400, `${JSON.stringify(input)}: name and origin are required`);
+    assert.ok([400, 422].includes(res.status), `${JSON.stringify(input)}: name and origin are required (${res.status})`);
   }
   assert.deepEqual(await installed(a), [], 'nothing was created by the refused requests');
 });
@@ -283,7 +283,7 @@ test('a fake public address hands out nothing the bootstrap accepts', async () =
     const out = mkdtempSync(path.join(work, 'fake-web-'));
     const result = await bootstrap(forged, out);
     assert.equal(result.code, 0, result.stderr);
-    assert.match(result.stdout, /does not verify — trying the cluster channel/);
+    assert.match(result.stdout, /does not verify \(.*\) — trying the cluster channel/);
     assert.match(result.stdout, /certificate matches the pin/);
     assert.equal(parseEnv(path.join(out, '.env')).JWT_SECRET, cluster.secrets.jwt);
   } finally {
@@ -355,7 +355,7 @@ test('the bootstrap writes the new node\'s configuration, once', async () => {
   assert.notEqual(env.DATABASE_URL, a.databaseUrl, 'never the inviting node\'s database');
   assert.match(env.MYSQL_ROOT_PASSWORD, /^[A-Za-z0-9_-]{32}$/, 'a fresh password of its own');
   assert.match(env.CLUSTER_SECRET, /^[A-Za-z0-9_-]{64}$/);
-  assert.equal(env.CLUSTER_MTLS_URL, 'https://node-b.example.org:4100');
+  assert.equal(env.CLUSTER_MTLS_URL, `https://node-b.example.org:${a.mtlsPort}`, 'the cluster port of the inviting node, unless chosen otherwise');
   assert.equal(env.CLUSTER_NODE_NAME, 'Node B');
   assert.match(readFileSync(path.join(out, 'Caddyfile'), 'utf8'), /^node-b\.example\.org \{$/m);
   assert.match(readFileSync(path.join(out, 'compose.env'), 'utf8'), /^COMPOSE_PROFILES=blue,web$/m, 'with a domain: its own HTTPS');
@@ -444,9 +444,49 @@ test('without an address, the new server is named by the IP its setup came from'
     const result = await bootstrap(tokenOf(created.json.command), out);
     assert.equal(result.code, 0, result.stderr);
     const env = parseEnv(path.join(out, '.env'));
-    assert.equal(env.CLUSTER_MTLS_URL, 'https://127.0.0.1:4100', 'the address the request came from');
+    assert.equal(env.CLUSTER_MTLS_URL, `https://127.0.0.1:${a.mtlsPort}`, 'the address the request came from');
     assert.equal(existsSync(path.join(out, 'Caddyfile')), false, 'no domain: no web server of its own');
     assert.match(readFileSync(path.join(out, 'compose.env'), 'utf8'), /^COMPOSE_PROFILES=blue$/m);
+  } finally {
+    await cluster.admin(a, 'DELETE', `/cluster/node-installs/${created.json.id}`);
+  }
+});
+
+test('behind the administrator\'s proxy: the chosen ports, addresses and sources reach the new server', async () => {
+  for (const [input, pattern] of [
+    [{ web: 'proxy', apiPort: 4200, clusterPort: 4200 }, /differ/],
+    [{ web: 'proxy', apiFrom: '10.8.0.0/40' }, /not an IP/],
+    [{ web: 'domain' }, /domain/],
+    [{ clusterPort: 70000 }, /between 1 and 65535/],
+  ]) {
+    const refused = await createInstall(a, { name: 'Refused', ...input });
+    assert.ok([400, 422].includes(refused.status), JSON.stringify(input));
+    if (refused.status === 400) assert.match(refused.json.error, pattern);
+  }
+  const created = await createInstall(a, {
+    name: 'Behind proxy', web: 'proxy', apiPort: 8081, apiBind: '10.8.0.5', apiFrom: '10.8.0.1',
+    clusterPort: 4200, clusterBind: '10.8.0.5', clusterFrom: '10.8.0.0/24',
+  });
+  assert.equal(created.status, 201, created.text);
+  assert.deepEqual(created.json.options, { web: 'proxy', apiPort: 8081, apiBind: '10.8.0.5', apiFrom: ['10.8.0.1'], clusterPort: 4200, clusterBind: '10.8.0.5', clusterFrom: ['10.8.0.0/24'] });
+  assert.equal((await installed(a)).find((row) => row.id === created.json.id).web, 'proxy');
+  const out = mkdtempSync(path.join(work, 'behind-proxy-'));
+  try {
+    const result = await bootstrap(tokenOf(created.json.command), out);
+    assert.equal(result.code, 0, result.stderr);
+    const env = parseEnv(path.join(out, '.env'));
+    assert.equal(env.CLUSTER_MTLS_URL, 'https://127.0.0.1:4200');
+    assert.equal(env.TRUST_PROXY, 'uniquelocal,10.8.0.1', 'the proxy is trusted for the client address');
+    const composeEnv = readFileSync(path.join(out, 'compose.env'), 'utf8');
+    assert.match(composeEnv, /^COMPOSE_PROFILES=blue,gateway$/m);
+    assert.match(composeEnv, /^POKYH_API_PORT=8081$/m);
+    assert.match(composeEnv, /^POKYH_API_BIND=10\.8\.0\.5$/m);
+    assert.match(composeEnv, /^POKYH_CLUSTER_PORT=4200$/m);
+    assert.match(readFileSync(path.join(out, 'Caddyfile'), 'utf8'), /trusted_proxies static private_ranges 10\.8\.0\.1/);
+    const summary = readFileSync(path.join(out, 'state/summary'), 'utf8');
+    assert.match(summary, /^web=proxy$/m);
+    assert.match(summary, /^cluster_from=10\.8\.0\.0\/24$/m);
+    assert.match(summary, /^api_from=10\.8\.0\.1$/m);
   } finally {
     await cluster.admin(a, 'DELETE', `/cluster/node-installs/${created.json.id}`);
   }

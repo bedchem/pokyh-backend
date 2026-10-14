@@ -1,4 +1,4 @@
-import type { AdminStats, AdminClass, AdminSession, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish, AdminDishFull, AdminDishImportResult, AdminDishShiftResult, AdminDishRotateResult, AdminDishResetResult, AdminDishAnchorResult, DishPlan, AdminCommentsResponse, FileLogFile, FileLogResponse, FileLogEntry, FrontendActivityLogsResponse, FrontendActivityStats, AllTodosResponse, AllRemindersResponse, SchoolYearsResponse, ArchivedUsersResponse, ArchivedClass, ArchivedTodosResponse, ArchivedRemindersResponse, RolloverResult, RollbackResult, AdminApiKey, CreatedApiKey, LearnConfigValues, LearnAiConfigValues, LearnAiGrant, LearnAiTeamGrant, AdminLearnTeam, LearnTeamAssignableRole, AdminLearnCoursesResponse, AdminLearnCourseAccessResponse, AdminLearnCourse, AdminLearnCourseAccess, LearnCoursePermission, LearnCourseStatus, LearnCourseVisibility, AdminLearnCourseVocabularyResponse, AdminLearnVocabularyImportResponse, BackupsResponse, AdminPopup, PopupInput, ClusterStatus, ClusterInstall, CreatedClusterInstall, ClusterReach, ReachEntry, AdminAnalytics, AnalyticsRange, AnalyticsPeople, PeopleFilters, AnalyticsBreakdown, BreakdownKind, AnalyticsDishes, ClusterUpdates, ClusterUpdateSettings } from './types';
+import type { AdminStats, AdminClass, AdminSession, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish, AdminDishFull, AdminDishImportResult, AdminDishShiftResult, AdminDishRotateResult, AdminDishResetResult, AdminDishAnchorResult, DishPlan, AdminCommentsResponse, FileLogFile, FileLogResponse, FileLogEntry, FrontendActivityLogsResponse, FrontendActivityStats, AllTodosResponse, AllRemindersResponse, SchoolYearsResponse, ArchivedUsersResponse, ArchivedClass, ArchivedTodosResponse, ArchivedRemindersResponse, RolloverResult, RollbackResult, AdminApiKey, CreatedApiKey, LearnConfigValues, LearnAiConfigValues, LearnAiGrant, LearnAiTeamGrant, AdminLearnTeam, LearnTeamAssignableRole, AdminLearnCoursesResponse, AdminLearnCourseAccessResponse, AdminLearnCourse, AdminLearnCourseAccess, LearnCoursePermission, LearnCourseStatus, LearnCourseVisibility, AdminLearnCourseVocabularyResponse, AdminLearnVocabularyImportResponse, BackupsResponse, AdminPopup, PopupInput, ClusterStatus, ClusterInstall, CreatedClusterInstall, ClusterReach, ReachEntry, AdminAnalytics, AnalyticsRange, AnalyticsPeople, PeopleFilters, AnalyticsBreakdown, BreakdownKind, AnalyticsDishes, ClusterUpdates, ClusterUpdateSettings, PopupTargetUser, PopupTargetClass, ClusterScope, WayTestResult, ReachKind } from './types';
 
 const TOKEN_KEY = 'pokyh_admin_token';
 
@@ -570,6 +570,10 @@ export const adminApi = {
   renderPopup: (content: string): Promise<{ html: string }> =>
     request<{ html: string }>('POST', '/api/admin/popups/render', { content }),
 
+  // Who a popup can be meant for: users by name, and every known class.
+  getPopupTargets: (q: string): Promise<{ users: PopupTargetUser[]; classes: PopupTargetClass[] }> =>
+    request<{ users: PopupTargetUser[]; classes: PopupTargetClass[] }>('GET', `/api/admin/popups/targets?q=${encodeURIComponent(q)}`),
+
   // ── Cluster ───────────────────────────────────────────────────────────────
   getCluster: (): Promise<ClusterStatus> =>
     request<ClusterStatus>('GET', '/api/admin/cluster'),
@@ -600,7 +604,11 @@ export const adminApi = {
     request<{ ok: boolean }>('PATCH', '/api/admin/cluster/node', { name }),
 
   // One-line node install: the command is returned once and never again.
-  createClusterInstall: (data: { name: string; address?: string; withAi?: boolean; acmeEmail?: string; origin: string }): Promise<CreatedClusterInstall> =>
+  createClusterInstall: (data: {
+    name: string; address?: string; withAi?: boolean; acmeEmail?: string; origin: string;
+    web?: 'none' | 'domain' | 'proxy'; apiPort?: number; apiBind?: string; apiFrom?: string;
+    clusterPort?: number; clusterBind?: string; clusterFrom?: string;
+  }): Promise<CreatedClusterInstall> =>
     request<CreatedClusterInstall>('POST', '/api/admin/cluster/node-installs', data),
 
   getClusterInstalls: (): Promise<{ installs: ClusterInstall[] }> =>
@@ -673,6 +681,14 @@ export const adminApi = {
 
   rollBackClusterNode: (): Promise<{ ok: boolean }> =>
     request<{ ok: boolean }>('POST', '/api/admin/cluster/updates/rollback'),
+
+  // What the cluster exchanges (Pokyh Learn yes/no) — the same on every node.
+  setClusterScope: (learn: boolean): Promise<ClusterScope> =>
+    request<ClusterScope>('PUT', '/api/admin/cluster/scope', { learn }),
+
+  // Does this way arrive at this node? (through proxy, relay, VPN …)
+  testClusterWay: (kind: ReachKind, endpoint: string): Promise<WayTestResult> =>
+    request<WayTestResult>('POST', '/api/admin/cluster/reach/test', { kind, endpoint }),
 
   getToken,
 };

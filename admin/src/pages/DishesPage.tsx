@@ -764,7 +764,8 @@ function DishCard({ dish, ratingData, onEdit, onDelete, onDragStart, onDragEnd, 
 
 function ImportDialog({ defaultPlan, onDone, onClose }: { defaultPlan: DishPlan; onDone: () => void; onClose: () => void }) {
   const { showToast } = useToast();
-  const [url, setUrl] = useState('https://mensa.plattnericus.dev/mensa.json');
+  // Empty: the server uses MENSA_IMPORT_URL.
+  const [url, setUrl] = useState('');
   const [plan, setPlan] = useState<DishPlan>(defaultPlan);
   const [loading, setLoading] = useState(false);
 
@@ -827,7 +828,7 @@ function ImportDialog({ defaultPlan, onDone, onClose }: { defaultPlan: DishPlan;
           className="field h-11 px-4 text-[14px] w-full mb-4"
           value={url}
           onChange={(e) => setUrl(e.target.value)}
-          placeholder="https://..."
+          placeholder="leer = MENSA_IMPORT_URL aus der .env"
         />
         <div className="flex items-center justify-end gap-3">
           <button onClick={onClose} className="px-4 py-2 rounded-full text-sm"

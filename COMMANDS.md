@@ -50,7 +50,7 @@ node scripts/set-admin-password.js
 
 # Grant a user admin privileges (by username)
 npm run make-admin <username>
-# Example: npm run make-admin felix
+# Example: npm run make-admin alice
 
 # Revoke admin privileges from a user
 npm run revoke-admin <username>

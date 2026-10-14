@@ -36,7 +36,6 @@ umask 077
 POKYH_HOME=${POKYH_HOME:-/opt/pokyh}
 NODE_IMAGE=node:22-alpine
 APP_UID=10001
-CLUSTER_PORT=4100
 DOCKER_KEY_FINGERPRINT=9DC858229FC7DD38854AE2D88D81803C0EBFCD88
 MIN_MEMORY_KB=1900000
 MIN_DISK_KB=10000000
@@ -97,9 +96,6 @@ preflight() {
   info "Free disk: $((DISK_KB / 1024 / 1024)) GB"
 
   [ ! -e "$POKYH_HOME/.installed" ] || die "Pokyh is already installed in $POKYH_HOME. To start over, remove it first (see $POKYH_HOME/pokyh)."
-  if [ ! -d "$POKYH_HOME/state" ] && port_in_use "$CLUSTER_PORT"; then
-    die "Port $CLUSTER_PORT is already in use on this server; Pokyh needs it for the cluster"
-  fi
 }
 
 ensure_clock() {
@@ -188,6 +184,13 @@ POKYH_BOOTSTRAP_END
   NODE_NAME=$(sed -n 's/^name=//p' "$POKYH_HOME/state/summary")
   PEER_NAME=$(sed -n 's/^peer=//p' "$POKYH_HOME/state/summary")
   WITH_AI=$(sed -n 's/^ai=//p' "$POKYH_HOME/state/summary")
+  # How this server is reached, as chosen when the command was made.
+  WEB=$(sed -n 's/^web=//p' "$POKYH_HOME/state/summary")
+  CLUSTER_PORT=$(sed -n 's/^cluster_port=//p' "$POKYH_HOME/state/summary")
+  CLUSTER_FROM=$(sed -n 's/^cluster_from=//p' "$POKYH_HOME/state/summary")
+  API_PORT=$(sed -n 's/^api_port=//p' "$POKYH_HOME/state/summary")
+  API_FROM=$(sed -n 's/^api_from=//p' "$POKYH_HOME/state/summary")
+  case "$CLUSTER_PORT" in ''|*[!0-9]*) die "The configuration names no usable cluster port" ;; esac
 }
 
 # ─── 4. Hardening ──────────────────────────────────────────────────────────────
@@ -216,30 +219,53 @@ harden() {
   fi
   [ -n "$ssh_ports" ] || ssh_ports=22
   for port in $ssh_ports; do ufw allow "$port/tcp" comment 'SSH' >/dev/null; done
-  ufw allow "$CLUSTER_PORT/tcp" comment 'Pokyh cluster' >/dev/null
-  if [ -n "$DOMAIN" ]; then
+  allow_from "$CLUSTER_PORT" "$CLUSTER_FROM" 'Pokyh cluster'
+  if [ "$WEB" = domain ]; then
     ufw allow 80/tcp comment 'Pokyh HTTPS' >/dev/null
     ufw allow 443/tcp comment 'Pokyh HTTPS' >/dev/null
     ufw allow 443/udp comment 'Pokyh HTTP/3' >/dev/null
+  elif [ "$WEB" = proxy ]; then
+    allow_from "$API_PORT" "$API_FROM" 'Pokyh API for your proxy'
   fi
   if ! ufw status 2>/dev/null | grep -q '^Status: active'; then
     ufw default deny incoming >/dev/null
     ufw default allow outgoing >/dev/null
     ufw --force enable >/dev/null
   fi
-  info "Firewall: open only for SSH (port ${ssh_ports% }), $CLUSTER_PORT${DOMAIN:+, 80, 443}"
+  opened="$CLUSTER_PORT${CLUSTER_FROM:+ (from $CLUSTER_FROM)}"
+  if [ "$WEB" = domain ]; then opened="$opened, 80, 443"; fi
+  if [ "$WEB" = proxy ]; then opened="$opened, $API_PORT${API_FROM:+ (from $API_FROM)}"; fi
+  info "Firewall: open only for SSH (port ${ssh_ports% }) and $opened"
+}
+
+# Opens a port for the listed sources, or for everyone when none are listed.
+allow_from() {
+  if [ -z "$2" ]; then
+    ufw allow "$1/tcp" comment "$3" >/dev/null
+    return 0
+  fi
+  for source in $2; do
+    ufw allow from "$source" to any port "$1" proto tcp comment "$3" >/dev/null
+  done
 }
 
 # ─── 5. Stack ──────────────────────────────────────────────────────────────────
 
+# A port the stack needs, unless the stack itself holds it (a resumed run).
+require_port() {
+  if port_in_use "$1" && ! docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^pokyh-$2"; then
+    die "Port $1 is already in use on this server; Pokyh needs it ($3). Choose another port when creating the command, or free it."
+  fi
+}
+
 start_stack() {
   step "Building and starting Pokyh"
-  if [ -n "$DOMAIN" ]; then
-    for port in 80 443; do
-      if port_in_use "$port" && ! docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^pokyh-caddy'; then
-        die "Port $port is already in use on this server; with a domain Pokyh needs 80 and 443 for HTTPS"
-      fi
-    done
+  require_port "$CLUSTER_PORT" edge 'cluster'
+  if [ "$WEB" = domain ]; then
+    require_port 80 caddy 'HTTPS for the domain'
+    require_port 443 caddy 'HTTPS for the domain'
+  elif [ "$WEB" = proxy ]; then
+    require_port "$API_PORT" gateway 'API for your proxy'
   fi
   rm -rf "$POKYH_HOME/app.new"
   mkdir -p "$POKYH_HOME/app.new"
@@ -328,9 +354,11 @@ finish() {
   pin=$(status_field ownPin)
   step "Done"
   info "${BOLD}${NODE_NAME:-${DOMAIN:-$ADDRESS}}${RESET} is a node of the cluster${PEER_NAME:+ (joined through $PEER_NAME)}."
-  if [ -n "$DOMAIN" ]; then
+  if [ "$WEB" = domain ]; then
     info "Admin panel:   https://$DOMAIN/admin/"
     info "API:           https://$DOMAIN"
+  elif [ "$WEB" = proxy ]; then
+    info "API:           port $API_PORT for your proxy${API_FROM:+ (only from $API_FROM)} — point your proxy at it"
   else
     info "Web:           none of its own — clients reach the cluster through your other nodes or your proxy"
   fi

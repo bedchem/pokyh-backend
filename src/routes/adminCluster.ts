@@ -30,6 +30,8 @@ import {
   retryUpdate,
   rollBack,
   saveUpdateSettings,
+  setReplicationScope,
+  testReachWay,
 } from '../cluster';
 
 // ─── Cluster administration: /api/admin/cluster ──────────────────────────────
@@ -162,6 +164,14 @@ const installSchema = z.object({
   acmeEmail: z.string().trim().max(254).optional(),
   // This node's public address as the browser shows it (window.location.origin).
   origin: z.string().trim().min(1).max(255),
+  // How the new server is reached (installOptions.ts); empty: like this node.
+  web: z.enum(['none', 'domain', 'proxy']).optional(),
+  apiPort: z.number().int().optional(),
+  apiBind: z.string().trim().max(64).optional(),
+  apiFrom: z.string().trim().max(1000).optional(),
+  clusterPort: z.number().int().optional(),
+  clusterBind: z.string().trim().max(64).optional(),
+  clusterFrom: z.string().trim().max(1000).optional(),
 });
 
 router.post('/node-installs', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
@@ -173,6 +183,10 @@ router.post('/node-installs', requireAdmin, writeLimiter, async (req: Request, r
       withAi: body.withAi === true,
       acmeEmail: body.acmeEmail ?? '',
       origin: body.origin,
+      options: {
+        web: body.web, apiPort: body.apiPort, apiBind: body.apiBind, apiFrom: body.apiFrom,
+        clusterPort: body.clusterPort, clusterBind: body.clusterBind, clusterFrom: body.clusterFrom,
+      },
       createdBy: actor(req),
     });
     logger.info('Admin action: one-line node install created', { action: 'cluster_install_created', adminUsername: actor(req), installId: install.id });
@@ -217,7 +231,7 @@ router.get('/reach', requireAdmin, async (_req: Request, res: Response): Promise
 
 const reachEntrySchema = z.object({
   id: z.string().max(36).optional(),
-  kind: z.enum(['direct', 'proxy-port', 'proxy-sni']),
+  kind: z.enum(['direct', 'proxy-port', 'proxy-sni', 'proxy-path']),
   endpoint: z.string().trim().min(1).max(300),
   enabled: z.boolean(),
   backend: z.string().trim().max(270).optional(),
@@ -362,6 +376,39 @@ router.post('/updates/rollback', requireAdmin, writeLimiter, async (req: Request
     rollBack(actor(req));
     logger.warn('Cluster node rolled back', { action: 'cluster_update_rollback', admin: actor(req) });
     res.json({ ok: true });
+  });
+});
+
+// ─── Ways and scope ──────────────────────────────────────────────────────────
+
+const wayTestSchema = z.object({
+  kind: z.enum(['direct', 'proxy-port', 'proxy-sni', 'proxy-path']),
+  endpoint: z.string().trim().min(1).max(300),
+});
+
+// "Test this way": does it arrive at this node?
+router.post('/reach/test', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+  const parsed = wayTestSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: 'Invalid way' });
+    return;
+  }
+  await guarded(res, async () => {
+    res.json(await testReachWay(parsed.data.kind, parsed.data.endpoint));
+  });
+});
+
+// What the cluster exchanges — the same for every node (replication scope).
+router.put('/scope', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+  const parsed = z.object({ learn: z.boolean() }).safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: 'Invalid scope' });
+    return;
+  }
+  await guarded(res, async () => {
+    const scope = await setReplicationScope({ learn: parsed.data.learn, actor: actor(req) });
+    logger.info('Admin action: cluster replication scope changed', { action: 'cluster_scope_set', adminUsername: actor(req), learn: parsed.data.learn });
+    res.json(scope);
   });
 });
 

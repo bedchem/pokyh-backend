@@ -1,7 +1,7 @@
-import { createHash } from 'crypto';
 import { prisma } from '../db';
 import { config } from '../config';
 import { kindOf, type CodecColumn } from './codec';
+import { fingerprintOf } from './scopeRules';
 import { isSafeIdentifier, type SqlTable } from './sqlgen';
 
 // The set of replicated tables, read from the live database rather than
@@ -41,6 +41,8 @@ export interface Catalog {
   // their fingerprints match, so a rolling upgrade pauses replication instead
   // of writing rows into a table of a different shape.
   fingerprint: string;
+  // The lines the fingerprint is made of ("c|table|…", "u|table|…").
+  signature: string[];
 }
 
 function isReplicated(table: string): boolean {
@@ -176,6 +178,5 @@ export async function loadCatalog(): Promise<Catalog> {
   for (const name of tables.keys()) rankOf(name);
 
   const ordered = [...tables.values()].sort((a, b) => a.rank - b.rank || a.name.localeCompare(b.name));
-  const fingerprint = createHash('sha256').update(signature.sort().join('\n')).digest('hex').slice(0, 32);
-  return { tables, ordered, fingerprint };
+  return { tables, ordered, fingerprint: fingerprintOf(signature), signature };
 }

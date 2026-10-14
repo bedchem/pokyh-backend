@@ -3,7 +3,7 @@ import { prisma } from '../db';
 import { config } from '../config';
 import { logger } from '../utils/logger';
 import { applyPush, closeApplier, deferredCount, retryDeferred, wantedFromOffer, whenApplierIdle } from './applier';
-import { loadCatalog } from './catalog';
+import { loadCatalog, type Catalog } from './catalog';
 import {
   backfillVersions,
   ensureTriggers,
@@ -17,7 +17,7 @@ import {
 } from './capture';
 import { configFingerprint } from './crypto';
 import { ClusterError } from './errors';
-import { formatEndpoint, parseEndpointList, writtenPort } from './endpoints';
+import { formatEndpoint, parseEndpointList, parsePathWay, writtenPort } from './endpoints';
 import { isChannelUrl } from './installToken';
 import { runBootstrap, stopBootstrap, type BootstrapJoin, type BootstrapStatus } from './joinFile';
 import { estimateSkewMs, healthAfter, normalizePeerAddress, rendezvousOwner, type Health } from './health';
@@ -35,8 +35,9 @@ import {
   startMtlsListener,
   stopMtlsListener,
 } from './mtls';
-import { envEndpoints, loadReach, panelEntries, relayReach, saveReach, type ReachEntry } from './reach';
-import { proxySnippets, validProxyRoute, type ProxySnippets } from './proxySnippets';
+import { envEndpoints, envPathWays, loadReach, ownPathWays, panelEntries, relayReach, saveReach, type ReachEntry } from './reach';
+import { pathSnippets, proxySnippets, validPathRoute, validProxyRoute, type ProxySnippets } from './proxySnippets';
+import { testWay } from './waytest';
 import { addRelay, relayStatus, removeRelay, setRelayEndpointsHook, startRelays, stopRelays, updateRelay } from './relayClient';
 import { routeLabel } from './relayProtocol';
 import { createRelayCommand as relayCommand, type RelayCommandInput } from './relaySetup';
@@ -69,9 +70,11 @@ import {
   setPeerStatus,
   storedEndpoints,
 } from './store';
-import { RpcError, dropSessionsOf, pinAccepted, rpc, setChannelHook, setRpcHandler, sweepSessions } from './transport';
+import { MAX_FRAME_BYTES, RpcError, dropSessionsOf, dropUnpinnedSessionsOfLockedPeers, pinAccepted, rpc, setChannelHook, setRpcHandler, sweepSessions } from './transport';
 import { createNodeCertificate, inspectNodeCertificate } from './x509';
 import { handleDigest, handleRows, verifyPeer } from './verify';
+import { adoptScope, loadScope, replicationScope, setScope } from './scope';
+import { exchangedIn, isLearnTable, restrictCatalog } from './scopeRules';
 import {
   checkNow as checkUpdatesNow,
   handleBuildCall,
@@ -131,13 +134,19 @@ function labelOf(peer: { name: string; baseUrl?: string; address?: string }): st
 
 let captureInFlight: Promise<void> | null = null;
 
+// Every table is captured; what is exchanged follows the replication scope.
+function useCatalog(catalog: Catalog): void {
+  state.captureCatalog = catalog;
+  state.catalog = restrictCatalog(catalog, exchangedIn(replicationScope()));
+}
+
 // Loads the table catalog, installs the capture triggers and registers every
 // existing row. Safe to repeat; concurrent callers share one run.
 function prepareCapture(): Promise<void> {
   if (!captureInFlight) {
     captureInFlight = (async () => {
       const catalog = await loadCatalog();
-      state.catalog = catalog;
+      useCatalog(catalog);
       // Existing rows are registered before the triggers exist: at that point
       // no write touches the version registry yet, so registering even a very
       // large table cannot get in any writer's way. Rows written in the short
@@ -250,6 +259,8 @@ function loadPeerRuntime(row: ClusterPeer): PeerRuntime | null {
     tlsOutOk: samePin ? previous!.tlsOutOk : false,
     tlsInOk: samePin ? previous!.tlsInOk : false,
     tlsRetryAt: previous?.tlsRetryAt ?? 0,
+    paths: previous?.paths ?? storedPathWays(row.pathWays),
+    pathActive: previous?.pathActive ?? null,
     syncing: false,
     lastSyncAt: previous?.lastSyncAt ?? null,
     lastSyncError: previous?.lastSyncError ?? null,
@@ -380,6 +391,28 @@ const certificateMismatchNoted = new Set<string>();
 // A peer announced its channel over the authenticated link. A link made
 // before the channel existed moves there by itself; a different certificate
 // than the pinned one is never adopted this way (only by a renewal).
+function storedPathWays(text: string | null): string[] {
+  if (!text) return [];
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    return Array.isArray(parsed) ? parsed.map((way) => parsePathWay(String(way))).filter((way): way is string => way !== null).slice(0, 8) : [];
+  } catch {
+    return [];
+  }
+}
+
+// The ways through the peer's web proxy, as it announces them; kept so they
+// are known even while every other way is down.
+function absorbPaths(peer: PeerRuntime, advertised: string[]): void {
+  const ways = advertised.map((way) => parsePathWay(way)).filter((way): way is string => way !== null).slice(0, 8);
+  if (ways.join(' ') === peer.paths.join(' ')) return;
+  peer.paths = ways;
+  if (peer.pathActive && !ways.includes(peer.pathActive)) peer.pathActive = null;
+  void prisma.clusterPeer.updateMany({ where: { id: peer.rowId }, data: { pathWays: ways.length > 0 ? JSON.stringify(ways) : null } })
+    .catch((err) => logger.warn('Peer ways could not be stored', { action: 'cluster_path_ways_store_failed', message: message(err) }));
+  if (ways.length > 0) recordEvent('info', `${labelOf(peer)} offers ${ways.length} way(s) through its web proxy`);
+}
+
 function absorbChannel(peer: PeerRuntime, advert: { url: string; cert: string; endpoints?: string[] } | null | undefined): void {
   if (!advert || !ownChannel()) return;
   const endpoints = parseEndpointList(advert.endpoints ?? [advert.url]).endpoints;
@@ -435,10 +468,68 @@ function heartbeatPayload(peer: PeerRuntime): Heartbeat {
     addr: advertisedAddress(),
     tls: (() => {
       const channel = ownChannel();
-      return channel ? { url: channel.url, cert: channel.certPem, endpoints: channel.endpoints.map(formatEndpoint) } : null;
+      return channel ? { url: channel.url, cert: channel.certPem, endpoints: channel.endpoints.map(formatEndpoint), paths: ownPathWays() } : null;
     })(),
     via: peer.tls ? currentPathTo(peer.tls.pin) : null,
     upd: updateAdvert(),
+    scope: (() => {
+      const scope = replicationScope();
+      return { learn: scope.learn, v: scope.version, by: scope.by, actor: scope.actor };
+    })(),
+  };
+}
+
+// ─── Replication scope ───────────────────────────────────────────────────────
+
+// Applies a changed scope: what is exchanged, and — when Pokyh Learn is
+// exchanged again — a complete transfer to every peer, which merges the
+// Learn data of all nodes (the newer version of a row wins).
+async function applyScope(previousLearn: boolean, by: string): Promise<void> {
+  if (state.captureCatalog) useCatalog(state.captureCatalog);
+  const now = replicationScope();
+  if (now.learn === previousLearn) return;
+  recordEvent('warn', now.learn
+    ? `Pokyh Learn is exchanged with all nodes again (set ${by}); its data is being merged`
+    : `Pokyh Learn is no longer exchanged (set ${by}); every node keeps its own Learn data`);
+  logger.info('Cluster replication scope changed', { action: 'cluster_scope_changed', learn: now.learn, version: now.version });
+  if (now.learn) {
+    for (const peer of state.peers.values()) {
+      await startFullTransfer(peer.rowId).catch((err) => logger.warn('Cluster transfer could not be started', { action: 'cluster_scope_transfer_failed', peer: peer.nodeId, message: message(err) }));
+    }
+  }
+  for (const peer of state.peers.values()) void heartbeatPeer(peer);
+}
+
+let scopeQueue: Promise<void> = Promise.resolve();
+
+function absorbScope(peer: PeerRuntime, advert: NonNullable<Heartbeat['scope']>): void {
+  scopeQueue = scopeQueue.then(async () => {
+    const previous = await adoptScope({ learn: advert.learn, version: advert.v, by: advert.by, actor: advert.actor });
+    if (previous) await applyScope(previous.learn, `by ${advert.actor ?? 'an administrator'} on ${labelOf(peer)}`);
+  }).catch((err) => {
+    logger.warn('Cluster replication scope could not be taken over', { action: 'cluster_scope_adopt_failed', message: message(err) });
+  });
+}
+
+export async function setReplicationScope(input: { learn: boolean; actor: string }): Promise<ReturnType<typeof scopeStatus>> {
+  requireRunning();
+  const previous = replicationScope().learn;
+  await setScope(input.learn, input.actor, state.nodeId);
+  await applyScope(previous, `by ${input.actor}`);
+  return scopeStatus();
+}
+
+function scopeStatus() {
+  const scope = replicationScope();
+  const all = state.captureCatalog?.ordered.map((table) => table.name) ?? [];
+  return {
+    learn: scope.learn,
+    source: scope.version === 0 ? 'env' as const : 'panel' as const,
+    changedAt: scope.version > 0 ? new Date(scope.version).toISOString() : null,
+    changedBy: scope.actor,
+    learnTables: all.filter(isLearnTable).length,
+    // Peers that exchange something else right now (until they take over the setting).
+    differing: [...state.peers.values()].filter((peer) => peer.remote.learn !== null && peer.remote.learn !== scope.learn).map((peer) => labelOf(peer)),
   };
 }
 
@@ -472,11 +563,16 @@ function absorbHeartbeat(peer: PeerRuntime, remote: Heartbeat): void {
     addr: remote.addr,
     via: remote.via ?? null,
     update: remote.upd ?? null,
+    learn: remote.scope ? remote.scope.learn : null,
   };
+  if (remote.scope) absorbScope(peer, remote.scope);
+  if (remote.tls) absorbPaths(peer, remote.tls.paths ?? []);
   const localSchema = state.catalog?.fingerprint ?? '';
   const schemaMatch = Boolean(localSchema) && remote.schema === localSchema;
   if (peer.schemaMatch !== schemaMatch) {
-    if (!schemaMatch) recordEvent('warn', `${labelOf(peer)} runs a different database schema; replication with it is paused`);
+    const scopeDiffers = remote.scope !== undefined && remote.scope.learn !== replicationScope().learn;
+    if (!schemaMatch && scopeDiffers) recordEvent('info', `${labelOf(peer)} exchanges ${remote.scope!.learn ? 'Pokyh Learn' : 'no Pokyh Learn'}; replication waits until both nodes use the newest setting`);
+    else if (!schemaMatch) recordEvent('warn', `${labelOf(peer)} runs a different database schema; replication with it is paused`);
     else if (peer.schemaMatch === false) recordEvent('info', `${labelOf(peer)} runs the same database schema again; replication resumes`);
   }
   peer.schemaMatch = schemaMatch;
@@ -693,7 +789,10 @@ async function maintenance(): Promise<void> {
   if (state.captureReady && !state.paused) {
     if (Date.now() - lastPruneAt > PRUNE_EVERY_MS) {
       lastPruneAt = Date.now();
-      await pruneTombstones();
+      // Deletions in tables that are not exchanged right now stay recorded:
+      // once they are again, they must win over the rows other nodes kept.
+      const exchanged = new Set(state.catalog?.ordered.map((table) => table.name) ?? []);
+      await pruneTombstones((state.captureCatalog?.ordered ?? []).map((table) => table.name).filter((name) => !exchanged.has(name)));
     }
     await meshTick();
   }
@@ -706,6 +805,7 @@ export async function startCluster(): Promise<void> {
   try {
     const node = await loadOrCreateNode();
     state.nodeId = node.nodeId;
+    await loadScope(node.nodeId);
     state.nodeName = node.name;
     state.advertiseUrl = node.advertiseUrl;
     await loadOrCreateIdentity(node.nodeId);
@@ -826,7 +926,7 @@ async function restoreWithinCluster(restore: () => Promise<void>): Promise<void>
       });
       try {
         const catalog = await loadCatalog();
-        state.catalog = catalog;
+        useCatalog(catalog);
         await ensureTriggers(catalog, state.nodeId);
         await rebuildVersions(catalog, state.nodeId);
         for (const peer of state.peers.values()) peer.feed = newFeedProgress(0n);
@@ -932,6 +1032,15 @@ function announceReachChange(): void {
 // Proxy configuration for each way set to go through a proxy.
 function snippetsFor(entry: ReachEntry): ProxySnippets | null {
   if (entry.kind === 'direct' || !entry.backend) return null;
+  if (entry.kind === 'proxy-path') {
+    const route = {
+      url: entry.endpoint,
+      backend: entry.backend,
+      maxBodyBytes: MAX_FRAME_BYTES,
+      timeoutSeconds: Math.ceil(Math.max(config.cluster.syncTimeoutMs, config.cluster.requestTimeoutMs) / 1000) + 5,
+    };
+    return validPathRoute(route) ? pathSnippets(route) : null;
+  }
   const endpoint = parseEndpointList([entry.endpoint]).endpoints[0];
   if (!endpoint) return null;
   const url = new URL(endpoint.url);
@@ -955,23 +1064,41 @@ export function reachStatus() {
     env: env.endpoints.map(formatEndpoint),
     envInvalid: env.invalid,
     entries: panelEntries().map((entry) => ({ ...entry, snippets: snippetsFor(entry) })),
+    // Ways through this node's web proxy (unpinned; used by the others only
+    // when every pinned way fails). They arrive at the API port's /cluster
+    // entry (CLUSTER_PUBLIC_PATH) or at CLUSTER_PORT.
+    pathWays: ownPathWays(),
+    pathEnv: envPathWays().ways,
+    pathEnvInvalid: envPathWays().invalid,
+    pathEntry: { apiPort: config.cluster.publicPath, apiPortNumber: config.port, clusterPort: config.cluster.port },
     relayEndpoints: relayReach().map(formatEndpoint),
     relayLabel: config.cluster.relayLabel || routeLabel(state.nodeName, state.nodeId),
     relays: relays.map((relay) => ({
       ...relay,
       // A relay behind the administrator's proxy on 443: what that proxy has to do.
       snippets: relay.domain && relay.useSni
-        ? proxySnippets({ listenPort: 443, serverNames: [`*.${relay.domain}`], backend: '127.0.0.1:4100' })
+        ? proxySnippets({ listenPort: 443, serverNames: [`*.${relay.domain}`], backend: `127.0.0.1:${relayLocalPort(relay.ports)}` })
         : null,
     })),
     peers: [...state.peers.values()].map((peer) => ({
       id: peer.rowId,
       name: labelOf(peer),
       // How this node reaches the peer, and how the peer reaches this node.
-      outgoing: peer.tls ? currentPathTo(peer.tls.pin) : null,
+      outgoing: peer.session?.channel === 'path' ? `${peer.pathActive} (web proxy)` : peer.tls ? currentPathTo(peer.tls.pin) : null,
       incoming: peer.remote.via,
     })),
   };
+}
+
+// The relay's own port on its server, where a proxy there passes 443 to.
+function relayLocalPort(ports: string[]): number {
+  const written = ports.map((url) => writtenPort(url)).find((port): port is number => port !== null);
+  return written ?? config.cluster.relayDefaultPort;
+}
+
+export async function testReachWay(kind: ReachEntry['kind'], endpoint: string) {
+  requireRunning();
+  return testWay(kind, endpoint, config.cluster.requestTimeoutMs * 2);
 }
 
 export async function updateReach(entries: Array<Partial<ReachEntry>>): Promise<ReturnType<typeof reachStatus>> {
@@ -980,6 +1107,10 @@ export async function updateReach(entries: Array<Partial<ReachEntry>>): Promise<
     await saveReach(entries);
   } catch (err) {
     throw new ClusterError(message(err));
+  }
+  if (ownPathWays().length === 0) {
+    const dropped = dropUnpinnedSessionsOfLockedPeers();
+    if (dropped > 0) recordEvent('info', `No way through the web proxy is offered any more; ${dropped} session(s) on it were closed`);
   }
   announceReachChange();
   recordEvent('info', 'The ways to reach this node were changed');
@@ -1008,7 +1139,7 @@ export function createRelayCommand(input: RelayCommandInput) {
 
 // ─── One-line node install ───────────────────────────────────────────────────
 
-export async function createNodeInstall(input: { name: string; address: string; withAi: boolean; acmeEmail: string; origin: string; createdBy: string }) {
+export async function createNodeInstall(input: Parameters<typeof createInstall>[0]) {
   requireRunning();
   // In place before anyone can join, as for an invite.
   await ensureCapture();
@@ -1225,7 +1356,7 @@ export async function rebuildFromThisNode(): Promise<{ rows: number }> {
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
     const catalog = await loadCatalog();
-    state.catalog = catalog;
+    useCatalog(catalog);
     await ensureTriggers(catalog, state.nodeId);
     const rows = await rebuildVersions(catalog, state.nodeId);
     for (const peer of state.peers.values()) peer.feed = newFeedProgress(0n);
@@ -1368,6 +1499,11 @@ export async function clusterStatus() {
             active: runtime ? runtime.tlsLocked || (runtime.tls !== null && Date.now() >= runtime.tlsRetryAt) : false,
           }
         : null,
+      // Ways through the peer's web proxy (unpinned), and whether calls use
+      // one right now because the channel fails.
+      pathWays: runtime?.paths ?? [],
+      onPath: runtime ? runtime.session?.channel === 'path' || (runtime.tlsLocked && Date.now() < runtime.tlsRetryAt && runtime.paths.length > 0) : false,
+      pathActive: runtime?.pathActive ?? null,
       warnings,
       createdAt: row.createdAt.toISOString(),
     };
@@ -1395,10 +1531,14 @@ export async function clusterStatus() {
       verifyIntervalMinutes: config.cluster.verifyIntervalMinutes,
       inviteMinutes: config.cluster.pairingTtlMinutes,
       installMinutes: config.cluster.installTtlMinutes,
+      // Defaults for a server set up with the one-line installer: like this one.
+      apiPort: config.port,
+      clusterPort: config.cluster.mtlsPort,
       // Default for the AI choice of a server set up with the one-line installer.
       aiEnabled: config.learnAi.enabled,
     },
     channel: channelStatus(),
+    scope: scopeStatus(),
     peers,
     events: [...state.events].reverse().slice(0, 50),
   };

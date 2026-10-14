@@ -94,8 +94,8 @@ function parsePlan(v: unknown, fallback: 'summer' | 'winter' = 'summer'): 'summe
   return v === 'winter' ? 'winter' : v === 'summer' ? 'summer' : fallback;
 }
 
-// Try to pull the intrinsic week number out of the source id used by
-// mensa.plattnericus.dev, which formats ids as "w1_mo", "w2_tu", … "w6_su".
+// Try to pull the intrinsic week number out of the source id of the menu
+// source, formatted as "w1_mo", "w2_tu", … "w6_su".
 // Falls back to 0 (unknown) when the id doesn't match the pattern.
 function weekOrdinalFromSourceId(sourceId: string | null | undefined): number {
   if (!sourceId) return 0;
@@ -1268,8 +1268,12 @@ router.delete('/dishes/:id', requireAdmin, async (req: Request, res: Response): 
 // Fetches the external mensa.json URL and bulk-upserts all dishes
 
 router.post('/dishes/import-url', requireAdmin, async (req: Request, res: Response): Promise<void> => {
-  const url = String(req.body?.url ?? config.mensaImportUrl);
+  const url = String(req.body?.url || config.mensaImportUrl);
   const plan = parsePlan(req.body?.plan);
+  if (!url) {
+    res.status(400).json({ error: 'Enter the address of the menu (mensa.json) or set MENSA_IMPORT_URL' });
+    return;
+  }
 
   let raw: string;
   try {
@@ -1389,7 +1393,11 @@ router.post('/dishes/import-url', requireAdmin, async (req: Request, res: Respon
 
 router.post('/dishes/reset', requireAdmin, async (req: Request, res: Response): Promise<void> => {
   const plan = parsePlan(req.body?.plan);
-  const url = String(req.body?.url ?? config.mensaImportUrl);
+  const url = String(req.body?.url || config.mensaImportUrl);
+  if (!url) {
+    res.status(400).json({ error: 'Enter the address of the menu (mensa.json) or set MENSA_IMPORT_URL' });
+    return;
+  }
 
   let raw: string;
   try {

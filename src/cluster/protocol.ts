@@ -94,6 +94,8 @@ const channelAdvert = z.object({
   cert: z.string().max(4096),
   // Every way to reach it, in order (endpoints.ts); `url` is the first.
   endpoints: z.array(z.string().max(300)).max(8).optional(),
+  // Ways through its web proxy (reach.ts, "proxy-path"); unpinned, used last.
+  paths: z.array(z.string().max(255)).max(8).optional(),
 });
 
 // What a node tells the others about its version and updates (updates.ts).
@@ -110,6 +112,14 @@ export const updateAdvertSchema = z.object({
   build: z.object({ sha256: z.string().regex(/^[0-9a-f]{64}$/), bytes: z.number().int().min(1).max(512 * 1024 * 1024) }).nullable(),
 });
 export type UpdateAdvert = z.infer<typeof updateAdvertSchema>;
+
+// The cluster-wide replication scope as the sender has it (scopeRules.ts).
+export const scopeAdvertSchema = z.object({
+  learn: z.boolean(),
+  v: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+  by: z.string().max(36),
+  actor: z.string().max(100).nullable(),
+});
 
 export const heartbeatSchema = z.object({
   t: z.number(),
@@ -136,6 +146,8 @@ export const heartbeatSchema = z.object({
   via: z.string().max(300).nullable().optional(),
   // Version and update state (older nodes send none).
   upd: updateAdvertSchema.nullable().optional(),
+  // What the sender exchanges (older nodes send none: everything).
+  scope: scopeAdvertSchema.optional(),
 });
 export type Heartbeat = z.infer<typeof heartbeatSchema>;
 

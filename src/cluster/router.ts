@@ -8,6 +8,7 @@ import { handlePairConfirm, handlePairInit } from './pairing';
 import { handleBundle, handleInstallScript, handleProvision } from './provision';
 import { state } from './runtime';
 import { MAX_FRAME_BYTES, handleRpc, handleSession, type ChannelContext } from './transport';
+import { handleProbe } from './waytest';
 
 // HTTP surface of the node-to-node protocol, served under /cluster/v1 in two
 // places, each switched in .env:
@@ -118,6 +119,12 @@ export function createClusterRouter(entry: EntryPoint): Router {
     router.get('/install.sh', installLimiter, handleInstallScript);
     router.post('/provision', installLimiter, smallJson, handleProvision);
     router.post('/provision/bundle', installLimiter, smallJson, handleBundle);
+  }
+  if (entry !== 'mtls') {
+    // "Test this way" (admin panel): only this node can answer the challenge
+    // correctly, so a test that went through a proxy proves it arrived here.
+    const probeLimiter = rateLimit({ ...limiterOptions, max: 30 });
+    router.post('/probe', probeLimiter, smallJson, handleProbe);
   }
   router.post('/session', sessionLimiter, smallJson, handleSession);
   router.post(

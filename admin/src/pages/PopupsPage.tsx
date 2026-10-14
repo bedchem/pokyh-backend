@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, CalendarClock, Globe, Layers, LogIn, Megaphone, Moon, Pencil, Plus, Power, Save, Smartphone, Sun, Trash2, UserRound, Users, X } from 'lucide-react';
+import { AlertTriangle, CalendarClock, Globe, GraduationCap, Layers, LogIn, Megaphone, Moon, Pencil, Plus, Power, Save, Smartphone, Sun, Target, Trash2, UserRound, Users, X } from 'lucide-react';
 import { adminApi } from '../api';
 import { useToast } from '../components/Toast';
 import { useLive } from '../live';
 import { Figures, Notice, PageHeader, Segmented as KitSegmented } from '../components/kit';
 import { PopupEditor } from '../components/popups/PopupEditor';
+import { RecipientPicker } from '../components/popups/RecipientPicker';
+import { InfoTip } from '../components/cluster/explain';
 import { AndroidPopupPreview, WebPopupPreview, type PreviewTheme } from '../components/popups/PopupPreview';
-import type { AdminPopup, PopupAudience, PopupInput, PopupMode, PopupPlatform, PopupStatus } from '../types';
+import type { AdminPopup, PopupAudience, PopupInput, PopupMode, PopupPlatform, PopupStatus, PopupTargetUser } from '../types';
 
 const dimText = { color: 'rgb(var(--ink-rgb) / 0.62)' };
 
@@ -52,8 +54,16 @@ function scheduleSummary(p: { mode: PopupMode; showCount: number; startsAt: stri
 
 const EMPTY: PopupInput = {
   title: '', content: '', platform: 'all', audience: 'all', mode: 'once', showCount: 7,
-  startsAt: null, endsAt: null, enabled: true,
+  startsAt: null, endsAt: null, enabled: true, targetUsers: [], targetClasses: [],
 };
+
+// "3 Personen · 2 Klassen" for the list.
+function recipientSummary(p: AdminPopup): string {
+  const parts: string[] = [];
+  if (p.targetClasses.length > 0) parts.push(p.targetClasses.length === 1 ? `Klasse ${p.targetClasses[0]!.name}` : `${p.targetClasses.length} Klassen`);
+  if (p.targetUsers.length > 0) parts.push(p.targetUsers.length === 1 ? p.targetUsers[0]!.username : `${p.targetUsers.length} Personen`);
+  return parts.join(' · ');
+}
 
 export function PopupsPage() {
   const { showToast } = useToast();
@@ -68,6 +78,9 @@ export function PopupsPage() {
   const [attempted, setAttempted] = useState(false);
   const [previewTheme, setPreviewTheme] = useState<PreviewTheme>('light');
   const [previewTarget, setPreviewTarget] = useState<'android' | 'web'>('android');
+  // Recipients: everybody (by platform and audience) or only chosen ones.
+  const [targeted, setTargeted] = useState(false);
+  const [recipients, setRecipients] = useState<PopupTargetUser[]>([]);
 
   const load = useCallback(async () => {
     try {
@@ -99,6 +112,8 @@ export function PopupsPage() {
   function openNew() {
     setAttempted(false);
     setForm({ ...EMPTY });
+    setTargeted(false);
+    setRecipients([]);
     setHtml('');
     setEditingId('');
     requestAnimationFrame(() => document.getElementById('popup-editor')?.scrollIntoView({ behavior: 'smooth' }));
@@ -109,7 +124,10 @@ export function PopupsPage() {
     setForm({
       title: p.title, content: p.content, platform: p.platform, audience: p.audience, mode: p.mode,
       showCount: p.mode === 'once' ? 7 : p.showCount, startsAt: p.startsAt, endsAt: p.endsAt, enabled: p.enabled, resetSeen: false,
+      targetUsers: p.targetUsers.map((user) => user.stableUid), targetClasses: p.targetClasses.map((entry) => entry.id),
     });
+    setTargeted(p.targetUsers.length > 0 || p.targetClasses.length > 0);
+    setRecipients(p.targetUsers);
     setHtml(p.contentHtml);
     setEditingId(p.id);
     if (p.platform === 'web') setPreviewTarget('web');
@@ -132,8 +150,11 @@ export function PopupsPage() {
   // Everything still missing before the popup can be saved, each with the
   // field it belongs to. Only the title is required; the text may be empty.
   const problems = useMemo(() => {
-    const list: Array<{ field: 'title' | 'schedule' | 'showCount'; message: string }> = [];
+    const list: Array<{ field: 'title' | 'schedule' | 'showCount' | 'recipients'; message: string }> = [];
     if (!form.title.trim()) list.push({ field: 'title', message: 'Titel eingeben — er erscheint als Überschrift des Popups.' });
+    if (targeted && recipients.length === 0 && form.targetClasses.length === 0) {
+      list.push({ field: 'recipients', message: 'Mindestens eine Klasse oder einen Benutzer auswählen — oder „Alle“ wählen.' });
+    }
     if (form.startsAt && form.endsAt && new Date(form.endsAt) <= new Date(form.startsAt)) {
       list.push({ field: 'schedule', message: 'Das Ende muss nach dem Start liegen.' });
     }
@@ -142,16 +163,18 @@ export function PopupsPage() {
       if (form.showCount < 2) list.push({ field: 'showCount', message: 'Für „Mehrmals im Zeitraum“ mindestens 2 Anzeigen wählen.' });
     }
     return list;
-  }, [form]);
+  }, [form, targeted, recipients]);
   const showProblems = attempted && problems.length > 0;
-  const invalid = (field: 'title' | 'schedule' | 'showCount') => showProblems && problems.some((problem) => problem.field === field);
+  const invalid = (field: 'title' | 'schedule' | 'showCount' | 'recipients') => showProblems && problems.some((problem) => problem.field === field);
   const invalidStyle: React.CSSProperties = { boxShadow: 'inset 0 0 0 1.5px var(--rose-deep)' };
 
   async function save() {
     if (problems.length > 0) {
       setAttempted(true);
       const first = problems[0]!.field;
-      document.getElementById(first === 'title' ? 'popup-title' : first === 'showCount' ? 'popup-show-count' : 'popup-starts-at')?.focus();
+      const id = first === 'title' ? 'popup-title' : first === 'showCount' ? 'popup-show-count' : first === 'recipients' ? 'popup-recipients' : 'popup-starts-at';
+      document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      document.getElementById(id)?.focus();
       return;
     }
     setSaving(true);
@@ -159,8 +182,11 @@ export function PopupsPage() {
       // Android has no guests, so its audience is irrelevant — store the neutral value.
       const payload: PopupInput = {
         ...form,
-        audience: form.platform === 'android' ? 'all' : form.audience,
+        // Chosen recipients are signed in by definition.
+        audience: targeted ? 'users' : form.platform === 'android' ? 'all' : form.audience,
         showCount: form.mode === 'once' ? 1 : form.showCount,
+        targetUsers: targeted ? recipients.map((user) => user.stableUid) : [],
+        targetClasses: targeted ? form.targetClasses : [],
       };
       if (editingId) await adminApi.updatePopup(editingId, payload);
       else await adminApi.createPopup(payload);
@@ -242,7 +268,37 @@ export function PopupsPage() {
                 />
               </div>
 
-              {form.platform !== 'android' && (
+              <div id="popup-recipients" tabIndex={-1}>
+                <label className="mb-1.5 flex items-center gap-1.5 text-[12px]" style={dimText}>
+                  Empfänger
+                  <InfoTip>
+                    <b>Alle</b>: jeder, den Plattform und Zielgruppe erlauben. <b>Nur ausgewählte</b>: das Popup erscheint ausschließlich bei den
+                    gewählten Klassen und Benutzern (beliebig viele von beiden) — nur angemeldet, Gäste sehen es nie. Der Server entscheidet anhand
+                    der Anmeldung; niemand sonst bekommt das Popup überhaupt zu sehen.
+                  </InfoTip>
+                </label>
+                <Segmented
+                  value={targeted ? 'chosen' : 'everyone'}
+                  onChange={(v) => setTargeted(v === 'chosen')}
+                  options={[
+                    { value: 'everyone', label: 'Alle', icon: <Users size={14} /> },
+                    { value: 'chosen', label: 'Nur ausgewählte', icon: <Target size={14} /> },
+                  ]}
+                />
+                {targeted && (
+                  <div className="mt-3">
+                    <RecipientPicker
+                      users={recipients}
+                      classes={form.targetClasses}
+                      onUsers={setRecipients}
+                      onClasses={(next) => set('targetClasses', next)}
+                      invalid={invalid('recipients')}
+                    />
+                  </div>
+                )}
+              </div>
+
+              {form.platform !== 'android' && !targeted && (
                 <div>
                   <label className="text-[12px] block mb-1.5" style={dimText}>Zielgruppe (Website)</label>
                   <Segmented
@@ -420,7 +476,13 @@ export function PopupsPage() {
                       {p.platform === 'android' ? <Smartphone size={11} /> : p.platform === 'web' ? <Globe size={11} /> : <Layers size={11} />}
                       {PLATFORM_LABEL[p.platform]}
                     </Badge>
-                    {p.platform !== 'android' && p.audience !== 'all' && (
+                    {(p.targetUsers.length > 0 || p.targetClasses.length > 0) && (
+                      <Badge color="var(--sky-deep)">
+                        {p.targetClasses.length > 0 ? <GraduationCap size={11} /> : <Target size={11} />}
+                        {recipientSummary(p)}
+                      </Badge>
+                    )}
+                    {p.platform !== 'android' && p.audience !== 'all' && p.targetUsers.length === 0 && p.targetClasses.length === 0 && (
                       <Badge color="var(--teal-deep)">
                         {p.audience === 'guests' ? <LogIn size={11} /> : <UserRound size={11} />}
                         {AUDIENCE_LABEL[p.audience]}

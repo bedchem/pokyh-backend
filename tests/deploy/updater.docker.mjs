@@ -186,6 +186,24 @@ after(() => {
   rmSync(home, { recursive: true, force: true });
 }, { timeout: 120_000 });
 
+test('the Caddyfiles the installer writes are valid for Caddy (own domain and behind a proxy)', () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'pokyh-caddy-check-'));
+  try {
+    for (const [name, text] of [
+      ['domain', bootstrap.renderCaddyfile({ domain: 'node2.example.org', acmeEmail: 'ops@example.org', tlsInternal: false })],
+      ['gateway', bootstrap.renderGatewayCaddyfile({ trusted: ['10.8.0.1', '10.8.0.0/24'] })],
+    ]) {
+      writeFileSync(path.join(dir, name), text);
+      const out = sh('docker', ['run', '--rm', '-v', `${path.join(dir, name)}:/etc/caddy/Caddyfile:ro`, 'caddy:2.8.4-alpine', 'caddy', 'validate', '--config', '/etc/caddy/Caddyfile', '--adapter', 'caddyfile'], { stdio: ['ignore', 'pipe', 'pipe'] });
+      assert.match(out, /Valid configuration/, name);
+    }
+  } catch (err) {
+    throw new Error(`${err.message}\n${err.stderr ?? ''}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('the real compose.yml passes the updater\'s own policy', () => {
   const rendered = JSON.parse(compose('--profile', 'blue', '--profile', 'green', '--profile', 'web', '--profile', 'ai', 'config', '--format', 'json'));
   assert.deepEqual(updater.checkComposePolicy(rendered, home), []);

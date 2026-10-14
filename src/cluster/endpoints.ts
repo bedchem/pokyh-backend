@@ -158,6 +158,31 @@ export function publicOrigin(value: string): string | null {
   return url.origin;
 }
 
+// A way to this node through the administrator's own web proxy, on the
+// API's public address (api.example.org/cluster-node/name): the proxy ends
+// TLS there and passes the path on to this node's cluster entry. Nothing on
+// that way is trusted — the frames are end-to-end encrypted and
+// authenticated with the link key — but there is no certificate pinning, so
+// it is used only after every pinned way failed. https://host[:port][/path]
+// (http only on this machine, for tests). Returns the canonical form or null.
+const PATH_SEGMENT = /^[A-Za-z0-9._~-]{1,64}$/;
+export function parsePathWay(value: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(value.trim());
+  } catch {
+    return null;
+  }
+  const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback)) return null;
+  if (url.search || url.hash || url.username || url.password || value.length > 255) return null;
+  // "." and ".." are resolved by the URL parser; written ones are refused.
+  if (/\/\.\.?(\/|$)/.test(value.trim().replace(/^[a-z]+:\/\/[^/]*/i, ''))) return null;
+  const segments = url.pathname.replace(/\/+$/, '').split('/').filter((part) => part !== '');
+  if (segments.length > 4 || !segments.every((part) => PATH_SEGMENT.test(part) && part !== '.' && part !== '..')) return null;
+  return `${url.origin}${segments.length > 0 ? `/${segments.join('/')}` : ''}`;
+}
+
 // The command-line form curl needs for this endpoint: the URL to request and,
 // when the server name differs from the host connected to, the --connect-to
 // mapping that sends the request there while presenting the server name.

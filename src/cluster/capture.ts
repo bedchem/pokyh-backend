@@ -251,7 +251,7 @@ export async function rebuildVersions(catalog: Catalog, nodeId: string): Promise
 // Removes version records of rows deleted long ago. Until then the record is
 // what tells a returning peer that the row was deleted on purpose. A record
 // some active peer has not read from the feed yet always stays.
-export async function pruneTombstones(): Promise<number> {
+export async function pruneTombstones(keepTables: string[] = []): Promise<number> {
   const cutoff = new Date(Date.now() - config.cluster.tombstoneRetentionDays * 24 * 60 * 60 * 1000);
   const peers = await prisma.clusterPeer.findMany({ where: { status: 'ACTIVE' }, select: { sentSeq: true } });
   const delivered = peers.reduce<bigint | null>((min, peer) => (min === null || peer.sentSeq < min ? peer.sentSeq : min), null);
@@ -260,8 +260,9 @@ export async function pruneTombstones(): Promise<number> {
       `SELECT s.\`table_name\`, s.\`pk_hash\` FROM ${q(STATE_TABLE)} s `
       + 'WHERE s.`deleted` = 1 AND s.`changed_at` < ? '
       + (delivered !== null ? 'AND s.`seq` <= ? ' : '')
+      + (keepTables.length > 0 ? `AND s.\`table_name\` NOT IN (${keepTables.map(() => '?').join(', ')}) ` : '')
       + `LIMIT ${CHUNK} FOR UPDATE SKIP LOCKED`,
-      cutoff, ...(delivered !== null ? [delivered] : []),
+      cutoff, ...(delivered !== null ? [delivered] : []), ...keepTables,
     );
     if (rows.length === 0) return 0;
     for (const row of rows) {

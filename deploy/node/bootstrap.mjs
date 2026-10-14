@@ -184,6 +184,36 @@ export function isNodeLocal(key) {
   return NODE_LOCAL.has(key) || NODE_LOCAL_PREFIXES.some((prefix) => key.startsWith(prefix)) || PROCESS_CONTROL.test(key);
 }
 
+// Inside the stack the app listens on these ports (not published; Caddy and
+// the edge forwarder reach it there). What the outside sees is chosen per
+// install (installOptions.ts).
+const APP_PORT = 4000;
+const APP_CHANNEL_PORT = 4100;
+
+// An IPv4/IPv6 address or CIDR range (src/cluster/installOptions.ts).
+export function validSource(text) {
+  if (typeof text !== 'string') return false;
+  const slash = text.indexOf('/');
+  const address = slash >= 0 ? text.slice(0, slash) : text;
+  const family = isIP(address);
+  if (family === 0) return false;
+  if (slash < 0) return true;
+  const bits = text.slice(slash + 1);
+  return /^\d{1,3}$/.test(bits) && Number(bits) <= (family === 4 ? 32 : 128);
+}
+
+function validOptions(node) {
+  const portOk = (value) => Number.isInteger(value) && value >= 1 && value <= 65_535;
+  const bindOk = (value) => typeof value === 'string' && (value === '' || isIP(value) !== 0);
+  const sourcesOk = (value) => Array.isArray(value) && value.length <= 16 && value.every(validSource);
+  if (!['none', 'domain', 'proxy'].includes(node.web)) return 'web access';
+  if (node.web === 'domain' && !node.domain) return 'web access without a domain';
+  if (!portOk(node.clusterPort) || !bindOk(node.clusterBind) || !sourcesOk(node.clusterFrom)) return 'cluster port';
+  if (node.web === 'proxy' && (!portOk(node.apiPort) || node.apiPort === node.clusterPort)) return 'API port';
+  if (!bindOk(node.apiBind) || !sourcesOk(node.apiFrom)) return 'API address';
+  return null;
+}
+
 export function validatePayload(payload, token) {
   const fail = (what) => { throw new BootstrapError(`The configuration from the cluster is unusable (${what})`); };
   if (!payload || payload.v !== 1) fail('version');
@@ -194,6 +224,8 @@ export function validatePayload(payload, token) {
   if (typeof update.repo !== 'string' || (update.repo !== '' && !/^https:\/\/[A-Za-z0-9.-]+(:\d{1,5})?(\/[A-Za-z0-9._~-]+){2,4}$/.test(update.repo))) fail('update.repo');
   if (typeof update.branch !== 'string' || !/^[A-Za-z0-9._/-]{1,200}$/.test(update.branch) || update.branch.includes('..')) fail('update.branch');
   if (typeof node.name !== 'string' || !NAME.test(node.name)) fail('name');
+  const optionsProblem = validOptions(node);
+  if (optionsProblem) fail(optionsProblem);
   if (typeof node.withAi !== 'boolean') fail('AI choice');
   if (typeof node.acmeEmail !== 'string' || (node.acmeEmail !== '' && !EMAIL.test(node.acmeEmail))) fail('e-mail');
   if (!payload.env || typeof payload.env !== 'object' || Array.isArray(payload.env)) fail('settings');
@@ -233,13 +265,14 @@ export function channelHost(node) {
 export function buildEnvFile({ payload, secrets, generatedAt }) {
   const { node } = payload;
   const host = channelHost(node);
-  const channelUrl = host ? `https://${host}:4100` : '';
+  const channelUrl = host ? `https://${host}:${node.clusterPort}` : '';
   const local = {
     NODE_ENV: 'production',
-    PORT: '4000',
-    // Only Caddy reaches the API port (it is not published); it sets the
-    // client address and drops whatever a client sent.
-    TRUST_PROXY: 'uniquelocal',
+    PORT: String(APP_PORT),
+    // Only Caddy reaches the API port (it is not published); it passes the
+    // client address on. Behind the administrator's proxy, that proxy's
+    // addresses are trusted as well, so the real client arrives.
+    TRUST_PROXY: ['uniquelocal', ...(node.web === 'proxy' ? node.apiFrom : [])].join(','),
     DB_HOST: 'mysql',
     DB_PORT: '3306',
     DB_USER: 'root',
@@ -253,7 +286,7 @@ export function buildEnvFile({ payload, secrets, generatedAt }) {
     CLUSTER_SECRET: secrets.clusterSecret,
     CLUSTER_PUBLIC_PATH: 'false',
     CLUSTER_PORT: '0',
-    CLUSTER_MTLS_PORT: '4100',
+    CLUSTER_MTLS_PORT: String(APP_CHANNEL_PORT),
     CLUSTER_MTLS_BIND_ADDRESS: '0.0.0.0',
     CLUSTER_MTLS_URL: channelUrl,
     CLUSTER_ADVERTISE_URL: channelUrl,
@@ -281,22 +314,11 @@ export function buildEnvFile({ payload, secrets, generatedAt }) {
   return text;
 }
 
-export function renderCaddyfile({ domain, acmeEmail, tlsInternal }) {
-  const global = [];
-  if (acmeEmail) global.push(`\temail ${acmeEmail}`);
-  // The colour that is not running fails its health check every second;
-  // that is expected and would only flood the log.
-  global.push('\tlog default {\n\t\texclude http.handlers.reverse_proxy.health_checker.active\n\t}');
-  let text = '# Written by the Pokyh node installer.\n';
-  if (global.length > 0) text += `{\n${global.join('\n')}\n}\n\n`;
-  text += `${domain} {\n`;
-  if (tlsInternal) text += '\ttls internal\n';
-  text += '\tencode zstd gzip\n';
-  text += '\theader Strict-Transport-Security "max-age=31536000"\n';
-  // Both colours of a blue/green update; only those that answer /readyz get
-  // requests, so a version that is still starting (or failing) never does.
-  // While one goes away, a request is retried at the other.
-  text += '\treverse_proxy app-blue:4000 app-green:4000 {\n';
+// Both colours of a blue/green update; only those that answer /readyz get
+// requests, so a version that is still starting (or failing) never does.
+// While one goes away, a request is retried at the other.
+function upstreamBlock() {
+  let text = `\treverse_proxy app-blue:${APP_PORT} app-green:${APP_PORT} {\n`;
   text += '\t\thealth_uri /readyz\n';
   text += '\t\thealth_interval 1s\n';
   text += '\t\thealth_timeout 2s\n';
@@ -309,6 +331,42 @@ export function renderCaddyfile({ domain, acmeEmail, tlsInternal }) {
   // A colour that just went away must not hold a request up for long.
   text += '\t\ttransport http {\n\t\t\tdial_timeout 1s\n\t\t}\n';
   text += '\t}\n';
+  return text;
+}
+
+// The colour that is not running fails its health check every second; that
+// is expected and would only flood the log.
+const QUIET_HEALTH_LOG = '\tlog default {\n\t\texclude http.handlers.reverse_proxy.health_checker.active\n\t}';
+
+export function renderCaddyfile({ domain, acmeEmail, tlsInternal }) {
+  const global = [];
+  if (acmeEmail) global.push(`\temail ${acmeEmail}`);
+  global.push(QUIET_HEALTH_LOG);
+  let text = '# Written by the Pokyh node installer.\n';
+  text += `{\n${global.join('\n')}\n}\n\n`;
+  text += `${domain} {\n`;
+  if (tlsInternal) text += '\ttls internal\n';
+  text += '\tencode zstd gzip\n';
+  text += '\theader Strict-Transport-Security "max-age=31536000"\n';
+  text += upstreamBlock();
+  text += '}\n';
+  return text;
+}
+
+// Behind the administrator's own proxy: plain HTTP on the gateway's port (the
+// proxy does TLS), the proxy's addresses trusted for the client address.
+export const GATEWAY_PORT = 8080;
+export function renderGatewayCaddyfile({ trusted }) {
+  let text = '# Written by the Pokyh node installer (behind your proxy).\n';
+  text += '{\n';
+  text += `${QUIET_HEALTH_LOG}\n`;
+  text += '\tservers {\n';
+  text += `\t\ttrusted_proxies static private_ranges${trusted.length > 0 ? ` ${trusted.join(' ')}` : ''}\n`;
+  text += '\t}\n';
+  text += '}\n\n';
+  text += `:${GATEWAY_PORT} {\n`;
+  text += '\tencode zstd gzip\n';
+  text += upstreamBlock();
   text += '}\n';
   return text;
 }
@@ -327,8 +385,9 @@ export function aiPlan({ withAi, memKb, cpus }) {
   };
 }
 
-export function renderComposeEnv({ ai, web, home = '/opt/pokyh', runtime = { repo: '', branch: 'main' } }) {
-  const profiles = ['blue', ...(web ? ['web'] : []), ...(ai.enabled ? ['ai'] : [])];
+export function renderComposeEnv({ ai, node = { web: 'none', clusterPort: APP_CHANNEL_PORT, clusterBind: '', apiPort: 0, apiBind: '' }, home = '/opt/pokyh', runtime = { repo: '', branch: 'main' } }) {
+  const webProfile = node.web === 'domain' ? ['web'] : node.web === 'proxy' ? ['gateway'] : [];
+  const profiles = ['blue', ...webProfile, ...(ai.enabled ? ['ai'] : [])];
   let text = '# Stack settings for compose.yml (not secret). Written by the installer;\n';
   text += '# the updater changes POKYH_IMAGE_* and COMPOSE_PROFILES (blue/green).\n';
   text += 'COMPOSE_PROJECT_NAME=pokyh\n';
@@ -336,6 +395,9 @@ export function renderComposeEnv({ ai, web, home = '/opt/pokyh', runtime = { rep
   text += `COMPOSE_PROFILES=${profiles.join(',')}\n`;
   // The only source the updater takes its own files from (updater.mjs).
   text += `POKYH_RUNTIME_REPO=${runtime.repo}\nPOKYH_RUNTIME_BRANCH=${runtime.branch}\n`;
+  // Where the outside reaches this server (chosen when the command was made).
+  text += `POKYH_CLUSTER_PORT=${node.clusterPort}\nPOKYH_CLUSTER_BIND=${node.clusterBind || '0.0.0.0'}\n`;
+  if (node.web === 'proxy') text += `POKYH_API_PORT=${node.apiPort}\nPOKYH_API_BIND=${node.apiBind || '0.0.0.0'}\n`;
   if (ai.enabled) text += `OLLAMA_MEM_LIMIT=${ai.memLimit}\nOLLAMA_CPUS=${ai.cpus}\nOLLAMA_NUM_THREAD=${ai.threads}\n`;
   return text;
 }
@@ -655,14 +717,16 @@ export async function main({ out = process.env.POKYH_OUT || '/out', tokenText } 
   if (ai.note) log(ai.note);
   const effective = ai.enabled || !payload.node.withAi ? payload : { ...payload, node: { ...payload.node, withAi: false } };
   writePrivate(path.join(out, '.env'), buildEnvFile({ payload: effective, secrets, generatedAt: new Date().toISOString() }));
-  const web = Boolean(payload.node.domain);
-  writePrivate(path.join(out, 'compose.env'), renderComposeEnv({ ai, web, home: process.env.POKYH_HOME_ON_HOST || '/opt/pokyh', runtime: payload.update ?? { repo: '', branch: 'main' } }));
-  if (web) {
+  const { node } = payload;
+  writePrivate(path.join(out, 'compose.env'), renderComposeEnv({ ai, node, home: process.env.POKYH_HOME_ON_HOST || '/opt/pokyh', runtime: payload.update ?? { repo: '', branch: 'main' } }));
+  if (node.web === 'domain') {
     fs.writeFileSync(path.join(out, 'Caddyfile'), renderCaddyfile({
-      domain: payload.node.domain,
-      acmeEmail: payload.node.acmeEmail,
+      domain: node.domain,
+      acmeEmail: node.acmeEmail,
       tlsInternal: process.env.POKYH_TLS_INTERNAL === '1',
     }), { mode: 0o644 });
+  } else if (node.web === 'proxy') {
+    fs.writeFileSync(path.join(out, 'Caddyfile'), renderGatewayCaddyfile({ trusted: node.apiFrom }), { mode: 0o644 });
   }
 
   // The backend takes this over at its first start and deletes it at once.
@@ -673,7 +737,19 @@ export async function main({ out = process.env.POKYH_OUT || '/out', tokenText } 
 
   const safeName = (payload.node.name || '').replace(/[^A-Za-z0-9 ._-]/g, '').slice(0, 120);
   const safePeer = (payload.cluster.name || '').replace(/[^A-Za-z0-9 ._-]/g, '').slice(0, 120);
-  fs.writeFileSync(path.join(stateDir, 'summary'), `domain=${payload.node.domain}\naddress=${payload.node.address ?? ''}\nname=${safeName}\npeer=${safePeer}\nai=${ai.enabled ? 'yes' : 'no'}\n`, { mode: 0o600 });
+  const summary = [
+    `domain=${node.domain}`,
+    `address=${node.address ?? ''}`,
+    `name=${safeName}`,
+    `peer=${safePeer}`,
+    `ai=${ai.enabled ? 'yes' : 'no'}`,
+    `web=${node.web}`,
+    `cluster_port=${node.clusterPort}`,
+    `cluster_from=${node.clusterFrom.join(' ')}`,
+    `api_port=${node.web === 'proxy' ? node.apiPort : ''}`,
+    `api_from=${node.web === 'proxy' ? node.apiFrom.join(' ') : ''}`,
+  ];
+  fs.writeFileSync(path.join(stateDir, 'summary'), `${summary.join('\n')}\n`, { mode: 0o600 });
   log(`Configuration for ${safeName || payload.node.domain} written`);
 }
 
