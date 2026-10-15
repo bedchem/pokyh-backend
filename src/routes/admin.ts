@@ -50,6 +50,8 @@ import { intQueryParam } from '../utils/duration';
 import { clientIp } from '../middleware/requestLogger';
 import { sseManager } from '../services/sse';
 import { ADMIN_LIVE_KEY } from '../services/adminLive';
+import { localDayAndHour, startOfLocalDay } from '../services/usageAnalytics';
+import { activeToday } from './adminAnalytics';
 import {
   beginPasswordSetup,
   checkAdminPassword,
@@ -2225,13 +2227,14 @@ router.get('/activity-logs', requireAdmin, async (req: Request, res: Response): 
 // ─── GET /api/admin/activity-logs/stats ──────────────────────────────────────
 
 router.get('/activity-logs/stats', requireAdmin, async (_req: Request, res: Response): Promise<void> => {
-  const startOfToday = new Date();
-  startOfToday.setHours(0, 0, 0, 0);
+  // "Today" is the local day the Analytics page counts in, not the server's.
+  const tz = config.usageAnalytics.timezone;
+  const startOfToday = startOfLocalDay(localDayAndHour(new Date(), tz).dayKey, tz);
 
   type EventRow = { event: string; count: bigint };
   type PageRow  = { page: string; count: bigint };
 
-  const [totalToday, uniqueUsersToday, eventBreakdown, topPages] = await Promise.all([
+  const [totalToday, uniqueUsersToday, eventBreakdown, topPages, activeUsersToday, eventsToday, topPagesToday] = await Promise.all([
     prisma.frontendActivityLog.count({ where: { createdAt: { gte: startOfToday } } }),
     prisma.$queryRaw<{ cnt: bigint }[]>`
       SELECT COUNT(DISTINCT username) AS cnt FROM frontend_activity_logs
@@ -2247,6 +2250,19 @@ router.get('/activity-logs/stats', requireAdmin, async (_req: Request, res: Resp
       WHERE page IS NOT NULL AND created_at >= DATE_SUB(NOW(), INTERVAL 1 DAY)
       GROUP BY page ORDER BY count DESC LIMIT 10
     `,
+    // The dashboard's "today" figures: active users as Analytics counts them,
+    // and events and pages of today only.
+    activeToday().catch(() => 0),
+    prisma.$queryRaw<EventRow[]>`
+      SELECT event, COUNT(*) AS count FROM frontend_activity_logs
+      WHERE created_at >= ${startOfToday}
+      GROUP BY event ORDER BY count DESC
+    `,
+    prisma.$queryRaw<PageRow[]>`
+      SELECT page, COUNT(*) AS count FROM frontend_activity_logs
+      WHERE page IS NOT NULL AND created_at >= ${startOfToday}
+      GROUP BY page ORDER BY count DESC LIMIT 10
+    `,
   ]);
 
   res.json({
@@ -2254,6 +2270,9 @@ router.get('/activity-logs/stats', requireAdmin, async (_req: Request, res: Resp
     uniqueUsersToday: Number(uniqueUsersToday[0]?.cnt ?? 0),
     eventBreakdown: eventBreakdown.map((r: EventRow) => ({ event: r.event, count: Number(r.count) })),
     topPages: topPages.map((r: PageRow) => ({ page: r.page, count: Number(r.count) })),
+    activeUsersToday,
+    eventsToday: eventsToday.map((r: EventRow) => ({ event: r.event, count: Number(r.count) })),
+    topPagesToday: topPagesToday.map((r: PageRow) => ({ page: r.page, count: Number(r.count) })),
   });
 });
 

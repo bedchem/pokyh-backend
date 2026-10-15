@@ -226,7 +226,7 @@ export function DashboardPage() {
   const newThisWeek = stats.newUsersThisWeek ?? 0;
   const errorRate = requestsToday > 0 ? (errorsToday / requestsToday) * 100 : 0;
   const today = new Date().toLocaleDateString('de-AT', { day: 'numeric', month: 'short', year: 'numeric' });
-  const activeShare = usage && stats.totalUsers > 0 ? usage.uniqueUsersToday / stats.totalUsers : 0;
+  const activeShare = usage && stats.totalUsers > 0 ? usage.activeUsersToday / stats.totalUsers : 0;
 
   const ledger = [
     { label: 'Admins',       value: stats.totalAdmins },
@@ -344,7 +344,7 @@ export function DashboardPage() {
                 <dl className="flex flex-col gap-5">
                   <div>
                     <dt className="text-[13.5px] text-ink-3">Aktive Nutzer</dt>
-                    <dd className="mt-0.5 text-[19px] font-semibold"><Count value={usage.uniqueUsersToday} /></dd>
+                    <dd className="mt-0.5 text-[19px] font-semibold"><Count value={usage.activeUsersToday} /></dd>
                   </div>
                   <div>
                     <dt className="text-[13.5px] text-ink-3">Ereignisse</dt>
@@ -355,16 +355,16 @@ export function DashboardPage() {
               <div className="min-w-0">
                 <h3 className="mb-5 text-[14.5px] text-ink-3">Meistbesuchte Seiten</h3>
                 <RankBars
-                  items={usage.topPages.slice(0, 4).map((p) => ({ label: p.page, value: p.count }))}
+                  items={usage.topPagesToday.slice(0, 4).map((p) => ({ label: p.page, value: p.count }))}
                   empty="Heute noch keine Seitenaufrufe."
                 />
               </div>
             </div>
-            {usage.eventBreakdown.length > 0 && (
+            {usage.eventsToday.length > 0 && (
               <div className="mt-10">
                 <SplitBar
                   ariaLabel="Ereignisse von heute nach Art"
-                  parts={usage.eventBreakdown.slice(0, 5).map((e, i) => ({
+                  parts={usage.eventsToday.slice(0, 5).map((e, i) => ({
                     label: e.event.replace(/_/g, ' '),
                     value: e.count,
                     color: EVENT_COLORS[i % EVENT_COLORS.length]!,

@@ -431,6 +431,10 @@ export function AnalyticsPage() {
   const platformSum = PLATFORM_ORDER.reduce((s, p) => s + platforms.byPlatform[p], 0);
   const shownPlatforms = PLATFORM_ORDER.filter((p) => p !== 'other' || platforms.byPlatform.other > 0 || time.byPlatform.other.sessions > 0);
   const hasTrend = data.daily.some((d) => d.people > 0 || d.sessions > 0 || d.webViews > 0);
+  // Website visitors are different people per day; the tile shows the
+  // average day, like the chart beneath it, not their sum over the period.
+  const webDays = data.daily.filter((d) => d.webViews > 0).length;
+  const perWebDay = (n: number) => (webDays > 0 ? n / webDays : 0);
 
   // ── Derived records ───────────────────────────────────────────────────────
   const busiestDay = data.daily.reduce<Day | null>((best, d) => (d.people > (best?.people ?? 0) ? d : best), null);
@@ -444,7 +448,7 @@ export function AnalyticsPage() {
 
   const highlights: Fact[] = [];
   if (hasVisits) highlights.push({ icon: Hourglass, tone: 'sky', value: hours(time.totalSeconds), label: 'insgesamt auf Pokyh verbracht', open: () => show('Zeit in Pokyh', {}, 'seconds') });
-  if (busiestDay && busiestDay.users > 0) highlights.push({ icon: Trophy, tone: 'amber', value: `${de(busiestDay.users)} Nutzer`, label: `Rekordtag: ${longDay(busiestDay.dayKey)}`, open: () => show(`Aktiv am ${longDay(busiestDay.dayKey)}`, { day: busiestDay.dayKey }) });
+  if (busiestDay && busiestDay.people > 0) highlights.push({ icon: Trophy, tone: 'amber', value: `${de(busiestDay.people)} Nutzer`, label: `Rekordtag: ${longDay(busiestDay.dayKey)}`, open: () => show(`Aktiv am ${longDay(busiestDay.dayKey)}`, { day: busiestDay.dayKey }) });
   if (peakHour && peakHour.sessions > 0) highlights.push({ icon: Flame, tone: 'rose', value: hourSpan(peakHour.hour), label: `Stoßzeit — ${percent(peakHour.sessions, time.sessions)} aller Sitzungen starten hier`, open: () => show(`Sitzungen ${hourSpan(peakHour.hour)}`, { hours: [peakHour.hour] }, 'visits') });
   if (topPlatform && platformSum > 0) highlights.push({ icon: Medal, tone: 'violet', value: `${PLATFORM_LABEL[topPlatform]} vorn`, label: `${percent(platforms.byPlatform[topPlatform], platformSum)} der Plattform-Nutzungen`, open: () => showPlatform(topPlatform) });
   if (favouriteDay && favouriteDay.avgUsers > 0) highlights.push({ icon: CalendarDays, tone: 'mint', value: WEEKDAYS[favouriteDay.weekday]!, label: `Lieblingstag mit Ø ${de(favouriteDay.avgUsers, 1)} aktiven Nutzern`, open: () => show(`Aktiv an ${WEEKDAYS[favouriteDay.weekday]}en`, { weekdays: [favouriteDay.weekday] }, 'visits') });
@@ -477,8 +481,8 @@ export function AnalyticsPage() {
     {
       key: 'visitors',
       label: 'Website-Besucher',
-      value: web.visitors,
-      detail: `davon ${de(web.signedVisitors)} mit Konto`,
+      value: de(perWebDay(web.visitors), 1),
+      detail: `Ø pro Tag · davon ${de(perWebDay(web.signedVisitors), 1)} mit Konto`,
     },
     {
       key: 'time',
@@ -879,7 +883,7 @@ export function AnalyticsPage() {
                         <Ledger
                           columns={2}
                           items={[
-                            { label: 'Neu', value: de(engagement.newUsers), hint: 'Konto im Zeitraum erstellt', open: () => show('Neu im Zeitraum', { segment: 'new' }, 'lastSeenAt') },
+                            { label: 'Neu und aktiv', value: de(engagement.newUsers), hint: 'Konto im Zeitraum erstellt und im Zeitraum genutzt', open: () => show('Neu im Zeitraum', { segment: 'new' }, 'lastSeenAt') },
                             { label: 'Wiederkehrend', value: de(engagement.returningUsers), open: () => show('Wiederkehrend', { segment: 'returning' }) },
                             { label: 'Stammnutzer', value: de(engagement.loyalUsers), hint: 'an mindestens jedem zweiten Tag aktiv', open: () => show('Stammnutzer', { segment: 'loyal' }, 'activeDays') },
                             { label: 'Ø aktive Tage', value: de(engagement.activeDaysPerUser, 1), open: () => show('Aktive Tage', {}, 'activeDays') },
@@ -887,7 +891,7 @@ export function AnalyticsPage() {
                         />
                       </div>
                     </div>
-                    <Explain>Anteil der Monatsnutzer, die an einem Tag Pokyh öffnen. Aktiv in 30 Tagen: {de(engagement.mau)}.</Explain>
+                    <Explain>Der Ring zählt immer die letzten 30 Tage, unabhängig vom Zeitraum: Anteil der {de(engagement.mau)} Monatsnutzer, die an einem durchschnittlichen Tag Pokyh öffnen.</Explain>
                   </Section>
                 </Pair>
 
@@ -1015,7 +1019,7 @@ export function AnalyticsPage() {
                 ]}
               />
               <Pair>
-                <Section title="Konten" meta={`${de(accounts.newInRange)} neu`}>
+                <Section title="Konten" meta={`${de(accounts.newInRange)} neu registriert`}>
                   <div className="mt-8">
                     <Ledger
                       items={[

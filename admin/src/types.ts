@@ -310,6 +310,11 @@ export interface FrontendActivityStats {
   uniqueUsersToday: number;
   eventBreakdown: Array<{ event: string; count: number }>;
   topPages: Array<{ page: string; count: number }>;
+  // The dashboard's "today": active users as the Analytics page counts them,
+  // and events and pages of today only (the two above reach 7 days and 24 h).
+  activeUsersToday: number;
+  eventsToday: Array<{ event: string; count: number }>;
+  topPagesToday: Array<{ page: string; count: number }>;
 }
 
 export interface AdminAllTodo extends AdminTodo {

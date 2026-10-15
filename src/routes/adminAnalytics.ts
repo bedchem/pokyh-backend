@@ -61,6 +61,30 @@ async function requestLogUserAgents(key: string, since: Date, until: Date, fresh
   return rows;
 }
 
+// The same evidence, but only from the local days `keepDay` accepts — for
+// lists narrowed to a day or to weekdays. Grouped by hour like requestLogDays,
+// then folded back to one row per account and user agent.
+async function requestLogUserAgentsOn(key: string, since: Date, until: Date, tz: string, keepDay: (dayKey: string) => boolean): Promise<UaRow[]> {
+  const cached = userAgentCache.get(key);
+  if (cached) return cached;
+  const rows = await prisma.$queryRaw<Array<UaRow & { h: string }>>`
+    SELECT stable_uid AS uid, user_agent AS ua, DATE_FORMAT(created_at, '%Y-%m-%d %H') AS h, MAX(created_at) AS lastAt
+    FROM request_logs
+    WHERE created_at >= ${since} AND created_at < ${until} AND stable_uid IS NOT NULL AND user_agent IS NOT NULL
+    GROUP BY stable_uid, user_agent, h`;
+  const merged = new Map<string, UaRow>();
+  for (const row of rows) {
+    if (!keepDay(localDayAndHour(new Date(`${row.h.replace(' ', 'T')}:00:00Z`), tz).dayKey)) continue;
+    const lastAt = new Date(row.lastAt);
+    const id = `${row.uid}\n${row.ua}`;
+    const known = merged.get(id);
+    if (!known || lastAt > known.lastAt) merged.set(id, { uid: row.uid, ua: row.ua, lastAt });
+  }
+  const result = [...merged.values()];
+  userAgentCache.set(key, result);
+  return result;
+}
+
 type LogDay = { all: Set<string>; byPlatform: Record<UsagePlatform, Set<string>> };
 const logDayCache = new TtlCache<Map<string, LogDay>>(60 * 1000);
 
@@ -960,6 +984,19 @@ async function buildAnalytics(period: Period, fresh: boolean): Promise<Analytics
   };
 }
 
+// "Heute aktiv" exactly as the Analytics page counts it (engagement.dau), for
+// the dashboard: different people in today's visits, or the server logs where
+// they saw more.
+export async function activeToday(now = new Date()): Promise<number> {
+  const tz = config.usageAnalytics.timezone;
+  const todayKey = localDayAndHour(now, tz).dayKey;
+  const [[row], logDays] = await Promise.all([
+    prisma.$queryRaw<Array<{ n: bigint }>>`SELECT COUNT(DISTINCT ${PERSON_SQL}) AS n FROM usage_sessions WHERE day_key = ${todayKey}`,
+    requestLogDays(startOfLocalDay(todayKey, tz), startOfLocalDay(addDays(todayKey, 1), tz), tz, false),
+  ]);
+  return Math.max(num(row?.n), logDays.get(todayKey)?.all.size ?? 0);
+}
+
 router.get('/', requireAdmin, async (req: Request, res: Response): Promise<void> => {
   let period: Period;
   try {
@@ -1138,10 +1175,26 @@ router.get('/people', requireAdmin, async (req: Request, res: Response): Promise
   }
   const where = Prisma.join(conditions, ' AND ');
 
-  // Log rows have no day or hour of their own, so they only join lists that
-  // span the whole range — exactly the ones whose figures include them.
-  const timeFiltered = day !== null || hours.length > 0 || weekdays.length > 0 || band !== null;
-  const withLogs = !timeFiltered && (platform !== null || (segment !== null && segment !== 'loyal'));
+  // Log rows join every list whose figure includes them: the whole range, a
+  // platform, most segments — and a day or weekdays, matched by the log's own
+  // local day. They have no start hour or visit length, so lists narrowed by
+  // those stay visits only, as do the figures made of visits or page views.
+  const sessionFiltered = hours.length > 0 || band !== null;
+  const dayFiltered = day !== null || weekdays.length > 0;
+  const visitsOnly = segment === 'loyal' || klasse !== null || page !== null || created !== null;
+  const withLogs = !sessionFiltered && (platform !== null || !visitsOnly);
+  const logDayMatches = (dayKey: string) =>
+    dayKey >= fromKey && dayKey <= toKey
+    && (day === null || dayKey === day)
+    && (weekdays.length === 0 || weekdays.includes(weekdayOf(dayKey)));
+  const logRows = (): Promise<UaRow[]> => {
+    if (!withLogs) return Promise.resolve([]);
+    if (!dayFiltered) return requestLogUserAgents(`people|${fromKey}|${toKey}`, since, until, false);
+    // One day needs only that day's logs.
+    const from = day !== null && day >= fromKey ? startOfLocalDay(day, tz) : since;
+    const to = day !== null && day <= toKey ? startOfLocalDay(addDays(day, 1), tz) : until;
+    return requestLogUserAgentsOn(`people|${fromKey}|${toKey}|${day ?? ''}|${weekdays.join(',')}`, from, to, tz, logDayMatches);
+  };
 
   type VisitRow = { uid: string; device: string; client: string; version: string; visits: bigint; seconds: unknown; lastSeenAt: Date };
   type DaysRow = { uid: string; activeDays: bigint };
@@ -1156,7 +1209,7 @@ router.get('/people', requireAdmin, async (req: Request, res: Response): Promise
       SELECT stable_uid AS uid, COUNT(DISTINCT day_key) AS activeDays
       FROM usage_sessions WHERE ${where}
       GROUP BY stable_uid`,
-    withLogs ? requestLogUserAgents(`people|${fromKey}|${toKey}`, since, until, false) : Promise.resolve([] as UaRow[]),
+    logRows(),
     // Page views are logged per localised path ("/de/timetable"); they are
     // matched after the same normalising the page list uses.
     page
