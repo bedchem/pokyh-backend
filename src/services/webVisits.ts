@@ -5,7 +5,7 @@ import { config } from '../config';
 import { clientIp } from '../middleware/requestLogger';
 import { visitorKeyFor } from './visitorKey';
 import { classifyUserAgent, localDayAndHour } from './usageAnalytics';
-import { countryFromHeader, placeFromHeader, sendsGpc, visitPage, visitorIp } from './webVisitMeta';
+import { countryFromHeader, placeFromHeader, sendsGpc, visitPage, visitorIp, visitorSource } from './webVisitMeta';
 
 // Website visitors, signed in or not: one row per page view of the website
 // (the page_view event of POST /activity-log). Behind "Website-Besucher" and
@@ -21,7 +21,8 @@ import { countryFromHeader, placeFromHeader, sendsGpc, visitPage, visitorIp } fr
 //   like the usage visits; it goes with the address, or on withdrawal.
 //   Otherwise a row only says whether someone was signed in. A day-scoped
 //   visitor key (the same salted hash as the usage visits) counts different
-//   visitors per day.
+//   visitors per day: a signed-in visitor by account, a guest by device
+//   (see visitorSource).
 // - Every signed-in view also carries a keyed hash of its account (no name),
 //   so the page can say how many different accounts share an address — a
 //   school network puts many behind one. It goes with the address.
@@ -43,7 +44,8 @@ export async function recordWebVisit(req: Request, page: string | undefined, nam
   const now = new Date();
   const { dayKey, hour } = localDayAndHour(now, config.usageAnalytics.timezone);
   const ip = visitorIp(clientIp(req), req.headers['cf-connecting-ip']);
-  const visitorKey = await visitorKeyFor(`web:${ip ?? 'unknown'}:${userAgent.slice(0, 500)}`, dayKey);
+  const accountKey = req.user ? accountKeyOf(req.user.stableUid) : null;
+  const visitorKey = await visitorKeyFor(visitorSource(accountKey, ip, userAgent), dayKey);
   const anonymous = sendsGpc(req.headers['sec-gpc']);
 
   await prisma.webVisit.create({
@@ -56,7 +58,7 @@ export async function recordWebVisit(req: Request, page: string | undefined, nam
       device: kind.device,
       signedIn: Boolean(req.user),
       stableUid: anonymous ? null : namedUid,
-      accountKey: anonymous || !req.user ? null : accountKeyOf(req.user.stableUid),
+      accountKey: anonymous ? null : accountKey,
       page: visitPage(page),
       dayKey,
       hour,

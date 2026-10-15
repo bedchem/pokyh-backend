@@ -270,8 +270,8 @@ export default function VisitorsView({ range, country: initialCountry, ip, onSel
       </div>
 
       <p className="mt-6 max-w-[90ch] text-[12.5px] leading-relaxed text-ink-3">
-        Gezählt wird jeder Seitenaufruf der Website, mit oder ohne Konto; Besucher sind verschiedene Personen pro Tag
-        (wer an zwei Tagen kommt, zählt zweimal). Namen nur von Konten mit Einwilligung zur Nutzungsstatistik.
+        Gezählt wird jeder Seitenaufruf der Website, mit oder ohne Konto. Besucher sind verschiedene Personen pro Tag:
+        Angemeldete zählen pro Konto, Gäste pro Gerät; wer an zwei Tagen kommt, zählt zweimal. Namen nur von Konten mit Einwilligung zur Nutzungsstatistik.
         IP-Adressen, Orte und Namen werden nach {data.ipRetentionDays} Tagen entfernt, danach bleibt nur die anonyme Zahl pro Land.
         {data.ipWindow.clamped && ` IP-Adressen gibt es in diesem Zeitraum erst ab ${shortDate(data.ipWindow.fromKey)}.`}
         {data.since && data.since > data.period.fromKey && ` Website-Besucher werden seit ${shortDate(data.since)} gezählt.`}

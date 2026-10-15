@@ -13,6 +13,7 @@ const {
   placeFromHeader,
   sendsGpc,
   visitPage,
+  visitorSource,
 } = await loadTs('src/services/webVisitMeta.ts');
 
 test('addresses are normalised and anything else is refused', () => {
@@ -45,6 +46,30 @@ test('behind a local proxy the edge header names the visitor, otherwise the dire
   // No usable header: the direct address, internal or not.
   assert.equal(visitorIp('172.18.0.5', 'garbage'), '172.18.0.5');
   assert.equal(visitorIp(undefined, undefined), null);
+});
+
+test('a signed-in visitor counts by account, a guest by device', () => {
+  const ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/128.0';
+  // Three accounts on one browser are three visitors…
+  const accounts = ['a', 'b', 'c'].map((uid) => visitorSource(uid, '203.0.113.7', ua));
+  assert.equal(new Set(accounts).size, 3);
+  // …one account on two devices is one…
+  assert.equal(visitorSource('a', '203.0.113.7', ua), visitorSource('a', '198.51.100.1', 'Mozilla/5.0 (iPhone)'));
+  // …and guests are told apart by address and browser.
+  assert.equal(visitorSource(null, '203.0.113.7', ua), visitorSource(null, '203.0.113.7', ua));
+  assert.notEqual(visitorSource(null, '203.0.113.7', ua), visitorSource(null, '203.0.113.8', ua));
+  assert.notEqual(visitorSource(null, '203.0.113.7', ua), visitorSource('a', '203.0.113.7', ua));
+});
+
+test('the cleanup rekeys signed-in visits with the very formula the count uses', () => {
+  // visitorKeyFor hashes `${salt}:${source}`; the SQL in index.ts must build
+  // the same string from the stored account key.
+  assert.equal(visitorSource('0123456789abcdef', '203.0.113.7', 'ua'), 'web-account:0123456789abcdef');
+  const root = fileURLToPath(new URL('..', import.meta.url));
+  const index = readFileSync(join(root, 'src', 'index.ts'), 'utf8');
+  const job = index.slice(index.indexOf('async function cleanupWebVisits'), index.indexOf('let backgroundJobsStarted'));
+  assert.ok(job.includes("LEFT(SHA2(CONCAT(s.salt, ':web-account:', w.account_key), 256), 16)"), 'same string, same hash, same length');
+  assert.ok(job.includes('JOIN usage_day_salts s ON s.day_key = w.day_key'), 'only while the day salt exists');
 });
 
 test('countries are two-letter codes, unknown and Tor are none', () => {

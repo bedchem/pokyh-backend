@@ -414,10 +414,22 @@ async function cleanupWebVisits() {
     UPDATE web_visits SET stable_uid = NULL
     WHERE stable_uid IS NOT NULL
       AND stable_uid NOT IN (SELECT stable_uid FROM privacy_consents WHERE usage_stats = 1)`;
-  if (anonymised > 0 || withoutConsent > 0) logger.info('Web visit retention cleanup', {
+  // Signed-in visits count by account (webVisitMeta.visitorSource). Rows keyed
+  // by device instead — written before that rule, or by a node still on an
+  // older version during a rolling update — get the account's day key while
+  // their day's salt exists (today and yesterday); afterwards nothing can be
+  // rekeyed, by design. Matches nothing once every row is in step.
+  const rekeyed = await prisma.$executeRaw`
+    UPDATE web_visits w
+    JOIN usage_day_salts s ON s.day_key = w.day_key
+    SET w.visitor_key = LEFT(SHA2(CONCAT(s.salt, ':web-account:', w.account_key), 256), 16)
+    WHERE w.account_key IS NOT NULL
+      AND w.visitor_key <> LEFT(SHA2(CONCAT(s.salt, ':web-account:', w.account_key), 256), 16)`;
+  if (anonymised > 0 || withoutConsent > 0 || rekeyed > 0) logger.info('Web visit retention cleanup', {
     action: 'web_visit_retention_cleanup',
     anonymisedCount: anonymised,
     anonymisedWithoutConsent: withoutConsent,
+    rekeyedByAccount: rekeyed,
     retentionDays: config.requestLogRetentionDays,
   });
 }

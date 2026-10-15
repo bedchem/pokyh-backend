@@ -53,6 +53,20 @@ export function visitorIp(direct: string | null | undefined, connectingIp: Heade
   return normaliseIp(firstHeader(connectingIp)) ?? own;
 }
 
+/**
+ * Who one visitor is for the count of different visitors per day: a signed-in
+ * visitor is their account (its keyed hash, see webVisits.ts) — several
+ * accounts on one browser are several visitors, one account on two devices is
+ * one — and a guest is their device, the address and browser together. The
+ * result is hashed with the day's salt before it is stored (visitorKeyFor);
+ * index.ts rebuilds the same value in SQL for rows keyed otherwise, so the two
+ * must stay in step: `${salt}:web-account:${accountKey}`.
+ */
+export function visitorSource(accountKey: string | null, ip: string | null, userAgent: string): string {
+  if (accountKey) return `web-account:${accountKey}`;
+  return `web:${ip ?? 'unknown'}:${userAgent.slice(0, 500)}`;
+}
+
 /** The visitor's country (ISO 3166-1 alpha-2) as the edge reports it, or "" when unknown. */
 export function countryFromHeader(value: HeaderValue): string {
   const code = (firstHeader(value) ?? '').trim().toUpperCase();
