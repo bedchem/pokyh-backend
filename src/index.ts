@@ -16,6 +16,7 @@ import { appRouter } from './routes/index';
 import { setupRouter } from './routes/setup';
 import { requestLogger } from './middleware/requestLogger';
 import { adminLive, adminAppSync } from './services/adminLive';
+import { expireLapsedAdminSetups } from './services/adminLogin';
 import { requestId } from './middleware/requestId';
 import { prisma } from './db';
 import { startPushPoller } from './services/pushPoller';
@@ -465,6 +466,16 @@ function startBackgroundJobs() {
   setInterval(() => void cleanupFrontendActivity().catch(() => {}), config.requestLogCleanupIntervalMs);
   setTimeout(() => void cleanupWebVisits().catch(() => {}), 30_000);
   setInterval(() => void cleanupWebVisits().catch(() => {}), config.requestLogCleanupIntervalMs);
+
+  // A WebUntis account made admin that did not sign in within its setup
+  // window loses the grant and its one-time password. The node that made the
+  // grant also has a timer for the exact moment; this covers restarts.
+  const expireAdminSetups = () => {
+    if (!ownsClusterWork('job:admin-setup-expiry')) return;
+    void expireLapsedAdminSetups().catch(() => {});
+  };
+  setTimeout(expireAdminSetups, 8_000);
+  setInterval(expireAdminSetups, 30_000);
 
   // Each job is started on its own: one that cannot start (for example a
   // rejected configuration value) must not keep the others from running.

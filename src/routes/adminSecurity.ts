@@ -8,7 +8,13 @@ import { clientIp } from '../middleware/requestLogger';
 import { logger } from '../utils/logger';
 import { UnauthorizedError, ValidationError } from '../utils/errors';
 import { passkeyRelyingParty } from '../security/adminLogin';
-import { checkAdminPassword, findAdminAccount, issueAdminToken } from '../services/adminLogin';
+import {
+  adminPasswordKindOf,
+  changeAdminPassword,
+  checkAdminPassword,
+  findAdminAccount,
+  issueAdminToken,
+} from '../services/adminLogin';
 import {
   deletePasskey,
   disableTotp,
@@ -34,7 +40,8 @@ import {
 //   POST /api/admin/auth/passkey/options        passwordless: WebAuthn challenge
 //   POST /api/admin/auth/passkey                passwordless: passkey assertion
 //
-//   GET    /api/admin/account/security          the signed-in admin's factors
+//   GET    /api/admin/account/security          the signed-in admin's factors and password kind
+//   POST   /api/admin/account/password          current + new password
 //   POST   /api/admin/account/totp/setup        new secret + QR code
 //   POST   /api/admin/account/totp/enable       first code → recovery codes
 //   POST   /api/admin/account/totp/disable      a code
@@ -61,6 +68,8 @@ function loginStepLimiter() {
 }
 const secondFactorLimiter = loginStepLimiter();
 const passkeyLoginLimiter = loginStepLimiter();
+// Guessing the current password through the change form is a login attempt too.
+const passwordChangeLimiter = loginStepLimiter();
 
 function relyingParty(req: Request, inSession: boolean): RelyingParty {
   const rp = passkeyRelyingParty(req.get('origin'), config.adminPasskeyOrigins);
@@ -73,8 +82,9 @@ function relyingParty(req: Request, inSession: boolean): RelyingParty {
 async function completeLogin(req: Request, res: Response, username: string, method: string): Promise<void> {
   // Admin rights may have been taken away since the first step.
   const still = await findAdminAccount(username);
-  if (!still.ok) {
-    logger.warn('Admin login failed: account is no longer an admin', { action: 'admin_login_failed', reason: still.reason, username, ip: clientIp(req) });
+  if (!still.ok || still.account.adminRecord?.mustChangePassword) {
+    const reason = still.ok ? 'one-time-password-pending' : still.reason;
+    logger.warn('Admin login failed: account is no longer an admin', { action: 'admin_login_failed', reason, username, ip: clientIp(req) });
     throw new UnauthorizedError('Invalid credentials');
   }
   const token = issueAdminToken(still.account.username);
@@ -143,7 +153,37 @@ router.post('/auth/passkey', passkeyLoginLimiter, async (req: Request, res: Resp
 // ── The signed-in admin's own factors ───────────────────────────────────────
 
 router.get('/account/security', requireAdmin, async (req: Request, res: Response): Promise<void> => {
-  res.json(await securityStatus(sessionUsername(req)));
+  const username = sessionUsername(req);
+  const [status, lookup] = await Promise.all([securityStatus(username), findAdminAccount(username)]);
+  // Which password signs this admin in — and so whether it can be changed here.
+  res.json({ ...status, password: lookup.ok ? adminPasswordKindOf(lookup.account) : 'config' });
+});
+
+// Changing the password asks for the current one, so a stolen session token
+// alone cannot lock the owner out. For a WebUntis admin this is the panel
+// password chosen after the one-time password — the WebUntis password itself
+// is never touched. A configured one (ADMIN_PASSWORD_HASH) changes on the
+// server only.
+router.post('/account/password', passwordChangeLimiter, requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const { currentPassword, newPassword } = z.object({
+    currentPassword: z.string().min(1).max(200),
+    newPassword: z.string().min(8, 'Das neue Passwort braucht mindestens 8 Zeichen').max(200),
+  }).parse(req.body);
+  const username = sessionUsername(req);
+  const lookup = await findAdminAccount(username);
+  if (!lookup.ok) throw new UnauthorizedError('Admin access has been revoked');
+  const kind = adminPasswordKindOf(lookup.account);
+  if (kind === 'config') {
+    throw new ValidationError('Dieses Passwort kommt aus der Server-Konfiguration und lässt sich nur dort ändern.');
+  }
+  const check = await checkAdminPassword(lookup.account, currentPassword);
+  if (check !== 'ok') {
+    logger.warn('Admin security: wrong current password before a password change', { action: 'admin_password_change_failed', username, ip: clientIp(req) });
+    throw new ValidationError('Das aktuelle Passwort stimmt nicht');
+  }
+  await changeAdminPassword(lookup.account, newPassword);
+  logger.info('Admin security: password changed', { action: 'admin_password_changed', username, kind, ip: clientIp(req) });
+  res.status(204).send();
 });
 
 router.post('/account/totp/setup', requireAdmin, async (req: Request, res: Response): Promise<void> => {
@@ -182,7 +222,8 @@ router.post('/account/passkeys/options', requireAdmin, async (req: Request, res:
   const { password } = z.object({ password: z.string().min(1).max(200) }).parse(req.body);
   const username = sessionUsername(req);
   const lookup = await findAdminAccount(username);
-  if (!lookup.ok || (await checkAdminPassword(lookup.account, password)) !== 'ok') {
+  const check = lookup.ok ? await checkAdminPassword(lookup.account, password) : 'wrong';
+  if (check !== 'ok') {
     logger.warn('Admin security: wrong password before adding a passkey', { action: 'admin_passkey_reauth_failed', username, ip: clientIp(req) });
     throw new ValidationError('Passwort stimmt nicht');
   }

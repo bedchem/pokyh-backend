@@ -1026,6 +1026,7 @@ export function AnalyticsPage() {
                         ]),
                         { label: 'Schüler:innen', value: de(accounts.students) },
                         { label: 'Eltern', value: de(accounts.parents) },
+                        ...(accounts.noRole > 0 ? [{ label: 'Ohne Rolle', value: de(accounts.noRole) }] : []),
                         { label: 'Mit WebUntis', value: de(accounts.untis) },
                         { label: 'Push aktiv', value: percent(accounts.withPush, accounts.total) },
                         { label: 'Learn-Profile', value: de(accounts.withLearn) },

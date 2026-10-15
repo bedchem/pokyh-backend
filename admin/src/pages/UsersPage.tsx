@@ -1,14 +1,17 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { Shield, ScrollText, Users, RefreshCw, UserPlus, Trash2, Download, Upload, GraduationCap, UserCog, ShieldCheck } from 'lucide-react';
+import { Shield, ScrollText, Users, RefreshCw, UserPlus, Trash2, Download, Upload, GraduationCap, UserCog, ShieldCheck, Wand2 } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { adminApi } from '../api';
 import { useToast } from '../components/Toast';
 import { useAutoRefresh } from '../hooks/useAutoRefresh';
 import { useLive } from '../live';
 import { UserDetailDrawer } from '../components/UserDetailDrawer';
-import { Avatar, Delta, Dialog, Empty, FieldLabel, Figures, IconButton, PageHeader, Pager, SearchField, Section, Segmented, Spinner, Status, Tag } from '../components/kit';
+import { Avatar, Checkbox, Delta, Dialog, Empty, FieldLabel, Figures, IconButton, PageHeader, Pager, SearchField, Section, Segmented, Spinner, Status, Tag } from '../components/kit';
 import { Bars, SplitBar } from '../components/charts';
-import type { AdminUser } from '../types';
+import { AdminCountdown, clockOffset } from '../components/AdminCountdown';
+import { GrantAdminDialog, randomPassword } from '../components/GrantAdminDialog';
+import { ROLE_OPTIONS, roleLabel, roleTone } from '../roles';
+import type { AccountRole, AdminUser } from '../types';
 
 function relativeDate(dateStr: string): string {
   const diff = Date.now() - new Date(dateStr).getTime();
@@ -20,13 +23,15 @@ function relativeDate(dateStr: string): string {
   return months === 1 ? 'vor 1 Monat' : `vor ${months} Monaten`;
 }
 
-type FilterTab = 'all' | 'students' | 'parents' | 'admins';
+type FilterTab = 'all' | 'students' | 'parents' | 'none' | 'admins';
 
-// Tabs that map to a server-side role filter (Schüler/Eltern). 'admins' is
-// filtered client-side on the already-fetched page (admin is a separate flag).
-function roleForFilter(filter: FilterTab): 'student' | 'parent' | undefined {
+// Tabs that map to a server-side role filter (Schüler/Eltern/ohne Rolle).
+// 'admins' is filtered client-side on the already-fetched page (admin is a
+// separate flag).
+function roleForFilter(filter: FilterTab): AccountRole | undefined {
   if (filter === 'students') return 'student';
   if (filter === 'parents') return 'parent';
+  if (filter === 'none') return 'none';
   return undefined;
 }
 
@@ -37,6 +42,8 @@ interface Summary {
   admins: number;
   students: number;
   parents: number;
+  noRole: number;
+  // Accounts made since Monday 00:00 (server time).
   newThisWeek: number;
   byDay: Array<{ date: string; count: number }>;
 }
@@ -45,10 +52,52 @@ const TABS: Array<{ value: FilterTab; label: string }> = [
   { value: 'all',      label: 'Alle' },
   { value: 'students', label: 'Schüler' },
   { value: 'parents',  label: 'Eltern' },
+  { value: 'none',     label: 'Ohne Rolle' },
   { value: 'admins',   label: 'Admin' },
 ];
 
-const EMPTY_FORM = { username: '', password: '', webuntisKlasseId: '', webuntisKlasseName: '', role: 'student' as 'student' | 'parent' };
+const EMPTY_FORM = {
+  username: '',
+  password: '',
+  webuntisKlasseId: '',
+  webuntisKlasseName: '',
+  role: 'student' as AccountRole,
+  isAdmin: false,
+  // Only for an admin without a password (a WebUntis account).
+  adminPassword: '',
+};
+
+// Choosing a role: three options, each with what it means.
+function RoleDialog({ user, onPick, onClose }: { user: AdminUser; onPick: (role: AccountRole) => void; onClose: () => void }) {
+  return (
+    <Dialog title="Rolle ändern" subtitle={user.username} onClose={onClose}>
+      <div className="flex flex-col gap-2">
+        {ROLE_OPTIONS.map((option) => {
+          const current = option.value === user.role;
+          return (
+            <button
+              key={option.value}
+              type="button"
+              onClick={() => onPick(option.value)}
+              aria-pressed={current}
+              className="flex items-start gap-3.5 rounded-[18px] px-[18px] py-3.5 text-left transition-colors"
+              style={{ background: current ? 'var(--sky-wash)' : 'var(--well)' }}
+            >
+              <span className="min-w-0 flex-1">
+                <span className="block text-[14.5px] font-medium" style={{ color: current ? 'var(--sky-deep)' : 'var(--ink)' }}>{option.label}</span>
+                <span className="mt-0.5 block text-[13px] leading-relaxed text-ink-3">{option.hint}</span>
+              </span>
+              {current && <span className="mt-0.5 text-[12.5px] text-sky-deep">aktuell</span>}
+            </button>
+          );
+        })}
+      </div>
+      {user.isAdmin && (
+        <p className="mt-4 text-[12.5px] leading-relaxed text-ink-3">Die Admin-Rechte bleiben bei jeder Rolle unverändert.</p>
+      )}
+    </Dialog>
+  );
+}
 
 function SkeletonRow() {
   return (
@@ -85,6 +134,10 @@ export function UsersPage() {
   const [createForm, setCreateForm] = useState(EMPTY_FORM);
   const [creating, setCreating] = useState(false);
   const [pendingRole, setPendingRole] = useState<string | null>(null);
+  const [roleDialogUser, setRoleDialogUser] = useState<AdminUser | null>(null);
+  const [grantUser, setGrantUser] = useState<AdminUser | null>(null);
+  // Server clock minus local clock, for the admin countdowns.
+  const [offset, setOffset] = useState(0);
   const [exporting, setExporting] = useState(false);
   const [importing, setImporting] = useState(false);
   const importInputRef = useRef<HTMLInputElement>(null);
@@ -102,12 +155,14 @@ export function UsersPage() {
       adminApi.stats(),
       adminApi.users(undefined, 1, 1, 'student'),
       adminApi.users(undefined, 1, 1, 'parent'),
-    ]).then(([stats, students, parents]) => {
+      adminApi.users(undefined, 1, 1, 'none'),
+    ]).then(([stats, students, parents, noRole]) => {
       setSummary({
         total: stats.totalUsers,
         admins: stats.totalAdmins,
         students: students.total,
         parents: parents.total,
+        noRole: noRole.total,
         newThisWeek: stats.newUsersThisWeek ?? 0,
         byDay: stats.usersByDay ?? [],
       });
@@ -120,6 +175,7 @@ export function UsersPage() {
       const res = await adminApi.users(debouncedSearch || undefined, page, limit, roleForFilter(filter));
       setUsers(res.users);
       setTotal(res.total);
+      setOffset(clockOffset(res.serverTime));
     } catch (err) {
       showToast(err instanceof Error ? err.message : 'Laden fehlgeschlagen', 'error');
     } finally {
@@ -146,7 +202,24 @@ export function UsersPage() {
 
   const totalPages = Math.ceil(total / limit);
 
+  // A countdown ran out: the server has removed the grant by now.
+  const handleGrantLapsed = useCallback(() => {
+    setTimeout(() => { void refreshAll(); }, 1500);
+  }, [refreshAll]);
+
+  function handleGranted(user: AdminUser, adminSetupExpiresAt: string | null) {
+    setGrantUser(null);
+    setUsers((prev) => prev.map((u) => u.stableUid === user.stableUid ? { ...u, isAdmin: true, adminSetupExpiresAt } : u));
+    showToast(`Admin an ${user.username} vergeben — Einmal-Passwort gilt 15 Minuten`, 'success');
+    fetchSummary();
+  }
+
   async function handleToggleAdmin(user: AdminUser) {
+    // A WebUntis account first gets a one-time password (popup).
+    if (!user.isAdmin && user.needsOneTimePassword) {
+      setGrantUser(user);
+      return;
+    }
     setPendingAdmin(user.stableUid);
     const newIsAdmin = !user.isAdmin;
     setUsers((prev) => prev.map((u) => u.stableUid === user.stableUid ? { ...u, isAdmin: newIsAdmin } : u));
@@ -193,12 +266,15 @@ export function UsersPage() {
     if (!createForm.username.trim()) return;
     setCreating(true);
     try {
+      const password = createForm.password.trim();
       const user = await adminApi.createUser({
         username: createForm.username.trim(),
-        password: createForm.password.trim() || undefined,
+        password: password || undefined,
         webuntisKlasseId: createForm.webuntisKlasseId ? parseInt(createForm.webuntisKlasseId, 10) : 0,
         webuntisKlasseName: createForm.webuntisKlasseName.trim() || undefined,
         role: createForm.role,
+        isAdmin: createForm.isAdmin,
+        adminPassword: createForm.isAdmin && !password ? createForm.adminPassword : undefined,
       });
       setUsers((prev) => [user, ...prev]);
       setTotal((t) => t + 1);
@@ -213,13 +289,14 @@ export function UsersPage() {
     }
   }
 
-  async function handleToggleRole(user: AdminUser) {
-    const newRole: 'student' | 'parent' = user.role === 'parent' ? 'student' : 'parent';
+  async function handleSetRole(user: AdminUser, newRole: AccountRole) {
+    setRoleDialogUser(null);
+    if (newRole === user.role) return;
     setPendingRole(user.stableUid);
     setUsers((prev) => prev.map((u) => u.stableUid === user.stableUid ? { ...u, role: newRole } : u));
     try {
       await adminApi.setUserRole(user.stableUid, newRole);
-      showToast(`${user.username} ist jetzt ${newRole === 'parent' ? 'Elternteil' : 'Schüler:in'}`, 'success');
+      showToast(newRole === 'none' ? `${user.username} hat jetzt keine Rolle` : `${user.username} ist jetzt ${roleLabel(newRole)}`, 'success');
       fetchSummary();
       // If a role filter is active, the row may no longer belong on this page.
       if (roleForFilter(filter)) void fetchUsers();
@@ -319,16 +396,51 @@ export function UsersPage() {
                 />
               </FieldLabel>
             </div>
-            {/* Account type — Schüler vs. Eltern */}
+            {/* Account type — Schüler, Eltern or no role */}
             <div className="flex flex-col gap-2">
-              <span className="text-[13px] text-ink-2">Kontotyp</span>
+              <span className="text-[13px] text-ink-2">Rolle</span>
               <Segmented
-                label="Kontotyp"
+                label="Rolle"
                 value={createForm.role}
                 onChange={(role) => setCreateForm((f) => ({ ...f, role }))}
-                options={[{ value: 'student', label: 'Schüler:in' }, { value: 'parent', label: 'Elternteil' }]}
+                options={ROLE_OPTIONS.map((o) => ({ value: o.value, label: o.value === 'none' ? 'Keine' : o.label }))}
               />
             </div>
+            <Checkbox
+              checked={createForm.isAdmin}
+              onChange={(isAdmin) => setCreateForm((f) => ({ ...f, isAdmin }))}
+              label="Admin"
+              hint="Darf sich im Admin-Panel anmelden. Die Rolle bleibt davon unberührt."
+            />
+            {createForm.isAdmin && !createForm.password.trim() && (
+              <FieldLabel
+                label="Einmal-Passwort fürs Admin-Panel *"
+                hint="Ohne Passwort oben ist es ein WebUntis-Konto. Gilt 15 Minuten; beim ersten Login muss ein eigenes Passwort gesetzt werden, sonst verfällt der Admin-Zugang."
+              >
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    required
+                    minLength={8}
+                    autoComplete="off"
+                    autoCapitalize="none"
+                    spellCheck={false}
+                    value={createForm.adminPassword}
+                    onChange={(e) => setCreateForm((f) => ({ ...f, adminPassword: e.target.value }))}
+                    className="field h-12 min-w-0 flex-1 px-4 font-mono text-[14.5px]"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setCreateForm((f) => ({ ...f, adminPassword: randomPassword() }))}
+                    className="btn btn-quiet"
+                    title="Zufälliges Passwort erzeugen"
+                  >
+                    <Wand2 size={16} strokeWidth={1.7} />
+                    Generieren
+                  </button>
+                </div>
+              </FieldLabel>
+            )}
             <div className="mt-2 flex gap-3">
               <button type="button" onClick={() => setShowCreateModal(false)} className="btn btn-quiet flex-1">Abbrechen</button>
               <button type="submit" disabled={creating} className="btn btn-primary flex-1">
@@ -340,12 +452,29 @@ export function UsersPage() {
         </Dialog>
       )}
 
+      {grantUser && (
+        <GrantAdminDialog
+          stableUid={grantUser.stableUid}
+          username={grantUser.username}
+          onClose={() => setGrantUser(null)}
+          onGranted={(expiresAt) => handleGranted(grantUser, expiresAt)}
+        />
+      )}
+
+      {roleDialogUser && (
+        <RoleDialog
+          user={roleDialogUser}
+          onPick={(role) => void handleSetRole(roleDialogUser, role)}
+          onClose={() => setRoleDialogUser(null)}
+        />
+      )}
+
       {selectedUid && (
         <UserDetailDrawer
           stableUid={selectedUid}
           onClose={() => setSelectedUid(null)}
           onUserDeleted={(uid) => { setUsers((prev) => prev.filter((u) => u.stableUid !== uid)); setTotal((t) => t - 1); setSelectedUid(null); fetchSummary(); }}
-          onAdminToggled={(uid, isAdmin) => { setUsers((prev) => prev.map((u) => u.stableUid === uid ? { ...u, isAdmin } : u)); fetchSummary(); }}
+          onAdminToggled={(uid, isAdmin, adminSetupExpiresAt) => { setUsers((prev) => prev.map((u) => u.stableUid === uid ? { ...u, isAdmin, adminSetupExpiresAt } : u)); fetchSummary(); }}
         />
       )}
 
@@ -374,7 +503,7 @@ export function UsersPage() {
             value: summary?.total ?? total,
             icon: Users,
             note: summary && summary.newThisWeek > 0
-              ? <Delta trend="up" tone="mint"><span title="Neue Konten in dieser Woche">+{summary.newThisWeek.toLocaleString('de-AT')} neu</span></Delta>
+              ? <Delta trend="up" tone="mint"><span title="Neue Konten seit Montag 00:00">+{summary.newThisWeek.toLocaleString('de-AT')} diese Woche</span></Delta>
               : undefined,
           },
           { label: 'Schüler:innen', value: summary?.students ?? '–', icon: GraduationCap },
@@ -403,6 +532,7 @@ export function UsersPage() {
               parts={[
                 { label: 'Schüler:innen', value: summary?.students ?? 0, color: 'var(--mint)' },
                 { label: 'Eltern',        value: summary?.parents ?? 0,  color: '#a98be0' },
+                { label: 'Ohne Rolle',    value: summary?.noRole ?? 0,   color: 'var(--well-3)' },
               ]}
             />
           </div>
@@ -466,8 +596,15 @@ export function UsersPage() {
 
                     <td>
                       <div className="flex flex-col gap-1.5">
-                        <Status tone={user.role === 'parent' ? 'violet' : 'mint'}>{user.role === 'parent' ? 'Elternteil' : 'Schüler:in'}</Status>
-                        {user.isAdmin && <Status tone="sky">Admin</Status>}
+                        <Status tone={roleTone(user.role)}>{roleLabel(user.role)}</Status>
+                        {user.isAdmin && (
+                          <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+                            <Status tone={user.adminSetupExpiresAt ? 'amber' : 'sky'}>Admin</Status>
+                            {user.adminSetupExpiresAt && (
+                              <AdminCountdown expiresAt={user.adminSetupExpiresAt} offset={offset} onExpired={handleGrantLapsed} />
+                            )}
+                          </div>
+                        )}
                       </div>
                     </td>
 
@@ -483,13 +620,13 @@ export function UsersPage() {
                           label={user.isAdmin ? 'Admin-Rechte entziehen' : 'Admin-Rechte vergeben'}
                           onClick={() => void handleToggleAdmin(user)}
                         />
-                        {/* Toggle role: Schüler ⇄ Eltern */}
+                        {/* Role: Schüler, Eltern or none */}
                         <IconButton
-                          icon={user.role === 'parent' ? GraduationCap : UserCog}
+                          icon={UserCog}
                           tone="violet"
                           busy={pendingRole === user.stableUid}
-                          label={user.role === 'parent' ? 'Zu Schüler:in machen' : 'Zu Elternteil machen'}
-                          onClick={() => void handleToggleRole(user)}
+                          label="Rolle ändern"
+                          onClick={() => setRoleDialogUser(user)}
                         />
                         <IconButton
                           icon={ScrollText}

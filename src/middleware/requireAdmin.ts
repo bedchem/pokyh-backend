@@ -40,12 +40,15 @@ function extractToken(req: Request): string | null {
 // that could ever accidentally persist "admin" into a user's mutable `role`
 // column grants access on its own — matching CLAUDE.md's explicit "server-
 // side Admin lookup, not a mutable JWT flag" requirement.
+// A grant still waiting for its first login (one-time password not yet
+// replaced) is not admin standing either: a token from an earlier admin
+// period of the same account must not come back to life with it.
 async function isCurrentlyAdmin(username: string): Promise<boolean> {
   if (config.adminUsernames.includes(username)) return true;
   const user = await prisma.user.findUnique({ where: { username }, select: { stableUid: true } });
   if (!user) return false;
-  const record = await prisma.admin.findUnique({ where: { stableUid: user.stableUid }, select: { stableUid: true } });
-  return record !== null;
+  const record = await prisma.admin.findUnique({ where: { stableUid: user.stableUid }, select: { mustChangePassword: true } });
+  return record !== null && !record.mustChangePassword;
 }
 
 export async function requireAdmin(

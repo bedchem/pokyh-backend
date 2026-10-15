@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useMemo, useState, useRef } from 'react';
 import {
   X,
   CheckSquare,
@@ -20,6 +20,9 @@ import {
 } from 'lucide-react';
 import { adminApi } from '../api';
 import { useToast } from './Toast';
+import { AdminCountdown, clockOffset } from './AdminCountdown';
+import { GrantAdminDialog } from './GrantAdminDialog';
+import { roleLabel } from '../roles';
 import type { AdminUserDetail, AdminTodo, AdminUserClass } from '../types';
 
 const AVATAR_COLORS = ['#2a78cc', '#8a3fc4', '#0f7f96', '#16845f', '#b3610d', '#d93a40'];
@@ -426,7 +429,7 @@ interface UserDetailDrawerProps {
   stableUid: string;
   onClose: () => void;
   onUserDeleted: (stableUid: string) => void;
-  onAdminToggled: (stableUid: string, isAdmin: boolean) => void;
+  onAdminToggled: (stableUid: string, isAdmin: boolean, adminSetupExpiresAt: string | null) => void;
 }
 
 export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminToggled }: UserDetailDrawerProps) {
@@ -441,6 +444,9 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [newPassword, setNewPassword] = useState('');
   const [settingPassword, setSettingPassword] = useState(false);
+  const [showGrantDialog, setShowGrantDialog] = useState(false);
+  // Server clock minus local clock, measured when the details arrived.
+  const offset = useMemo(() => clockOffset(user?.serverTime), [user?.serverTime]);
   const [isMobile, setIsMobile] = useState(() => typeof window !== 'undefined' && window.innerWidth < 640);
 
   useEffect(() => {
@@ -469,20 +475,43 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
   function handleTodoDeleted(id: string) { setUser((prev) => prev ? { ...prev, todos: prev.todos.filter((t) => t.id !== id) } : prev); }
   function handleClassRemoved(classId: string) { setUser((prev) => prev ? { ...prev, classes: prev.classes.filter((c) => c.classId !== classId) } : prev); }
 
+  function handleGranted(adminSetupExpiresAt: string | null) {
+    if (!user) return;
+    setShowGrantDialog(false);
+    showToast(`Admin an ${user.username} vergeben — Einmal-Passwort gilt 15 Minuten`, 'success');
+    setUser((prev) => prev ? { ...prev, isAdmin: true, adminSetupExpiresAt, adminCanSignIn: false } : prev);
+    onAdminToggled(user.stableUid, true, adminSetupExpiresAt);
+  }
+
+  // The countdown ran out: the server has removed the grant by now.
+  function handleGrantLapsed() {
+    setTimeout(() => {
+      adminApi.userDetail(stableUid).then((fresh) => {
+        setUser(fresh);
+        if (!fresh.isAdmin) onAdminToggled(stableUid, false, null);
+      }).catch(() => {});
+    }, 1500);
+  }
+
   async function handleToggleAdmin() {
     if (!user) return;
+    // A WebUntis account first gets a one-time password (popup).
+    if (!user.isAdmin && user.needsOneTimePassword) {
+      setShowGrantDialog(true);
+      return;
+    }
     setTogglingAdmin(true);
     try {
       if (user.isAdmin) {
         await adminApi.revokeAdmin(user.stableUid);
         showToast(`Admin von ${user.username} entzogen`, 'success');
-        onAdminToggled(user.stableUid, false);
+        onAdminToggled(user.stableUid, false, null);
         onClose();
       } else {
-        await adminApi.grantAdmin(user.stableUid);
+        const result = await adminApi.grantAdmin(user.stableUid);
         showToast(`Admin an ${user.username} vergeben`, 'success');
-        setUser((prev) => prev ? { ...prev, isAdmin: true } : prev);
-        onAdminToggled(user.stableUid, true);
+        setUser((prev) => prev ? { ...prev, isAdmin: true, adminSetupExpiresAt: result.adminSetupExpiresAt, adminCanSignIn: true } : prev);
+        onAdminToggled(user.stableUid, true, result.adminSetupExpiresAt);
       }
     } catch (e) {
       showToast(e instanceof Error ? e.message : 'Fehler', 'error');
@@ -531,6 +560,15 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
 
   return (
     <>
+      {showGrantDialog && user && (
+        <GrantAdminDialog
+          stableUid={user.stableUid}
+          username={user.username}
+          onClose={() => setShowGrantDialog(false)}
+          onGranted={handleGranted}
+        />
+      )}
+
       {/* Password modal */}
       {showPasswordModal && user && (
         <div
@@ -697,11 +735,15 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
                       {user.isAdmin && (
                         <span className="badge-blue text-[11px] px-2 py-0.5 font-medium">Admin</span>
                       )}
+                      {user.isAdmin && user.adminSetupExpiresAt && (
+                        <AdminCountdown expiresAt={user.adminSetupExpiresAt} offset={offset} onExpired={handleGrantLapsed} />
+                      )}
                     </div>
                     <div className="text-[11px] font-mono mt-1" style={{ color: 'rgb(var(--ink-rgb) / 0.484)' }}>
                       {user.stableUid}
                     </div>
                     <div className="flex items-center gap-3 mt-1.5 text-[12px] flex-wrap" style={{ color: 'rgb(var(--ink-rgb) / 0.58)' }}>
+                      <span>{roleLabel(user.role)}</span>
                       {user.webuntisKlasseName && <span>{user.webuntisKlasseName}</span>}
                       <span>Beigetreten {relativeDate(user.createdAt)}</span>
                     </div>
@@ -737,7 +779,25 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
                     Passwort setzen
                   </button>
                 </div>
-                {user.isAdmin && user.hasPassword === false && (
+                {user.isAdmin && user.adminSetupExpiresAt ? (
+                  <p className="mt-3 text-[12px] leading-relaxed" style={{ color: 'var(--amber-deep)' }}>
+                    Wartet auf den ersten Login mit dem Einmal-Passwort. Ohne Login verfällt der Admin-Zugang samt Einmal-Passwort.
+                  </p>
+                ) : user.isAdmin && !user.adminCanSignIn && user.needsOneTimePassword ? (
+                  <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2">
+                    <p className="min-w-0 flex-1 text-[12px] leading-relaxed" style={{ color: 'var(--amber-deep)' }}>
+                      {user.username} kann sich nicht im Admin-Panel anmelden: ein WebUntis-Konto braucht ein Einmal-Passwort.
+                    </p>
+                    <button
+                      onClick={() => setShowGrantDialog(true)}
+                      className="flex items-center gap-1.5 text-[12px] px-3 py-2 rounded-full transition-colors font-medium"
+                      style={{ color: 'var(--amber-deep)', border: '1px solid rgba(190,110,20,0.3)', background: 'transparent' }}
+                    >
+                      <Key size={12} />
+                      Einmal-Passwort vergeben
+                    </button>
+                  </div>
+                ) : user.isAdmin && user.hasPassword === false && (
                   <p className="mt-3 text-[12px] leading-relaxed" style={{ color: 'var(--amber-deep)' }}>
                     Kein eigenes Passwort: {user.username} kommt nur mit dem gemeinsamen Admin-Passwort ins Panel.
                     Setze ein Passwort, damit die Anmeldung mit eigenen Zugangsdaten klappt.

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, FormEvent } from 'react';
-import { AlertTriangle, Check, Copy, KeyRound, Pencil, ShieldCheck, Smartphone, Trash2 } from 'lucide-react';
+import { AlertTriangle, Check, Copy, KeyRound, Lock, Pencil, ShieldCheck, Smartphone, Trash2 } from 'lucide-react';
 import { browserSupportsWebAuthn, startRegistration } from '@simplewebauthn/browser';
 import { adminApi } from '../api';
 import { passkeyErrorMessage } from '../pages/LoginPage';
@@ -52,6 +52,86 @@ function RecoveryCodes({ codes, onDone }: { codes: string[]; onDone: () => void 
         </button>
         <button type="button" onClick={onDone} className="btn btn-primary">Ich habe sie gespeichert</button>
       </div>
+    </div>
+  );
+}
+
+// The password the panel login checks. A configured one (server
+// configuration) cannot be changed here; for a WebUntis admin this is the
+// panel password chosen after the one-time password, not the WebUntis one.
+function PasswordChange({ status }: { status: AdminSecurityStatus }) {
+  const [open, setOpen] = useState(false);
+  const [current, setCurrent] = useState('');
+  const [next, setNext] = useState('');
+  const [repeat, setRepeat] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState(false);
+
+  function reset() {
+    setOpen(false);
+    setCurrent('');
+    setNext('');
+    setRepeat('');
+    setError(null);
+  }
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    if (next.length < 8) { setError('Das neue Passwort braucht mindestens 8 Zeichen'); return; }
+    if (next !== repeat) { setError('Die beiden neuen Passwörter stimmen nicht überein'); return; }
+    setBusy(true);
+    setError(null);
+    try {
+      await adminApi.changePassword(current, next);
+      reset();
+      setDone(true);
+    } catch (err) {
+      setError(errorText(err, 'Passwort ändern fehlgeschlagen'));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const field = 'field h-[46px] w-full max-w-[320px] px-4 text-[14.5px]';
+
+  return (
+    <div className="mb-10">
+      <span className="flex items-center gap-2.5 text-[15px] font-medium"><Lock size={17} strokeWidth={1.7} /> Passwort</span>
+      <p className="mt-2 max-w-[60ch] text-[13.5px] leading-relaxed text-ink-3">
+        {status.password === 'config'
+          ? 'Dein Passwort kommt aus der Server-Konfiguration und lässt sich nur dort ändern.'
+          : status.password === 'account'
+            ? 'Gilt auch für deine Anmeldung in der Pokyh-App.'
+            : 'Gilt nur fürs Admin-Panel — ein WebUntis-Passwort bleibt unverändert.'}
+      </p>
+
+      {done && !open && <div className="mt-4 max-w-[60ch]"><Notice tone="mint" icon={Check}>Passwort geändert.</Notice></div>}
+
+      {status.password !== 'config' && !open && (
+        <button type="button" onClick={() => { setOpen(true); setDone(false); }} className="btn btn-quiet mt-5">
+          <Lock size={15} strokeWidth={1.7} /> Passwort ändern
+        </button>
+      )}
+
+      {open && (
+        <form onSubmit={(e) => void submit(e)} className="mt-5 flex max-w-[60ch] flex-col gap-4">
+          <FieldLabel label="Aktuelles Passwort">
+            <input type="password" value={current} onChange={(e) => setCurrent(e.target.value)} autoComplete="current-password" maxLength={200} required autoFocus className={field} />
+          </FieldLabel>
+          <FieldLabel label="Neues Passwort" hint="Mindestens 8 Zeichen.">
+            <input type="password" value={next} onChange={(e) => setNext(e.target.value)} autoComplete="new-password" maxLength={200} required className={field} />
+          </FieldLabel>
+          <FieldLabel label="Neues Passwort wiederholen">
+            <input type="password" value={repeat} onChange={(e) => setRepeat(e.target.value)} autoComplete="new-password" maxLength={200} required className={field} />
+          </FieldLabel>
+          {error && <Notice tone="rose" icon={AlertTriangle}>{error}</Notice>}
+          <div className="flex flex-wrap gap-2.5">
+            <button type="submit" disabled={busy} className="btn btn-primary">{busy ? <Spinner /> : null}Passwort ändern</button>
+            <button type="button" onClick={reset} className="btn btn-quiet">Abbrechen</button>
+          </div>
+        </form>
+      )}
     </div>
   );
 }
@@ -391,6 +471,7 @@ export function AccountSecurity() {
       {!status && !loadError && <Spinner />}
       {status && (
         <>
+          <PasswordChange status={status} />
           <AuthenticatorApp status={status} reload={reload} />
           <Passkeys status={status} reload={reload} />
         </>

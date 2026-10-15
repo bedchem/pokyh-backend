@@ -31,7 +31,8 @@ async function main() {
   await prisma.admin.upsert({
     where: { stableUid: user.stableUid },
     create: { stableUid: user.stableUid, canCreateClass: true, passwordHash },
-    update: { canCreateClass: true, passwordHash },
+    // A password set here is final: it ends a pending one-time-password grant.
+    update: { canCreateClass: true, passwordHash, mustChangePassword: false, setupExpiresAt: null },
   });
 
   console.log(`\n✅ "${username}" is now an admin — login with this password at /admin/\n`);

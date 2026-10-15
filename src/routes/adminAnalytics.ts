@@ -280,6 +280,8 @@ interface AnalyticsResponse {
     total: number;
     students: number;
     parents: number;
+    // Accounts set to "no role" (e.g. admins outside any class).
+    noRole: number;
     untis: number;
     local: number;
     newInRange: number;
@@ -794,10 +796,12 @@ async function buildAnalytics(period: Period, fresh: boolean): Promise<Analytics
   // ── Accounts and classes ──────────────────────────────────────────────────
   let students = 0;
   let parents = 0;
+  let noRole = 0;
   let untis = 0;
   let oldest = now.getTime();
   for (const user of users) {
     if (user.role === 'parent') parents += 1;
+    else if (user.role === 'none') noRole += 1;
     else students += 1;
     if (user.isUntisUser) untis += 1;
     oldest = Math.min(oldest, user.createdAt.getTime());
@@ -910,6 +914,7 @@ async function buildAnalytics(period: Period, fresh: boolean): Promise<Analytics
       total: users.length,
       students,
       parents,
+      noRole,
       untis,
       local: users.length - untis,
       newInRange,

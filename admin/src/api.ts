@@ -1,4 +1,4 @@
-import type { AdminStats, AdminClass, AdminSession, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish, AdminDishFull, AdminDishImportResult, AdminDishShiftResult, AdminDishRotateResult, AdminDishResetResult, AdminDishAnchorResult, DishPlan, AdminCommentsResponse, FileLogFile, FileLogResponse, FileLogEntry, FrontendActivityLogsResponse, FrontendActivityStats, AllTodosResponse, AllRemindersResponse, SchoolYearsResponse, ArchivedUsersResponse, ArchivedClass, ArchivedTodosResponse, ArchivedRemindersResponse, RolloverResult, RollbackResult, AdminApiKey, CreatedApiKey, LearnConfigValues, LearnAiConfigValues, LearnAiGrant, LearnAiTeamGrant, AdminLearnTeam, LearnTeamAssignableRole, AdminLearnCoursesResponse, AdminLearnCourseAccessResponse, AdminLearnCourse, AdminLearnCourseAccess, LearnCoursePermission, LearnCourseStatus, LearnCourseVisibility, AdminLearnCourseVocabularyResponse, AdminLearnVocabularyImportResponse, BackupsResponse, AdminPopup, PopupInput, ClusterStatus, ClusterInstall, CreatedClusterInstall, ClusterReach, ReachEntry, AdminAnalytics, AnalyticsRange, AnalyticsPeople, PeopleFilters, AnalyticsBreakdown, BreakdownKind, AnalyticsDishes, AnalyticsVisitors, AnalyticsVisitorIp, AnalyticsPersonDetail, ClusterUpdates, ClusterUpdateSettings, PopupTargetUser, PopupTargetClass, ClusterScope, WayTestResult, ReachKind, LoginResult, SecondFactorChallenge, PasskeyChallenge, AdminSecurityStatus, TotpSetup, AdminPasskey } from './types';
+import type { AdminStats, AdminClass, AdminSession, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish, AdminDishFull, AdminDishImportResult, AdminDishShiftResult, AdminDishRotateResult, AdminDishResetResult, AdminDishAnchorResult, DishPlan, AdminCommentsResponse, FileLogFile, FileLogResponse, FileLogEntry, FrontendActivityLogsResponse, FrontendActivityStats, AllTodosResponse, AllRemindersResponse, SchoolYearsResponse, ArchivedUsersResponse, ArchivedClass, ArchivedTodosResponse, ArchivedRemindersResponse, RolloverResult, RollbackResult, AdminApiKey, CreatedApiKey, LearnConfigValues, LearnAiConfigValues, LearnAiGrant, LearnAiTeamGrant, AdminLearnTeam, LearnTeamAssignableRole, AdminLearnCoursesResponse, AdminLearnCourseAccessResponse, AdminLearnCourse, AdminLearnCourseAccess, LearnCoursePermission, LearnCourseStatus, LearnCourseVisibility, AdminLearnCourseVocabularyResponse, AdminLearnVocabularyImportResponse, BackupsResponse, AdminPopup, PopupInput, ClusterStatus, ClusterInstall, CreatedClusterInstall, ClusterReach, ReachEntry, AdminAnalytics, AnalyticsRange, AnalyticsPeople, PeopleFilters, AnalyticsBreakdown, BreakdownKind, AnalyticsDishes, AnalyticsVisitors, AnalyticsVisitorIp, AnalyticsPersonDetail, ClusterUpdates, ClusterUpdateSettings, PopupTargetUser, PopupTargetClass, ClusterScope, WayTestResult, ReachKind, LoginResult, PasskeyChallenge, AdminSecurityStatus, TotpSetup, AdminPasskey, AccountRole } from './types';
 import type { AuthenticationResponseJSON, PublicKeyCredentialCreationOptionsJSON, PublicKeyCredentialRequestOptionsJSON, RegistrationResponseJSON } from '@simplewebauthn/browser';
 
 const TOKEN_KEY = 'pokyh_admin_token';
@@ -40,7 +40,8 @@ async function request<T>(
 
   if (res.status === 401) {
     clearToken();
-    window.location.hash = '#/login';
+    const loginPath = `${import.meta.env.BASE_URL}login`;
+    if (window.location.pathname !== loginPath) window.location.assign(loginPath);
     throw new Error('Session expired');
   }
 
@@ -86,10 +87,20 @@ function storeToken(data: { token: string }): string {
 export const adminApi = {
   /** The token, or — with a second factor set up — the ticket for step two. */
   login: async (username: string, password: string): Promise<LoginResult> => {
-    const data = await loginStep<{ token: string } | SecondFactorChallenge>('/api/admin/auth/login', { username, password });
+    const data = await loginStep<LoginResult>('/api/admin/auth/login', { username, password });
     if ('token' in data) return { token: storeToken(data) };
     return data;
   },
+
+  /** After a one-time password: the admin's own password, then the next login step. */
+  setupPassword: async (ticket: string, newPassword: string): Promise<LoginResult> => {
+    const data = await loginStep<LoginResult>('/api/admin/auth/password-setup', { ticket, newPassword });
+    if ('token' in data) return { token: storeToken(data) };
+    return data;
+  },
+
+  changePassword: (currentPassword: string, newPassword: string): Promise<void> =>
+    request<void>('POST', '/api/admin/account/password', { currentPassword, newPassword }),
 
   loginWithCode: async (ticket: string, code: string): Promise<string> =>
     storeToken(await loginStep<{ token: string }>('/api/admin/auth/2fa', { ticket, code })),
@@ -140,7 +151,7 @@ export const adminApi = {
   stats: (): Promise<AdminStats> =>
     request<AdminStats>('GET', '/api/admin/stats'),
 
-  users: (search?: string, page = 1, limit = 20, role?: 'student' | 'parent'): Promise<UsersResponse> => {
+  users: (search?: string, page = 1, limit = 20, role?: AccountRole): Promise<UsersResponse> => {
     const params = new URLSearchParams();
     if (search) params.set('search', search);
     if (role) params.set('role', role);
@@ -152,10 +163,11 @@ export const adminApi = {
   userDetail: (stableUid: string): Promise<AdminUserDetail> =>
     request<AdminUserDetail>('GET', `/api/admin/users/${stableUid}`),
 
-  createUser: (data: { username: string; password?: string; webuntisKlasseId?: number; webuntisKlasseName?: string; role?: 'student' | 'parent' }): Promise<import('./types').AdminUser> =>
+  // isAdmin without a password (a WebUntis account) needs adminPassword, the one-time password.
+  createUser: (data: { username: string; password?: string; webuntisKlasseId?: number; webuntisKlasseName?: string; role?: AccountRole; isAdmin?: boolean; adminPassword?: string }): Promise<import('./types').AdminUser> =>
     request<import('./types').AdminUser>('POST', '/api/admin/users', data),
 
-  setUserRole: (stableUid: string, role: 'student' | 'parent'): Promise<{ stableUid: string; role: string }> =>
+  setUserRole: (stableUid: string, role: AccountRole): Promise<{ stableUid: string; role: string }> =>
     request<{ stableUid: string; role: string }>('PATCH', `/api/admin/users/${stableUid}/role`, { role }),
 
   // Full DB backup: requires the Bearer token, so we fetch as a blob and trigger
@@ -198,8 +210,9 @@ export const adminApi = {
   removeFromClass: (stableUid: string, classId: string): Promise<void> =>
     request<void>('DELETE', `/api/admin/users/${stableUid}/classes/${classId}`),
 
-  grantAdmin: (stableUid: string): Promise<{ ok: boolean }> =>
-    request<{ ok: boolean }>('POST', `/api/admin/users/${stableUid}/grant-admin`),
+  // A WebUntis account needs `password`: its one-time password for the panel.
+  grantAdmin: (stableUid: string, password?: string): Promise<{ ok: boolean; adminSetupExpiresAt: string | null }> =>
+    request<{ ok: boolean; adminSetupExpiresAt: string | null }>('POST', `/api/admin/users/${stableUid}/grant-admin`, password ? { password } : undefined),
 
   revokeAdmin: (stableUid: string): Promise<void> =>
     request<void>('DELETE', `/api/admin/users/${stableUid}/revoke-admin`),

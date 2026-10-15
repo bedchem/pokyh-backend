@@ -13,7 +13,7 @@ import { validateWebUntis } from '../services/webuntis';
 import { getLearnConfig } from '../services/learnConfig';
 import { reclaimDishRatings } from '../services/dishRatings';
 import { logger } from '../utils/logger';
-import { AccountRole, normalizeAccountClass } from '../utils/accountClass';
+import { AccountRole, hasClassIdentity, normalizeAccountClass, parseAccountRole } from '../utils/accountClass';
 import {
   AppError,
   UnauthorizedError,
@@ -95,9 +95,9 @@ async function removeUserFromClasses(stableUid: string): Promise<void> {
   });
 }
 
-// Auto-join / leave / create class based on webuntisKlasseId. Parent accounts
-// are deliberately never class members, even when a caller submits the class
-// of a child or an old deployment left a parent ClassMember row behind.
+// Auto-join / leave / create class based on webuntisKlasseId. Parent and
+// role-less accounts are deliberately never class members, even when a caller
+// submits the class of a child or an old deployment left a ClassMember row behind.
 async function syncUserClass(
   stableUid: string,
   username: string,
@@ -105,7 +105,7 @@ async function syncUserClass(
   klasseName: string,
   role: AccountRole = 'student'
 ): Promise<string | null> {
-  if (role === 'parent') {
+  if (!hasClassIdentity(role)) {
     await prisma.user.updateMany({
       where: {
         stableUid,
@@ -234,10 +234,13 @@ async function completeWebUntisLogin({
   klasseName: string;
   role: 'student' | 'parent';
 }): Promise<AuthenticatedUserResponse> {
-  const accountClass = normalizeAccountClass(role, klasseId, klasseName);
+  let user = await prisma.user.findUnique({ where: { username } });
+  // WebUntis only tells students from parents. "No role" is an admin's
+  // choice for this account and survives every login.
+  const accountRole: AccountRole = user?.role === 'none' ? 'none' : role;
+  const accountClass = normalizeAccountClass(accountRole, klasseId, klasseName);
   klasseId = accountClass.klasseId;
   klasseName = accountClass.klasseName;
-  let user = await prisma.user.findUnique({ where: { username } });
 
   if (!user) {
     const stableUid = generateStableUid();
@@ -278,12 +281,12 @@ async function completeWebUntisLogin({
         webuntisKlasseId: klasseId,
         webuntisKlasseName: klasseName,
         isUntisUser: true,
-        role,
+        role: accountRole,
       },
     });
   }
 
-  const classId = await syncUserClass(user.stableUid, username, klasseId, klasseName, role);
+  const classId = await syncUserClass(user.stableUid, username, klasseId, klasseName, parseAccountRole(user.role));
   const isAdmin = await prisma.admin.findUnique({ where: { stableUid: user.stableUid } }) !== null;
   const token = signJwt({
     stableUid: user.stableUid,
@@ -400,18 +403,15 @@ router.post('/login', authLimiter, async (req: Request, res: Response) => {
     }
 
     const admin = await prisma.admin.findUnique({ where: { stableUid: user.stableUid } });
+    const role = parseAccountRole(user.role);
     const classId = await syncUserClass(
       user.stableUid,
       user.username,
       user.webuntisKlasseId,
       user.webuntisKlasseName,
-      user.role === 'parent' ? 'parent' : 'student',
+      role,
     );
-    const accountClass = normalizeAccountClass(
-      user.role === 'parent' ? 'parent' : 'student',
-      user.webuntisKlasseId,
-      user.webuntisKlasseName,
-    );
+    const accountClass = normalizeAccountClass(role, user.webuntisKlasseId, user.webuntisKlasseName);
     const token = signJwt({
       stableUid: user.stableUid,
       username: user.username,
@@ -545,7 +545,7 @@ router.post('/refresh', refreshLimiter, async (req: Request, res: Response) => {
 
   const { user } = stored;
   const accountClass = normalizeAccountClass(
-    user.role === 'parent' ? 'parent' : 'student',
+    parseAccountRole(user.role),
     user.webuntisKlasseId,
     user.webuntisKlasseName,
   );
@@ -597,23 +597,20 @@ router.get('/me', requireAuth, async (req: Request, res: Response) => {
     throw new UnauthorizedError('User not found');
   }
 
-  if (user.role === 'parent') {
+  const role = parseAccountRole(user.role);
+  if (!hasClassIdentity(role)) {
     await syncUserClass(
       user.stableUid,
       user.username,
       0,
       '',
-      'parent',
+      role,
     );
   }
 
   const admin = await prisma.admin.findUnique({ where: { stableUid } });
-  const accountClass = normalizeAccountClass(
-    user.role === 'parent' ? 'parent' : 'student',
-    user.webuntisKlasseId,
-    user.webuntisKlasseName,
-  );
-  const membership = user.role === 'parent'
+  const accountClass = normalizeAccountClass(role, user.webuntisKlasseId, user.webuntisKlasseName);
+  const membership = !hasClassIdentity(role)
     ? null
     : await prisma.classMember.findFirst({ where: { stableUid } });
 

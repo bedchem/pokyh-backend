@@ -977,6 +977,31 @@
 .toggle[aria-checked="true"] span { transform: translateX(18px); }
 .toggle:disabled { opacity: 0.5; cursor: not-allowed; }
 
+/* A checkbox with its label: a soft well that fills with sky when on, the
+   same colours as .toggle. Only colour changes — no scaling. */
+.check-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  cursor: pointer;
+  user-select: none;
+}
+.check {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  margin-top: 1px;
+  border-radius: 7px;
+  background: var(--well-3);
+  color: transparent;
+  transition: background 0.3s var(--glide), color 0.3s var(--glide);
+}
+.check-row input:checked + .check { background: var(--sky-solid); color: #ffffff; }
+.check-row input:focus-visible + .check { outline: 2px solid var(--ink); outline-offset: 2px; }
+
 /* A choice that is either on or off, as a pill. */
 .scope-chip {
   display: inline-flex;

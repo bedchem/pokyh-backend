@@ -1,4 +1,4 @@
-import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { useAuth } from './hooks/useAuth';
 import { ToastProvider } from './components/Toast';
 import { Layout } from './components/Layout';
@@ -29,6 +29,9 @@ import { ClusterPage } from './pages/ClusterPage';
 import { ReactNode, Suspense, useState, useEffect } from 'react';
 import { setupApi } from './api';
 import type { SetupStatus } from './types';
+
+// "/admin/" from vite's base, without the trailing slash.
+const ROUTER_BASENAME = import.meta.env.BASE_URL.replace(/\/$/, '');
 
 function ProtectedRoute({ children, bleed }: { children: ReactNode; bleed?: boolean }) {
   const { isAuthenticated } = useAuth();
@@ -61,8 +64,9 @@ export default function App() {
   }, []);
 
   const handleSetupComplete = () => {
+    // The router is not mounted yet; it starts at this address.
+    window.history.replaceState(null, '', `${import.meta.env.BASE_URL}dashboard`);
     setSetupStatus(prev => prev ? { ...prev, needsSetup: false } : null);
-    window.location.hash = '#/dashboard';
   };
 
   if (setupLoading) return <Spinner />;
@@ -75,7 +79,9 @@ export default function App() {
 
   return (
     <ToastProvider>
-      <HashRouter>
+      {/* Plain paths under /admin/ (the server answers every one of them with
+          the panel), e.g. /admin/dashboard. */}
+      <BrowserRouter basename={ROUTER_BASENAME}>
         <Suspense fallback={null}>
           <Routes>
             <Route path="/"               element={<RootRedirect />} />
@@ -104,7 +110,7 @@ export default function App() {
             <Route path="*"                  element={<Navigate to="/" replace />} />
           </Routes>
         </Suspense>
-      </HashRouter>
+      </BrowserRouter>
     </ToastProvider>
   );
 }

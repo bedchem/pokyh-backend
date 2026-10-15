@@ -497,6 +497,9 @@ const ACTION_LABELS: Record<string, string> = {
   delete_user:           'Benutzer gelöscht',
   grant_admin:           'Admin vergeben',
   revoke_admin:          'Admin entzogen',
+  admin_setup_expired:   'Admin verfallen (kein Login)',
+  admin_password_setup:  'Eigenes Passwort gesetzt',
+  admin_password_changed: 'Passwort geändert',
   delete_all_sessions:   'Sessions gelöscht',
 };
 
@@ -506,6 +509,9 @@ const ACTION_COLORS: Record<string, string> = {
   delete_user:           'var(--rose-deep)',
   grant_admin:           'var(--sky-deep)',
   revoke_admin:          'var(--amber-deep)',
+  admin_setup_expired:   'var(--amber-deep)',
+  admin_password_setup:  'var(--mint-deep)',
+  admin_password_changed: 'var(--mint-deep)',
   delete_all_sessions:   'var(--amber-deep)',
 };
 

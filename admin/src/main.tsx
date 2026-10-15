@@ -34,6 +34,13 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | 
   }
 }
 
+// The panel used hash addresses (/admin/#/users). Bookmarks and old links
+// keep working: they become the plain address before the router starts.
+if (window.location.hash.startsWith('#/')) {
+  const base = import.meta.env.BASE_URL.replace(/\/$/, '')
+  window.history.replaceState(null, '', base + window.location.hash.slice(1))
+}
+
 const rootEl = document.getElementById('root')!
 startThemeSync()
 startFavicon()

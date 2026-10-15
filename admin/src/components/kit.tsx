@@ -1,7 +1,7 @@
 import { ReactNode, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Link } from 'react-router-dom';
-import { ChevronLeft, ChevronRight, Search, X, type LucideIcon } from 'lucide-react';
+import { Check, ChevronLeft, ChevronRight, Search, X, type LucideIcon } from 'lucide-react';
 import gsap from 'gsap';
 import { prefersReducedMotion } from '../motion';
 
@@ -531,6 +531,20 @@ export function Toggle({ checked, onChange, label, disabled = false }: { checked
     >
       <span />
     </button>
+  );
+}
+
+// A checkbox in the panel's own look: a soft well that fills with sky when on.
+export function Checkbox({ checked, onChange, label, hint }: { checked: boolean; onChange: (next: boolean) => void; label: ReactNode; hint?: ReactNode }) {
+  return (
+    <label className="check-row">
+      <input type="checkbox" className="sr-only" checked={checked} onChange={(e) => onChange(e.target.checked)} />
+      <span className="check" aria-hidden="true"><Check size={14} strokeWidth={2.4} /></span>
+      <span className="min-w-0">
+        <span className="block text-[14.5px] text-ink">{label}</span>
+        {hint && <span className="mt-0.5 block text-[12.5px] leading-relaxed text-ink-3">{hint}</span>}
+      </span>
+    </label>
   );
 }
 

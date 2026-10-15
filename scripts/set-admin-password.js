@@ -31,7 +31,8 @@ async function main() {
 
   await prisma.admin.update({
     where: { stableUid: user.stableUid },
-    data: { passwordHash },
+    // A password set here is final: it ends a pending one-time-password grant.
+    data: { passwordHash, mustChangePassword: false, setupExpiresAt: null },
   });
 
   console.log(`\n✅ Password updated for "${username}"\n`);

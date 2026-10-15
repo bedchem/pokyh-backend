@@ -7,7 +7,7 @@ const source = await readFile(new URL('../src/utils/accountClass.ts', import.met
 const compiled = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2020 },
 }).outputText;
-const { mayJoinClass, normalizeAccountClass } = await import(
+const { mayJoinClass, normalizeAccountClass, parseAccountRole, hasClassIdentity } = await import(
   `data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`
 );
 
@@ -32,4 +32,22 @@ test('invalid student class ids stay unassigned instead of creating class zero',
     klasseId: 0,
     klasseName: 'unknown',
   });
+});
+
+test('accounts without a role have no class identity, like parents', () => {
+  assert.deepEqual(normalizeAccountClass('none', 4711, ' 4A '), {
+    klasseId: 0,
+    klasseName: '',
+  });
+  assert.equal(mayJoinClass('none'), false);
+  assert.equal(hasClassIdentity('none'), false);
+  assert.equal(hasClassIdentity('student'), true);
+});
+
+test('stored roles parse to the known roles, unknown ones stay students', () => {
+  assert.equal(parseAccountRole('parent'), 'parent');
+  assert.equal(parseAccountRole('none'), 'none');
+  assert.equal(parseAccountRole('student'), 'student');
+  assert.equal(parseAccountRole('admin'), 'student');
+  assert.equal(parseAccountRole(undefined), 'student');
 });

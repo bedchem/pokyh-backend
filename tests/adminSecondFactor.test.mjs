@@ -97,6 +97,36 @@ test('an admin made in the panel logs in with the account password', () => {
   assert.deepEqual(login.adminPasswordHashes({ adminHash: null, userHash: null, sharedHash: '' }), []);
 });
 
+test('a WebUntis account made admin starts with a one-time password', () => {
+  // The reported bug: "Admin vergeben" on a WebUntis account left it with no
+  // password the panel would accept.
+  assert.equal(login.grantNeedsOneTimePassword({ isUntisUser: true, hasPassword: false }), true);
+  assert.equal(login.grantNeedsOneTimePassword({ isUntisUser: true, hasPassword: true }), true, 'never the WebUntis-linked account password');
+  assert.equal(login.grantNeedsOneTimePassword({ isUntisUser: false, hasPassword: false }), true);
+  assert.equal(login.grantNeedsOneTimePassword({ isUntisUser: false, hasPassword: true }), false, 'a local account keeps its own password');
+  assert.equal(login.ADMIN_SETUP_WINDOW_MS, 15 * 60 * 1000);
+});
+
+test('a pending grant cannot sign in and lapses at its deadline', () => {
+  const deadline = new Date('2026-10-15T15:00:00Z');
+  const pending = { mustChangePassword: true, setupExpiresAt: deadline };
+  assert.equal(login.adminSetupLapsed(pending, new Date('2026-10-15T14:59:59Z')), false);
+  assert.equal(login.adminSetupLapsed(pending, deadline), true);
+  assert.equal(login.adminSetupLapsed({ mustChangePassword: false, setupExpiresAt: deadline }, new Date('2026-10-16T00:00:00Z')), false, 'a finished setup never lapses');
+  assert.equal(login.adminCanSignIn({ adminHash: 'otp', mustChangePassword: true, needsOneTimePassword: true }), false);
+  assert.equal(login.adminCanSignIn({ adminHash: 'own', mustChangePassword: false, needsOneTimePassword: true }), true);
+  assert.equal(login.adminCanSignIn({ adminHash: null, mustChangePassword: false, needsOneTimePassword: true }), false, 'an old WebUntis admin without password');
+  assert.equal(login.adminCanSignIn({ adminHash: null, mustChangePassword: false, needsOneTimePassword: false }), true);
+});
+
+test('the panel changes only passwords it owns', () => {
+  assert.equal(login.adminPasswordKind({ hasAccount: true, hasAdminRecord: true, adminHash: 'admin', isUntisUser: true }), 'admin');
+  assert.equal(login.adminPasswordKind({ hasAccount: true, hasAdminRecord: true, adminHash: null, isUntisUser: false }), 'account');
+  assert.equal(login.adminPasswordKind({ hasAccount: true, hasAdminRecord: true, adminHash: null, isUntisUser: true }), 'admin');
+  assert.equal(login.adminPasswordKind({ hasAccount: true, hasAdminRecord: false, adminHash: null, isUntisUser: true }), 'config');
+  assert.equal(login.adminPasswordKind({ hasAccount: false, hasAdminRecord: false, adminHash: null, isUntisUser: undefined }), 'config');
+});
+
 test('env admin names match regardless of case and keep the configured spelling', () => {
   assert.equal(login.matchEnvAdmin(' Admin ', ['admin', 'ops']), 'admin');
   assert.equal(login.matchEnvAdmin('OPS', ['admin', 'Ops']), 'Ops');

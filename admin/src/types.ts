@@ -6,11 +6,19 @@ export interface AdminUser {
   classId: string | null;
   classCode: string | null;
   isAdmin: boolean;
-  role: 'student' | 'parent';
+  // Set while a WebUntis account made admin has not signed in with its
+  // one-time password yet; the grant lapses at this moment.
+  adminSetupExpiresAt: string | null;
+  // "Admin vergeben" asks for a one-time password (a WebUntis account).
+  needsOneTimePassword: boolean;
+  role: AccountRole;
   todoCount: number;
   createdAt: string;
   updatedAt: string;
 }
+
+// "none": neither student nor parent, e.g. an admin outside any class.
+export type AccountRole = 'student' | 'parent' | 'none';
 
 export interface AdminTodo {
   id: string;
@@ -37,6 +45,10 @@ export interface AdminUserClass {
 export interface AdminUserDetail extends AdminUser {
   // Whether the account can sign in to the panel with its own password.
   hasPassword?: boolean;
+  // False for an admin that has no password the panel accepts (an older
+  // WebUntis admin) — "Einmal-Passwort vergeben" fixes that.
+  adminCanSignIn: boolean;
+  serverTime: string;
   todos: AdminTodo[];
   classes: AdminUserClass[];
 }
@@ -117,6 +129,8 @@ export interface UsersResponse {
   total: number;
   page: number;
   limit: number;
+  // For countdowns that run against the server clock.
+  serverTime: string;
 }
 
 export interface RequestLog {
@@ -342,7 +356,7 @@ export interface ArchivedUser {
   schoolYearId: string;
   stableUid: string;
   username: string;
-  role: 'student' | 'parent';
+  role: AccountRole;
   webuntisKlasseId: number;
   webuntisKlasseName: string;
   classId: string | null;
@@ -1105,6 +1119,7 @@ export interface AdminAnalytics {
     total: number;
     students: number;
     parents: number;
+    noRole: number;
     untis: number;
     local: number;
     newInRange: number;
@@ -1329,7 +1344,13 @@ export interface SecondFactorChallenge {
   methods: { totp: boolean; passkey: boolean };
 }
 
-export type LoginResult = { token: string } | SecondFactorChallenge;
+// After a one-time password: the new admin must choose their own password.
+export interface PasswordSetupChallenge {
+  passwordChangeRequired: true;
+  ticket: string;
+}
+
+export type LoginResult = { token: string } | SecondFactorChallenge | PasswordSetupChallenge;
 
 export interface PasskeyChallenge<O> {
   options: O;
@@ -1350,6 +1371,9 @@ export interface AdminSecurityStatus {
   totpEnabled: boolean;
   recoveryCodesLeft: number;
   passkeys: AdminPasskey[];
+  // Which password signs this admin in: "admin" (panel only), "account" (also
+  // the app login) or "config" (server configuration, not changeable here).
+  password: 'admin' | 'account' | 'config';
 }
 
 export interface TotpSetup {

@@ -6,6 +6,7 @@ import { prisma } from '../db';
 import { config } from '../config';
 import { optionalAuth } from '../middleware/auth';
 import { logger } from '../utils/logger';
+import { hasClassIdentity } from '../utils/accountClass';
 import { hasUsageConsent } from '../services/privacyConsent';
 import { visitorKeyFor } from '../services/visitorKey';
 import {
@@ -72,7 +73,7 @@ async function classOf(stableUid: string): Promise<string | null> {
   if (hit && Date.now() - hit.at < CLASS_CACHE_MS) return hit.klasse;
   const user = await prisma.user.findUnique({ where: { stableUid }, select: { role: true, webuntisKlasseName: true } });
   const name = user?.webuntisKlasseName.trim() ?? '';
-  const klasse = user && user.role !== 'parent' && name ? name.slice(0, 64) : null;
+  const klasse = user && hasClassIdentity(user.role) && name ? name.slice(0, 64) : null;
   if (classCache.size > 5000) classCache.clear();
   classCache.set(stableUid, { klasse, at: Date.now() });
   return klasse;

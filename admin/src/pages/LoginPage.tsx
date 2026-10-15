@@ -7,7 +7,65 @@ import { adminApi } from '../api';
 import { useAuth } from '../hooks/useAuth';
 import { prefersReducedMotion } from '../motion';
 import { Wordmark } from '../components/Layout';
-import type { SecondFactorChallenge } from '../types';
+import { Dialog, FieldLabel, Notice } from '../components/kit';
+import type { LoginResult, SecondFactorChallenge } from '../types';
+
+// After signing in with a one-time password: the new admin's own password.
+// Closing it cancels; the one-time password keeps working until it lapses.
+function PasswordSetupDialog({ ticket, onDone, onClose }: { ticket: string; onDone: (result: LoginResult) => void; onClose: () => void }) {
+  const [password, setPassword] = useState('');
+  const [repeat, setRepeat] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    if (password.length < 8) { setError('Das Passwort braucht mindestens 8 Zeichen'); return; }
+    if (password !== repeat) { setError('Die beiden Passwörter stimmen nicht überein'); return; }
+    setBusy(true);
+    setError(null);
+    try {
+      onDone(await adminApi.setupPassword(ticket, password));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Passwort setzen fehlgeschlagen');
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog title="Neues Passwort festlegen" subtitle="Dein Einmal-Passwort gilt nur für diese erste Anmeldung." onClose={onClose}>
+      <form onSubmit={(e) => void submit(e)} className="flex flex-col gap-5">
+        <FieldLabel label="Neues Passwort" hint="Mindestens 8 Zeichen, nicht das Einmal-Passwort. Gilt nur fürs Admin-Panel.">
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            autoComplete="new-password"
+            maxLength={200}
+            required
+            className="field h-[52px] w-full px-[18px] text-[15px]"
+          />
+        </FieldLabel>
+        <FieldLabel label="Neues Passwort wiederholen">
+          <input
+            type="password"
+            value={repeat}
+            onChange={(e) => setRepeat(e.target.value)}
+            autoComplete="new-password"
+            maxLength={200}
+            required
+            className="field h-[52px] w-full px-[18px] text-[15px]"
+          />
+        </FieldLabel>
+        {error && <Notice tone="rose">{error}</Notice>}
+        <button type="submit" disabled={busy} className="btn-primary flex h-[52px] w-full items-center justify-center gap-2 text-[15px]">
+          {busy && <Loader2 size={16} className="animate-spin" />}
+          Passwort speichern
+        </button>
+      </form>
+    </Dialog>
+  );
+}
 
 // The browser's own message for a cancelled or timed-out passkey prompt is
 // technical English; a cancel is not an error worth explaining.
@@ -30,6 +88,7 @@ export function LoginPage() {
   const [challenge, setChallenge] = useState<SecondFactorChallenge | null>(null);
   const [code, setCode] = useState('');
   const [useRecovery, setUseRecovery] = useState(false);
+  const [setupTicket, setSetupTicket] = useState<string | null>(null);
   const sheetRef = useRef<HTMLDivElement>(null);
   const passkeysSupported = browserSupportsWebAuthn();
 
@@ -52,20 +111,28 @@ export function LoginPage() {
     navigate('/dashboard');
   }
 
+  // After a correct password: signed in, a new password to choose (after a
+  // one-time password), or the second factor.
+  function showNextStep(result: LoginResult) {
+    if ('token' in result) {
+      finish(result.token);
+    } else if ('passwordChangeRequired' in result) {
+      setSetupTicket(result.ticket);
+    } else {
+      setCode('');
+      setUseRecovery(!result.methods.totp);
+      setChallenge(result);
+    }
+  }
+
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setError('');
     setLoading(true);
     try {
       const result = await login(username, password);
-      if ('token' in result) {
-        navigate('/dashboard');
-      } else {
-        setPassword('');
-        setCode('');
-        setUseRecovery(!result.methods.totp);
-        setChallenge(result);
-      }
+      setPassword('');
+      showNextStep(result);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Anmeldung fehlgeschlagen');
     } finally {
@@ -210,6 +277,13 @@ export function LoginPage() {
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-canvas p-4">
+      {setupTicket && (
+        <PasswordSetupDialog
+          ticket={setupTicket}
+          onClose={() => setSetupTicket(null)}
+          onDone={(result) => { setSetupTicket(null); showNextStep(result); }}
+        />
+      )}
       <div
         ref={sheetRef}
         className="w-full max-w-[440px] rounded-sheet bg-sheet px-7 pb-10 pt-9 sm:px-11 sm:pb-12 sm:pt-11"

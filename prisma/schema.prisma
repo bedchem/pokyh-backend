@@ -77,6 +77,13 @@ model Admin {
   stableUid      String   @id @map("stable_uid")
   canCreateClass Boolean  @default(true) @map("can_create_class")
   passwordHash   String?  @map("password_hash") @db.VarChar(100)
+  // A WebUntis account made admin in the panel has no password of its own:
+  // the granting admin sets a one-time password (passwordHash), the new admin
+  // must replace it at the first login. Without that login before
+  // setupExpiresAt, the grant lapses and this row — with the one-time
+  // password — is removed.
+  mustChangePassword Boolean   @default(false) @map("must_change_password")
+  setupExpiresAt     DateTime? @map("setup_expires_at")
   createdAt      DateTime @default(now()) @map("created_at")
 
   @@map("admins")
