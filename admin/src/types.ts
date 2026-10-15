@@ -1060,7 +1060,30 @@ export interface AdminAnalytics {
     userSeconds: number;
     byPlatform: PlatformCounts;
     signups: number;
+    // Website page views and different website visitors, signed in or not.
+    webViews: number;
+    webVisitors: number;
   }>;
+  // Everyone on the website, signed in or not.
+  web: {
+    views: number;
+    // Different visitors per day, added up: two days on the site count twice.
+    visitors: number;
+    guestViews: number;
+    // "davon mit Konto": the same, opened signed in.
+    signedViews: number;
+    signedVisitors: number;
+    // Different addresses — everyone's, signed in or not — in the part of the
+    // period that still has them, and those from which someone signed in.
+    ips: number;
+    signedIps: number;
+    countries: number;
+    // Every known country, most views first.
+    byCountry: Array<{ country: string; views: number; visitors: number }>;
+    // The first day a website visit was recorded.
+    since: string | null;
+    ipRetentionDays: number;
+  };
   hours: Array<{ hour: number; sessions: number; seconds: number }>;
   weekdays: Array<{ weekday: number; sessions: number; avgUsers: number; seconds: number }>;
   engagement: {
@@ -1193,4 +1216,105 @@ export interface AnalyticsDish {
 export interface AnalyticsDishes {
   total: number;
   dishes: AnalyticsDish[];
+}
+
+// GET /api/admin/analytics/visitors — the website's visitors by country and
+// by address. Addresses are kept for `ipRetentionDays` only, so the address
+// list covers `ipWindow`, the country figures the whole period.
+export type VisitorDevice = 'ios' | 'android' | 'desktop' | 'other';
+
+export interface VisitorCountry {
+  // ISO 3166-1 alpha-2; "" for visits whose country is unknown.
+  country: string;
+  views: number;
+  visitors: number;
+  ips: number;
+}
+
+export interface VisitorIp {
+  ip: string;
+  country: string;
+  region: string | null;
+  city: string | null;
+  views: number;
+  days: number;
+  firstAt: string | null;
+  lastAt: string | null;
+  devices: VisitorDevice[];
+  // Page views made signed in: any at all makes the address "Konto", none "Gast".
+  signedViews: number;
+  // Different accounts signed in from the address (a school network puts many
+  // behind one), and those with consent to the usage statistics by name.
+  accountCount: number;
+  accounts: Array<{ stableUid: string; username: string }>;
+}
+
+export interface AnalyticsVisitors {
+  period: { key: string; label: string; fromKey: string; toKey: string };
+  totals: {
+    views: number;
+    visitors: number;
+    guestViews: number;
+    // "davon mit Konto".
+    signedViews: number;
+    signedVisitors: number;
+    unknownViews: number;
+    ips: number;
+    signedIps: number;
+    countries: number;
+  };
+  countries: VisitorCountry[];
+  ips: VisitorIp[];
+  ipWindow: { fromKey: string; toKey: string; clamped: boolean };
+  ipRetentionDays: number;
+  since: string | null;
+}
+
+// GET /api/admin/analytics/person — one consenting account across the page.
+export interface AnalyticsPersonDetail {
+  stableUid: string;
+  username: string;
+  klasse: string;
+  createdAt: string;
+  usage: {
+    seconds: number;
+    visits: number;
+    activeDays: number;
+    lastSeenAt: string | null;
+    platforms: UsagePlatform[];
+    daily: Array<{ dayKey: string; seconds: number }>;
+    window: { fromKey: string; toKey: string; clamped: boolean };
+  };
+  web: {
+    views: number;
+    ips: Array<{ ip: string; country: string; region: string | null; city: string | null; views: number; lastAt: string | null }>;
+    pages: Array<{ page: string; views: number }>;
+    window: { fromKey: string; toKey: string; clamped: boolean };
+  };
+}
+
+// GET /api/admin/analytics/visitors/ip — one address in detail.
+export interface AnalyticsVisitorIp {
+  ip: string;
+  country: string;
+  region: string | null;
+  city: string | null;
+  views: number;
+  days: number;
+  firstAt: string | null;
+  lastAt: string | null;
+  signedInViews: number;
+  // Different accounts signed in from it; those with consent to the usage
+  // statistics by name.
+  accountCount: number;
+  accounts: Array<{ stableUid: string; username: string; klasse: string; views: number; lastAt: string | null }>;
+  // Signed in without that consent: counted, never named.
+  unnamedSignedInViews: number;
+  daily: Array<{ dayKey: string; views: number }>;
+  // Page views per hour of the day, 0–23.
+  hours: number[];
+  pages: Array<{ page: string; views: number }>;
+  devices: Array<{ device: VisitorDevice; views: number }>;
+  recent: Array<{ at: string | null; page: string; device: VisitorDevice; signedIn: boolean }>;
+  window: { fromKey: string; toKey: string; clamped: boolean };
 }

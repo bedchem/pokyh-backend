@@ -1374,6 +1374,400 @@ section:hover > div > div > .sec-title::before, section:hover > div > .sec-title
 .mark-loader > :nth-child(3) { animation-delay: 0.45s; }
 @keyframes markPulse { 0%, 100% { opacity: 0.18; } 40% { opacity: 1; } }
 
+/* ─── Dialogs as sheets on a phone ───────────────────────────── */
+
+/* A dialog opened with `sheet` covers the screen on a phone: no floating card
+   with a gap above it, a header that stays in reach while the list scrolls. */
+@media (max-width: 639.98px) {
+  .dialog-sheet.dialog-sheet { align-items: flex-start; padding: calc(env(safe-area-inset-top) + 10px) 0 0; }
+  .dialog-sheet > .dialog-panel {
+    max-width: none !important;
+    min-height: calc(100dvh - env(safe-area-inset-top) - 10px);
+    padding: 0 16px calc(28px + env(safe-area-inset-bottom));
+    border-radius: 24px 24px 0 0;
+    animation-name: sheetUp;
+  }
+  .dialog-sheet .dialog-head {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    margin: 0 -16px;
+    padding: 18px 16px 14px;
+    background: var(--raise);
+    border-bottom: 1px solid var(--line);
+  }
+  .dialog-sheet .dialog-head + div { margin-top: 18px; }
+}
+@keyframes sheetUp {
+  from { opacity: 0; transform: translateY(28px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ─── Analytics on a phone ───────────────────────────────────── */
+
+/* Figures without their icon wells: label, value and note stacked in two
+   columns, nothing cut off. */
+@media (max-width: 639.98px) {
+  .figures-compact .strip { padding-top: 20px; padding-bottom: 20px; }
+  .figures-compact .strip-grid { row-gap: 18px; }
+  .figures-compact .strip-cell { gap: 0; }
+  .figures-compact .strip-cell .orb { display: none; }
+  .figures-compact .strip-cell > .min-w-0 > span:first-child { font-size: 12.5px; color: var(--ink-3); }
+  .figures-compact .strip-figure { white-space: normal; margin-top: 2px; }
+  .figures-compact .strip-figure > span:first-child { font-size: 19px; }
+}
+
+/* The page's areas on a phone: one row of tabs; a short bar travels under
+   the chosen one, like the marker of the bottom bar. */
+.line-tabs {
+  position: relative;
+  display: flex;
+  padding: 4px;
+  border-radius: 999px;
+  background: var(--well);
+}
+.line-tabs button {
+  position: relative;
+  z-index: 1;
+  flex: 1 1 auto;
+  height: 40px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 13.5px;
+  color: var(--ink-3);
+  white-space: nowrap;
+  transition: color 0.3s var(--glide);
+}
+.line-tabs button[aria-pressed="true"] { color: var(--ink); font-weight: 500; }
+/* The chosen tab's raised thumb, as in every switch of the panel. */
+.line-tabs-marker {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  left: 0;
+  border-radius: 999px;
+  background: var(--thumb);
+  box-shadow: 0 4px 10px -6px rgb(0 0 0 / 0.35);
+  pointer-events: none;
+  transition: transform 0.5s var(--glide), width 0.5s var(--glide);
+}
+
+/* Platforms on a phone: one row each, the details in a quiet line beneath. */
+.plat-list > li + li { border-top: 1px solid var(--line); }
+.plat-list button { display: block; width: 100%; padding: 13px 0; font-size: 14.5px; text-align: left; }
+
+/* A touch screen has no hover, so a bar chart's tooltip rests on its latest
+   bar; the room above keeps it off the title of its section. */
+@media (max-width: 639.98px) {
+  .bars { padding-top: 38px; }
+}
+
+
+/* ─── Analytics: the top band and its chart ──────────────────── */
+
+/* Four figures in a well, the chosen one raised like the thumb of a switch;
+   the chart beneath shows the chosen one. The whole tile chooses; the links
+   in its last line open the people behind them. */
+.hero { container-type: inline-size; }
+.kpi-band {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+  padding: 5px;
+  border-radius: 28px;
+  background: var(--well);
+}
+@container (max-width: 760px) {
+  .kpi-band { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+.kpi {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  min-width: 0;
+  text-align: left;
+  padding: 18px 22px;
+  border-radius: 23px;
+  transition: background-color 0.35s var(--glide), box-shadow 0.35s var(--glide);
+}
+.kpi[data-on="true"] { background: var(--thumb); box-shadow: 0 6px 16px -10px rgb(0 0 0 / 0.35); }
+@media (hover: hover) {
+  .kpi:not([data-on="true"]):hover { background: var(--hover); }
+}
+.kpi:focus-visible { outline-offset: -2px; border-radius: 23px; }
+.kpi-label { font-size: 13.5px; color: var(--ink-3); transition: color 0.3s ease; }
+.kpi[data-on="true"] .kpi-label { color: var(--ink-2); }
+.kpi-value {
+  max-width: 100%;
+  margin-top: 6px;
+  overflow: hidden;
+  font-size: 30px;
+  font-weight: 600;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.kpi-detail {
+  max-width: 100%;
+  margin-top: 8px;
+  overflow: hidden;
+  font-size: 12.5px;
+  color: var(--ink-3);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.hero-chart { margin-top: 26px; }
+
+.legend-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 999px;
+  font-size: 13.5px;
+  color: var(--ink-3);
+  transition: background-color 0.25s ease, color 0.25s ease;
+}
+.legend-btn i { width: 7px; height: 7px; flex-shrink: 0; border-radius: 999px; }
+.legend-btn:hover { background: var(--hover); color: var(--ink-2); }
+.hero-chart ul:has(.legend-btn) { margin-left: -12px; }
+
+/* The three countries most visitors come from, under the map. */
+.origin-list { display: flex; flex-direction: column; gap: 2px; margin-left: -12px; margin-right: -12px; }
+.origin-list button {
+  display: block;
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 14px;
+  font-size: 14px;
+  text-align: left;
+  transition: background-color 0.25s ease;
+}
+.origin-list button:hover { background: var(--hover); }
+
+@media (max-width: 639.98px) {
+  .kpi-band { padding: 4px; border-radius: 24px; }
+  .kpi { padding: 14px 14px 15px; border-radius: 20px; }
+  .kpi-label { font-size: 12.5px; }
+  .kpi-value { font-size: 23px; }
+  .kpi-detail { margin-top: 6px; font-size: 12px; white-space: normal; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+  .hero-chart { margin-top: 22px; }
+
+}
+
+/* ─── The inspector ──────────────────────────────────────────── */
+
+.dialog-trail { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; margin-bottom: 4px; font-size: 12.5px; color: var(--ink-3); }
+.dialog-trail button { max-width: 220px; transition: color 0.2s ease; }
+.dialog-trail button:hover { color: var(--ink); }
+
+.insp-facts {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px 24px;
+  padding: 18px 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+.insp-facts dt { font-size: 12.5px; color: var(--ink-3); }
+.insp-facts dd { margin-top: 3px; font-size: 18px; font-weight: 600; }
+.insp-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--sky-deep);
+  background: linear-gradient(currentColor, currentColor) 0 100% / 0 1px no-repeat;
+  transition: background-size 0.4s var(--glide);
+}
+.insp-link:hover { background-size: 100% 1px; }
+.insp-pair { display: grid; gap: 4px 40px; }
+@media (min-width: 768px) {
+  .insp-pair { grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); }
+}
+@media (max-width: 639.98px) {
+  .insp-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+.vis-list-plain > li + li { border-top: 1px solid var(--line); }
+.vis-person {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 8px;
+  border-radius: 14px;
+  text-align: left;
+  transition: background-color 0.2s ease;
+}
+.vis-person:hover { background: var(--hover); }
+
+/* ─── Visitor map ────────────────────────────────────────────── */
+
+.map-frame {
+  --map-land: var(--well-3);
+  --map-land-hover: rgb(var(--ink-rgb) / 0.24);
+  position: relative;
+  aspect-ratio: 960 / 600;
+  overflow: hidden;
+  border-radius: 22px;
+  background: var(--well);
+}
+.map-country {
+  stroke: var(--well);
+  stroke-width: 0.7;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+  cursor: pointer;
+  transition: fill 0.25s ease;
+}
+.map-selected {
+  fill: none;
+  stroke: var(--ink);
+  stroke-width: 1.6;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+  pointer-events: none;
+}
+.map-info {
+  position: absolute;
+  left: 12px;
+  top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  max-width: calc(100% - 24px);
+  padding: 8px 12px;
+  border-radius: 12px;
+  background: rgb(var(--sheet-rgb) / 0.88);
+  font-size: 13px;
+  line-height: 1.35;
+  pointer-events: none;
+}
+.map-legend {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 10px;
+  border-radius: 10px;
+  background: rgb(var(--sheet-rgb) / 0.88);
+  font-size: 11.5px;
+  color: var(--ink-3);
+  pointer-events: none;
+}
+.map-legend span:first-child { margin-right: 6px; }
+.map-legend span:last-child { margin-left: 6px; }
+.map-legend i { width: 18px; height: 8px; border-radius: 3px; }
+@media (max-width: 639.98px) {
+  .map-frame { border-radius: 18px; }
+  .map-info { left: 8px; top: 8px; padding: 6px 10px; font-size: 12.5px; }
+  .map-legend { left: 8px; bottom: 8px; padding: 5px 8px; font-size: 11px; }
+  .map-legend i { width: 13px; height: 7px; }
+}
+
+/* The visitor dialog: figures, then the map with one calm list beside it. */
+.vis-totals {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px 20px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid var(--line);
+}
+.vis-totals dt { font-size: 12.5px; color: var(--ink-3); }
+.vis-totals dd { margin-top: 2px; font-size: 20px; font-weight: 600; line-height: 1.25; }
+.vis-totals dd.vis-sub { margin-top: 1px; font-size: 12.5px; font-weight: 400; color: var(--ink-3); }
+@media (min-width: 640px) {
+  .vis-totals { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .vis-totals > div + div { padding-left: 20px; border-left: 1px solid var(--line); }
+}
+
+/* Who an address belongs to: someone signed in from it, or only guests. */
+.vis-kind {
+  flex-shrink: 0;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.5;
+}
+.vis-kind[data-kind="account"] { background: var(--sky-wash); color: var(--sky-deep); }
+.vis-kind[data-kind="guest"] { background: var(--well-2); color: var(--ink-3); }
+
+.vis-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 28px; }
+@media (min-width: 1024px) {
+  .vis-grid { grid-template-columns: minmax(0, 1fr) 360px; gap: 32px; }
+  /* The list is exactly as tall as the map and scrolls inside. */
+  .vis-side { position: relative; min-height: 0; }
+  .vis-side-inner { position: absolute; inset: 0; display: flex; flex-direction: column; overflow-x: hidden; overflow-y: auto; scrollbar-width: thin; }
+  .vis-list { flex: 1; min-height: 0; overflow-y: auto; }
+}
+.vis-side { min-width: 0; scroll-margin-top: 84px; }
+
+.vis-list > ul > li + li { border-top: 1px solid var(--line); }
+.vis-row, .vis-country {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 11px 8px;
+  border-radius: 14px;
+  text-align: left;
+  transition: background-color 0.2s ease;
+}
+.vis-country { display: block; padding: 10px 8px; }
+.vis-row:hover, .vis-country:hover:not(:disabled) { background: var(--hover); }
+.vis-country:disabled { cursor: default; }
+.vis-ip { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 14px; font-weight: 500; letter-spacing: -0.01em; }
+
+.cc {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  height: 17px;
+  padding: 0 5px;
+  border-radius: 5px;
+  background: var(--well-2);
+  color: var(--ink-2);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.vis-filter, .vis-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 32px;
+  padding: 0 12px 0 9px;
+  border-radius: 999px;
+  font-size: 13px;
+  transition: background-color 0.25s ease, color 0.25s ease;
+}
+.vis-filter { background: var(--sky-wash); color: var(--sky-deep); }
+.vis-filter .cc { background: rgb(var(--sheet-rgb) / 0.7); color: inherit; }
+.vis-filter:hover { background: var(--sky-solid); color: #ffffff; }
+.vis-back { background: var(--field); color: var(--ink-2); }
+.vis-back:hover { background: var(--ink); color: var(--sheet); }
+
+.vis-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 18px; }
+.vis-facts dt { font-size: 12px; color: var(--ink-3); }
+.vis-facts dd { margin-top: 2px; font-size: 15px; font-weight: 600; }
+@media (min-width: 640px) and (max-width: 1023.98px) {
+  .vis-facts { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+.vis-h { margin: 26px 0 12px; font-size: 13px; font-weight: 400; color: var(--ink-3); }
+.vis-accounts { display: flex; flex-direction: column; gap: 2px; }
+.vis-chip { display: inline-flex; align-items: center; gap: 8px; height: 30px; padding: 0 12px; border-radius: 999px; background: var(--well); font-size: 13px; }
+.vis-recent li { display: flex; align-items: baseline; gap: 12px; padding: 8px 0; font-size: 13px; border-top: 1px solid var(--line); }
+.vis-recent li:first-child { border-top: 0; }
+
 /* ─── Theme switch ───────────────────────────────────────────── */
 
 /* theme.ts runs the switch as a view transition and animates the clip of the

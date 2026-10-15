@@ -49,6 +49,7 @@ model User {
   learnAiUsageCounters    LearnAiUsageCounter[]
   learnAiTrainingPrompts  LearnAiTrainingPrompt[]
   usageSessions           UsageSession[]
+  webVisits               WebVisit[]
   privacyConsent          PrivacyConsent?
   popupTargets            PopupTargetUser[]
 
@@ -554,6 +555,48 @@ model UsageClassDay {
 
   @@id([dayKey, klasse])
   @@map("usage_class_days")
+}
+
+// Website visitors behind "Website-Besucher" and the visitor map on the admin
+// Analytics page: one row per page view of the website, signed in or not
+// (routes/activityLog.ts). The address and the place derived from it are kept
+// as long as the request logs (REQUEST_LOG_RETENTION_DAYS) and then removed;
+// the row stays as an anonymous count of country, device, day, hour and page.
+// It names the account only with that account's consent to the usage
+// statistics, and loses it together with the address or on withdrawal.
+model WebVisit {
+  id         String   @id @default(uuid()) @db.VarChar(36)
+  // Null once expired, and from browsers that send Global Privacy Control.
+  ip         String?  @db.VarChar(45)
+  // ISO 3166-1 alpha-2 from the edge proxy (Cloudflare); "" when unknown.
+  country    String   @default("") @db.VarChar(2)
+  // Only when the edge sends visitor location headers; removed with the address.
+  region     String?  @db.VarChar(80)
+  city       String?  @db.VarChar(80)
+  // sha256(day salt + address + user agent), 16 hex characters: counts
+  // different visitors per day, unlinkable once the day's salt is deleted.
+  visitorKey String   @map("visitor_key") @db.VarChar(16)
+  // "ios" | "android" | "desktop" | "other"
+  device     String   @db.VarChar(10)
+  signedIn   Boolean  @default(false) @map("signed_in")
+  // The signed-in account, only with its consent to the usage statistics.
+  stableUid  String?  @map("stable_uid")
+  // Any signed-in account as a keyed hash (16 hex characters, no name): counts
+  // how many different accounts share an address. Removed with the address.
+  accountKey String?  @map("account_key") @db.VarChar(16)
+  // The page without its language prefix ("/timetable").
+  page       String   @default("") @db.VarChar(200)
+  dayKey     String   @map("day_key") @db.VarChar(10)
+  hour       Int
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  user User? @relation(fields: [stableUid], references: [stableUid], onDelete: SetNull)
+
+  @@index([dayKey])
+  @@index([ip])
+  @@index([createdAt])
+  @@index([stableUid])
+  @@map("web_visits")
 }
 
 // ─── Privacy notice and usage-statistics consent ─────────────────────────────

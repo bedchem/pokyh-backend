@@ -131,8 +131,9 @@ export interface Part {
   color: string;
 }
 
-// One bar divided by share, with its legend underneath.
-export function SplitBar({ parts, unit = '', ariaLabel }: { parts: Part[]; unit?: string; ariaLabel: string }) {
+// One bar divided by share, with its legend underneath (left out where a
+// list beside it already names every part).
+export function SplitBar({ parts, unit = '', ariaLabel, legend = true }: { parts: Part[]; unit?: string; ariaLabel: string; legend?: boolean }) {
   const total = parts.reduce((sum, p) => sum + p.value, 0);
   // Pointing at a segment or its legend entry steps the others back.
   const [focus, setFocus] = useState<string | null>(null);
@@ -152,7 +153,7 @@ export function SplitBar({ parts, unit = '', ariaLabel }: { parts: Part[]; unit?
             />
           ))}
       </div>
-      <dl className="mt-5 flex flex-wrap gap-x-9 gap-y-4">
+      {legend && <dl className="mt-5 flex flex-wrap gap-x-9 gap-y-4">
         {parts.map((p) => (
           <div key={p.label} className="legend-item min-w-0" data-dim={focus !== null && focus !== p.label} onPointerEnter={() => setFocus(p.label)}>
             <dt className="flex items-center gap-[10px] text-[13.5px] text-ink-3">
@@ -167,7 +168,7 @@ export function SplitBar({ parts, unit = '', ariaLabel }: { parts: Part[]; unit?
             </dd>
           </div>
         ))}
-      </dl>
+      </dl>}
     </div>
   );
 }

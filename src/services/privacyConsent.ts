@@ -28,7 +28,7 @@ export function rememberUsageConsent(stableUid: string, usage: boolean): void {
 
 // What a withdrawn (or never given) consent means for data already stored:
 // the account's visits and page views lose its name and stay only as
-// anonymous counts.
+// anonymous counts; its website visits keep only "signed in".
 export async function forgetUsageData(stableUid: string): Promise<void> {
   await keyUnkeyedVisits(stableUid);
   await prisma.usageSession.updateMany({ where: { stableUid }, data: { stableUid: null } });
@@ -36,4 +36,5 @@ export async function forgetUsageData(stableUid: string): Promise<void> {
     where: { stableUid, event: 'page_view' },
     data: { stableUid: null, username: null, ip: null, userAgent: null },
   });
+  await prisma.webVisit.updateMany({ where: { stableUid }, data: { stableUid: null } });
 }

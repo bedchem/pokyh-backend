@@ -6,6 +6,8 @@ import { optionalAuth } from '../middleware/auth';
 import { clientIp } from '../middleware/requestLogger';
 import { logger } from '../utils/logger';
 import { hasUsageConsent } from '../services/privacyConsent';
+import { recordWebVisit } from '../services/webVisits';
+import { config } from '../config';
 
 const router = Router();
 
@@ -71,6 +73,15 @@ router.post('/', limiter, optionalAuth, async (req: Request, res: Response): Pro
   prisma.frontendActivityLog.create({
     data: { event, page: page ?? null, detail: detail ?? null, stableUid, username, ip, userAgent },
   }).catch(() => {});
+
+  // Every page view of the website, signed in or not, is also one website
+  // visit for the visitor statistics (services/webVisits.ts); it names the
+  // account only with its consent, as above. Best effort.
+  if (event === 'page_view') {
+    recordWebVisit(req, page, stableUid).catch((e) => {
+      if (config.debug) logger.warn('[activity-log] web visit not stored', { message: e instanceof Error ? e.message : String(e), requestId: req.id });
+    });
+  }
 
   res.status(204).send();
 });

@@ -394,6 +394,34 @@ async function cleanupFrontendActivity() {
   });
 }
 
+// Website visitors (web_visits): the address, the place derived from it and
+// a consenting account's name are personal data and kept as long as the
+// request logs. After that a row is an anonymous count — country, device,
+// day, hour, page — with its time cut to the hour. A name without (or after
+// withdrawing) consent goes at once. Replicated data: one node is enough.
+async function cleanupWebVisits() {
+  if (!ownsClusterWork('job:web-visits-cleanup')) return;
+  const cutoff = new Date(Date.now() - config.requestLogRetentionDays * 24 * 60 * 60 * 1000);
+  const anonymised = await prisma.$executeRaw`
+    UPDATE web_visits
+    SET ip = NULL, region = NULL, city = NULL, stable_uid = NULL, account_key = NULL,
+        created_at = DATE_FORMAT(created_at, '%Y-%m-%d %H:00:00')
+    WHERE created_at < ${cutoff}
+      AND (ip IS NOT NULL OR region IS NOT NULL OR city IS NOT NULL OR stable_uid IS NOT NULL OR account_key IS NOT NULL
+           OR MINUTE(created_at) <> 0 OR SECOND(created_at) <> 0)`;
+  // Named only with consent: a withdrawal on another node, a race.
+  const withoutConsent = await prisma.$executeRaw`
+    UPDATE web_visits SET stable_uid = NULL
+    WHERE stable_uid IS NOT NULL
+      AND stable_uid NOT IN (SELECT stable_uid FROM privacy_consents WHERE usage_stats = 1)`;
+  if (anonymised > 0 || withoutConsent > 0) logger.info('Web visit retention cleanup', {
+    action: 'web_visit_retention_cleanup',
+    anonymisedCount: anonymised,
+    anonymisedWithoutConsent: withoutConsent,
+    retentionDays: config.requestLogRetentionDays,
+  });
+}
+
 let backgroundJobsStarted = false;
 
 // Starts the periodic background jobs exactly once, after the DB is reachable.
@@ -423,6 +451,8 @@ function startBackgroundJobs() {
   setInterval(() => void cleanupExpiredUsageSessions().catch(() => {}), 24 * 60 * 60 * 1000);
   setTimeout(() => void cleanupFrontendActivity().catch(() => {}), 25_000);
   setInterval(() => void cleanupFrontendActivity().catch(() => {}), config.requestLogCleanupIntervalMs);
+  setTimeout(() => void cleanupWebVisits().catch(() => {}), 30_000);
+  setInterval(() => void cleanupWebVisits().catch(() => {}), config.requestLogCleanupIntervalMs);
 
   // Each job is started on its own: one that cannot start (for example a
   // rejected configuration value) must not keep the others from running.

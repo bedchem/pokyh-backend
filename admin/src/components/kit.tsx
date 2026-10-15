@@ -412,11 +412,20 @@ interface DialogProps {
   onClose: () => void;
   children: ReactNode;
   width?: number;
+  // On a phone: a sheet over the whole screen instead of a floating card,
+  // for dialogs that hold lists, maps and tables.
+  sheet?: boolean;
+  // A dialog that was reached from another one: a way back, and the steps
+  // that led here (each a way back to that step).
+  onBack?: () => void;
+  trail?: Array<{ label: string; onClick: () => void }>;
+  // Shown beside the title, e.g. the avatar of the person it is about.
+  lead?: ReactNode;
 }
 
 // Rendered into <body>, so no ancestor transform can clip it. Escape and a
 // click on the scrim close it.
-export function Dialog({ title, subtitle, onClose, children, width = 460 }: DialogProps) {
+export function Dialog({ title, subtitle, onClose, children, width = 460, sheet = false, onBack, trail, lead }: DialogProps) {
   const panelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -427,13 +436,16 @@ export function Dialog({ title, subtitle, onClose, children, width = 460 }: Dial
 
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
-    panelRef.current?.querySelector<HTMLElement>('input, select, textarea, button:not([data-close])')?.focus();
+    // On a touch screen a focused field would open the keyboard over the
+    // sheet before anything is read, so the sheet itself takes the focus.
+    if (sheet && window.matchMedia('(pointer: coarse)').matches) panelRef.current?.focus({ preventScroll: true });
+    else panelRef.current?.querySelector<HTMLElement>('input, select, textarea, button:not([data-close])')?.focus();
     return () => previous?.focus?.();
-  }, []);
+  }, [sheet]);
 
   return createPortal(
     <div
-      className="animate-fadeIn fixed inset-0 z-[80] flex items-start justify-center overflow-y-auto overflow-x-hidden overscroll-contain p-4 pt-[9vh]"
+      className={`animate-fadeIn fixed inset-0 z-[80] flex items-start justify-center overflow-y-auto overflow-x-hidden overscroll-contain p-4 pt-[9vh] ${sheet ? 'dialog-sheet' : ''}`}
       style={{ background: 'var(--scrim)' }}
       onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
@@ -442,11 +454,28 @@ export function Dialog({ title, subtitle, onClose, children, width = 460 }: Dial
         role="dialog"
         aria-modal="true"
         aria-label={title}
-        className="animate-scaleIn w-full min-w-0 rounded-[28px] bg-raise p-6 sm:p-8"
-        style={{ maxWidth: width, boxShadow: '0 44px 70px -40px rgb(0 0 0 / 0.45)' }}
+        tabIndex={sheet ? -1 : undefined}
+        className="dialog-panel animate-scaleIn w-full min-w-0 rounded-[28px] bg-raise p-6 outline-none sm:p-8"
+        style={{ maxWidth: width, boxShadow: '0 44px 70px -40px rgb(0 0 0 / 0.45)', transition: 'max-width 0.45s var(--glide)' }}
       >
-        <div className="flex items-start justify-between gap-4">
-          <div className="min-w-0">
+        <div className="dialog-head flex items-start justify-between gap-4">
+          {onBack && (
+            <button type="button" data-close className="orb h-9 w-9 flex-shrink-0" onClick={onBack} aria-label="Zurück">
+              <ChevronLeft size={17} strokeWidth={1.8} />
+            </button>
+          )}
+          {lead && <div className="flex-shrink-0 self-center">{lead}</div>}
+          <div className="min-w-0 flex-1">
+            {trail && trail.length > 0 && (
+              <nav className="dialog-trail" aria-label="Pfad">
+                {trail.map((step, i) => (
+                  <span key={`${step.label}-${i}`} className="flex min-w-0 items-center gap-1.5">
+                    <button type="button" className="truncate" onClick={step.onClick}>{step.label}</button>
+                    <ChevronRight size={12} strokeWidth={1.8} className="flex-shrink-0 opacity-60" aria-hidden="true" />
+                  </span>
+                ))}
+              </nav>
+            )}
             <h2 className="text-[20px] font-semibold">{title}</h2>
             {subtitle && <p className="mt-1 text-[14px] text-ink-3">{subtitle}</p>}
           </div>
