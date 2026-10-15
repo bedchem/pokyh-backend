@@ -19,6 +19,9 @@ async function main() {
   }
 
   const deleted = await prisma.admin.deleteMany({ where: { stableUid: user.stableUid } });
+  // Second factors must not come back to life if the name is made admin again.
+  await prisma.adminTotp.deleteMany({ where: { username: user.username } });
+  await prisma.adminPasskey.deleteMany({ where: { username: user.username } });
   if (deleted.count === 0) {
     console.log(`ℹ️  "${username}" was not an admin`);
   } else {

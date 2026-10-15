@@ -2,6 +2,7 @@ import { useState, useRef } from 'react';
 import { Download, Upload, AlertTriangle, CheckCircle2, Database, Shield, Info } from 'lucide-react';
 import { adminApi } from '../api';
 import { FormSection, Notice, PageHeader, Spinner } from '../components/kit';
+import { AccountSecurity } from '../components/AccountSecurity';
 
 export function SettingsPage() {
   const [exporting, setExporting] = useState(false);
@@ -53,9 +54,11 @@ export function SettingsPage() {
 
   return (
     <div>
-      <PageHeader title="Einstellungen" subtitle="Export, Import und Sicherung der gesamten Datenbank." />
+      <PageHeader title="Einstellungen" subtitle="Anmeldung deines Admin-Kontos sowie Export, Import und Sicherung der gesamten Datenbank." />
 
       <div className="mt-10">
+        <AccountSecurity />
+
         <FormSection
           icon={Database}
           title="Datenbank exportieren"

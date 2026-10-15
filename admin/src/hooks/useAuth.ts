@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { adminApi } from '../api';
+import type { LoginResult } from '../types';
 
 const TOKEN_KEY = 'pokyh_admin_token';
 
@@ -33,7 +34,10 @@ interface UseAuthReturn {
   isAuthenticated: boolean;
   token: string | null;
   username: string;
-  login: (username: string, password: string) => Promise<void>;
+  /** Resolves with the ticket for step two when a second factor is set up. */
+  login: (username: string, password: string) => Promise<LoginResult>;
+  /** Takes the token a finished login step returned. */
+  acceptToken: (token: string) => void;
   logout: () => void;
 }
 
@@ -60,7 +64,12 @@ export function useAuth(): UseAuthReturn {
   }, []);
 
   const login = useCallback(async (username: string, password: string) => {
-    const newToken = await adminApi.login(username, password);
+    const result = await adminApi.login(username, password);
+    if ('token' in result) setToken(result.token);
+    return result;
+  }, []);
+
+  const acceptToken = useCallback((newToken: string) => {
     setToken(newToken);
   }, []);
 
@@ -76,6 +85,7 @@ export function useAuth(): UseAuthReturn {
     token,
     username,
     login,
+    acceptToken,
     logout,
   };
 }

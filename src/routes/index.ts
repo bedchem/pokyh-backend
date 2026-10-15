@@ -21,6 +21,7 @@ import { learnAiRouter } from './learnAi';
 import { popupsAdminRouter, popupsRouter } from './popups';
 import { clusterAdminRouter } from './adminCluster';
 import { analyticsAdminRouter } from './adminAnalytics';
+import { adminSecurityRouter } from './adminSecurity';
 import { config } from '../config';
 
 const router = Router();
@@ -45,6 +46,7 @@ function requireLearnBrowserOrigin(req: Request, res: Response, next: NextFuncti
 router.use('/api/admin/popups', popupsAdminRouter);
 router.use('/api/admin/cluster', clusterAdminRouter);
 router.use('/api/admin/analytics', analyticsAdminRouter);
+router.use('/api/admin', adminSecurityRouter);
 router.use('/api/admin', adminRouter);
 
 // Public dish catalog — no API key required (read-only menu data)

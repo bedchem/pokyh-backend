@@ -160,6 +160,10 @@ export const config = {
   // header and remain authenticated by the API key plus user bearer token.
   learnAllowedOrigins: (process.env.LEARN_ALLOWED_ORIGINS ?? '')
     .split(',').map((origin) => origin.trim()).filter(Boolean),
+  // Optional: the only admin panel origins passkeys may be made and used
+  // under (e.g. "https://api.pokyh.com"). Empty = the panel's own https origin.
+  adminPasskeyOrigins: (process.env.ADMIN_PASSKEY_ORIGINS ?? '')
+    .split(',').map((origin) => origin.trim().replace(/\/+$/, '')).filter(Boolean),
   // Optional editorial lookup only. The provider never grades a quiz or writes
   // an answer by itself; it offers a server-side suggestion for an editor to
   // review. Keeping it disabled by default prevents unannounced content export.

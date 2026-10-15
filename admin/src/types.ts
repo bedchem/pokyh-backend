@@ -35,6 +35,8 @@ export interface AdminUserClass {
 }
 
 export interface AdminUserDetail extends AdminUser {
+  // Whether the account can sign in to the panel with its own password.
+  hasPassword?: boolean;
   todos: AdminTodo[];
   classes: AdminUserClass[];
 }
@@ -1317,4 +1319,41 @@ export interface AnalyticsVisitorIp {
   devices: Array<{ device: VisitorDevice; views: number }>;
   recent: Array<{ at: string | null; page: string; device: VisitorDevice; signedIn: boolean }>;
   window: { fromKey: string; toKey: string; clamped: boolean };
+}
+
+// ─── Admin login: second factor and passkeys ──────────────────────────────────
+
+export interface SecondFactorChallenge {
+  secondFactorRequired: true;
+  ticket: string;
+  methods: { totp: boolean; passkey: boolean };
+}
+
+export type LoginResult = { token: string } | SecondFactorChallenge;
+
+export interface PasskeyChallenge<O> {
+  options: O;
+  challengeToken: string;
+}
+
+export interface AdminPasskey {
+  id: string;
+  name: string;
+  rpId: string;
+  backedUp: boolean;
+  createdAt: string;
+  lastUsedAt: string | null;
+}
+
+export interface AdminSecurityStatus {
+  username: string;
+  totpEnabled: boolean;
+  recoveryCodesLeft: number;
+  passkeys: AdminPasskey[];
+}
+
+export interface TotpSetup {
+  secret: string;
+  otpauthUrl: string;
+  qrSvg: string;
 }

@@ -502,6 +502,7 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
     try {
       await adminApi.setUserPassword(user.stableUid, newPassword);
       showToast(`Passwort für ${user.username} gesetzt`, 'success');
+      setUser((prev) => prev ? { ...prev, hasPassword: true } : prev);
       setShowPasswordModal(false);
       setNewPassword('');
     } catch (err) {
@@ -736,6 +737,12 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
                     Passwort setzen
                   </button>
                 </div>
+                {user.isAdmin && user.hasPassword === false && (
+                  <p className="mt-3 text-[12px] leading-relaxed" style={{ color: 'var(--amber-deep)' }}>
+                    Kein eigenes Passwort: {user.username} kommt nur mit dem gemeinsamen Admin-Passwort ins Panel.
+                    Setze ein Passwort, damit die Anmeldung mit eigenen Zugangsdaten klappt.
+                  </p>
+                )}
               </div>
 
               {/* Classes */}

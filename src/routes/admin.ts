@@ -50,6 +50,8 @@ import { intQueryParam } from '../utils/duration';
 import { clientIp } from '../middleware/requestLogger';
 import { sseManager } from '../services/sse';
 import { ADMIN_LIVE_KEY } from '../services/adminLive';
+import { checkAdminPassword, findAdminAccount, issueAdminToken } from '../services/adminLogin';
+import { clearSecondFactors, issueSecondFactorTicket, secondFactorMethods } from '../services/adminSecondFactor';
 
 function safeParseTags(raw: string): string[] {
   try { return JSON.parse(raw) as string[]; } catch { return []; }
@@ -164,49 +166,55 @@ const loginLimiter = rateLimit({
 // ─── POST /api/admin/auth/login ───────────────────────────────────────────────
 
 router.post('/auth/login', loginLimiter, async (req: Request, res: Response): Promise<void> => {
-  const { username, password } = req.body as { username?: string; password?: string };
+  const { username, password } = req.body as { username?: unknown; password?: unknown };
 
-  if (!username || !password) {
+  if (typeof username !== 'string' || typeof password !== 'string' || !username.trim() || !password) {
     res.status(400).json({ error: 'Username and password required' });
     return;
   }
 
-  // Accept admins defined in env OR with an Admin DB record (per-user password)
-  const user = await prisma.user.findUnique({ where: { username } });
-  const adminRecord = user
-    ? await prisma.admin.findUnique({ where: { stableUid: user.stableUid } })
-    : null;
-
+  // Admins defined in env OR with an Admin DB record. The failure reason only
+  // goes to the log; the caller always sees the same "Invalid credentials".
   const loginIp = clientIp(req);
-  const isEnvAdmin = config.adminUsernames.includes(username);
-  if (!adminRecord && !isEnvAdmin) {
-    logger.warn('Admin login failed: unknown user', { action: 'admin_login_failed', username, ip: loginIp });
+  const lookup = await findAdminAccount(username);
+  if (!lookup.ok) {
+    const message = lookup.reason === 'no-account'
+      ? 'Admin login failed: unknown user'
+      : 'Admin login failed: account is not an admin';
+    logger.warn(message, { action: 'admin_login_failed', reason: lookup.reason, username, ip: loginIp });
+    res.status(401).json({ error: 'Invalid credentials' });
+    return;
+  }
+  const { account } = lookup;
+
+  const check = await checkAdminPassword(account, password);
+  if (check === 'no-password') {
+    if (account.isEnvAdmin) {
+      res.status(500).json({ error: 'Admin password not configured — run npm run make-admin to set one' });
+      return;
+    }
+    logger.warn('Admin login failed: account has no password — set one under Nutzer → Passwort setzen', {
+      action: 'admin_login_failed', reason: 'no-password', username: account.username, ip: loginIp,
+    });
+    res.status(401).json({ error: 'Invalid credentials' });
+    return;
+  }
+  if (check === 'wrong') {
+    logger.warn('Admin login failed: wrong password', { action: 'admin_login_failed', reason: 'wrong-password', username: account.username, ip: loginIp });
     res.status(401).json({ error: 'Invalid credentials' });
     return;
   }
 
-  // Per-user hash takes priority; fall back to shared ADMIN_PASSWORD_HASH
-  const hashToCheck = adminRecord?.passwordHash ?? config.adminPasswordHash;
-  if (!hashToCheck) {
-    res.status(500).json({ error: 'Admin password not configured — run npm run make-admin to set one' });
+  // With a second factor set up, the password alone is only half the login.
+  const methods = await secondFactorMethods(account.username);
+  if (methods.totp || methods.passkey) {
+    logger.info('Admin login: password ok, second factor required', { action: 'admin_login_password_ok', username: account.username, ip: loginIp });
+    res.json({ secondFactorRequired: true, ticket: issueSecondFactorTicket(account.username), methods });
     return;
   }
 
-  const valid = await bcrypt.compare(password, hashToCheck);
-  if (!valid) {
-    logger.warn('Admin login failed: wrong password', { action: 'admin_login_failed', username, ip: loginIp });
-    res.status(401).json({ error: 'Invalid credentials' });
-    return;
-  }
-
-  const ip = loginIp;
-  const token = jwt.sign(
-    { role: 'admin', sub: 'admin-panel', username },
-    config.jwtSecret,
-    { expiresIn: config.adminJwtExpiresIn } as jwt.SignOptions
-  );
-
-  logger.info('Admin login successful', { action: 'admin_login', username, ip, userAgent: req.headers['user-agent'] });
+  const token = issueAdminToken(account.username);
+  logger.info('Admin login successful', { action: 'admin_login', method: 'password', username: account.username, ip: loginIp, userAgent: req.headers['user-agent'] });
   res.json({ token });
 });
 
@@ -525,6 +533,8 @@ router.get('/users/:stableUid', requireAdmin, async (req: Request, res: Response
     webuntisKlasseId: user.role === 'parent' ? 0 : user.webuntisKlasseId,
     webuntisKlasseName: user.role === 'parent' ? '' : user.webuntisKlasseName,
     isAdmin: !!isAdmin,
+    // Whether the account can sign in to the panel with its own password.
+    hasPassword: Boolean(user.passwordHash || isAdmin?.passwordHash),
     role: user.role,
     createdAt: user.createdAt.toISOString(),
     updatedAt: user.updatedAt.toISOString(),
@@ -555,7 +565,8 @@ router.delete('/users/:stableUid', requireAdmin, async (req: Request, res: Respo
   let adminUsername = 'admin';
   try { if (adminJwt) adminUsername = (jwt.decode(adminJwt) as Record<string, string>)?.['username'] ?? 'admin'; } catch {}
   revokeUserTokens(stableUid);
-  await prisma.user.delete({ where: { stableUid } }).catch(() => null);
+  const deleted = await prisma.user.delete({ where: { stableUid } }).catch(() => null);
+  if (deleted) await clearStaleSecondFactors(deleted.username);
   logger.info('Admin action: delete user', { action: 'delete_user', adminUsername, targetUid: stableUid });
   res.status(204).send();
 });
@@ -680,10 +691,20 @@ router.delete('/users/:stableUid/revoke-admin', requireAdmin, async (req: Reques
   try { if (adminJwt) adminUsername = (jwt.decode(adminJwt) as Record<string, string>)?.['username'] ?? 'admin'; } catch {}
 
   await prisma.admin.deleteMany({ where: { stableUid } });
+  const target = await prisma.user.findUnique({ where: { stableUid }, select: { username: true } });
+  if (target) await clearStaleSecondFactors(target.username);
 
   logger.info('Admin action: revoke admin', { action: 'revoke_admin', adminUsername, targetUid: stableUid });
   res.status(204).send();
 });
+
+// Passkeys and the authenticator app of someone who is no longer an admin
+// must not come back to life when the name is later made admin again. An
+// env-configured admin keeps them: their access did not end.
+async function clearStaleSecondFactors(username: string): Promise<void> {
+  const still = await findAdminAccount(username);
+  if (!still.ok) await clearSecondFactors(username);
+}
 
 // ─── GET /api/admin/classes ───────────────────────────────────────────────────
 

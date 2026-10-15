@@ -82,6 +82,46 @@ model Admin {
   @@map("admins")
 }
 
+// Second factors of the admin panel login. Keyed by the admin login name —
+// the identity the admin JWT carries — so an env-configured admin without a
+// users row can use them as well. Once an admin has any of them, the password
+// alone no longer opens the panel.
+model AdminTotp {
+  username      String    @id @db.VarChar(191)
+  // The base32 secret, sealed with a key derived from JWT_SECRET.
+  secretEnc     String    @map("secret_enc") @db.VarChar(255)
+  // Null while the set-up waits for its first correct code.
+  enabledAt     DateTime? @map("enabled_at")
+  // The last accepted 30-second step: a code is never accepted twice.
+  lastUsedStep  Int       @default(0) @map("last_used_step")
+  // JSON array of SHA-256 hashes of the unused one-time recovery codes.
+  recoveryCodes String    @map("recovery_codes") @db.Text
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  @@map("admin_totp")
+}
+
+model AdminPasskey {
+  id           String    @id @default(uuid())
+  username     String    @db.VarChar(191)
+  // WebAuthn credential id, base64url.
+  credentialId String    @unique @map("credential_id") @db.VarChar(512)
+  // COSE public key, base64url.
+  publicKey    String    @map("public_key") @db.Text
+  counter      BigInt    @default(0)
+  transports   String    @default("") @db.VarChar(255)
+  // The domain the passkey was made for; it only works under that domain.
+  rpId         String    @map("rp_id") @db.VarChar(255)
+  name         String    @db.VarChar(100)
+  backedUp     Boolean   @default(false) @map("backed_up")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  lastUsedAt   DateTime? @map("last_used_at")
+
+  @@index([username])
+  @@map("admin_passkeys")
+}
+
 model Class {
   id               String   @id
   name             String

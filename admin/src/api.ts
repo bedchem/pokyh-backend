@@ -1,4 +1,5 @@
-import type { AdminStats, AdminClass, AdminSession, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish, AdminDishFull, AdminDishImportResult, AdminDishShiftResult, AdminDishRotateResult, AdminDishResetResult, AdminDishAnchorResult, DishPlan, AdminCommentsResponse, FileLogFile, FileLogResponse, FileLogEntry, FrontendActivityLogsResponse, FrontendActivityStats, AllTodosResponse, AllRemindersResponse, SchoolYearsResponse, ArchivedUsersResponse, ArchivedClass, ArchivedTodosResponse, ArchivedRemindersResponse, RolloverResult, RollbackResult, AdminApiKey, CreatedApiKey, LearnConfigValues, LearnAiConfigValues, LearnAiGrant, LearnAiTeamGrant, AdminLearnTeam, LearnTeamAssignableRole, AdminLearnCoursesResponse, AdminLearnCourseAccessResponse, AdminLearnCourse, AdminLearnCourseAccess, LearnCoursePermission, LearnCourseStatus, LearnCourseVisibility, AdminLearnCourseVocabularyResponse, AdminLearnVocabularyImportResponse, BackupsResponse, AdminPopup, PopupInput, ClusterStatus, ClusterInstall, CreatedClusterInstall, ClusterReach, ReachEntry, AdminAnalytics, AnalyticsRange, AnalyticsPeople, PeopleFilters, AnalyticsBreakdown, BreakdownKind, AnalyticsDishes, AnalyticsVisitors, AnalyticsVisitorIp, AnalyticsPersonDetail, ClusterUpdates, ClusterUpdateSettings, PopupTargetUser, PopupTargetClass, ClusterScope, WayTestResult, ReachKind } from './types';
+import type { AdminStats, AdminClass, AdminSession, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish, AdminDishFull, AdminDishImportResult, AdminDishShiftResult, AdminDishRotateResult, AdminDishResetResult, AdminDishAnchorResult, DishPlan, AdminCommentsResponse, FileLogFile, FileLogResponse, FileLogEntry, FrontendActivityLogsResponse, FrontendActivityStats, AllTodosResponse, AllRemindersResponse, SchoolYearsResponse, ArchivedUsersResponse, ArchivedClass, ArchivedTodosResponse, ArchivedRemindersResponse, RolloverResult, RollbackResult, AdminApiKey, CreatedApiKey, LearnConfigValues, LearnAiConfigValues, LearnAiGrant, LearnAiTeamGrant, AdminLearnTeam, LearnTeamAssignableRole, AdminLearnCoursesResponse, AdminLearnCourseAccessResponse, AdminLearnCourse, AdminLearnCourseAccess, LearnCoursePermission, LearnCourseStatus, LearnCourseVisibility, AdminLearnCourseVocabularyResponse, AdminLearnVocabularyImportResponse, BackupsResponse, AdminPopup, PopupInput, ClusterStatus, ClusterInstall, CreatedClusterInstall, ClusterReach, ReachEntry, AdminAnalytics, AnalyticsRange, AnalyticsPeople, PeopleFilters, AnalyticsBreakdown, BreakdownKind, AnalyticsDishes, AnalyticsVisitors, AnalyticsVisitorIp, AnalyticsPersonDetail, ClusterUpdates, ClusterUpdateSettings, PopupTargetUser, PopupTargetClass, ClusterScope, WayTestResult, ReachKind, LoginResult, SecondFactorChallenge, PasskeyChallenge, AdminSecurityStatus, TotpSetup, AdminPasskey } from './types';
+import type { AuthenticationResponseJSON, PublicKeyCredentialCreationOptionsJSON, PublicKeyCredentialRequestOptionsJSON, RegistrationResponseJSON } from '@simplewebauthn/browser';
 
 const TOKEN_KEY = 'pokyh_admin_token';
 
@@ -61,23 +62,76 @@ async function request<T>(
   return res.json() as Promise<T>;
 }
 
+// Login steps use raw fetch — the generic request() handler treats 401 as
+// "session expired", which is wrong for the login form (it should show the
+// server's message instead).
+async function loginStep<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body ?? {}),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({})) as { error?: string };
+    throw new Error(data.error === 'Invalid credentials' ? 'Benutzername oder Passwort falsch' : data.error ?? `HTTP ${res.status}`);
+  }
+  return res.json() as Promise<T>;
+}
+
+function storeToken(data: { token: string }): string {
+  setToken(data.token);
+  return data.token;
+}
+
 export const adminApi = {
-  login: async (username: string, password: string): Promise<string> => {
-    // Use raw fetch — the generic request() handler treats 401 as "session expired"
-    // which is wrong for the login form (should show "Invalid credentials" instead).
-    const res = await fetch('/api/admin/auth/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password }),
-    });
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({})) as { error?: string };
-      throw new Error(data.error ?? `HTTP ${res.status}`);
-    }
-    const data = await res.json() as { token: string };
-    setToken(data.token);
-    return data.token;
+  /** The token, or — with a second factor set up — the ticket for step two. */
+  login: async (username: string, password: string): Promise<LoginResult> => {
+    const data = await loginStep<{ token: string } | SecondFactorChallenge>('/api/admin/auth/login', { username, password });
+    if ('token' in data) return { token: storeToken(data) };
+    return data;
   },
+
+  loginWithCode: async (ticket: string, code: string): Promise<string> =>
+    storeToken(await loginStep<{ token: string }>('/api/admin/auth/2fa', { ticket, code })),
+
+  secondFactorPasskeyOptions: (ticket: string): Promise<PasskeyChallenge<PublicKeyCredentialRequestOptionsJSON>> =>
+    loginStep('/api/admin/auth/2fa/passkey/options', { ticket }),
+
+  loginWithSecondFactorPasskey: async (ticket: string, challengeToken: string, response: AuthenticationResponseJSON): Promise<string> =>
+    storeToken(await loginStep<{ token: string }>('/api/admin/auth/2fa/passkey', { ticket, challengeToken, response })),
+
+  passkeyLoginOptions: (): Promise<PasskeyChallenge<PublicKeyCredentialRequestOptionsJSON>> =>
+    loginStep('/api/admin/auth/passkey/options', {}),
+
+  loginWithPasskey: async (challengeToken: string, response: AuthenticationResponseJSON): Promise<string> =>
+    storeToken(await loginStep<{ token: string }>('/api/admin/auth/passkey', { challengeToken, response })),
+
+  securityStatus: (): Promise<AdminSecurityStatus> =>
+    request<AdminSecurityStatus>('GET', '/api/admin/account/security'),
+
+  startTotpSetup: (): Promise<TotpSetup> =>
+    request<TotpSetup>('POST', '/api/admin/account/totp/setup'),
+
+  enableTotp: (code: string): Promise<{ recoveryCodes: string[] }> =>
+    request('POST', '/api/admin/account/totp/enable', { code }),
+
+  disableTotp: (code: string): Promise<void> =>
+    request<void>('POST', '/api/admin/account/totp/disable', { code }),
+
+  renewRecoveryCodes: (code: string): Promise<{ recoveryCodes: string[] }> =>
+    request('POST', '/api/admin/account/recovery-codes', { code }),
+
+  passkeyRegistrationOptions: (password: string): Promise<PasskeyChallenge<PublicKeyCredentialCreationOptionsJSON>> =>
+    request('POST', '/api/admin/account/passkeys/options', { password }),
+
+  addPasskey: (challengeToken: string, response: RegistrationResponseJSON, name: string): Promise<AdminPasskey> =>
+    request<AdminPasskey>('POST', '/api/admin/account/passkeys', { challengeToken, response, name }),
+
+  renamePasskey: (id: string, name: string): Promise<void> =>
+    request<void>('PATCH', `/api/admin/account/passkeys/${encodeURIComponent(id)}`, { name }),
+
+  deletePasskey: (id: string): Promise<void> =>
+    request<void>('DELETE', `/api/admin/account/passkeys/${encodeURIComponent(id)}`),
 
   logout: (): void => {
     clearToken();
