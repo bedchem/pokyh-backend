@@ -9,6 +9,7 @@ import { logger } from '../utils/logger';
 import { hasClassIdentity } from '../utils/accountClass';
 import { hasUsageConsent } from '../services/privacyConsent';
 import { visitorKeyFor } from '../services/visitorKey';
+import { recordAppVisit } from '../services/webVisits';
 import {
   USAGE_CLIENTS,
   USAGE_DEVICES,
@@ -24,7 +25,11 @@ import {
 // about once a minute while Pokyh is in the foreground, and once more when it
 // goes to the background. Each call carries the foreground seconds and opened
 // screens since the previous one; the server adds them to that visit's single
-// row. Nothing else is kept: no IP address, user agent, path or content.
+// row. That row keeps nothing else: no IP address, user agent, path or content.
+//
+// A native app's heartbeat also makes the app's opening an app visit in the
+// visitor statistics (services/webVisits.ts), with the address like a website
+// page view — kept apart from this row, and only as long as the request logs.
 //
 // Without the account's consent the row is anonymous — only a day-scoped
 // visitor key, so the aggregate figures still count everyone (anonymous,
@@ -163,6 +168,14 @@ router.post('/ping', optionalAuth, limiter, async (req: Request, res: Response):
   const named = account ? await hasUsageConsent(account).catch(() => false) : false;
   const device: UsageDevice = ping.device ?? classifyUserAgent(req.headers['user-agent'])?.device ?? 'other';
   const now = new Date();
+
+  // The website records its visitors per page view (routes/activityLog.ts);
+  // an app's opening is recorded here. Best effort.
+  if (ping.client === 'app') {
+    recordAppVisit(req, { sessionId: ping.sessionId, device, appVersion: ping.appVersion ?? '' }, named ? account : null).catch((e) => {
+      if (config.debug) logger.warn('[usage] app visit not stored', { message: e instanceof Error ? e.message : String(e), requestId: req.id });
+    });
+  }
 
   try {
     // A new visit reaches an open Analytics page at once (adminLive).

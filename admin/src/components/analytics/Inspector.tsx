@@ -15,8 +15,9 @@ import type {
   BreakdownKind,
   PeopleFilters,
   UsagePlatform,
+  VisitSource,
 } from '../../types';
-import { NEUTRAL, PLATFORM_LABEL, capitalised, dayDate, de, duration, hours, lastSeen, longDay, percent, periodText, shortDate, when } from './format';
+import { NEUTRAL, PLATFORM_LABEL, SOURCE_TITLE, capitalised, sourceOfViews, viewWord, dayDate, de, duration, hours, lastSeen, longDay, percent, periodText, shortDate, when } from './format';
 
 // Everything behind a figure opens here, in one window that remembers the way
 // it came: a list of people leads to a person, a person to the addresses it
@@ -33,7 +34,8 @@ export type InspectorView =
   | { kind: 'people'; title: string; filters: PeopleFilters; sort: SortKey; range?: AnalyticsRange; search?: string }
   | { kind: 'dishes'; title: string; sort: DishSort; stars?: number }
   | { kind: 'breakdown'; title: string; breakdown: BreakdownKind; labelHeader: string; valueHeader: string }
-  | { kind: 'visitors'; country?: string | null; ip?: string | null }
+  // Website and apps together unless a source is chosen.
+  | { kind: 'visitors'; source?: VisitSource; country?: string | null; ip?: string | null }
   | { kind: 'person'; uid: string; username: string };
 
 export interface InspectorNav {
@@ -47,14 +49,14 @@ export interface InspectorNav {
 }
 
 function titleOf(view: InspectorView): string {
-  if (view.kind === 'visitors') return 'Website-Besucher';
+  if (view.kind === 'visitors') return SOURCE_TITLE[view.source ?? 'all'];
   if (view.kind === 'person') return view.username;
   return view.title;
 }
 
 // How a step is named in the trail above the title.
 function crumbOf(view: InspectorView): string {
-  if (view.kind === 'visitors') return view.ip ?? (view.country ? `Besucher aus ${countryName(view.country)}` : 'Website-Besucher');
+  if (view.kind === 'visitors') return view.ip ?? (view.country ? `Besucher aus ${countryName(view.country)}` : titleOf(view));
   return titleOf(view);
 }
 
@@ -106,6 +108,9 @@ export function Inspector({ stack, onChange, range, colors }: {
           <Suspense fallback={<div className="flex justify-center py-20"><Spinner size={20} /></div>}>
             <VisitorsView
               range={range}
+              source={top.source ?? 'all'}
+              // Another source is another list: back to it from an address.
+              onSource={(source) => nav.replace({ ...top, source, ip: null })}
               country={top.country ?? null}
               ip={top.ip ?? null}
               onSelectIp={(ip) => nav.replace({ ...top, ip })}
@@ -325,6 +330,11 @@ function PeopleView({ view, nav }: { view: Extract<InspectorView, { kind: 'peopl
 
 // ─── One person ─────────────────────────────────────────────────────────────
 
+// Calendar days from one "YYYY-MM-DD" to another, both included.
+function daysBetweenKeys(fromKey: string, toKey: string): number {
+  return Math.max(1, Math.round((dayDate(toKey).getTime() - dayDate(fromKey).getTime()) / 86_400_000) + 1);
+}
+
 function PersonView({ view, nav }: { view: Extract<InspectorView, { kind: 'person' }>; nav: InspectorNav }) {
   const { data, error } = useViewData<AnalyticsPersonDetail>(() => adminApi.analyticsPerson(view.uid, nav.range), `${view.uid}|${nav.range}`);
   const { setMeta } = nav;
@@ -355,10 +365,26 @@ function PersonView({ view, nav }: { view: Extract<InspectorView, { kind: 'perso
       </div>
 
       <dl className="insp-facts mt-5">
-        <div><dt>Zeit in Pokyh</dt><dd className="tabular">{usage.seconds > 0 ? duration(usage.seconds) : '–'}</dd></div>
-        <div><dt>Besuche</dt><dd className="tabular">{de(usage.visits)}</dd></div>
-        <div><dt>Aktive Tage</dt><dd className="tabular">{de(usage.activeDays)}</dd></div>
-        <div><dt>Zuletzt aktiv</dt><dd>{usage.lastSeenAt ? lastSeen(usage.lastSeenAt) : '–'}</dd></div>
+        <div>
+          <dt>Zeit in Pokyh</dt>
+          <dd className="tabular">{usage.seconds > 0 ? duration(usage.seconds) : '–'}</dd>
+          <dd className="insp-fact-sub">{usage.activeDays > 0 ? `Ø ${duration(usage.seconds / usage.activeDays)} pro aktivem Tag` : 'noch nicht gemessen'}</dd>
+        </div>
+        <div>
+          <dt>Besuche</dt>
+          <dd className="tabular">{de(usage.visits)}</dd>
+          <dd className="insp-fact-sub">{usage.visits > 0 ? `Ø ${duration(usage.seconds / usage.visits)} pro Besuch` : 'noch keine'}</dd>
+        </div>
+        <div>
+          <dt>Aktive Tage</dt>
+          <dd className="tabular">{de(usage.activeDays)}</dd>
+          <dd className="insp-fact-sub">von {de(daysBetweenKeys(usage.window.fromKey, usage.window.toKey))} Tagen</dd>
+        </div>
+        <div>
+          <dt>Zuletzt aktiv</dt>
+          <dd>{usage.lastSeenAt ? lastSeen(usage.lastSeenAt) : '–'}</dd>
+          <dd className="insp-fact-sub">{web.ips.length > 0 ? `von ${de(web.ips.length)} ${web.ips.length === 1 ? 'IP-Adresse' : 'IP-Adressen'}` : 'keine IP-Adresse im Zeitraum'}</dd>
+        </div>
       </dl>
 
       {usage.daily.some((d) => d.seconds > 0) && (
@@ -378,35 +404,52 @@ function PersonView({ view, nav }: { view: Extract<InspectorView, { kind: 'perso
 
       <div className="insp-pair mt-2">
         <section className="min-w-0">
-          <h4 className="vis-h">Website · IP-Adressen</h4>
+          <h4 className="vis-h">IP-Adressen · Website &amp; Apps</h4>
           {web.ips.length === 0 ? (
-            <p className="text-[13.5px] text-ink-3">Keine Website-Besuche mit IP-Adresse im Zeitraum.</p>
+            <p className="text-[13.5px] text-ink-3">Keine Besuche mit IP-Adresse im Zeitraum.</p>
           ) : (
             <ul className="vis-list-plain">
-              {web.ips.map((entry) => (
-                <li key={entry.ip}>
-                  <button type="button" className="vis-row" onClick={() => nav.push({ kind: 'visitors', ip: entry.ip })}>
-                    <span className="min-w-0 flex-1">
-                      <span className="vis-ip block truncate">{entry.ip}</span>
-                      <span className="mt-1 flex min-w-0 items-center gap-2 text-[12.5px] text-ink-3">
-                        <span className="cc" aria-hidden="true">{entry.country || '??'}</span>
-                        <span className="truncate">{[entry.city ?? countryName(entry.country), when(entry.lastAt)].join(' · ')}</span>
+              {web.ips.map((entry) => {
+                return (
+                  <li key={entry.ip}>
+                    {/* An address opens with everything from it, website and apps. */}
+                    <button type="button" className="vis-row" onClick={() => nav.push({ kind: 'visitors', source: 'all', ip: entry.ip })}>
+                      <span className="min-w-0 flex-1">
+                        <span className="flex min-w-0 items-center gap-2">
+                          <span className="vis-ip min-w-0 truncate">{entry.ip}</span>
+                          <span className="flex flex-shrink-0 items-center gap-1" title={entry.platforms.map((p) => PLATFORM_LABEL[p]).join(', ')}>
+                            {entry.platforms.map((p) => (
+                              <i key={p} className="h-[7px] w-[7px] rounded-full" style={{ background: nav.colors[p] }} aria-hidden="true" />
+                            ))}
+                          </span>
+                        </span>
+                        <span className="mt-1 flex min-w-0 items-center gap-2 text-[12.5px] text-ink-3">
+                          <span className="cc" aria-hidden="true">{entry.country || '??'}</span>
+                          <span className="truncate">
+                            {[entry.city ?? countryName(entry.country), entry.platforms.map((p) => PLATFORM_LABEL[p]).join(' & '), when(entry.lastAt)].filter(Boolean).join(' · ')}
+                          </span>
+                        </span>
                       </span>
-                    </span>
-                    <span className="flex-shrink-0 text-right">
-                      <span className="tabular block text-[15px] font-semibold">{de(entry.views)}</span>
-                      <span className="block text-[11.5px] text-ink-3">Aufrufe</span>
-                    </span>
-                    <ChevronRight size={15} strokeWidth={1.7} className="flex-shrink-0 text-ink-4" aria-hidden="true" />
-                  </button>
-                </li>
-              ))}
+                      <span className="flex-shrink-0 text-right">
+                        <span className="tabular block text-[15px] font-semibold">{de(entry.views)}</span>
+                        <span className="block text-[11.5px] text-ink-3">{viewWord(sourceOfViews(entry.views, entry.appViews), entry.views)}</span>
+                      </span>
+                      <ChevronRight size={15} strokeWidth={1.7} className="flex-shrink-0 text-ink-4" aria-hidden="true" />
+                    </button>
+                  </li>
+                );
+              })}
             </ul>
           )}
         </section>
         <section className="min-w-0">
           <h4 className="vis-h">Aufgerufene Seiten</h4>
           <RankBars items={web.pages.map((p) => ({ label: p.page, value: p.views }))} empty="Keine Seitenaufrufe im Zeitraum." />
+          {web.appViews > 0 && (
+            <p className="mt-3 text-[12.5px] text-ink-3">
+              Dazu {de(web.appViews)}× eine App geöffnet.
+            </p>
+          )}
         </section>
       </div>
 

@@ -19,7 +19,7 @@ export default function VisitorMapPreview({ byCountry, onOpen }: {
       selected={null}
       onSelect={onOpen}
       theme={theme}
-      idleText={values.size > 0 ? 'Land wählen für seine Besucher' : 'Noch keine Besucher mit bekanntem Land'}
+      idleText={values.size > 0 ? 'Land wählen für seine IP-Adressen' : 'Noch kein Land bekannt'}
     />
   );
 }

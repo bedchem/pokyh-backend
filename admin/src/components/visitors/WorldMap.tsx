@@ -53,9 +53,14 @@ interface WorldMapProps {
   theme: Theme;
   // Shown in the corner while nothing is pointed at or selected.
   idleText: string;
+  // What a country's two figures count: website page views and visitors, or
+  // app openings and users.
+  units?: { views: string; visitors: string };
 }
 
-export function WorldMap({ values, frame, selected, onSelect, theme, idleText }: WorldMapProps) {
+const DEFAULT_UNITS = { views: 'Aufrufe', visitors: 'Besucher' };
+
+export function WorldMap({ values, frame, selected, onSelect, theme, idleText, units = DEFAULT_UNITS }: WorldMapProps) {
   const [shapes, setShapes] = useState<CountryShape[] | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
   const [hovered, setHovered] = useState<string | null>(null);
@@ -104,7 +109,7 @@ export function WorldMap({ values, frame, selected, onSelect, theme, idleText }:
           viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
           className="block h-full w-full"
           role="img"
-          aria-label={`Weltkarte der Website-Besucher nach Land${selected ? `, gewählt: ${countryName(selected)}` : ''}`}
+          aria-label={`Weltkarte der ${units.visitors} nach Land${selected ? `, gewählt: ${countryName(selected)}` : ''}`}
         >
           {/* The sea: a click on it clears the selection. */}
           <rect width={WIDTH} height={HEIGHT} fill="transparent" onClick={() => onSelect(null)} />
@@ -135,7 +140,7 @@ export function WorldMap({ values, frame, selected, onSelect, theme, idleText }:
           <>
             <span className="font-medium text-ink">{countryName(focus)}</span>
             <span className="tabular text-ink-3">
-              {focusValue ? `${compact(focusValue.views)} Aufrufe · ${compact(focusValue.visitors)} Besucher` : 'keine Besuche'}
+              {focusValue ? `${compact(focusValue.views)} ${units.views} · ${compact(focusValue.visitors)} ${units.visitors}` : 'keine Besuche'}
             </span>
           </>
         ) : (

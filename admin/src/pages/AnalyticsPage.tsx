@@ -341,7 +341,10 @@ export function AnalyticsPage() {
     open({ kind: 'breakdown', title, breakdown, labelHeader, valueHeader });
   const showPlatform = (platform: UsagePlatform, search?: string) =>
     show(`${PLATFORM_LABEL[platform]}: wer nutzt sie?`, { platform }, 'lastSeenAt', { search });
-  const showVisitors = (country: string | null = null) => open({ kind: 'visitors', country });
+  // The website's visitors behind "Website-Besucher"; website and apps
+  // together behind "Herkunft".
+  const showVisitors = (country: string | null = null) => open({ kind: 'visitors', source: 'web', country });
+  const showOrigin = (country: string | null = null) => open({ kind: 'visitors', source: 'all', country });
 
   const load = useCallback(async (fresh = false) => {
     try {
@@ -418,7 +421,7 @@ export function AnalyticsPage() {
     );
   }
 
-  const { platforms, time, engagement, accounts, features, mensa, live, web } = data;
+  const { platforms, time, engagement, accounts, features, mensa, live, web, origin } = data;
   const hasVisits = time.sessions > 0;
   const rangeLabel = data.period.label;
   // Periods longer than the server logs reach: people per day, on average.
@@ -511,7 +514,7 @@ export function AnalyticsPage() {
     users: perDay
       ? `Ø verschiedene Personen pro Tag, die eine App oder die Website genutzt haben, je ${unitWord}. Wer mehrere Plattformen nutzt, zählt bei jeder.`
       : `Verschiedene Konten pro ${unitWord}, nach Plattform. Wer mehrere nutzt, zählt bei jeder.${trend?.unit === 'day' ? ' Klick auf einen Tag zeigt, wer aktiv war.' : ''}`,
-    visitors: `${trend?.unit === 'day' ? 'Verschiedene' : 'Ø verschiedene'} Besucher der Website pro Tag, mit und ohne Konto — auch Startseite, Anmeldung und Mensa. Bots und die Apps zählen nicht. Klick zeigt Karte und IP-Adressen.`,
+    visitors: `${trend?.unit === 'day' ? 'Verschiedene' : 'Ø verschiedene'} Besucher der Website pro Tag, mit und ohne Konto — auch Startseite, Anmeldung und Mensa. Bots zählen nicht; die Apps stehen unter Aktive Nutzer, ihre IP-Adressen unter Herkunft. Klick zeigt Karte und IP-Adressen.`,
     time: 'Ø Zeit pro aktiver Person und Tag, gemessen in den Apps und auf der Website, solange Pokyh im Vordergrund ist.',
     sessions: `Wie oft Pokyh pro ${unitWord} geöffnet wurde, in den Apps und auf der Website.${trend?.unit === 'day' ? ' Klick auf einen Tag zeigt, wer da war.' : ''}`,
   };
@@ -525,7 +528,7 @@ export function AnalyticsPage() {
       }
       : undefined;
 
-  const knownCountries = web.byCountry.filter((c) => c.country !== '');
+  const knownCountries = origin.byCountry.filter((c) => c.country !== '');
 
   return (
     <div>
@@ -647,28 +650,28 @@ export function AnalyticsPage() {
           </div>
         )}
 
-        {/* 2 — where the website's visitors come from, and what stands out */}
+        {/* 2 — where the website and the apps are used from, and what stands out */}
         <div className="mt-14">
           <Pair>
             <Section
               title="Herkunft"
-              meta={`${de(web.countries)} ${web.countries === 1 ? 'Land' : 'Länder'} · ${de(web.ips)} IP-Adressen`}
-              action={<button type="button" className="btn btn-sm btn-quiet" onClick={() => showVisitors()}>Alle Besucher <ChevronRight size={14} strokeWidth={1.8} /></button>}
+              meta={`Website & Apps · ${de(origin.countries)} ${origin.countries === 1 ? 'Land' : 'Länder'} · ${de(origin.ips)} IP-Adressen`}
+              action={<button type="button" className="btn btn-sm btn-quiet" onClick={() => showOrigin()}>Karte & IP-Adressen <ChevronRight size={14} strokeWidth={1.8} /></button>}
             >
               <div className="mt-6">
                 <Suspense fallback={<div className="map-frame flex items-center justify-center"><Spinner size={18} /></div>}>
-                  <VisitorMapPreview byCountry={knownCountries} onOpen={showVisitors} />
+                  <VisitorMapPreview byCountry={knownCountries} onOpen={showOrigin} />
                 </Suspense>
               </div>
               {knownCountries.length > 0 && (
                 <ul className="origin-list mt-5">
                   {knownCountries.slice(0, 3).map((c) => (
                     <li key={c.country}>
-                      <button type="button" onClick={() => showVisitors(c.country)}>
+                      <button type="button" onClick={() => showOrigin(c.country)}>
                         <span className="flex items-center gap-2.5">
                           <span className="cc" aria-hidden="true">{c.country}</span>
                           <span className="min-w-0 flex-1 truncate">{countryName(c.country)}</span>
-                          <span className="tabular text-ink-3">{de(c.views)} · {percent(c.views, web.views)}</span>
+                          <span className="tabular text-ink-3">{de(c.views)} · {percent(c.views, origin.views)}</span>
                         </span>
                         <span className="rank-track mt-2 block">
                           <span className="rank-fill" style={{ width: `${Math.max((c.views / Math.max(1, knownCountries[0]!.views)) * 100, 2)}%`, background: NEUTRAL }} />

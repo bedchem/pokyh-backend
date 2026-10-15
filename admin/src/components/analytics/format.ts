@@ -1,5 +1,5 @@
 import type { Theme } from '../../theme';
-import type { AnalyticsRange, UsagePlatform } from '../../types';
+import type { AnalyticsRange, UsagePlatform, VisitSource } from '../../types';
 
 // The vocabulary and number formats every part of the Analytics page shares:
 // the page itself, the inspector and the visitor map.
@@ -8,6 +8,23 @@ import type { AnalyticsRange, UsagePlatform } from '../../types';
 // phone or a computer, in a tab or installed to the home screen — is "Web".
 export const PLATFORM_ORDER: UsagePlatform[] = ['ios', 'android', 'web', 'other'];
 export const PLATFORM_LABEL: Record<UsagePlatform, string> = { ios: 'iPhone-App', android: 'Android-App', web: 'Web', other: 'Andere App' };
+
+// Where people come from, on the website, in the apps, or both. The website
+// counts visitors and page views, the apps their users and openings — only
+// signed in — and both together people and accesses.
+export const SOURCE_TITLE: Record<VisitSource, string> = { all: 'Herkunft', web: 'Website-Besucher', app: 'App-Nutzer' };
+export const SOURCE_PEOPLE: Record<VisitSource, string> = { all: 'Personen', web: 'Besucher', app: 'Nutzer' };
+
+export function viewWord(source: VisitSource, n: number): string {
+  if (source === 'app') return n === 1 ? 'Öffnung' : 'Öffnungen';
+  if (source === 'all') return n === 1 ? 'Zugriff' : 'Zugriffe';
+  return n === 1 ? 'Aufruf' : 'Aufrufe';
+}
+
+// What a mix of website page views and app openings is called.
+export function sourceOfViews(views: number, appViews: number): VisitSource {
+  return appViews <= 0 ? 'web' : appViews >= views ? 'app' : 'all';
+}
 
 // One colour per platform, the same in every chart on the page. Checked for
 // colour-vision deficiencies and contrast on both sheets; dark mode has its

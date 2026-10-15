@@ -609,15 +609,24 @@ model UsageClassDay {
   @@map("usage_class_days")
 }
 
-// Website visitors behind "Website-Besucher" and the visitor map on the admin
-// Analytics page: one row per page view of the website, signed in or not
-// (routes/activityLog.ts). The address and the place derived from it are kept
-// as long as the request logs (REQUEST_LOG_RETENTION_DAYS) and then removed;
-// the row stays as an anonymous count of country, device, day, hour and page.
-// It names the account only with that account's consent to the usage
-// statistics, and loses it together with the address or on withdrawal.
+// Visitors behind "Besucher" and the visitor map on the admin Analytics page:
+// one row per page view of the website, signed in or not
+// (routes/activityLog.ts), and one per opening of a native app from an address
+// on a day (`client` "app", routes/usage.ts). The address and the place
+// derived from it are kept as long as the request logs
+// (REQUEST_LOG_RETENTION_DAYS) and then removed; the row stays as an anonymous
+// count of country, device, day, hour and page. It names the account only with
+// that account's consent to the usage statistics, and loses it together with
+// the address or on withdrawal.
 model WebVisit {
   id         String   @id @default(uuid()) @db.VarChar(36)
+  // "web": a page view of the website. "app": the iOS or Android app opened.
+  client     String   @default("web") @db.VarChar(8)
+  // An app opening's usage visit (usage_sessions.id), so that one visit is
+  // stored once per address and day. Removed with the address.
+  sessionId  String?  @map("session_id") @db.VarChar(36)
+  // The app's version for an app opening; "" for the website.
+  appVersion String   @default("") @map("app_version") @db.VarChar(32)
   // Null once expired, and from browsers that send Global Privacy Control.
   ip         String?  @db.VarChar(45)
   // ISO 3166-1 alpha-2 from the edge proxy (Cloudflare); "" when unknown.
@@ -636,7 +645,7 @@ model WebVisit {
   // Any signed-in account as a keyed hash (16 hex characters, no name): counts
   // how many different accounts share an address. Removed with the address.
   accountKey String?  @map("account_key") @db.VarChar(16)
-  // The page without its language prefix ("/timetable").
+  // The website page without its language prefix ("/timetable"); "" for an app.
   page       String   @default("") @db.VarChar(200)
   dayKey     String   @map("day_key") @db.VarChar(10)
   hour       Int
@@ -648,6 +657,7 @@ model WebVisit {
   @@index([ip])
   @@index([createdAt])
   @@index([stableUid])
+  @@index([sessionId])
   @@map("web_visits")
 }
 

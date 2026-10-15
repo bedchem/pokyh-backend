@@ -121,3 +121,35 @@ test('expired website visits lose their address and place instead of being delet
   assert.ok(!/DELETE\s+FROM|deleteMany/i.test(job), 'the job never deletes rows');
   assert.ok(index.includes('cleanupWebVisits().catch'), 'the job is scheduled');
 });
+
+test('expired app visits also lose their link to the usage visit', () => {
+  const root = fileURLToPath(new URL('..', import.meta.url));
+  const index = readFileSync(join(root, 'src', 'index.ts'), 'utf8');
+  const job = index.slice(index.indexOf('async function cleanupWebVisits'), index.indexOf('let backgroundJobsStarted'));
+  assert.ok(job.includes('account_key = NULL, session_id = NULL'), 'the session link goes with the address');
+  assert.ok(job.includes('session_id IS NOT NULL'), 'rows with only a session link left are cleaned as well');
+});
+
+test('an app is recorded as a visitor from its own heartbeat, once per visit, address and day', () => {
+  const root = fileURLToPath(new URL('..', import.meta.url));
+  const usage = readFileSync(join(root, 'src', 'routes', 'usage.ts'), 'utf8');
+  const visits = readFileSync(join(root, 'src', 'services', 'webVisits.ts'), 'utf8');
+  assert.ok(/if \(ping\.client === 'app'\) \{\s*recordAppVisit\(/.test(usage), 'only native app pings make app visits');
+  assert.ok(usage.includes('named ? account : null'), 'the account is named only with its consent');
+  const record = visits.slice(visits.indexOf('export async function recordAppVisit'));
+  assert.ok(record.includes('where: { sessionId: visit.sessionId, ip: fields.ip, dayKey: fields.dayKey }'), 'one row per visit, address and day');
+  assert.ok(record.includes("client: 'app'"), 'app rows are marked as such');
+  assert.ok(record.includes('visitorFields('), 'app rows keep exactly what website rows keep');
+});
+
+test('website figures stay website-only next to the combined ones', () => {
+  const root = fileURLToPath(new URL('..', import.meta.url));
+  const analytics = readFileSync(join(root, 'src', 'routes', 'adminAnalytics.ts'), 'utf8');
+  const summary = analytics.slice(analytics.indexOf('async function visitSummary'), analytics.indexOf('async function buildAnalytics'));
+  assert.ok(summary.includes("AND client = 'web' AND country <> ''"), 'website countries leave the apps out');
+  assert.ok(summary.includes("COUNT(DISTINCT CASE WHEN client = 'web' THEN ip END) AS webIps"), 'website addresses leave the apps out');
+  assert.ok(analytics.includes("return value === 'all' || value === 'app' ? value : 'web';"), 'the visitor list shows the website unless asked otherwise');
+  const pageLists = analytics.split('\n').filter((line) => /SELECT page\b/.test(line) && line.includes('FROM web_visits'));
+  assert.equal(pageLists.length, 2, 'an address and a person each list pages');
+  assert.ok(pageLists.every((line) => line.includes("client = 'web' GROUP BY page")), 'page lists only hold website pages');
+});

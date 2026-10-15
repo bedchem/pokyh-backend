@@ -1087,6 +1087,15 @@ export interface AdminAnalytics {
     webViews: number;
     webVisitors: number;
   }>;
+  // Where the website and the apps are used from: website page views and app
+  // openings by country, and their different addresses.
+  origin: {
+    views: number;
+    appViews: number;
+    ips: number;
+    countries: number;
+    byCountry: Array<{ country: string; views: number; visitors: number }>;
+  };
   // Everyone on the website, signed in or not.
   web: {
     views: number;
@@ -1242,10 +1251,14 @@ export interface AnalyticsDishes {
   dishes: AnalyticsDish[];
 }
 
-// GET /api/admin/analytics/visitors — the website's visitors by country and
-// by address. Addresses are kept for `ipRetentionDays` only, so the address
-// list covers `ipWindow`, the country figures the whole period.
+// GET /api/admin/analytics/visitors — the visitors of the website and the
+// apps by country and by address. Addresses are kept for `ipRetentionDays`
+// only, so the address list covers `ipWindow`, the country figures the whole
+// period. A view is a website page view or an app opening.
 export type VisitorDevice = 'ios' | 'android' | 'desktop' | 'other';
+// Which visits a visitor view shows.
+export type VisitSource = 'all' | 'web' | 'app';
+export type VisitClient = 'web' | 'app';
 
 export interface VisitorCountry {
   // ISO 3166-1 alpha-2; "" for visits whose country is unknown.
@@ -1261,11 +1274,15 @@ export interface VisitorIp {
   region: string | null;
   city: string | null;
   views: number;
+  // Of them app openings; the rest are website page views.
+  appViews: number;
   days: number;
   firstAt: string | null;
   lastAt: string | null;
   devices: VisitorDevice[];
-  // Page views made signed in: any at all makes the address "Konto", none "Gast".
+  // The website ("web") and the apps it was used in.
+  platforms: UsagePlatform[];
+  // Views made signed in: any at all makes the address "Konto", none "Gast".
   signedViews: number;
   // Different accounts signed in from the address (a school network puts many
   // behind one), and those with consent to the usage statistics by name.
@@ -1275,6 +1292,9 @@ export interface VisitorIp {
 
 export interface AnalyticsVisitors {
   period: { key: string; label: string; fromKey: string; toKey: string };
+  source: VisitSource;
+  // Views in the period on the website and in the apps, whichever is shown.
+  sources: Record<VisitClient, number>;
   totals: {
     views: number;
     visitors: number;
@@ -1309,9 +1329,15 @@ export interface AnalyticsPersonDetail {
     daily: Array<{ dayKey: string; seconds: number }>;
     window: { fromKey: string; toKey: string; clamped: boolean };
   };
+  // Where the account opened the website and the apps from.
   web: {
+    // Website page views, and app openings beside them.
     views: number;
-    ips: Array<{ ip: string; country: string; region: string | null; city: string | null; views: number; lastAt: string | null }>;
+    appViews: number;
+    ips: Array<{
+      ip: string; country: string; region: string | null; city: string | null;
+      views: number; appViews: number; platforms: UsagePlatform[]; lastAt: string | null;
+    }>;
     pages: Array<{ page: string; views: number }>;
     window: { fromKey: string; toKey: string; clamped: boolean };
   };
@@ -1324,6 +1350,8 @@ export interface AnalyticsVisitorIp {
   region: string | null;
   city: string | null;
   views: number;
+  // Of them app openings; the rest are website page views.
+  appViews: number;
   days: number;
   firstAt: string | null;
   lastAt: string | null;
@@ -1331,15 +1359,17 @@ export interface AnalyticsVisitorIp {
   // Different accounts signed in from it; those with consent to the usage
   // statistics by name.
   accountCount: number;
-  accounts: Array<{ stableUid: string; username: string; klasse: string; views: number; lastAt: string | null }>;
+  accounts: Array<{ stableUid: string; username: string; klasse: string; views: number; appViews: number; lastAt: string | null }>;
   // Signed in without that consent: counted, never named.
   unnamedSignedInViews: number;
   daily: Array<{ dayKey: string; views: number }>;
-  // Page views per hour of the day, 0–23.
+  // Views per hour of the day, 0–23.
   hours: number[];
+  // Website pages only.
   pages: Array<{ page: string; views: number }>;
-  devices: Array<{ device: VisitorDevice; views: number }>;
-  recent: Array<{ at: string | null; page: string; device: VisitorDevice; signedIn: boolean }>;
+  devices: Array<{ device: VisitorDevice; client: VisitClient; views: number }>;
+  // `page` is "" and `appVersion` set for an app opening.
+  recent: Array<{ at: string | null; client: VisitClient; page: string; appVersion: string | null; device: VisitorDevice; signedIn: boolean }>;
   window: { fromKey: string; toKey: string; clamped: boolean };
 }
 

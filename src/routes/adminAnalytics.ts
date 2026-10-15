@@ -264,6 +264,15 @@ interface AnalyticsResponse {
     webViews: number;
     webVisitors: number;
   }>;
+  // Where the website and the apps are used from (web_visits): website page
+  // views and app openings by country, and their different addresses.
+  origin: {
+    views: number;
+    appViews: number;
+    ips: number;
+    countries: number;
+    byCountry: Array<{ country: string; views: number; visitors: number }>;
+  };
   // Everyone on the website, signed in or not (web_visits).
   web: {
     views: number;
@@ -384,57 +393,97 @@ function round(value: number, digits = 1): number {
   return Math.round(value * f) / f;
 }
 
-// ─── Website visitors (web_visits) ───────────────────────────────────────────
-// Everyone who opened the website, signed in or not: one row per page view
-// (services/webVisits.ts). Different visitors are counted per day through the
-// day-scoped visitor key, so over a period "visitors" adds up the days. The
-// address is kept only as long as the request logs, so per-address figures
-// cover at most that much of a period.
+// ─── Visitors (web_visits) ───────────────────────────────────────────────────
+// Everyone who opened the website, signed in or not — one row per page view —
+// and every opening of an app — one row per visit, address and day
+// (services/webVisits.ts). "Website-Besucher" are the website's rows only:
+// different visitors per day through the day-scoped visitor key, so over a
+// period "visitors" adds up the days. Where people come from — countries and
+// addresses — covers the website and the apps. The address is kept only as
+// long as the request logs, so per-address figures cover at most that much of
+// a period.
 
-interface WebSummary {
-  byDay: Map<string, { views: number; visitors: number; signedVisitors: number }>;
-  views: number;
-  guestViews: number;
-  ips: number;
-  // Addresses with at least one page view made signed in.
-  signedIps: number;
-  countries: Array<{ country: string; views: number; visitors: number }>;
-  since: string | null;
+// A visit's platform as the rest of the page names it: each app on its own,
+// the website as "web".
+const VISIT_PLATFORM_SQL = Prisma.sql`CASE WHEN client = 'app' THEN (CASE WHEN device IN ('ios', 'android') THEN device ELSE 'other' END) ELSE 'web' END`;
+
+// The visits the inspector's visitor views are narrowed to.
+type VisitSource = 'all' | 'web' | 'app';
+
+function visitSourceOf(value: unknown): VisitSource {
+  return value === 'all' || value === 'app' ? value : 'web';
 }
 
-const EMPTY_WEB: WebSummary = { byDay: new Map(), views: 0, guestViews: 0, ips: 0, signedIps: 0, countries: [], since: null };
+function sourceSql(source: VisitSource): Prisma.Sql {
+  if (source === 'web') return Prisma.sql`AND client = 'web'`;
+  if (source === 'app') return Prisma.sql`AND client = 'app'`;
+  return Prisma.empty;
+}
+
+type CountryCount = { country: string; views: number; visitors: number };
+
+interface VisitSummary {
+  // The website: page views and different visitors per day.
+  byDay: Map<string, { views: number; visitors: number; signedVisitors: number }>;
+  web: { views: number; guestViews: number; ips: number; signedIps: number; countries: CountryCount[]; since: string | null };
+  // Website and apps: where they come from.
+  origin: { views: number; appViews: number; ips: number; countries: CountryCount[] };
+}
+
+const EMPTY_VISITS: VisitSummary = {
+  byDay: new Map(),
+  web: { views: 0, guestViews: 0, ips: 0, signedIps: 0, countries: [], since: null },
+  origin: { views: 0, appViews: 0, ips: 0, countries: [] },
+};
 
 // Never rejects: a missing table (the schema not applied yet) must not cost
 // the rest of the page.
-async function webSummary(fromKey: string, toKey: string): Promise<WebSummary> {
+async function visitSummary(fromKey: string, toKey: string): Promise<VisitSummary> {
   try {
     const inPeriod = Prisma.sql`day_key >= ${fromKey} AND day_key <= ${toKey}`;
-    const [dayRows, countryRows, [ipRow], [sinceRow]] = await Promise.all([
-      prisma.$queryRaw<Array<{ dayKey: string; views: bigint; visitors: bigint; signedVisitors: bigint; guestViews: unknown }>>`
+    type DayRow = { dayKey: string; views: bigint; visitors: bigint; signedVisitors: bigint; guestViews: unknown };
+    type CountryRow = { country: string; views: bigint; visitors: bigint };
+    type TotalRow = { views: bigint; appViews: unknown; webIps: bigint; webSignedIps: bigint; ips: bigint };
+    const [dayRows, webCountryRows, countryRows, [totals], [sinceRow]] = await Promise.all([
+      prisma.$queryRaw<DayRow[]>`
         SELECT day_key AS dayKey, COUNT(*) AS views, COUNT(DISTINCT visitor_key) AS visitors,
                COUNT(DISTINCT CASE WHEN signed_in THEN visitor_key END) AS signedVisitors,
                SUM(CASE WHEN signed_in THEN 0 ELSE 1 END) AS guestViews
-        FROM web_visits WHERE ${inPeriod} GROUP BY day_key`,
-      prisma.$queryRaw<Array<{ country: string; views: bigint; visitors: bigint }>>`
+        FROM web_visits WHERE ${inPeriod} AND client = 'web' GROUP BY day_key`,
+      prisma.$queryRaw<CountryRow[]>`
+        SELECT country, COUNT(*) AS views, COUNT(DISTINCT day_key, visitor_key) AS visitors FROM web_visits
+        WHERE ${inPeriod} AND client = 'web' AND country <> '' GROUP BY country ORDER BY views DESC`,
+      prisma.$queryRaw<CountryRow[]>`
         SELECT country, COUNT(*) AS views, COUNT(DISTINCT day_key, visitor_key) AS visitors FROM web_visits
         WHERE ${inPeriod} AND country <> '' GROUP BY country ORDER BY views DESC`,
-      prisma.$queryRaw<Array<{ n: bigint; signed: bigint }>>`
-        SELECT COUNT(DISTINCT ip) AS n, COUNT(DISTINCT CASE WHEN signed_in THEN ip END) AS signed
-        FROM web_visits WHERE ${inPeriod} AND ip IS NOT NULL`,
-      prisma.$queryRaw<Array<{ k: string | null }>>`SELECT MIN(day_key) AS k FROM web_visits`,
+      prisma.$queryRaw<TotalRow[]>`
+        SELECT COUNT(*) AS views, SUM(CASE WHEN client = 'app' THEN 1 ELSE 0 END) AS appViews,
+               COUNT(DISTINCT CASE WHEN client = 'web' THEN ip END) AS webIps,
+               COUNT(DISTINCT CASE WHEN client = 'web' AND signed_in THEN ip END) AS webSignedIps,
+               COUNT(DISTINCT ip) AS ips
+        FROM web_visits WHERE ${inPeriod}`,
+      prisma.$queryRaw<Array<{ k: string | null }>>`SELECT MIN(day_key) AS k FROM web_visits WHERE client = 'web'`,
     ]);
-    const byDay = new Map(dayRows.map((row) => [row.dayKey, { views: num(row.views), visitors: num(row.visitors), signedVisitors: num(row.signedVisitors) }]));
+    const countries = (rows: CountryRow[]) => rows.map((row) => ({ country: row.country, views: num(row.views), visitors: num(row.visitors) }));
     return {
-      byDay,
-      views: dayRows.reduce((sum, row) => sum + num(row.views), 0),
-      guestViews: dayRows.reduce((sum, row) => sum + num(row.guestViews), 0),
-      ips: num(ipRow?.n),
-      signedIps: num(ipRow?.signed),
-      countries: countryRows.map((row) => ({ country: row.country, views: num(row.views), visitors: num(row.visitors) })),
-      since: sinceRow?.k ?? null,
+      byDay: new Map(dayRows.map((row) => [row.dayKey, { views: num(row.views), visitors: num(row.visitors), signedVisitors: num(row.signedVisitors) }])),
+      web: {
+        views: dayRows.reduce((sum, row) => sum + num(row.views), 0),
+        guestViews: dayRows.reduce((sum, row) => sum + num(row.guestViews), 0),
+        ips: num(totals?.webIps),
+        signedIps: num(totals?.webSignedIps),
+        countries: countries(webCountryRows),
+        since: sinceRow?.k ?? null,
+      },
+      origin: {
+        views: num(totals?.views),
+        appViews: num(totals?.appViews),
+        ips: num(totals?.ips),
+        countries: countries(countryRows),
+      },
     };
   } catch {
-    return EMPTY_WEB;
+    return EMPTY_VISITS;
   }
 }
 
@@ -474,7 +523,7 @@ async function buildAnalytics(period: Period, fresh: boolean): Promise<Analytics
   type ClassRow = { name: string; seconds: unknown; sessions: unknown; people: unknown; days: bigint };
 
   // Runs beside the queries below; it never rejects.
-  const webPromise = webSummary(fromKey, toKey);
+  const visitsPromise = visitSummary(fromKey, toKey);
 
   const [
     dailyRows,
@@ -731,7 +780,7 @@ async function buildAnalytics(period: Period, fresh: boolean): Promise<Analytics
   // A day counts whoever was there: the measured visits, or the server logs
   // where they saw more.
   const peopleOn = (dayKey: string, visitPeople: number) => Math.max(visitPeople, logDays.get(dayKey)?.all.size ?? 0);
-  const site = await webPromise;
+  const site = await visitsPromise;
   const daily = axis.map((dayKey) => {
     const total = totalsByDay.get(dayKey);
     const visits = platformsByDay.get(dayKey) ?? zeroPlatforms();
@@ -908,17 +957,24 @@ async function buildAnalytics(period: Period, fresh: boolean): Promise<Analytics
       lengthBands,
     },
     daily,
+    origin: {
+      views: site.origin.views,
+      appViews: site.origin.appViews,
+      ips: site.origin.ips,
+      countries: site.origin.countries.length,
+      byCountry: site.origin.countries,
+    },
     web: {
-      views: site.views,
+      views: site.web.views,
       visitors: daily.reduce((sum, d) => sum + d.webVisitors, 0),
-      guestViews: site.guestViews,
-      signedViews: site.views - site.guestViews,
+      guestViews: site.web.guestViews,
+      signedViews: site.web.views - site.web.guestViews,
       signedVisitors: [...site.byDay.values()].reduce((sum, d) => sum + d.signedVisitors, 0),
-      ips: site.ips,
-      signedIps: site.signedIps,
-      countries: site.countries.length,
-      byCountry: site.countries,
-      since: site.since,
+      ips: site.web.ips,
+      signedIps: site.web.signedIps,
+      countries: site.web.countries.length,
+      byCountry: site.web.countries,
+      since: site.web.since,
       ipRetentionDays: config.requestLogRetentionDays,
     },
     hours,
@@ -1491,12 +1547,13 @@ router.get('/dishes', requireAdmin, async (_req: Request, res: Response): Promis
   res.json({ total: dishes.length, dishes: dishes.slice(0, DISHES_LIMIT) });
 });
 
-// ─── GET /api/admin/analytics/visitors?range=… ───────────────────────────────
-// Behind the visitor map: every country the website was opened from, and
-// every address with how often, on how many days and from which devices.
-// Addresses exist only for the last REQUEST_LOG_RETENTION_DAYS (index.ts), so
-// the address list covers at most that part of the period (`ipWindow`); the
-// country figures cover all of it.
+// ─── GET /api/admin/analytics/visitors?range=…&source=all|web|app ────────────
+// Behind the visitor map: every country the website or an app was opened
+// from, and every address with how often, on how many days and from which
+// devices and apps. `source` narrows it to the website (the default) or the
+// apps. Addresses exist only for the last REQUEST_LOG_RETENTION_DAYS
+// (index.ts), so the address list covers at most that part of the period
+// (`ipWindow`); the country figures cover all of it.
 
 const IP_LIMIT = 2000;
 const visitorsCache = new TtlCache<unknown>(3 * 1000);
@@ -1543,7 +1600,9 @@ function iso(value: Date | string | null): string | null {
 router.get('/visitors', requireAdmin, async (req: Request, res: Response): Promise<void> => {
   const period = await readPeriod(req, res);
   if (!period) return;
-  const cached = req.query['fresh'] === '1' ? undefined : visitorsCache.get(period.key);
+  const source = visitSourceOf(req.query['source']);
+  const cacheKey = `${period.key}|${source}`;
+  const cached = req.query['fresh'] === '1' ? undefined : visitorsCache.get(cacheKey);
   if (cached) {
     res.json(cached);
     return;
@@ -1551,17 +1610,21 @@ router.get('/visitors', requireAdmin, async (req: Request, res: Response): Promi
 
   const { fromKey, toKey } = period;
   const ipWindow = ipWindowOf(period);
-  const inPeriod = Prisma.sql`day_key >= ${fromKey} AND day_key <= ${toKey}`;
-  const inIpWindow = Prisma.sql`day_key >= ${ipWindow.fromKey} AND day_key <= ${ipWindow.toKey} AND ip IS NOT NULL`;
+  const only = sourceSql(source);
+  const inDays = Prisma.sql`day_key >= ${fromKey} AND day_key <= ${toKey}`;
+  const inPeriod = Prisma.sql`${inDays} ${only}`;
+  const inIpWindow = Prisma.sql`day_key >= ${ipWindow.fromKey} AND day_key <= ${ipWindow.toKey} AND ip IS NOT NULL ${only}`;
 
   type TotalRow = { views: bigint; visitors: bigint; signedVisitors: bigint; guestViews: unknown; unknownViews: unknown };
   type CountryRow = { country: string; views: bigint; visitors: bigint; ips: bigint };
   type IpRow = {
     ip: string; country: string; region: string | null; city: string | null;
-    views: bigint; signedViews: unknown; days: bigint; firstAt: Date; lastAt: Date; devices: string | null; uids: string | null; accountCount: bigint;
+    views: bigint; appViews: unknown; signedViews: unknown; days: bigint; firstAt: Date; lastAt: Date;
+    devices: string | null; platforms: string | null; uids: string | null; accountCount: bigint;
   };
+  type SourceRow = { client: string; views: bigint };
   try {
-    const [[totals], countryRows, ipRows, [ipCount], [sinceRow]] = await Promise.all([
+    const [[totals], countryRows, ipRows, [ipCount], [sinceRow], sourceRows] = await Promise.all([
       prisma.$queryRaw<TotalRow[]>`
         SELECT COUNT(*) AS views, COUNT(DISTINCT day_key, visitor_key) AS visitors,
                COUNT(DISTINCT CASE WHEN signed_in THEN CONCAT(day_key, ':', visitor_key) END) AS signedVisitors,
@@ -1578,10 +1641,12 @@ router.get('/visitors', requireAdmin, async (req: Request, res: Response): Promi
                SUBSTRING_INDEX(GROUP_CONCAT(country ORDER BY created_at DESC SEPARATOR '\n'), '\n', 1) AS country,
                SUBSTRING_INDEX(GROUP_CONCAT(region ORDER BY created_at DESC SEPARATOR '\n'), '\n', 1) AS region,
                SUBSTRING_INDEX(GROUP_CONCAT(city ORDER BY created_at DESC SEPARATOR '\n'), '\n', 1) AS city,
-               COUNT(*) AS views, SUM(CASE WHEN signed_in THEN 1 ELSE 0 END) AS signedViews,
+               COUNT(*) AS views, SUM(CASE WHEN client = 'app' THEN 1 ELSE 0 END) AS appViews,
+               SUM(CASE WHEN signed_in THEN 1 ELSE 0 END) AS signedViews,
                COUNT(DISTINCT day_key) AS days,
                MIN(created_at) AS firstAt, MAX(created_at) AS lastAt,
-               GROUP_CONCAT(DISTINCT device) AS devices, GROUP_CONCAT(DISTINCT stable_uid) AS uids,
+               GROUP_CONCAT(DISTINCT device) AS devices, GROUP_CONCAT(DISTINCT ${VISIT_PLATFORM_SQL}) AS platforms,
+               GROUP_CONCAT(DISTINCT stable_uid) AS uids,
                COUNT(DISTINCT account_key) AS accountCount
         FROM web_visits WHERE ${inIpWindow}
         GROUP BY ip ORDER BY views DESC, lastAt DESC
@@ -1589,14 +1654,20 @@ router.get('/visitors', requireAdmin, async (req: Request, res: Response): Promi
       prisma.$queryRaw<Array<{ n: bigint; signed: bigint }>>`
         SELECT COUNT(DISTINCT ip) AS n, COUNT(DISTINCT CASE WHEN signed_in THEN ip END) AS signed
         FROM web_visits WHERE ${inIpWindow}`,
-      prisma.$queryRaw<Array<{ k: string | null }>>`SELECT MIN(day_key) AS k FROM web_visits`,
+      prisma.$queryRaw<Array<{ k: string | null }>>`SELECT MIN(day_key) AS k FROM web_visits WHERE 1 = 1 ${only}`,
+      // Website and apps side by side, whichever is shown.
+      prisma.$queryRaw<SourceRow[]>`SELECT client, COUNT(*) AS views FROM web_visits WHERE ${inDays} GROUP BY client`,
     ]);
 
     // The accounts behind an address, by name only while their consent holds.
     const names = await consentingNames(ipRows.flatMap((row) => (row.uids ?? '').split(',').filter(Boolean)));
 
+    const viewsOf = (client: string) => num(sourceRows.find((row) => row.client === client)?.views);
     const result = {
       period: { key: period.key, label: period.label, fromKey, toKey },
+      source,
+      // Views in the period on the website and in the apps.
+      sources: { web: viewsOf('web'), app: viewsOf('app') },
       totals: {
         views: num(totals?.views),
         visitors: num(totals?.visitors),
@@ -1616,12 +1687,16 @@ router.get('/visitors', requireAdmin, async (req: Request, res: Response): Promi
         region: row.region || null,
         city: row.city || null,
         views: num(row.views),
-        // Page views made signed in; the rest came as a guest.
+        // Of them app openings; the rest are website page views.
+        appViews: num(row.appViews),
+        // Views made signed in; the rest came as a guest.
         signedViews: num(row.signedViews),
         days: num(row.days),
         firstAt: iso(row.firstAt),
         lastAt: iso(row.lastAt),
         devices: (row.devices ?? '').split(',').filter(Boolean),
+        // Website ("web") and the apps ("ios", "android") it was used in.
+        platforms: USAGE_PLATFORMS.filter((p) => (row.platforms ?? '').split(',').includes(p)),
         // Different accounts signed in from it, and those that may be named.
         accountCount: num(row.accountCount),
         accounts: (row.uids ?? '').split(',').filter((uid) => names.has(uid)).map((uid) => ({ stableUid: uid, username: names.get(uid)! })),
@@ -1630,7 +1705,7 @@ router.get('/visitors', requireAdmin, async (req: Request, res: Response): Promi
       ipRetentionDays: config.requestLogRetentionDays,
       since: sinceRow?.k ?? null,
     };
-    visitorsCache.set(period.key, result);
+    visitorsCache.set(cacheKey, result);
     res.json(result);
   } catch (err) {
     if (err instanceof Prisma.PrismaClientKnownRequestError || err instanceof Prisma.PrismaClientUnknownRequestError) {
@@ -1643,7 +1718,8 @@ router.get('/visitors', requireAdmin, async (req: Request, res: Response): Promi
 
 // ─── GET /api/admin/analytics/visitors/ip?ip=…&range=… ───────────────────────
 // One address in detail: where it comes from, when and how often it opened
-// which pages, on which devices. Within the period's address window only.
+// which pages or apps, on which devices — website and apps together. Within
+// the period's address window only.
 
 router.get('/visitors/ip', requireAdmin, async (req: Request, res: Response): Promise<void> => {
   const ip = normaliseIp(typeof req.query['ip'] === 'string' ? req.query['ip'] : null);
@@ -1660,27 +1736,30 @@ router.get('/visitors/ip', requireAdmin, async (req: Request, res: Response): Pr
   }
   const where = Prisma.sql`ip = ${ip} AND day_key >= ${window.fromKey} AND day_key <= ${window.toKey}`;
 
-  type SummaryRow = { views: bigint; days: bigint; firstAt: Date | null; lastAt: Date | null; signedInViews: unknown; accountCount: bigint };
+  type SummaryRow = { views: bigint; appViews: unknown; days: bigint; firstAt: Date | null; lastAt: Date | null; signedInViews: unknown; accountCount: bigint };
   type PlaceRow = { country: string; region: string | null; city: string | null };
   type CountRow = { key: string | number; n: bigint };
-  type RecentRow = { at: Date; page: string; device: string; signedIn: unknown };
-  type AccountRow = { uid: string; views: bigint; lastAt: Date };
+  type DeviceRow = { client: string; device: string; n: bigint };
+  type RecentRow = { at: Date; client: string; page: string; appVersion: string; device: string; signedIn: unknown };
+  type AccountRow = { uid: string; views: bigint; appViews: unknown; lastAt: Date };
   try {
     const [[summary], [place], dayRows, hourRows, pageRows, deviceRows, recentRows, accountRows] = await Promise.all([
       prisma.$queryRaw<SummaryRow[]>`
-        SELECT COUNT(*) AS views, COUNT(DISTINCT day_key) AS days, MIN(created_at) AS firstAt, MAX(created_at) AS lastAt,
+        SELECT COUNT(*) AS views, SUM(CASE WHEN client = 'app' THEN 1 ELSE 0 END) AS appViews,
+               COUNT(DISTINCT day_key) AS days, MIN(created_at) AS firstAt, MAX(created_at) AS lastAt,
                SUM(CASE WHEN signed_in THEN 1 ELSE 0 END) AS signedInViews, COUNT(DISTINCT account_key) AS accountCount
         FROM web_visits WHERE ${where}`,
       prisma.$queryRaw<PlaceRow[]>`SELECT country, region, city FROM web_visits WHERE ${where} ORDER BY created_at DESC LIMIT 1`,
       prisma.$queryRaw<CountRow[]>`SELECT day_key AS \`key\`, COUNT(*) AS n FROM web_visits WHERE ${where} GROUP BY day_key`,
       prisma.$queryRaw<CountRow[]>`SELECT hour AS \`key\`, COUNT(*) AS n FROM web_visits WHERE ${where} GROUP BY hour`,
-      prisma.$queryRaw<CountRow[]>`SELECT page AS \`key\`, COUNT(*) AS n FROM web_visits WHERE ${where} GROUP BY page ORDER BY n DESC LIMIT 12`,
-      prisma.$queryRaw<CountRow[]>`SELECT device AS \`key\`, COUNT(*) AS n FROM web_visits WHERE ${where} GROUP BY device ORDER BY n DESC`,
+      prisma.$queryRaw<CountRow[]>`SELECT page AS \`key\`, COUNT(*) AS n FROM web_visits WHERE ${where} AND client = 'web' GROUP BY page ORDER BY n DESC LIMIT 12`,
+      // An iPhone on the website and the iPhone app are told apart.
+      prisma.$queryRaw<DeviceRow[]>`SELECT client, device, COUNT(*) AS n FROM web_visits WHERE ${where} GROUP BY client, device ORDER BY n DESC`,
       prisma.$queryRaw<RecentRow[]>`
-        SELECT created_at AS at, page, device, signed_in AS signedIn
+        SELECT created_at AS at, client, page, app_version AS appVersion, device, signed_in AS signedIn
         FROM web_visits WHERE ${where} ORDER BY created_at DESC LIMIT 30`,
       prisma.$queryRaw<AccountRow[]>`
-        SELECT stable_uid AS uid, COUNT(*) AS views, MAX(created_at) AS lastAt
+        SELECT stable_uid AS uid, COUNT(*) AS views, SUM(CASE WHEN client = 'app' THEN 1 ELSE 0 END) AS appViews, MAX(created_at) AS lastAt
         FROM web_visits WHERE ${where} AND stable_uid IS NOT NULL
         GROUP BY stable_uid ORDER BY views DESC LIMIT 20`,
     ]);
@@ -1710,6 +1789,7 @@ router.get('/visitors/ip', requireAdmin, async (req: Request, res: Response): Pr
           username: user.username,
           klasse: user.role === 'parent' ? 'Elternteil' : user.webuntisKlasseName,
           views: num(row.views),
+          appViews: num(row.appViews),
           lastAt: iso(row.lastAt),
         };
       });
@@ -1722,6 +1802,8 @@ router.get('/visitors/ip', requireAdmin, async (req: Request, res: Response): Pr
       region: place?.region || null,
       city: place?.city || null,
       views,
+      // Of them app openings; the rest are website page views.
+      appViews: num(summary?.appViews),
       days: num(summary?.days),
       firstAt: iso(summary?.firstAt ?? null),
       lastAt: iso(summary?.lastAt ?? null),
@@ -1735,8 +1817,15 @@ router.get('/visitors/ip', requireAdmin, async (req: Request, res: Response): Pr
       daily: daysBetween(window.fromKey, window.toKey).map((dayKey) => ({ dayKey, views: perDay.get(dayKey) ?? 0 })),
       hours: Array.from({ length: 24 }, (_, hour) => perHour.get(hour) ?? 0),
       pages: pageRows.map((row) => ({ page: String(row.key) || '/', views: num(row.n) })),
-      devices: deviceRows.map((row) => ({ device: String(row.key), views: num(row.n) })),
-      recent: recentRows.map((row) => ({ at: iso(row.at), page: row.page || '/', device: row.device, signedIn: num(row.signedIn) > 0 })),
+      devices: deviceRows.map((row) => ({ device: row.device, client: row.client === 'app' ? 'app' : 'web', views: num(row.n) })),
+      recent: recentRows.map((row) => ({
+        at: iso(row.at),
+        client: row.client === 'app' ? 'app' : 'web',
+        page: row.client === 'app' ? '' : row.page || '/',
+        appVersion: row.appVersion || null,
+        device: row.device,
+        signedIn: num(row.signedIn) > 0,
+      })),
       window,
     });
   } catch (err) {
@@ -1750,9 +1839,9 @@ router.get('/visitors/ip', requireAdmin, async (req: Request, res: Response): Pr
 
 // ─── GET /api/admin/analytics/person?uid=…&range=… ───────────────────────────
 // One account across the page: its time in Pokyh and where it used it, and
-// the addresses and places it opened the website from. Only for an account
-// that consents to the usage statistics right now; any other gets 404, the
-// same answer as an unknown one. Visits name their account for
+// the addresses and places it opened the website and the apps from. Only for
+// an account that consents to the usage statistics right now; any other gets
+// 404, the same answer as an unknown one. Visits name their account for
 // USAGE_ANALYTICS_RETENTION_DAYS, addresses exist for REQUEST_LOG_RETENTION_DAYS.
 
 router.get('/person', requireAdmin, async (req: Request, res: Response): Promise<void> => {
@@ -1783,8 +1872,9 @@ router.get('/person', requireAdmin, async (req: Request, res: Response): Promise
   type UsageRow = { visits: bigint; seconds: unknown; days: bigint; lastAt: Date | null };
   type MixRow = { device: string; client: string };
   type DayRow = { dayKey: string; seconds: unknown };
-  type IpRow = { ip: string; country: string; region: string | null; city: string | null; views: bigint; lastAt: Date };
+  type IpRow = { ip: string; country: string; region: string | null; city: string | null; views: bigint; appViews: unknown; platforms: string | null; lastAt: Date };
   type PageRow = { page: string; views: bigint };
+  type TotalRow = { views: unknown; appViews: unknown };
   const [[usage], mixRows, dayRows, ipRows, pageRows, [webTotal]] = await Promise.all([
     prisma.$queryRaw<UsageRow[]>`
       SELECT COUNT(*) AS visits, SUM(active_seconds) AS seconds, COUNT(DISTINCT day_key) AS days, MAX(last_seen_at) AS lastAt
@@ -1796,11 +1886,14 @@ router.get('/person', requireAdmin, async (req: Request, res: Response): Promise
              SUBSTRING_INDEX(GROUP_CONCAT(country ORDER BY created_at DESC SEPARATOR '\n'), '\n', 1) AS country,
              SUBSTRING_INDEX(GROUP_CONCAT(region ORDER BY created_at DESC SEPARATOR '\n'), '\n', 1) AS region,
              SUBSTRING_INDEX(GROUP_CONCAT(city ORDER BY created_at DESC SEPARATOR '\n'), '\n', 1) AS city,
-             COUNT(*) AS views, MAX(created_at) AS lastAt
+             COUNT(*) AS views, SUM(CASE WHEN client = 'app' THEN 1 ELSE 0 END) AS appViews,
+             GROUP_CONCAT(DISTINCT ${VISIT_PLATFORM_SQL}) AS platforms, MAX(created_at) AS lastAt
       FROM web_visits WHERE ${inWeb} AND ip IS NOT NULL
       GROUP BY ip ORDER BY lastAt DESC LIMIT 50`,
-    prisma.$queryRaw<PageRow[]>`SELECT page, COUNT(*) AS views FROM web_visits WHERE ${inWeb} GROUP BY page ORDER BY views DESC LIMIT 8`,
-    prisma.$queryRaw<Array<{ n: bigint }>>`SELECT COUNT(*) AS n FROM web_visits WHERE ${inWeb}`,
+    prisma.$queryRaw<PageRow[]>`SELECT page, COUNT(*) AS views FROM web_visits WHERE ${inWeb} AND client = 'web' GROUP BY page ORDER BY views DESC LIMIT 8`,
+    prisma.$queryRaw<TotalRow[]>`
+      SELECT SUM(CASE WHEN client = 'web' THEN 1 ELSE 0 END) AS views, SUM(CASE WHEN client = 'app' THEN 1 ELSE 0 END) AS appViews
+      FROM web_visits WHERE ${inWeb}`,
   ]);
 
   const perDay = new Map(dayRows.map((row) => [row.dayKey, num(row.seconds)]));
@@ -1818,14 +1911,19 @@ router.get('/person', requireAdmin, async (req: Request, res: Response): Promise
       daily: daysBetween(usageWindow.fromKey, usageWindow.toKey).slice(-60).map((dayKey) => ({ dayKey, seconds: perDay.get(dayKey) ?? 0 })),
       window: usageWindow,
     },
+    // Where the account opened the website and the apps from.
     web: {
-      views: num(webTotal?.n),
+      // Website page views; app openings beside them.
+      views: num(webTotal?.views),
+      appViews: num(webTotal?.appViews),
       ips: ipRows.map((row) => ({
         ip: row.ip,
         country: row.country ?? '',
         region: row.region || null,
         city: row.city || null,
         views: num(row.views),
+        appViews: num(row.appViews),
+        platforms: USAGE_PLATFORMS.filter((p) => (row.platforms ?? '').split(',').includes(p)),
         lastAt: iso(row.lastAt),
       })),
       pages: pageRows.map((row) => ({ page: row.page || '/', views: num(row.views) })),

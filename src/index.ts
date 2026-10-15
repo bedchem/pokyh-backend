@@ -395,21 +395,22 @@ async function cleanupFrontendActivity() {
   });
 }
 
-// Website visitors (web_visits): the address, the place derived from it and
-// a consenting account's name are personal data and kept as long as the
-// request logs. After that a row is an anonymous count — country, device,
-// day, hour, page — with its time cut to the hour. A name without (or after
-// withdrawing) consent goes at once. Replicated data: one node is enough.
+// Website and app visitors (web_visits): the address, the place derived from
+// it, an app visit's link to its usage visit and a consenting account's name
+// are personal data and kept as long as the request logs. After that a row is
+// an anonymous count — country, device, day, hour, page or app version — with
+// its time cut to the hour. A name without (or after withdrawing) consent goes
+// at once. Replicated data: one node is enough.
 async function cleanupWebVisits() {
   if (!ownsClusterWork('job:web-visits-cleanup')) return;
   const cutoff = new Date(Date.now() - config.requestLogRetentionDays * 24 * 60 * 60 * 1000);
   const anonymised = await prisma.$executeRaw`
     UPDATE web_visits
-    SET ip = NULL, region = NULL, city = NULL, stable_uid = NULL, account_key = NULL,
+    SET ip = NULL, region = NULL, city = NULL, stable_uid = NULL, account_key = NULL, session_id = NULL,
         created_at = DATE_FORMAT(created_at, '%Y-%m-%d %H:00:00')
     WHERE created_at < ${cutoff}
       AND (ip IS NOT NULL OR region IS NOT NULL OR city IS NOT NULL OR stable_uid IS NOT NULL OR account_key IS NOT NULL
-           OR MINUTE(created_at) <> 0 OR SECOND(created_at) <> 0)`;
+           OR session_id IS NOT NULL OR MINUTE(created_at) <> 0 OR SECOND(created_at) <> 0)`;
   // Named only with consent: a withdrawal on another node, a race.
   const withoutConsent = await prisma.$executeRaw`
     UPDATE web_visits SET stable_uid = NULL
