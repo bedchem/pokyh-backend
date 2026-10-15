@@ -19,6 +19,7 @@ import {
   type UsagePlatform,
 } from '../services/usageAnalytics';
 import { normaliseIp } from '../services/webVisitMeta';
+import { accountKeyOf } from '../services/webVisits';
 
 // ─── GET /api/admin/analytics?days=7|30|90 ───────────────────────────────────
 // Everything the admin Analytics page shows. The page itself is aggregates;
@@ -354,7 +355,12 @@ interface AnalyticsResponse {
   // Anonymous class totals; `people` counts person-days, `avgPeople` people
   // per day with use.
   classes: Array<{ name: string; seconds: number; sessions: number; people: number; avgPeople: number }>;
-  appVersions: Array<{ platform: UsagePlatform; version: string; sessions: number }>;
+  // Sessions per app version and the different accounts behind it — null
+  // when the period reaches back further than the server logs.
+  appVersions: Array<{ platform: UsagePlatform; version: string; sessions: number; users: number | null }>;
+  // Accounts that used an app in the period without reporting a version:
+  // app versions from before the usage heartbeat. Null as above.
+  appOlderUsers: { ios: number; android: number } | null;
   pages: Array<{ page: string; views: number; users: number }>;
 }
 
@@ -524,6 +530,16 @@ async function buildAnalytics(period: Period, fresh: boolean): Promise<Analytics
 
   // Runs beside the queries below; it never rejects.
   const visitsPromise = visitSummary(fromKey, toKey);
+  // The accounts behind each app version: app openings keep an account's
+  // pseudonym as long as the logs reach back. Null when that is not the whole
+  // period or the table is missing — never rejects, like the summary above.
+  type VersionAccountRow = { device: string; version: string; accountKey: string };
+  const versionAccountsPromise: Promise<VersionAccountRow[] | null> = mode === 'accounts'
+    ? prisma.$queryRaw<VersionAccountRow[]>`
+        SELECT DISTINCT device, app_version AS version, account_key AS accountKey
+        FROM web_visits
+        WHERE ${inPeriod} AND client = 'app' AND app_version <> '' AND account_key IS NOT NULL`.catch(() => null)
+    : Promise.resolve(null);
 
   const [
     dailyRows,
@@ -907,6 +923,31 @@ async function buildAnalytics(period: Period, fresh: boolean): Promise<Analytics
     .sort((a, b) => b.views - a.views)
     .slice(0, 10);
 
+  // ── App versions ──────────────────────────────────────────────────────────
+  // Sessions per version from the visits, different accounts from the app
+  // openings. App versions from before the heartbeat report nothing, so an
+  // account the logs show in an app without any reported version is "older".
+  const versionAccounts = await versionAccountsPromise;
+  const versionUsers = new Map<string, number>();
+  const reportedVersion = new Map<UsagePlatform, Set<string>>();
+  for (const row of versionAccounts ?? []) {
+    const platform = platformOf(row.device, 'app');
+    const id = `${platform}|${row.version}`;
+    versionUsers.set(id, (versionUsers.get(id) ?? 0) + 1);
+    if (!reportedVersion.has(platform)) reportedVersion.set(platform, new Set());
+    reportedVersion.get(platform)!.add(row.accountKey);
+  }
+  const appVersions = versionRows
+    .map((row) => {
+      const platform = platformOf(row.device, 'app');
+      const users = versionAccounts ? versionUsers.get(`${platform}|${row.version}`) ?? 0 : null;
+      return { platform, version: row.version, sessions: num(row.sessions), users };
+    })
+    .sort((a, b) => (b.users ?? 0) - (a.users ?? 0) || b.sessions - a.sessions);
+  const olderOn = (platform: UsagePlatform) => [...perPlatform.get(platform)!]
+    .filter((uid) => !reportedVersion.get(platform)?.has(accountKeyOf(uid))).length;
+  const appOlderUsers = versionAccounts ? { ios: olderOn('ios'), android: olderOn('android') } : null;
+
   // ── Mensa ─────────────────────────────────────────────────────────────────
   // Ratings and comments are keyed by a dish's stableKey (the same dish on
   // another day shares it); rows from before that migration by its id.
@@ -1035,7 +1076,8 @@ async function buildAnalytics(period: Period, fresh: boolean): Promise<Analytics
       starBands,
     },
     classes,
-    appVersions: versionRows.map((row) => ({ platform: platformOf(row.device, 'app'), version: row.version, sessions: num(row.sessions) })),
+    appVersions,
+    appOlderUsers,
     pages,
   };
 }

@@ -33,9 +33,11 @@ function extractToken(req: Request): string | null {
   return null;
 }
 
-function verifyToken(token: string): JwtPayload | null {
+// `graceSeconds` accepts a token that expired up to that long ago; only
+// tokenAccount below passes it.
+function verifyToken(token: string, graceSeconds = 0): JwtPayload | null {
   try {
-    const decoded = jwt.verify(token, config.jwtSecret) as JwtPayload & jwt.JwtPayload;
+    const decoded = jwt.verify(token, config.jwtSecret, { clockTolerance: graceSeconds }) as JwtPayload & jwt.JwtPayload;
     // Only a user session token is acceptable here. The admin panel signs its
     // own tokens with the same secret but without a stable user id; letting
     // one through would hand routes an undefined id, which a database filter
@@ -78,6 +80,18 @@ export function requireAuth(
 
   req.user = payload;
   next();
+}
+
+/**
+ * The account behind a request's session token, also when that token expired
+ * up to `graceSeconds` ago — otherwise checked like any other (signature, user
+ * session, revocation). For counting visitors only, never for access: a
+ * browser coming back after the token's hour sends it once before refreshing
+ * it, and that page view is still this account's (services/webVisits.ts).
+ */
+export function tokenAccount(req: Request, graceSeconds: number): string | null {
+  const token = extractToken(req);
+  return token ? verifyToken(token, graceSeconds)?.stableUid ?? null : null;
 }
 
 export function optionalAuth(

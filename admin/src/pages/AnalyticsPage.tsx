@@ -32,7 +32,7 @@ import { useAutoRefresh } from '../hooks/useAutoRefresh';
 import { useLive, useLiveStatus } from '../live';
 import { useTheme } from '../theme';
 import { TrendChart, type TrendSeries } from '../components/TrendChart';
-import { Bars, RankBars, Ring, SplitBar } from '../components/charts';
+import { Bars, RankBars, Ring, SplitBar, type Rank } from '../components/charts';
 import { Count, Delta, Empty, Figures, IconButton, Notice, PageHeader, Section, Segmented, Spinner, TONES, Tag, useTableLabels, type Tone } from '../components/kit';
 import { Inspector, type DishSort, type InspectorView, type SortKey } from '../components/analytics/Inspector';
 import {
@@ -803,19 +803,32 @@ export function AnalyticsPage() {
                 </Section>
               </Pair>
 
-              {data.appVersions.length > 0 && (
+              {(data.appVersions.length > 0 || (data.appOlderUsers?.ios ?? 0) + (data.appOlderUsers?.android ?? 0) > 0) && (
                 <Pair>
                   {(['ios', 'android'] as const).map((p) => {
                     const versions = data.appVersions.filter((v) => v.platform === p);
+                    // While the logs reach back: people per version, their
+                    // sessions beside them, and those still on a version that
+                    // reports nothing. Otherwise sessions only.
+                    const withUsers = data.appOlderUsers != null;
+                    const older = data.appOlderUsers?.[p] ?? 0;
+                    const items: Rank[] = withUsers
+                      ? [
+                        ...versions.map((v) => ({ label: v.version, value: v.users ?? 0, note: `${de(v.sessions)} ${v.sessions === 1 ? 'Sitzung' : 'Sitzungen'}` })),
+                        ...(older > 0 ? [{ label: 'Ältere', value: older, note: 'keine Sitzungsdaten' }] : []),
+                      ]
+                      : versions.map((v) => ({ label: v.version, value: v.sessions }));
                     return (
-                      <Section key={p} title={`${PLATFORM_LABEL[p]}-Versionen`} meta="Sitzungen je Version">
+                      <Section key={p} title={`${PLATFORM_LABEL[p]}-Versionen`} meta={withUsers ? 'Nutzer und Sitzungen je Version' : 'Sitzungen je Version'}>
                         <div className="mt-8">
                           <RankBars
                             color={colors[p]}
-                            items={versions.map((v) => ({ label: v.version, value: v.sessions }))}
+                            items={items}
+                            unit={withUsers ? ' Nutzer' : ''}
                             empty="Noch keine Version gemeldet."
                           />
                         </div>
+                        {older > 0 && <Explain>Ältere: hat die App im Zeitraum genutzt, aber mit einer Version, die noch keine Nutzung meldet — dort gibt es keine Sitzungen.</Explain>}
                       </Section>
                     );
                   })}

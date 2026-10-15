@@ -2,6 +2,7 @@ import { createHmac } from 'crypto';
 import type { Request } from 'express';
 import { prisma } from '../db';
 import { config } from '../config';
+import { tokenAccount } from '../middleware/auth';
 import { clientIp } from '../middleware/requestLogger';
 import { visitorKeyFor } from './visitorKey';
 import { classifyUserAgent, localDayAndHour, type UsageDevice } from './usageAnalytics';
@@ -35,9 +36,16 @@ import { countryFromHeader, placeFromHeader, sendsGpc, visitPage, visitorIp, vis
 //   or account.
 // - Bots and scripts are not visitors.
 
+// A visitor whose access token ran out meanwhile still counts as their
+// account: the website sends its first page view with the old token before it
+// refreshes it, and counting that view as a guest made every returning
+// visitor two on that day. As long as the website keeps a session (its
+// refresh cookie lasts 30 days); access is never decided by this.
+const EXPIRED_TOKEN_GRACE_SECONDS = 30 * 24 * 60 * 60;
+
 // A pseudonym that is the same for one account everywhere but cannot be
 // turned back into it without the server secret; never shown, only counted.
-function accountKeyOf(stableUid: string): string {
+export function accountKeyOf(stableUid: string): string {
   return createHmac('sha256', config.jwtSecret).update(`pokyh:web-visit-account:v1:${stableUid}`).digest('hex').slice(0, 16);
 }
 
@@ -45,7 +53,8 @@ function accountKeyOf(stableUid: string): string {
 async function visitorFields(req: Request, userAgent: string, namedUid: string | null, now: Date) {
   const { dayKey, hour } = localDayAndHour(now, config.usageAnalytics.timezone);
   const ip = visitorIp(clientIp(req), req.headers['cf-connecting-ip']);
-  const accountKey = req.user ? accountKeyOf(req.user.stableUid) : null;
+  const account = req.user?.stableUid ?? tokenAccount(req, EXPIRED_TOKEN_GRACE_SECONDS);
+  const accountKey = account ? accountKeyOf(account) : null;
   const visitorKey = await visitorKeyFor(visitorSource(accountKey, ip, userAgent), dayKey);
   const anonymous = sendsGpc(req.headers['sec-gpc']);
   return {
@@ -54,7 +63,7 @@ async function visitorFields(req: Request, userAgent: string, namedUid: string |
     region: anonymous ? null : placeFromHeader(req.headers['cf-region']),
     city: anonymous ? null : placeFromHeader(req.headers['cf-ipcity']),
     visitorKey,
-    signedIn: Boolean(req.user),
+    signedIn: Boolean(account),
     stableUid: anonymous ? null : namedUid,
     accountKey: anonymous ? null : accountKey,
     dayKey,

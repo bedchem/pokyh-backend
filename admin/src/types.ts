@@ -1174,7 +1174,12 @@ export interface AdminAnalytics {
   // Anonymous class totals: `people` are person-days, `avgPeople` people per
   // day with use.
   classes: Array<{ name: string; seconds: number; sessions: number; people: number; avgPeople: number }>;
-  appVersions: Array<{ platform: UsagePlatform; version: string; sessions: number }>;
+  // Sessions per app version and the different accounts behind it — null
+  // when the period reaches back further than the server logs.
+  appVersions: Array<{ platform: UsagePlatform; version: string; sessions: number; users: number | null }>;
+  // Accounts that used an app without reporting a version (older app
+  // versions). Null as above.
+  appOlderUsers: { ios: number; android: number } | null;
   pages: Array<{ page: string; views: number; users: number }>;
 }
 
