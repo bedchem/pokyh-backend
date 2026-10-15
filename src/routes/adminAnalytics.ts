@@ -280,7 +280,7 @@ interface AnalyticsResponse {
     total: number;
     students: number;
     parents: number;
-    // Accounts set to "no role" (e.g. admins outside any class).
+    // Accounts with no role at all: neither student nor parent, and not an admin.
     noRole: number;
     untis: number;
     local: number;
@@ -470,7 +470,7 @@ async function buildAnalytics(period: Period, fresh: boolean): Promise<Analytics
     users,
     pushRows,
     learnProfiles,
-    admins,
+    adminRows,
     classCount,
     features,
     learnAgg,
@@ -554,7 +554,7 @@ async function buildAnalytics(period: Period, fresh: boolean): Promise<Analytics
     }),
     prisma.$queryRaw<CountRow[]>`SELECT COUNT(DISTINCT stable_uid) AS n FROM push_subscriptions`,
     prisma.learnProfile.count(),
-    prisma.admin.count(),
+    prisma.admin.findMany({ select: { stableUid: true } }),
     prisma.class.count(),
     Promise.all([
       prisma.todo.count({ where: { createdAt: { gte: since, lt: until } } }),
@@ -799,9 +799,11 @@ async function buildAnalytics(period: Period, fresh: boolean): Promise<Analytics
   let noRole = 0;
   let untis = 0;
   let oldest = now.getTime();
+  // An admin set to "none" has the admin role; it is not counted as role-less.
+  const adminUids = new Set(adminRows.map((row) => row.stableUid));
   for (const user of users) {
     if (user.role === 'parent') parents += 1;
-    else if (user.role === 'none') noRole += 1;
+    else if (user.role === 'none') { if (!adminUids.has(user.stableUid)) noRole += 1; }
     else students += 1;
     if (user.isUntisUser) untis += 1;
     oldest = Math.min(oldest, user.createdAt.getTime());
@@ -920,7 +922,7 @@ async function buildAnalytics(period: Period, fresh: boolean): Promise<Analytics
       newInRange,
       withPush: num(pushRows[0]?.n),
       withLearn: learnProfiles,
-      admins,
+      admins: adminRows.length,
       classes: classCount,
       oldestDays: users.length > 0 ? Math.floor((now.getTime() - oldest) / 86_400_000) : 0,
       usageConsents,

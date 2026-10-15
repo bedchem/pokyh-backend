@@ -21,7 +21,8 @@ import {
 import { adminApi } from '../api';
 import { useToast } from './Toast';
 import { AdminCountdown, clockOffset } from './AdminCountdown';
-import { GrantAdminDialog } from './GrantAdminDialog';
+import { GrantAdminDialog, OneTimePasswordDialog } from './GrantAdminDialog';
+import { PasswordInput } from './PasswordInput';
 import { roleLabel } from '../roles';
 import type { AdminUserDetail, AdminTodo, AdminUserClass } from '../types';
 
@@ -445,6 +446,7 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
   const [newPassword, setNewPassword] = useState('');
   const [settingPassword, setSettingPassword] = useState(false);
   const [showGrantDialog, setShowGrantDialog] = useState(false);
+  const [showOtp, setShowOtp] = useState(false);
   // Server clock minus local clock, measured when the details arrived.
   const offset = useMemo(() => clockOffset(user?.serverTime), [user?.serverTime]);
   const [isMobile, setIsMobile] = useState(() => typeof window !== 'undefined' && window.innerWidth < 640);
@@ -475,11 +477,10 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
   function handleTodoDeleted(id: string) { setUser((prev) => prev ? { ...prev, todos: prev.todos.filter((t) => t.id !== id) } : prev); }
   function handleClassRemoved(classId: string) { setUser((prev) => prev ? { ...prev, classes: prev.classes.filter((c) => c.classId !== classId) } : prev); }
 
+  // The popup stays open on the password; the drawer shows the countdown.
   function handleGranted(adminSetupExpiresAt: string | null) {
     if (!user) return;
-    setShowGrantDialog(false);
-    showToast(`Admin an ${user.username} vergeben — Einmal-Passwort gilt 15 Minuten`, 'success');
-    setUser((prev) => prev ? { ...prev, isAdmin: true, adminSetupExpiresAt, adminCanSignIn: false } : prev);
+    setUser((prev) => prev ? { ...prev, isAdmin: true, adminSetupExpiresAt, adminCanSignIn: adminSetupExpiresAt === null, canViewOneTimePassword: adminSetupExpiresAt !== null } : prev);
     onAdminToggled(user.stableUid, true, adminSetupExpiresAt);
   }
 
@@ -505,8 +506,11 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
       if (user.isAdmin) {
         await adminApi.revokeAdmin(user.stableUid);
         showToast(`Admin von ${user.username} entzogen`, 'success');
+        // The drawer stays open: "Admin vergeben" is right there again, and
+        // with it a new one-time password if one was lost.
+        setUser((prev) => prev ? { ...prev, isAdmin: false, adminSetupExpiresAt: null, canViewOneTimePassword: false, adminCanSignIn: false } : prev);
+        setShowOtp(false);
         onAdminToggled(user.stableUid, false, null);
-        onClose();
       } else {
         const result = await adminApi.grantAdmin(user.stableUid);
         showToast(`Admin an ${user.username} vergeben`, 'success');
@@ -566,6 +570,16 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
           username={user.username}
           onClose={() => setShowGrantDialog(false)}
           onGranted={handleGranted}
+          onLapsed={handleGrantLapsed}
+        />
+      )}
+
+      {showOtp && user && (
+        <OneTimePasswordDialog
+          stableUid={user.stableUid}
+          username={user.username}
+          onClose={() => setShowOtp(false)}
+          onLapsed={handleGrantLapsed}
         />
       )}
 
@@ -606,15 +620,11 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
                 >
                   Neues Passwort *
                 </label>
-                <input
-                  type="password"
+                <PasswordInput
+                  value={newPassword}
+                  onChange={setNewPassword}
                   placeholder="Min. 8 Zeichen"
                   required
-                  minLength={8}
-                  autoComplete="new-password"
-                  value={newPassword}
-                  onChange={(e) => setNewPassword(e.target.value)}
-                  className="field h-11 px-4 text-[14px] w-full"
                 />
               </div>
               <div className="flex gap-3 pt-1">
@@ -743,7 +753,8 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
                       {user.stableUid}
                     </div>
                     <div className="flex items-center gap-3 mt-1.5 text-[12px] flex-wrap" style={{ color: 'rgb(var(--ink-rgb) / 0.58)' }}>
-                      <span>{roleLabel(user.role)}</span>
+                      {/* An admin without student/parent role shows as admin only. */}
+                      {(user.role !== 'none' || !user.isAdmin) && <span>{roleLabel(user.role)}</span>}
                       {user.webuntisKlasseName && <span>{user.webuntisKlasseName}</span>}
                       <span>Beigetreten {relativeDate(user.createdAt)}</span>
                     </div>
@@ -780,9 +791,17 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
                   </button>
                 </div>
                 {user.isAdmin && user.adminSetupExpiresAt ? (
-                  <p className="mt-3 text-[12px] leading-relaxed" style={{ color: 'var(--amber-deep)' }}>
-                    Wartet auf den ersten Login mit dem Einmal-Passwort. Ohne Login verfällt der Admin-Zugang samt Einmal-Passwort.
-                  </p>
+                  <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2">
+                    <p className="min-w-0 flex-1 text-[12px] leading-relaxed" style={{ color: 'var(--amber-deep)' }}>
+                      Wartet auf den ersten Login mit dem Einmal-Passwort. Ohne Login verfällt der Admin-Zugang samt Einmal-Passwort.
+                    </p>
+                    {user.canViewOneTimePassword && (
+                      <button type="button" onClick={() => setShowOtp(true)} className="otp-chip" title="Einmal-Passwort nochmal anzeigen">
+                        <Key size={12} />
+                        Passwort anzeigen
+                      </button>
+                    )}
+                  </div>
                 ) : user.isAdmin && !user.adminCanSignIn && user.needsOneTimePassword ? (
                   <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2">
                     <p className="min-w-0 flex-1 text-[12px] leading-relaxed" style={{ color: 'var(--amber-deep)' }}>

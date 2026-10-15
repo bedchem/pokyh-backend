@@ -119,6 +119,20 @@ test('a pending grant cannot sign in and lapses at its deadline', () => {
   assert.equal(login.adminCanSignIn({ adminHash: null, mustChangePassword: false, needsOneTimePassword: false }), true);
 });
 
+test('only the granting admin sees the one-time password again, and only while pending', () => {
+  const now = new Date('2026-10-15T14:50:00Z');
+  const pending = { mustChangePassword: true, setupExpiresAt: new Date('2026-10-15T15:00:00Z'), oneTimePasswordEnc: 'v1.sealed', grantedBy: 'ryhox' };
+  assert.equal(login.mayViewOneTimePassword(pending, 'ryhox', now), true);
+  assert.equal(login.mayViewOneTimePassword(pending, 'other-admin', now), false, 'not another admin');
+  assert.equal(login.mayViewOneTimePassword(pending, 'ryhox', new Date('2026-10-15T15:00:00Z')), false, 'not after the deadline');
+  assert.equal(login.mayViewOneTimePassword({ ...pending, mustChangePassword: false, oneTimePasswordEnc: null }, 'ryhox', now), false, 'never the password chosen afterwards');
+  assert.equal(login.mayViewOneTimePassword({ ...pending, grantedBy: null }, 'ryhox', now), false);
+  assert.equal(login.validOneTimePassword('abcdefgh'), true);
+  assert.equal(login.validOneTimePassword('short'), false);
+  assert.equal(login.validOneTimePassword('x'.repeat(101)), false);
+  assert.equal(login.validOneTimePassword(undefined), false);
+});
+
 test('the panel changes only passwords it owns', () => {
   assert.equal(login.adminPasswordKind({ hasAccount: true, hasAdminRecord: true, adminHash: 'admin', isUntisUser: true }), 'admin');
   assert.equal(login.adminPasswordKind({ hasAccount: true, hasAdminRecord: true, adminHash: null, isUntisUser: false }), 'account');

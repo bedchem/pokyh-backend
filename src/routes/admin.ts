@@ -60,8 +60,9 @@ import {
   issueAdminToken,
   pendingAdminFields,
   scheduleSetupExpiry,
+  viewOneTimePassword,
 } from '../services/adminLogin';
-import { adminCanSignIn, grantNeedsOneTimePassword } from '../security/adminLogin';
+import { adminCanSignIn, grantNeedsOneTimePassword, mayViewOneTimePassword, validOneTimePassword } from '../security/adminLogin';
 import { clearSecondFactors, issueSecondFactorTicket, secondFactorMethods } from '../services/adminSecondFactor';
 import { hasClassIdentity, parseAccountRole } from '../utils/accountClass';
 
@@ -366,10 +367,11 @@ router.post('/users', requireAdmin, async (req: Request, res: Response): Promise
   // Without a password the account is a WebUntis account: as an admin it
   // starts with a one-time password, like "Admin vergeben".
   const oneTimeAdmin = makeAdmin && !password;
-  if (oneTimeAdmin && (typeof adminPassword !== 'string' || adminPassword.length < 8 || adminPassword.length > 200)) {
-    res.status(400).json({ error: 'Einmal-Passwort fürs Admin-Panel muss mindestens 8 Zeichen lang sein' });
+  if (oneTimeAdmin && !validOneTimePassword(adminPassword)) {
+    res.status(400).json({ error: 'Einmal-Passwort fürs Admin-Panel muss 8 bis 100 Zeichen lang sein' });
     return;
   }
+  const grantingAdmin = req.adminUser!.username;
 
   const existing = await prisma.user.findUnique({ where: { username: username.trim().toLowerCase() } });
   if (existing) {
@@ -393,7 +395,7 @@ router.post('/users', requireAdmin, async (req: Request, res: Response): Promise
   });
   // The account and its admin rights are made together or not at all.
   const adminData = makeAdmin
-    ? (oneTimeAdmin ? await pendingAdminFields(adminPassword as string) : { canCreateClass: true })
+    ? (oneTimeAdmin ? await pendingAdminFields(adminPassword as string, grantingAdmin) : { canCreateClass: true })
     : null;
   const [user] = adminData
     ? await prisma.$transaction([createUser, prisma.admin.create({ data: { stableUid, ...adminData } })])
@@ -402,8 +404,7 @@ router.post('/users', requireAdmin, async (req: Request, res: Response): Promise
   if (setupExpiresAt) scheduleSetupExpiry(setupExpiresAt);
 
   if (makeAdmin) {
-    const adminUsername = adminUsernameFromReq(req.headers['authorization']);
-    logger.info('Admin action: grant admin', { action: 'grant_admin', adminUsername, targetUid: stableUid, oneTimePassword: oneTimeAdmin });
+    logger.info('Admin action: grant admin', { action: 'grant_admin', adminUsername: grantingAdmin, targetUid: stableUid, oneTimePassword: oneTimeAdmin });
   }
 
   res.status(201).json({
@@ -413,6 +414,8 @@ router.post('/users', requireAdmin, async (req: Request, res: Response): Promise
     webuntisKlasseName: user.webuntisKlasseName,
     isAdmin: makeAdmin,
     adminSetupExpiresAt: setupExpiresAt?.toISOString() ?? null,
+    canViewOneTimePassword: setupExpiresAt !== null,
+    serverTime: new Date().toISOString(),
     needsOneTimePassword: grantNeedsOneTimePassword({ isUntisUser: user.isUntisUser, hasPassword: Boolean(user.passwordHash) }),
     role: user.role,
     todoCount: 0,
@@ -522,13 +525,19 @@ router.get('/users', requireAdmin, async (req: Request, res: Response): Promise<
   const limit = intQueryParam(req.query['limit'], 20, 1, 100);
   const skip = (page - 1) * limit;
 
+  // A lapsed grant must not show up as admin when the panel's countdown ends.
+  await expireLapsedAdminSetups();
+
+  // "Without a role" means no role at all: an admin set to "none" still has
+  // the admin role and is not listed there.
+  const adminUidsForFilter = roleFilter === 'none'
+    ? (await prisma.admin.findMany({ select: { stableUid: true } })).map((a) => a.stableUid)
+    : [];
   const where = {
     ...(search ? { username: { contains: search } } : {}),
     ...(roleFilter ? { role: roleFilter } : {}),
+    ...(adminUidsForFilter.length > 0 ? { stableUid: { notIn: adminUidsForFilter } } : {}),
   };
-
-  // A lapsed grant must not show up as admin when the panel's countdown ends.
-  await expireLapsedAdminSetups();
 
   const [users, total] = await Promise.all([
     prisma.user.findMany({
@@ -552,9 +561,11 @@ router.get('/users', requireAdmin, async (req: Request, res: Response): Promise<
   const uids = users.map((u) => u.stableUid);
   const admins = await prisma.admin.findMany({
     where: { stableUid: { in: uids } },
-    select: { stableUid: true, mustChangePassword: true, setupExpiresAt: true },
+    select: { stableUid: true, mustChangePassword: true, setupExpiresAt: true, oneTimePasswordEnc: true, grantedBy: true },
   });
   const adminByUid = new Map(admins.map((a) => [a.stableUid, a]));
+  const viewer = req.adminUser!.username;
+  const now = new Date();
 
   const result = users.map((u) => {
     const withClass = hasClassIdentity(u.role);
@@ -571,6 +582,8 @@ router.get('/users', requireAdmin, async (req: Request, res: Response): Promise<
       // Set while a WebUntis account made admin has not signed in yet; the
       // grant lapses at this moment.
       adminSetupExpiresAt: admin?.mustChangePassword ? admin.setupExpiresAt?.toISOString() ?? null : null,
+      // Only for the admin who granted it, while it is pending.
+      canViewOneTimePassword: admin ? mayViewOneTimePassword(admin, viewer, now) : false,
       // "Admin vergeben" asks for a one-time password for this account.
       needsOneTimePassword: grantNeedsOneTimePassword({ isUntisUser: u.isUntisUser, hasPassword: Boolean(u.passwordHash) }),
       role: u.role,
@@ -621,6 +634,7 @@ router.get('/users/:stableUid', requireAdmin, async (req: Request, res: Response
     hasPassword: Boolean(user.passwordHash || isAdmin?.passwordHash),
     needsOneTimePassword,
     adminSetupExpiresAt: isAdmin?.mustChangePassword ? isAdmin.setupExpiresAt?.toISOString() ?? null : null,
+    canViewOneTimePassword: isAdmin ? mayViewOneTimePassword(isAdmin, req.adminUser!.username, new Date()) : false,
     // An admin that cannot sign in at all (a WebUntis admin made before
     // one-time passwords) gets one through "Admin vergeben" again.
     adminCanSignIn: isAdmin
@@ -760,9 +774,13 @@ router.delete('/users/:stableUid/classes/:classId', requireAdmin, async (req: Re
 
 router.post('/users/:stableUid/grant-admin', requireAdmin, async (req: Request, res: Response): Promise<void> => {
   const stableUid = String(req.params['stableUid']);
-  const adminJwt = req.headers['authorization']?.replace('Bearer ', '');
-  let adminUsername = 'admin';
-  try { if (adminJwt) adminUsername = (jwt.decode(adminJwt) as Record<string, string>)?.['username'] ?? 'admin'; } catch {}
+  const adminUsername = req.adminUser!.username;
+  const answer = (adminSetupExpiresAt: Date | null) => res.json({
+    ok: true,
+    adminSetupExpiresAt: adminSetupExpiresAt?.toISOString() ?? null,
+    canViewOneTimePassword: adminSetupExpiresAt !== null,
+    serverTime: new Date().toISOString(),
+  });
 
   const user = await prisma.user.findUnique({ where: { stableUid }, select: { isUntisUser: true, passwordHash: true } });
   if (!user) {
@@ -778,30 +796,51 @@ router.post('/users/:stableUid/grant-admin', requireAdmin, async (req: Request, 
       update: { canCreateClass: true },
     });
     logger.info('Admin action: grant admin', { action: 'grant_admin', adminUsername, targetUid: stableUid });
-    res.json({ ok: true, adminSetupExpiresAt: null });
+    answer(null);
     return;
   }
 
   // A WebUntis account has no password the panel could check: it starts with
   // a one-time password from the granting admin and must replace it at its
   // first login within ADMIN_SETUP_WINDOW_MS, or the grant lapses. An admin
-  // that already signs in with its own password stays as it is.
+  // that already signs in with its own password stays as it is; a pending
+  // grant is replaced by this one (new password, new deadline).
   const existing = await prisma.admin.findUnique({ where: { stableUid } });
   if (existing && adminCanSignIn({ adminHash: existing.passwordHash, mustChangePassword: existing.mustChangePassword, needsOneTimePassword })) {
-    res.json({ ok: true, adminSetupExpiresAt: null });
+    answer(null);
     return;
   }
-  const { password } = req.body as { password?: unknown };
-  if (typeof password !== 'string' || password.length < 8 || password.length > 200) {
+  // No body at all is a grant without a password, not a server error.
+  const { password } = (req.body ?? {}) as { password?: unknown };
+  if (!validOneTimePassword(password)) {
     res.status(422).json({
-      error: 'Für einen WebUntis-Account braucht „Admin vergeben“ ein Einmal-Passwort (mindestens 8 Zeichen)',
+      error: 'Für einen WebUntis-Account braucht „Admin vergeben“ ein Einmal-Passwort (8 bis 100 Zeichen)',
       code: 'one-time-password-required',
     });
     return;
   }
-  const setupExpiresAt = await grantAdminWithOneTimePassword(stableUid, password);
+  const setupExpiresAt = await grantAdminWithOneTimePassword(stableUid, password, adminUsername);
   logger.info('Admin action: grant admin', { action: 'grant_admin', adminUsername, targetUid: stableUid, oneTimePassword: true });
-  res.json({ ok: true, adminSetupExpiresAt: setupExpiresAt.toISOString() });
+  answer(setupExpiresAt);
+});
+
+// ─── GET /api/admin/users/:stableUid/one-time-password ───────────────────────
+// The pending grant's one-time password again — only for the admin who
+// granted it, only until the new admin has their own password or the grant
+// lapses. Never any other password.
+
+router.get('/users/:stableUid/one-time-password', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const stableUid = String(req.params['stableUid']);
+  const viewer = req.adminUser!.username;
+  await expireLapsedAdminSetups();
+  const found = await viewOneTimePassword(stableUid, viewer);
+  res.setHeader('Cache-Control', 'no-store');
+  if (!found) {
+    res.status(404).json({ error: 'Kein Einmal-Passwort mehr verfügbar — schon angemeldet, abgelaufen oder entzogen' });
+    return;
+  }
+  logger.info('Admin action: one-time password shown again', { action: 'admin_one_time_password_viewed', adminUsername: viewer, targetUid: stableUid });
+  res.json({ password: found.password, adminSetupExpiresAt: found.setupExpiresAt.toISOString(), serverTime: new Date().toISOString() });
 });
 
 // ─── DELETE /api/admin/users/:stableUid/revoke-admin ─────────────────────────

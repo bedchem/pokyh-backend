@@ -32,7 +32,7 @@ async function main() {
     where: { stableUid: user.stableUid },
     create: { stableUid: user.stableUid, canCreateClass: true, passwordHash },
     // A password set here is final: it ends a pending one-time-password grant.
-    update: { canCreateClass: true, passwordHash, mustChangePassword: false, setupExpiresAt: null },
+    update: { canCreateClass: true, passwordHash, mustChangePassword: false, setupExpiresAt: null, oneTimePasswordEnc: null },
   });
 
   console.log(`\n✅ "${username}" is now an admin — login with this password at /admin/\n`);

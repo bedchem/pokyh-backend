@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { Shield, ScrollText, Users, RefreshCw, UserPlus, Trash2, Download, Upload, GraduationCap, UserCog, ShieldCheck, Wand2 } from 'lucide-react';
+import { Shield, ScrollText, Users, RefreshCw, UserPlus, Trash2, Download, Upload, GraduationCap, UserCog, ShieldCheck, Wand2, KeyRound } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { adminApi } from '../api';
 import { useToast } from '../components/Toast';
@@ -9,7 +9,8 @@ import { UserDetailDrawer } from '../components/UserDetailDrawer';
 import { Avatar, Checkbox, Delta, Dialog, Empty, FieldLabel, Figures, IconButton, PageHeader, Pager, SearchField, Section, Segmented, Spinner, Status, Tag } from '../components/kit';
 import { Bars, SplitBar } from '../components/charts';
 import { AdminCountdown, clockOffset } from '../components/AdminCountdown';
-import { GrantAdminDialog, randomPassword } from '../components/GrantAdminDialog';
+import { GrantAdminDialog, OneTimePasswordDialog } from '../components/GrantAdminDialog';
+import { PasswordInput, randomPassword } from '../components/PasswordInput';
 import { ROLE_OPTIONS, roleLabel, roleTone } from '../roles';
 import type { AccountRole, AdminUser } from '../types';
 
@@ -136,6 +137,9 @@ export function UsersPage() {
   const [pendingRole, setPendingRole] = useState<string | null>(null);
   const [roleDialogUser, setRoleDialogUser] = useState<AdminUser | null>(null);
   const [grantUser, setGrantUser] = useState<AdminUser | null>(null);
+  // The one-time password of a pending grant, shown again (or right after
+  // creating an admin account, with the password just typed).
+  const [otpView, setOtpView] = useState<{ user: AdminUser; known?: { password: string; expiresAt: string; offset: number } } | null>(null);
   // Server clock minus local clock, for the admin countdowns.
   const [offset, setOffset] = useState(0);
   const [exporting, setExporting] = useState(false);
@@ -207,22 +211,31 @@ export function UsersPage() {
     setTimeout(() => { void refreshAll(); }, 1500);
   }, [refreshAll]);
 
+  // The popup stays open on the password; the row shows the countdown.
   function handleGranted(user: AdminUser, adminSetupExpiresAt: string | null) {
-    setGrantUser(null);
-    setUsers((prev) => prev.map((u) => u.stableUid === user.stableUid ? { ...u, isAdmin: true, adminSetupExpiresAt } : u));
-    showToast(`Admin an ${user.username} vergeben — Einmal-Passwort gilt 15 Minuten`, 'success');
+    setUsers((prev) => prev.map((u) => u.stableUid === user.stableUid
+      ? { ...u, isAdmin: true, adminSetupExpiresAt, canViewOneTimePassword: adminSetupExpiresAt !== null }
+      : u));
     fetchSummary();
   }
 
   async function handleToggleAdmin(user: AdminUser) {
-    // A WebUntis account first gets a one-time password (popup).
+    // Not an admin, WebUntis account: the one-time password popup.
     if (!user.isAdmin && user.needsOneTimePassword) {
       setGrantUser(user);
       return;
     }
     setPendingAdmin(user.stableUid);
-    const newIsAdmin = !user.isAdmin;
-    setUsers((prev) => prev.map((u) => u.stableUid === user.stableUid ? { ...u, isAdmin: newIsAdmin } : u));
+    if (user.isAdmin) {
+      // Revoking also ends a pending grant: its one-time password is gone,
+      // and the next "Admin vergeben" starts over with a new one.
+      setUsers((prev) => prev.map((u) => u.stableUid === user.stableUid
+        ? { ...u, isAdmin: false, adminSetupExpiresAt: null, canViewOneTimePassword: false }
+        : u));
+      setOtpView((v) => (v?.user.stableUid === user.stableUid ? null : v));
+    } else {
+      setUsers((prev) => prev.map((u) => u.stableUid === user.stableUid ? { ...u, isAdmin: true } : u));
+    }
     try {
       if (user.isAdmin) {
         await adminApi.revokeAdmin(user.stableUid);
@@ -233,7 +246,7 @@ export function UsersPage() {
       }
       fetchSummary();
     } catch (err) {
-      setUsers((prev) => prev.map((u) => u.stableUid === user.stableUid ? { ...u, isAdmin: user.isAdmin } : u));
+      setUsers((prev) => prev.map((u) => u.stableUid === user.stableUid ? user : u));
       showToast(err instanceof Error ? err.message : 'Aktion fehlgeschlagen', 'error');
     } finally {
       setPendingAdmin(null);
@@ -279,6 +292,13 @@ export function UsersPage() {
       setUsers((prev) => [user, ...prev]);
       setTotal((t) => t + 1);
       setShowCreateModal(false);
+      // A new WebUntis admin: show the one-time password with its countdown.
+      if (user.adminSetupExpiresAt) {
+        setOtpView({
+          user,
+          known: { password: createForm.adminPassword, expiresAt: user.adminSetupExpiresAt, offset: clockOffset((user as AdminUser & { serverTime?: string }).serverTime) },
+        });
+      }
       setCreateForm(EMPTY_FORM);
       showToast(`Benutzer "${user.username}" erstellt`, 'success');
       fetchSummary();
@@ -366,14 +386,10 @@ export function UsersPage() {
                 className="field h-12 w-full px-4 text-[14.5px]"
               />
             </FieldLabel>
-            <FieldLabel label="Passwort" hint="Optional, mindestens 8 Zeichen.">
-              <input
-                type="password"
-                placeholder="••••••••"
-                autoComplete="new-password"
+            <FieldLabel label="Passwort" hint="Optional, mindestens 8 Zeichen. Leer lassen für ein WebUntis-Konto.">
+              <PasswordInput
                 value={createForm.password}
-                onChange={(e) => setCreateForm((f) => ({ ...f, password: e.target.value }))}
-                className="field h-12 w-full px-4 text-[14.5px]"
+                onChange={(password) => setCreateForm((f) => ({ ...f, password }))}
               />
             </FieldLabel>
             <div className="grid grid-cols-2 gap-4">
@@ -458,6 +474,17 @@ export function UsersPage() {
           username={grantUser.username}
           onClose={() => setGrantUser(null)}
           onGranted={(expiresAt) => handleGranted(grantUser, expiresAt)}
+          onLapsed={handleGrantLapsed}
+        />
+      )}
+
+      {otpView && (
+        <OneTimePasswordDialog
+          stableUid={otpView.user.stableUid}
+          username={otpView.user.username}
+          known={otpView.known}
+          onClose={() => setOtpView(null)}
+          onLapsed={handleGrantLapsed}
         />
       )}
 
@@ -474,7 +501,7 @@ export function UsersPage() {
           stableUid={selectedUid}
           onClose={() => setSelectedUid(null)}
           onUserDeleted={(uid) => { setUsers((prev) => prev.filter((u) => u.stableUid !== uid)); setTotal((t) => t - 1); setSelectedUid(null); fetchSummary(); }}
-          onAdminToggled={(uid, isAdmin, adminSetupExpiresAt) => { setUsers((prev) => prev.map((u) => u.stableUid === uid ? { ...u, isAdmin, adminSetupExpiresAt } : u)); fetchSummary(); }}
+          onAdminToggled={(uid, isAdmin, adminSetupExpiresAt) => { setUsers((prev) => prev.map((u) => u.stableUid === uid ? { ...u, isAdmin, adminSetupExpiresAt, canViewOneTimePassword: adminSetupExpiresAt !== null } : u)); fetchSummary(); }}
         />
       )}
 
@@ -596,13 +623,28 @@ export function UsersPage() {
 
                     <td>
                       <div className="flex flex-col gap-1.5">
-                        <Status tone={roleTone(user.role)}>{roleLabel(user.role)}</Status>
+                        {/* "No role" is not a role to show: an admin shows as
+                            admin only, and only an account without any role
+                            at all says so, quietly. */}
+                        {user.role !== 'none'
+                          ? <Status tone={roleTone(user.role)}>{roleLabel(user.role)}</Status>
+                          : !user.isAdmin && <span className="text-[13.5px] text-ink-3">Keine Rolle</span>}
                         {user.isAdmin && (
                           <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
                             <Status tone={user.adminSetupExpiresAt ? 'amber' : 'sky'}>Admin</Status>
-                            {user.adminSetupExpiresAt && (
+                            {user.adminSetupExpiresAt && (user.canViewOneTimePassword ? (
+                              <button
+                                type="button"
+                                className="otp-chip"
+                                title="Einmal-Passwort nochmal anzeigen"
+                                onClick={(e) => { e.stopPropagation(); setOtpView({ user }); }}
+                              >
+                                <KeyRound size={13} strokeWidth={1.8} />
+                                <AdminCountdown expiresAt={user.adminSetupExpiresAt} offset={offset} onExpired={handleGrantLapsed} />
+                              </button>
+                            ) : (
                               <AdminCountdown expiresAt={user.adminSetupExpiresAt} offset={offset} onExpired={handleGrantLapsed} />
-                            )}
+                            ))}
                           </div>
                         )}
                       </div>

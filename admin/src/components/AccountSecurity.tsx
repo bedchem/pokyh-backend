@@ -5,6 +5,7 @@ import { adminApi } from '../api';
 import { passkeyErrorMessage } from '../pages/LoginPage';
 import type { AdminSecurityStatus, TotpSetup } from '../types';
 import { FieldLabel, FormSection, Notice, Spinner, Status } from './kit';
+import { PasswordInput } from './PasswordInput';
 
 const dateFormat = new Intl.DateTimeFormat('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' });
 
@@ -120,7 +121,9 @@ function PasswordChange({ status }: { status: AdminSecurityStatus }) {
             <input type="password" value={current} onChange={(e) => setCurrent(e.target.value)} autoComplete="current-password" maxLength={200} required autoFocus className={field} />
           </FieldLabel>
           <FieldLabel label="Neues Passwort" hint="Mindestens 8 Zeichen.">
-            <input type="password" value={next} onChange={(e) => setNext(e.target.value)} autoComplete="new-password" maxLength={200} required className={field} />
+            <div className="max-w-[440px]">
+              <PasswordInput value={next} onChange={setNext} onGenerated={setRepeat} required />
+            </div>
           </FieldLabel>
           <FieldLabel label="Neues Passwort wiederholen">
             <input type="password" value={repeat} onChange={(e) => setRepeat(e.target.value)} autoComplete="new-password" maxLength={200} required className={field} />

@@ -12,8 +12,10 @@ import {
   adminPasswordKind,
   adminSetupLapsed,
   matchEnvAdmin,
+  mayViewOneTimePassword,
   type AdminPasswordKind,
 } from '../security/adminLogin';
+import { openSecret, sealSecret } from '../security/totp';
 import { clearSecondFactors } from './adminSecondFactor';
 import { announceChange } from './adminLive';
 
@@ -119,22 +121,43 @@ export function issueAdminToken(username: string): string {
 //   3. Without that first login in time, the grant lapses: the admin row —
 //      and with it the one-time password — is removed.
 
-/** The admin row of a pending grant; pass its setupExpiresAt to scheduleSetupExpiry() once written. */
-export async function pendingAdminFields(oneTimePassword: string) {
+/**
+ * The admin row of a pending grant made by `grantedBy`; pass its
+ * setupExpiresAt to scheduleSetupExpiry() once written.
+ */
+export async function pendingAdminFields(oneTimePassword: string, grantedBy: string) {
   return {
     canCreateClass: true,
     passwordHash: await bcrypt.hash(oneTimePassword, config.bcryptRounds),
     mustChangePassword: true,
     setupExpiresAt: new Date(Date.now() + ADMIN_SETUP_WINDOW_MS),
+    oneTimePasswordEnc: sealSecret(oneTimePassword, config.jwtSecret),
+    grantedBy,
   };
 }
 
 /** Makes `stableUid` a pending admin that signs in once with `oneTimePassword`. */
-export async function grantAdminWithOneTimePassword(stableUid: string, oneTimePassword: string): Promise<Date> {
-  const data = await pendingAdminFields(oneTimePassword);
+export async function grantAdminWithOneTimePassword(stableUid: string, oneTimePassword: string, grantedBy: string): Promise<Date> {
+  const data = await pendingAdminFields(oneTimePassword, grantedBy);
   await prisma.admin.upsert({ where: { stableUid }, create: { stableUid, ...data }, update: data });
   scheduleSetupExpiry(data.setupExpiresAt);
   return data.setupExpiresAt;
+}
+
+/**
+ * The one-time password of a pending grant, for the admin who granted it —
+ * or null: someone else asks, the new admin has their own password by now,
+ * or the grant lapsed or was revoked.
+ */
+export async function viewOneTimePassword(stableUid: string, viewer: string): Promise<{ password: string; setupExpiresAt: Date } | null> {
+  const admin = await prisma.admin.findUnique({ where: { stableUid } });
+  if (!admin || !mayViewOneTimePassword(admin, viewer, new Date())) return null;
+  try {
+    return { password: openSecret(admin.oneTimePasswordEnc!, config.jwtSecret), setupExpiresAt: admin.setupExpiresAt! };
+  } catch {
+    // Sealed under another JWT_SECRET: unreadable, like a lost password.
+    return null;
+  }
 }
 
 // The exact moment a grant lapses, on the node that made it; the periodic
@@ -230,7 +253,8 @@ export async function finishPasswordSetup(ticket: string, newPassword: string): 
   const passwordHash = await bcrypt.hash(newPassword, config.bcryptRounds);
   const { count } = await prisma.admin.updateMany({
     where: { stableUid: record.stableUid, mustChangePassword: true, passwordHash: record.passwordHash },
-    data: { passwordHash, mustChangePassword: false, setupExpiresAt: null },
+    // The one-time password is gone for good, also for the granting admin.
+    data: { passwordHash, mustChangePassword: false, setupExpiresAt: null, oneTimePasswordEnc: null },
   });
   if (count === 0) throw new UnauthorizedError(expired);
   announceChange(['users']);

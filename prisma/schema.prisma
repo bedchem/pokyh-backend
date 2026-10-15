@@ -84,6 +84,11 @@ model Admin {
   // password — is removed.
   mustChangePassword Boolean   @default(false) @map("must_change_password")
   setupExpiresAt     DateTime? @map("setup_expires_at")
+  // The one-time password, sealed with a key derived from JWT_SECRET, so the
+  // admin who granted it (grantedBy, their login name) can show it again
+  // while the grant is pending. Cleared once the new admin has their own.
+  oneTimePasswordEnc String?   @map("one_time_password_enc") @db.VarChar(255)
+  grantedBy          String?   @map("granted_by") @db.VarChar(191)
   createdAt      DateTime @default(now()) @map("created_at")
 
   @@map("admins")

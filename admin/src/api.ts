@@ -211,8 +211,12 @@ export const adminApi = {
     request<void>('DELETE', `/api/admin/users/${stableUid}/classes/${classId}`),
 
   // A WebUntis account needs `password`: its one-time password for the panel.
-  grantAdmin: (stableUid: string, password?: string): Promise<{ ok: boolean; adminSetupExpiresAt: string | null }> =>
-    request<{ ok: boolean; adminSetupExpiresAt: string | null }>('POST', `/api/admin/users/${stableUid}/grant-admin`, password ? { password } : undefined),
+  grantAdmin: (stableUid: string, password?: string): Promise<{ ok: boolean; adminSetupExpiresAt: string | null; canViewOneTimePassword: boolean; serverTime: string }> =>
+    request('POST', `/api/admin/users/${stableUid}/grant-admin`, password ? { password } : {}),
+
+  // The pending grant's one-time password again — only for the admin who granted it.
+  oneTimePassword: (stableUid: string): Promise<{ password: string; adminSetupExpiresAt: string; serverTime: string }> =>
+    request('GET', `/api/admin/users/${stableUid}/one-time-password`),
 
   revokeAdmin: (stableUid: string): Promise<void> =>
     request<void>('DELETE', `/api/admin/users/${stableUid}/revoke-admin`),

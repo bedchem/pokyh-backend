@@ -9,6 +9,8 @@ export interface AdminUser {
   // Set while a WebUntis account made admin has not signed in with its
   // one-time password yet; the grant lapses at this moment.
   adminSetupExpiresAt: string | null;
+  // The signed-in admin granted it and may show the one-time password again.
+  canViewOneTimePassword: boolean;
   // "Admin vergeben" asks for a one-time password (a WebUntis account).
   needsOneTimePassword: boolean;
   role: AccountRole;

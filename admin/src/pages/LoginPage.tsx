@@ -8,6 +8,7 @@ import { useAuth } from '../hooks/useAuth';
 import { prefersReducedMotion } from '../motion';
 import { Wordmark } from '../components/Layout';
 import { Dialog, FieldLabel, Notice } from '../components/kit';
+import { PasswordInput } from '../components/PasswordInput';
 import type { LoginResult, SecondFactorChallenge } from '../types';
 
 // After signing in with a one-time password: the new admin's own password.
@@ -36,15 +37,7 @@ function PasswordSetupDialog({ ticket, onDone, onClose }: { ticket: string; onDo
     <Dialog title="Neues Passwort festlegen" subtitle="Dein Einmal-Passwort gilt nur für diese erste Anmeldung." onClose={onClose}>
       <form onSubmit={(e) => void submit(e)} className="flex flex-col gap-5">
         <FieldLabel label="Neues Passwort" hint="Mindestens 8 Zeichen, nicht das Einmal-Passwort. Gilt nur fürs Admin-Panel.">
-          <input
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            autoComplete="new-password"
-            maxLength={200}
-            required
-            className="field h-[52px] w-full px-[18px] text-[15px]"
-          />
+          <PasswordInput value={password} onChange={setPassword} onGenerated={setRepeat} required autoFocus />
         </FieldLabel>
         <FieldLabel label="Neues Passwort wiederholen">
           <input

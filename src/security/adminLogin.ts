@@ -50,6 +50,29 @@ export function adminCanSignIn(input: {
   return Boolean(input.adminHash) || !input.needsOneTimePassword;
 }
 
+/** A one-time password the granting admin types or generates. */
+export function validOneTimePassword(password: unknown): password is string {
+  return typeof password === 'string' && password.length >= 8 && password.length <= 100;
+}
+
+/**
+ * Whether `viewer` may see a pending grant's one-time password again: only
+ * the admin who granted it, only while the grant is pending and in time —
+ * never the password the new admin chooses afterwards.
+ */
+export function mayViewOneTimePassword(
+  admin: { mustChangePassword: boolean; setupExpiresAt: Date | null; oneTimePasswordEnc: string | null; grantedBy: string | null },
+  viewer: string,
+  now: Date,
+): boolean {
+  return admin.mustChangePassword
+    && admin.oneTimePasswordEnc !== null
+    && admin.grantedBy !== null
+    && admin.grantedBy === viewer
+    && admin.setupExpiresAt !== null
+    && admin.setupExpiresAt.getTime() > now.getTime();
+}
+
 /** Whether a pending grant has lapsed: no first login before its deadline. */
 export function adminSetupLapsed(
   admin: { mustChangePassword: boolean; setupExpiresAt: Date | null },
