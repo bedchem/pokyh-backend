@@ -1,235 +1,452 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
-import { MessageCircle, Trash2, RefreshCw, Bell, UtensilsCrossed } from 'lucide-react';
-import { adminApi } from '../api';
-import type { AdminComment } from '../types';
+import { useState, useEffect, useCallback } from 'react';
+import { useHanded } from '../useHanded';
+import { MessageCircle, Trash2, RefreshCw, Bell, UtensilsCrossed, ChevronDown, Star, ImageOff, Clock } from 'lucide-react';
+import { adminApi, setMenuContext } from '../api';
+import { useAccess } from '../access';
+import type { AdminComment, DishCommentGroup, DishCommentItem, MensaMenu, ReminderCommentGroup, ReminderCommentItem } from '../types';
 import { useToast } from '../components/Toast';
 import { useLive } from '../live';
-import { Avatar, Empty, Figures, IconButton, PageHeader, Pager, SearchField, Section, Segmented, Tag } from '../components/kit';
-import { SplitBar } from '../components/charts';
+import { Avatar, Collapse, Empty, Figures, IconButton, PageHeader, Pager, SearchField, Section, Segmented, Spinner, Tag } from '../components/kit';
+import { dateTime, num, relative } from '../components/format';
 
-function timeAgo(iso: string): string {
-  const diff = Date.now() - new Date(iso).getTime();
-  const min = Math.floor(diff / 60000);
-  if (min < 1) return 'gerade eben';
-  if (min < 60) return `vor ${min} Min.`;
-  const h = Math.floor(min / 60);
-  if (h < 24) return `vor ${h} Std.`;
-  const d = Math.floor(h / 24);
-  return d === 1 ? 'Gestern' : `vor ${d} Tagen`;
+// Comments, grouped by what they are about: each dish (by its stable key,
+// the id comments and votes reference — never by matching display names)
+// with its comment count and rating, opened to read and moderate; each
+// reminder likewise; and the newest comments in one stream. A school's view
+// holds its own accounts' comments only.
+
+type Tab = 'dishes' | 'reminders' | 'latest';
+type DishSort = 'latest' | 'comments' | 'rating' | 'name';
+
+// What the search hands over: the tab, a dish to open, a filter.
+interface Handed { tab?: Tab; dishKey?: string | null; menuId?: string | null; search?: string }
+
+function Stars({ value }: { value: number | null }) {
+  if (value === null) return null;
+  return (
+    <span className="inline-flex items-center gap-1 text-[12.5px] text-ink-2" aria-label={`${value} von 5 Sternen`}>
+      <Star size={12} strokeWidth={2} fill="currentColor" style={{ color: 'var(--amber)' }} /> {num(value, 1)}
+    </span>
+  );
 }
 
-function CommentRow({ comment, onDeleted }: { comment: AdminComment; onDeleted: (id: string) => void }) {
-  const { showToast } = useToast();
+// One comment with its moderation.
+function CommentItem({ author, body, at, stars, edited, onDelete }: {
+  author: string;
+  body: string;
+  at: string;
+  stars?: number | null;
+  edited?: boolean;
+  onDelete?: () => Promise<void>;
+}) {
   const [confirm, setConfirm] = useState(false);
-  const [deleting, setDeleting] = useState(false);
-
-  async function handleDelete() {
-    setDeleting(true);
-    try {
-      if (comment.type === 'reminder') await adminApi.deleteReminderComment(comment.id);
-      else await adminApi.deleteDishComment(comment.id);
-      onDeleted(comment.id);
-      showToast('Kommentar gelöscht', 'success');
-    } catch (err) {
-      showToast(err instanceof Error ? err.message : 'Fehler beim Löschen', 'error');
-      setDeleting(false);
-      setConfirm(false);
-    }
-  }
-
+  const [busy, setBusy] = useState(false);
   return (
-    <article className="spot flex items-start gap-4 py-6">
-      <Avatar name={comment.username} size={44} />
-
+    <article className="flex items-start gap-3.5 py-4">
+      <Avatar name={author} size={36} />
       <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-          <span className="text-[15px] font-medium">{comment.username}</span>
-          <time className="text-[12.5px] text-ink-3" dateTime={comment.createdAt}>{timeAgo(comment.createdAt)}</time>
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          <span className="text-[14.5px] font-medium">{author}</span>
+          {stars !== undefined && stars !== null && <Stars value={stars} />}
+          <time className="text-[12.5px] text-ink-3" dateTime={at} title={dateTime(at)}>{relative(at)}{edited ? ' · bearbeitet' : ''}</time>
         </div>
-        <div className="mt-1 flex flex-wrap items-center gap-2 text-[13.5px] text-ink-3">
-          <span className="min-w-0 truncate">Kommentierte <span className="text-sky-deep">{comment.contextTitle || 'einen Beitrag'}</span></span>
-          <Tag tone={comment.type === 'reminder' ? 'amber' : 'mint'}>
-            {comment.type === 'reminder' ? <><Bell size={11} /> Erinnerung</> : <><UtensilsCrossed size={11} /> Mensa</>}
-          </Tag>
+        <p className="comment-bubble">{body}</p>
+      </div>
+      {onDelete && (
+        <div className="flex flex-shrink-0 items-center gap-2">
+          {confirm ? (
+            <>
+              <button type="button" disabled={busy} className="btn btn-sm btn-danger" onClick={() => { setBusy(true); void onDelete().finally(() => { setBusy(false); setConfirm(false); }); }}>
+                {busy ? 'Lösche…' : 'Löschen?'}
+              </button>
+              <button type="button" disabled={busy} className="btn btn-sm btn-quiet" onClick={() => setConfirm(false)}>Nein</button>
+            </>
+          ) : (
+            <IconButton icon={Trash2} tone="rose" label="Kommentar löschen" onClick={() => setConfirm(true)} />
+          )}
         </div>
-        <p className="comment-bubble">{comment.body}</p>
-      </div>
-
-      <div className="flex flex-shrink-0 items-center gap-2">
-        {confirm ? (
-          <>
-            <button type="button" onClick={() => void handleDelete()} disabled={deleting} className="btn btn-sm btn-danger">
-              {deleting ? 'Lösche…' : 'Wirklich löschen?'}
-            </button>
-            <button type="button" onClick={() => setConfirm(false)} disabled={deleting} className="btn btn-sm btn-quiet">Nein</button>
-          </>
-        ) : (
-          <IconButton icon={Trash2} tone="rose" label="Kommentar löschen" onClick={() => setConfirm(true)} />
-        )}
-      </div>
+      )}
     </article>
   );
 }
 
-const PAGE_SIZE = 25;
-
-type CommentType = 'all' | 'reminder' | 'dish';
-type SortOption = 'createdAt_desc' | 'createdAt_asc' | 'username_asc' | 'username_desc' | 'body_asc' | 'body_desc';
-
-const SORT_OPTIONS: { value: SortOption; label: string }[] = [
-  { value: 'createdAt_desc', label: 'Neueste zuerst' },
-  { value: 'createdAt_asc',  label: 'Älteste zuerst' },
-  { value: 'username_asc',   label: 'Benutzer A–Z' },
-  { value: 'username_desc',  label: 'Benutzer Z–A' },
-];
-
-function parseSortOption(opt: SortOption): { sortBy: 'createdAt' | 'username' | 'body'; sortOrder: 'asc' | 'desc' } {
-  const [sb, so] = opt.split('_') as ['createdAt' | 'username' | 'body', 'asc' | 'desc'];
-  return { sortBy: sb, sortOrder: so };
-}
-
 export function CommentsPage() {
+  const { view, can } = useAccess();
   const { showToast } = useToast();
-  const [comments, setComments] = useState<AdminComment[]>([]);
-  const [total, setTotal] = useState(0);
-  // Totals per kind for the figures; fetched on their own so the list never waits on them.
-  const [split, setSplit] = useState<{ dish: number; reminder: number } | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [page, setPage] = useState(1);
-  const [type, setType] = useState<CommentType>('all');
-  const [search, setSearch] = useState('');
-  const [searchInput, setSearchInput] = useState('');
-  const [sortOption, setSortOption] = useState<SortOption>('createdAt_desc');
-  const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const handed = useHanded<Handed>();
+  const [tab, setTab] = useState<Tab>(handed.tab === 'reminders' || handed.tab === 'latest' ? handed.tab : 'dishes');
+  const [menus, setMenus] = useState<MensaMenu[]>([]);
+  const [menuId, setMenuId] = useState<string>('');
+  const [figures, setFigures] = useState<{ dish: number; dishes: number; reminder: number } | null>(null);
+  const moderate = can('comments.moderate');
+  const isGlobal = view?.kind === 'global';
 
-  const { sortBy, sortOrder } = parseSortOption(sortOption);
-
-  const load = useCallback(async (p: number, t: CommentType, s: string, sb: 'createdAt' | 'username' | 'body', so: 'asc' | 'desc') => {
-    setLoading(true);
-    try {
-      const data = await adminApi.comments({ page: p, limit: PAGE_SIZE, type: t, search: s || undefined, sortBy: sb, sortOrder: so });
-      setComments(data.comments);
-      setTotal(data.total);
-    } catch (err) {
-      showToast(err instanceof Error ? err.message : 'Fehler beim Laden', 'error');
-    } finally {
-      setLoading(false);
-    }
-  }, [showToast]);
-
-  const loadSplit = useCallback(() => {
-    Promise.all([
-      adminApi.comments({ limit: 1, type: 'dish' }),
-      adminApi.comments({ limit: 1, type: 'reminder' }),
-    ]).then(([dish, reminder]) => setSplit({ dish: dish.total, reminder: reminder.total }))
-      .catch(() => { /* the figures stay empty; the list is unaffected */ });
-  }, []);
-
-  useEffect(() => { void load(page, type, search, sortBy, sortOrder); }, [load, page, type, search, sortBy, sortOrder]);
-  useEffect(() => { loadSplit(); }, [loadSplit]);
-  useLive(['comments'], () => { loadSplit(); void load(page, type, search, sortBy, sortOrder); });
-
-  // Search as you type, a moment after the last keystroke.
+  // The global view picks the menu whose dish comments it shows.
   useEffect(() => {
-    if (searchTimer.current) clearTimeout(searchTimer.current);
-    searchTimer.current = setTimeout(() => { setPage(1); setSearch(searchInput.trim()); }, 300);
-    return () => { if (searchTimer.current) clearTimeout(searchTimer.current); };
-  }, [searchInput]);
+    if (!isGlobal) return;
+    adminApi.menus().then(({ menus: list }) => {
+      setMenus(list);
+      const preferred = list.find((m) => m.id === handed.menuId) ?? list.find((m) => m.isDefault) ?? list[0];
+      if (preferred) { setMenuContext(preferred.id); setMenuId(preferred.id); }
+    }).catch(() => undefined);
+    return () => setMenuContext(null);
+  }, [isGlobal]);
 
-  function handleTypeChange(t: CommentType) { setType(t); setPage(1); }
-  function handleSortChange(opt: SortOption) { setSortOption(opt); setPage(1); }
-  function handleDeleted(id: string) {
-    setComments((prev) => prev.filter((c) => c.id !== id));
-    setTotal((prev) => prev - 1);
-    loadSplit();
-  }
+  const loadFigures = useCallback(() => {
+    Promise.all([
+      adminApi.dishCommentGroups({ limit: 1 }),
+      adminApi.comments({ limit: 1, type: 'reminder' }),
+    ]).then(([dishes, reminders]) => setFigures({ dish: dishes.totalComments ?? 0, dishes: dishes.total, reminder: reminders.total }))
+      .catch(() => undefined);
+  }, []);
+  useEffect(() => { if (!isGlobal || menuId) loadFigures(); }, [loadFigures, isGlobal, menuId]);
+  useLive(['comments', 'ratings'], loadFigures, 3000);
 
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-  const allComments = split ? split.dish + split.reminder : null;
+  const ready = !isGlobal || menuId !== '';
 
   return (
     <div>
-      <PageHeader title="Kommentare" subtitle="Was Nutzer:innen zu Gerichten und Erinnerungen schreiben — hier moderieren.">
-        <IconButton
-          icon={RefreshCw}
-          label="Aktualisieren"
-          size={42}
-          busy={loading}
-          onClick={() => { loadSplit(); void load(page, type, search, sortBy, sortOrder); }}
-        />
+      <PageHeader title="Kommentare" subtitle={view?.kind === 'school' ? `Was die Konten von ${view.school.name} zu Gerichten und Erinnerungen schreiben.` : 'Was zu Gerichten und Erinnerungen geschrieben wird — nach Gericht geordnet, zum Lesen und Moderieren.'}>
+        {isGlobal && menus.length > 1 && (
+          <select className="field h-11 px-4 text-[14px]" value={menuId} onChange={(e) => { setMenuContext(e.target.value); setMenuId(e.target.value); }} aria-label="Mensaplan">
+            {menus.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+          </select>
+        )}
       </PageHeader>
 
       <Figures
         className="mt-10"
         items={[
-          { label: 'Kommentare',   value: allComments ?? '–',     icon: MessageCircle },
-          { label: 'Mensa',        value: split?.dish ?? '–',     icon: UtensilsCrossed },
-          { label: 'Erinnerungen', value: split?.reminder ?? '–', icon: Bell },
+          { label: 'Mensa-Kommentare', value: figures?.dish ?? '–', icon: MessageCircle },
+          { label: 'Gerichte mit Kommentaren', value: figures?.dishes ?? '–', icon: UtensilsCrossed },
+          { label: 'Zu Erinnerungen', value: figures?.reminder ?? '–', icon: Bell },
         ]}
       />
 
-      <Section className="mt-[46px]" title="Verteilung">
-        <div className="mt-8 max-w-[720px]">
-          <SplitBar
-            ariaLabel="Kommentare nach Art"
-            parts={[
-              { label: 'Mensa',        value: split?.dish ?? 0,     color: 'var(--mint)' },
-              { label: 'Erinnerungen', value: split?.reminder ?? 0, color: 'var(--amber)' },
-            ]}
-          />
-        </div>
-      </Section>
+      <div className="mt-[46px]">
+        <Segmented
+          label="Ansicht"
+          value={tab}
+          onChange={setTab}
+          options={[
+            { value: 'dishes', label: <><UtensilsCrossed size={13} /> Nach Gericht</> },
+            { value: 'reminders', label: <><Bell size={13} /> Nach Erinnerung</> },
+            { value: 'latest', label: <><Clock size={13} /> Neueste</> },
+          ]}
+        />
+      </div>
 
-      <Section
-        className="mt-[52px]"
-        title="Alle Kommentare"
-        meta={`${total.toLocaleString('de-AT')} ${search ? 'Treffer' : 'gesamt'}`}
-        action={(
-          <>
-            <SearchField value={searchInput} onChange={setSearchInput} placeholder="Benutzer oder Text suchen" className="w-full sm:w-[250px]" />
-            <select
-              value={sortOption}
-              onChange={(e) => handleSortChange(e.target.value as SortOption)}
-              aria-label="Sortierung"
-              className="field h-11 px-4 text-[14px]"
-            >
-              {SORT_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-            </select>
-            <Segmented
-              label="Art der Kommentare"
-              value={type}
-              onChange={handleTypeChange}
-              options={[
-                { value: 'all', label: 'Alle' },
-                { value: 'dish', label: <><UtensilsCrossed size={13} /> Mensa</> },
-                { value: 'reminder', label: <><Bell size={13} /> Erinnerungen</> },
-              ]}
-            />
-          </>
-        )}
-      >
-        {loading && comments.length === 0 ? (
-          <div className="mt-7 flex flex-col gap-7">
-            {Array.from({ length: 4 }).map((_, i) => (
-              <div key={i} className="flex items-start gap-4">
-                <div className="shimmer h-11 w-11 flex-shrink-0 rounded-full" />
-                <div className="flex-1">
-                  <div className="shimmer h-4 w-40 rounded-full" />
-                  <div className="shimmer mt-4 h-14 w-full max-w-[520px] rounded-[18px]" />
-                </div>
-              </div>
-            ))}
-          </div>
-        ) : comments.length === 0 ? (
-          <Empty icon={MessageCircle}>{search ? 'Keine Kommentare gefunden.' : 'Noch keine Kommentare.'}</Empty>
-        ) : (
-          <div className="stack mt-2">
-            {comments.map((c) => <CommentRow key={c.id} comment={c} onDeleted={handleDeleted} />)}
-          </div>
-        )}
-
-        <Pager page={page} pages={totalPages} onChange={setPage} />
-      </Section>
+      {!ready ? <div className="mt-8"><Spinner /></div> : tab === 'dishes'
+        ? <DishGroups key={menuId} moderate={moderate} onError={(m) => showToast(m, 'error')} onChanged={loadFigures} initialSearch={handed.tab === 'dishes' ? handed.search : undefined} initialOpen={handed.dishKey ?? undefined} />
+        : tab === 'reminders'
+          ? <ReminderGroups moderate={moderate} onError={(m) => showToast(m, 'error')} onChanged={loadFigures} initialSearch={handed.tab === 'reminders' ? handed.search : undefined} />
+          : <LatestComments key={menuId} moderate={moderate} onError={(m) => showToast(m, 'error')} onChanged={loadFigures} />}
     </div>
+  );
+}
+
+interface ListProps {
+  moderate: boolean;
+  onError: (message: string) => void;
+  onChanged: () => void;
+  initialSearch?: string;
+  initialOpen?: string;
+}
+
+function DishGroups({ moderate, onError, onChanged, initialSearch, initialOpen }: ListProps) {
+  const [groups, setGroups] = useState<DishCommentGroup[] | null>(null);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [sort, setSort] = useState<DishSort>('latest');
+  const [search, setSearch] = useState(initialSearch ?? '');
+  const [debounced, setDebounced] = useState(initialSearch?.trim() ?? '');
+  const [open, setOpen] = useState<string | null>(initialOpen ?? null);
+  const limit = 20;
+
+  useEffect(() => {
+    const t = window.setTimeout(() => { setDebounced(search.trim()); setPage(1); }, 300);
+    return () => window.clearTimeout(t);
+  }, [search]);
+
+  const load = useCallback(async () => {
+    try {
+      const res = await adminApi.dishCommentGroups({ page, limit, sort, search: debounced || undefined });
+      setGroups(res.dishes);
+      setTotal(res.total);
+    } catch (err) {
+      onError(err instanceof Error ? err.message : 'Kommentare konnten nicht geladen werden');
+    }
+  }, [page, sort, debounced, onError]);
+
+  useEffect(() => { void load(); }, [load]);
+  useLive(['comments', 'ratings'], () => { void load(); }, 3000);
+
+  return (
+    <Section
+      className="mt-8"
+      title="Gerichte"
+      meta={`${num(total)} mit Kommentaren`}
+      action={(
+        <>
+          <SearchField value={search} onChange={setSearch} placeholder="Gericht, Text oder Konto" className="w-full sm:w-[240px]" />
+          <select className="field h-11 px-4 text-[14px]" value={sort} onChange={(e) => { setSort(e.target.value as DishSort); setPage(1); }} aria-label="Sortierung">
+            <option value="latest">Neueste Kommentare</option>
+            <option value="comments">Meiste Kommentare</option>
+            <option value="rating">Beste Bewertung</option>
+            <option value="name">Name A–Z</option>
+          </select>
+        </>
+      )}
+    >
+      {!groups ? (
+        <div className="mt-8"><Spinner /></div>
+      ) : groups.length === 0 ? (
+        <Empty icon={UtensilsCrossed}>{debounced ? 'Nichts gefunden.' : 'Noch keine Kommentare zu Gerichten.'}</Empty>
+      ) : (
+        <ul className="mt-4 flex flex-col">
+          {groups.map((g) => (
+            <li key={g.dishId} className="border-t border-line first:border-t-0">
+              <button type="button" className="group-row" aria-expanded={open === g.dishId} onClick={() => setOpen(open === g.dishId ? null : g.dishId)}>
+                {g.imageUrl ? (
+                  <img src={g.imageUrl} alt="" className="h-12 w-12 flex-shrink-0 rounded-[14px] object-cover" loading="lazy" />
+                ) : (
+                  <span className="orb h-12 w-12">{g.deleted ? <ImageOff size={18} strokeWidth={1.6} /> : <UtensilsCrossed size={18} strokeWidth={1.6} />}</span>
+                )}
+                <span className="min-w-0 flex-1 text-left">
+                  <span className="block truncate text-[15px] font-medium">
+                    {g.name ?? 'Gericht nicht mehr im Plan'}
+                    {g.deleted && <span className="ml-2 align-middle"><Tag>gelöscht</Tag></span>}
+                  </span>
+                  <span className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12.5px] text-ink-3">
+                    <span>{num(g.comments)} {g.comments === 1 ? 'Kommentar' : 'Kommentare'}</span>
+                    {g.avgStars !== null && <span className="flex items-center gap-1"><Stars value={g.avgStars} /> ({num(g.ratingCount)})</span>}
+                    <span>zuletzt {relative(g.latestAt)}</span>
+                    {g.deleted && <span className="font-mono">{g.dishId}</span>}
+                  </span>
+                </span>
+                <ChevronDown size={18} strokeWidth={1.7} className="group-chevron" data-open={open === g.dishId} />
+              </button>
+              <Collapse open={open === g.dishId}>
+                {open === g.dishId && <DishThread dishId={g.dishId} moderate={moderate} onError={onError} onChanged={() => { void load(); onChanged(); }} />}
+              </Collapse>
+            </li>
+          ))}
+        </ul>
+      )}
+      <Pager page={page} pages={Math.ceil(total / limit)} onChange={setPage} />
+    </Section>
+  );
+}
+
+function DishThread({ dishId, moderate, onError, onChanged }: { dishId: string } & ListProps) {
+  const [items, setItems] = useState<DishCommentItem[] | null>(null);
+  const [sort, setSort] = useState<'newest' | 'oldest' | 'rating-low' | 'rating-high'>('newest');
+
+  const load = useCallback(async () => {
+    try {
+      setItems((await adminApi.dishComments(dishId, sort)).comments);
+    } catch (err) {
+      onError(err instanceof Error ? err.message : 'Kommentare konnten nicht geladen werden');
+    }
+  }, [dishId, sort, onError]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  return (
+    <div className="thread">
+      <div className="flex flex-wrap items-center justify-between gap-3 pb-1">
+        <span className="text-[12.5px] text-ink-3">Sterne: wie der Autor das Gericht bewertet hat</span>
+        <select className="field h-9 px-3 text-[13px]" value={sort} onChange={(e) => setSort(e.target.value as typeof sort)} aria-label="Kommentare sortieren">
+          <option value="newest">Neueste zuerst</option>
+          <option value="oldest">Älteste zuerst</option>
+          <option value="rating-low">Schlechteste Bewertung</option>
+          <option value="rating-high">Beste Bewertung</option>
+        </select>
+      </div>
+      {!items ? <Spinner /> : items.map((c) => (
+        <CommentItem
+          key={c.id}
+          author={c.username}
+          body={c.body}
+          at={c.createdAt}
+          stars={c.stars}
+          edited={c.edited}
+          onDelete={moderate ? async () => {
+            try {
+              await adminApi.deleteDishComment(c.id);
+              setItems((prev) => prev?.filter((x) => x.id !== c.id) ?? null);
+              onChanged();
+            } catch (err) {
+              onError(err instanceof Error ? err.message : 'Löschen fehlgeschlagen');
+            }
+          } : undefined}
+        />
+      ))}
+    </div>
+  );
+}
+
+function ReminderGroups({ moderate, onError, onChanged, initialSearch }: ListProps) {
+  const [groups, setGroups] = useState<ReminderCommentGroup[] | null>(null);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [search, setSearch] = useState(initialSearch ?? '');
+  const [debounced, setDebounced] = useState(initialSearch?.trim() ?? '');
+  const [open, setOpen] = useState<string | null>(null);
+  const limit = 20;
+
+  useEffect(() => {
+    const t = window.setTimeout(() => { setDebounced(search.trim()); setPage(1); }, 300);
+    return () => window.clearTimeout(t);
+  }, [search]);
+
+  const load = useCallback(async () => {
+    try {
+      const res = await adminApi.reminderCommentGroups({ page, limit, search: debounced || undefined });
+      setGroups(res.reminders);
+      setTotal(res.total);
+    } catch (err) {
+      onError(err instanceof Error ? err.message : 'Kommentare konnten nicht geladen werden');
+    }
+  }, [page, debounced, onError]);
+
+  useEffect(() => { void load(); }, [load]);
+  useLive(['comments'], () => { void load(); }, 3000);
+
+  return (
+    <Section className="mt-8" title="Erinnerungen" meta={`${num(total)} mit Kommentaren`} action={<SearchField value={search} onChange={setSearch} placeholder="Erinnerung, Text oder Konto" className="w-full sm:w-[240px]" />}>
+      {!groups ? (
+        <div className="mt-8"><Spinner /></div>
+      ) : groups.length === 0 ? (
+        <Empty icon={Bell}>{debounced ? 'Nichts gefunden.' : 'Noch keine Kommentare zu Erinnerungen.'}</Empty>
+      ) : (
+        <ul className="mt-4 flex flex-col">
+          {groups.map((g) => (
+            <li key={g.reminderId} className="border-t border-line first:border-t-0">
+              <button type="button" className="group-row" aria-expanded={open === g.reminderId} onClick={() => setOpen(open === g.reminderId ? null : g.reminderId)}>
+                <span className="orb h-12 w-12"><Bell size={18} strokeWidth={1.6} /></span>
+                <span className="min-w-0 flex-1 text-left">
+                  <span className="block truncate text-[15px] font-medium">{g.title ?? 'Erinnerung gelöscht'}</span>
+                  <span className="mt-1 flex flex-wrap items-center gap-x-3 text-[12.5px] text-ink-3">
+                    {g.className && <span>{g.className}</span>}
+                    <span>{num(g.comments)} {g.comments === 1 ? 'Kommentar' : 'Kommentare'}</span>
+                    <span>zuletzt {relative(g.latestAt)}</span>
+                  </span>
+                </span>
+                <ChevronDown size={18} strokeWidth={1.7} className="group-chevron" data-open={open === g.reminderId} />
+              </button>
+              <Collapse open={open === g.reminderId}>
+                {open === g.reminderId && <ReminderThread reminderId={g.reminderId} moderate={moderate} onError={onError} onChanged={() => { void load(); onChanged(); }} />}
+              </Collapse>
+            </li>
+          ))}
+        </ul>
+      )}
+      <Pager page={page} pages={Math.ceil(total / limit)} onChange={setPage} />
+    </Section>
+  );
+}
+
+function ReminderThread({ reminderId, moderate, onError, onChanged }: { reminderId: string } & ListProps) {
+  const [items, setItems] = useState<ReminderCommentItem[] | null>(null);
+  useEffect(() => {
+    adminApi.reminderComments(reminderId)
+      .then((res) => setItems(res.comments))
+      .catch((err) => onError(err instanceof Error ? err.message : 'Kommentare konnten nicht geladen werden'));
+  }, [reminderId, onError]);
+  return (
+    <div className="thread">
+      {!items ? <Spinner /> : items.map((c) => (
+        <CommentItem
+          key={c.id}
+          author={c.username}
+          body={c.body}
+          at={c.createdAt}
+          onDelete={moderate ? async () => {
+            try {
+              await adminApi.deleteReminderComment(c.id);
+              setItems((prev) => prev?.filter((x) => x.id !== c.id) ?? null);
+              onChanged();
+            } catch (err) {
+              onError(err instanceof Error ? err.message : 'Löschen fehlgeschlagen');
+            }
+          } : undefined}
+        />
+      ))}
+    </div>
+  );
+}
+
+// The newest comments of both kinds in one stream, for daily moderation.
+function LatestComments({ moderate, onError, onChanged }: ListProps) {
+  const [comments, setComments] = useState<AdminComment[] | null>(null);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [search, setSearch] = useState('');
+  const [debounced, setDebounced] = useState('');
+  const limit = 25;
+
+  useEffect(() => {
+    const t = window.setTimeout(() => { setDebounced(search.trim()); setPage(1); }, 300);
+    return () => window.clearTimeout(t);
+  }, [search]);
+
+  const load = useCallback(async () => {
+    try {
+      const res = await adminApi.comments({ page, limit, type: 'all', search: debounced || undefined, sortBy: 'createdAt', sortOrder: 'desc' });
+      setComments(res.comments);
+      setTotal(res.total);
+    } catch (err) {
+      onError(err instanceof Error ? err.message : 'Kommentare konnten nicht geladen werden');
+    }
+  }, [page, debounced, onError]);
+
+  useEffect(() => { void load(); }, [load]);
+  useLive(['comments'], () => { void load(); }, 3000);
+
+  return (
+    <Section
+      className="mt-8"
+      title="Neueste"
+      meta={`${num(total)} gesamt`}
+      action={(
+        <>
+          <SearchField value={search} onChange={setSearch} placeholder="Konto oder Text" className="w-full sm:w-[240px]" />
+          <IconButton icon={RefreshCw} label="Aktualisieren" onClick={() => void load()} />
+        </>
+      )}
+    >
+      {!comments ? <div className="mt-8"><Spinner /></div> : comments.length === 0 ? (
+        <Empty icon={MessageCircle}>Keine Kommentare.</Empty>
+      ) : (
+        <div className="mt-2">
+          {comments.map((c) => (
+            <div key={c.id} className="border-t border-line first:border-t-0">
+              <div className="flex items-center gap-2 pt-4 text-[12.5px] text-ink-3">
+                <Tag tone={c.type === 'reminder' ? 'amber' : 'mint'}>{c.type === 'reminder' ? <><Bell size={11} /> Erinnerung</> : <><UtensilsCrossed size={11} /> Mensa</>}</Tag>
+                <span className="min-w-0 truncate">{c.contextTitle}</span>
+              </div>
+              <CommentItem
+                author={c.username}
+                body={c.body}
+                at={c.createdAt}
+                onDelete={moderate ? async () => {
+                  try {
+                    if (c.type === 'reminder') await adminApi.deleteReminderComment(c.id);
+                    else await adminApi.deleteDishComment(c.id);
+                    setComments((prev) => prev?.filter((x) => x.id !== c.id) ?? null);
+                    setTotal((t) => t - 1);
+                    onChanged();
+                  } catch (err) {
+                    onError(err instanceof Error ? err.message : 'Löschen fehlgeschlagen');
+                  }
+                } : undefined}
+              />
+            </div>
+          ))}
+        </div>
+      )}
+      <Pager page={page} pages={Math.ceil(total / limit)} onChange={setPage} />
+    </Section>
   );
 }

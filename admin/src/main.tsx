@@ -7,10 +7,12 @@ import './index.css'
 import App from './App.tsx'
 import { startFavicon } from './favicon'
 import { startThemeSync } from './theme'
+import { reportPanelError, startErrorReports } from './errorReports'
 
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
   state = { error: null }
   static getDerivedStateFromError(error: Error) { return { error } }
+  componentDidCatch(error: Error) { reportPanelError(error) }
   render() {
     if (this.state.error) {
       return (
@@ -44,6 +46,7 @@ if (window.location.hash.startsWith('#/')) {
 const rootEl = document.getElementById('root')!
 startThemeSync()
 startFavicon()
+startErrorReports()
 createRoot(rootEl).render(
   <StrictMode>
     <ErrorBoundary>

@@ -1,5 +1,8 @@
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, useLocation, Link, Outlet } from 'react-router-dom';
+import { ShieldOff } from 'lucide-react';
 import { useAuth } from './hooks/useAuth';
+import { AccessProvider, useAccess } from './access';
+import { allowed, entryFor } from './nav';
 import { ToastProvider } from './components/Toast';
 import { Layout } from './components/Layout';
 import { MarkLoader } from './components/kit';
@@ -10,7 +13,6 @@ import { AnalyticsPage } from './pages/AnalyticsPage';
 import { UsersPage } from './pages/UsersPage';
 import { ClassesPage } from './pages/ClassesPage';
 import { SessionsPage } from './pages/SessionsPage';
-import { LogsPage } from './pages/LogsPage';
 import { DishesPage } from './pages/DishesPage';
 import { SubjectImagesPage } from './pages/SubjectImagesPage';
 import { CommentsPage } from './pages/CommentsPage';
@@ -26,17 +28,78 @@ import { LearnCoursesPage } from './pages/LearnCoursesPage';
 import { BackupsPage } from './pages/BackupsPage';
 import { PopupsPage } from './pages/PopupsPage';
 import { ClusterPage } from './pages/ClusterPage';
-import { ReactNode, Suspense, useState, useEffect } from 'react';
+import { RequestsPage } from './pages/RequestsPage';
+import { SchoolsPage } from './pages/SchoolsPage';
+import { SchoolSettingsPage } from './pages/SchoolSettingsPage';
+import { AdminsPage } from './pages/AdminsPage';
+import { FrontendLogsPage } from './pages/FrontendLogsPage';
+import { BackendLogsPage } from './pages/BackendLogsPage';
+import { AuditPage } from './pages/AuditPage';
+import { SystemPage } from './pages/SystemPage';
+import { PrivacyPage } from './pages/PrivacyPage';
+import { Suspense, useState, useEffect } from 'react';
 import { setupApi } from './api';
 import type { SetupStatus } from './types';
 
 // "/admin/" from vite's base, without the trailing slash.
 const ROUTER_BASENAME = import.meta.env.BASE_URL.replace(/\/$/, '');
 
-function ProtectedRoute({ children, bleed }: { children: ReactNode; bleed?: boolean }) {
+// Everything behind the login: one access context and one layout for all
+// pages, so switching sections keeps both (and the view) in place.
+function AuthedShell() {
   const { isAuthenticated } = useAuth();
   if (!isAuthenticated) return <Navigate to="/login" replace />;
-  return <Layout bleed={bleed}>{children}</Layout>;
+  return (
+    <AccessProvider fallback={<Spinner />}>
+      <Guarded />
+    </AccessProvider>
+  );
+}
+
+// Pages that lay out the full height themselves.
+const BLEED = new Set(['/dashboard']);
+
+// A page the admin may not open in this view shows why, instead of a broken
+// page; the API would refuse its data anyway.
+function Guarded() {
+  const { view, can, me } = useAccess();
+  const { pathname } = useLocation();
+  if (!view) {
+    return (
+      <NoAccess
+        title="Noch keine Rechte"
+        text={`Das Konto ${me?.username ?? ''} kann sich anmelden, hat aber noch keine Rechte. Ein Admin muss sie unter „Admins & Rechte“ vergeben.`}
+        showHome={false}
+      />
+    );
+  }
+  const entry = entryFor(pathname);
+  if (entry && !allowed(entry, view.kind, can)) {
+    return (
+      <Layout>
+        <NoAccess
+          title="Kein Zugriff"
+          text={view.kind === 'school' ? 'Diesen Bereich gibt es in der Schulansicht nicht, oder dir fehlen dafür die Rechte in dieser Schule.' : 'Für diesen Bereich fehlen dir die Rechte.'}
+          showHome
+        />
+      </Layout>
+    );
+  }
+  return <Layout bleed={BLEED.has(pathname)}><Outlet /></Layout>;
+}
+
+function NoAccess({ title, text, showHome }: { title: string; text: string; showHome: boolean }) {
+  const { logout } = useAuth();
+  return (
+    <div className="flex min-h-[60vh] flex-col items-center justify-center gap-4 px-6 text-center">
+      <span className="orb h-14 w-14"><ShieldOff size={24} strokeWidth={1.6} /></span>
+      <h1 className="text-[22px] font-semibold">{title}</h1>
+      <p className="max-w-[46ch] text-[15px] text-ink-3">{text}</p>
+      {showHome
+        ? <Link to="/dashboard" className="btn">Zur Übersicht</Link>
+        : <button type="button" className="btn" onClick={() => { logout(); window.location.assign(`${import.meta.env.BASE_URL}login`); }}>Abmelden</button>}
+    </div>
+  );
 }
 
 function RootRedirect() {
@@ -86,27 +149,39 @@ export default function App() {
           <Routes>
             <Route path="/"               element={<RootRedirect />} />
             <Route path="/login"          element={<LoginPage />} />
-            <Route path="/dashboard"      element={<ProtectedRoute bleed><DashboardPage /></ProtectedRoute>} />
-            <Route path="/analytics"      element={<ProtectedRoute><AnalyticsPage /></ProtectedRoute>} />
-            <Route path="/users"          element={<ProtectedRoute><UsersPage /></ProtectedRoute>} />
-            <Route path="/classes"        element={<ProtectedRoute><ClassesPage /></ProtectedRoute>} />
-            <Route path="/sessions"       element={<ProtectedRoute><SessionsPage /></ProtectedRoute>} />
-            <Route path="/logs"           element={<ProtectedRoute><LogsPage /></ProtectedRoute>} />
-            <Route path="/dishes"         element={<ProtectedRoute><DishesPage /></ProtectedRoute>} />
-            <Route path="/subject-images" element={<ProtectedRoute><SubjectImagesPage /></ProtectedRoute>} />
-            <Route path="/comments"          element={<ProtectedRoute><CommentsPage /></ProtectedRoute>} />
-            <Route path="/log-files"         element={<ProtectedRoute><LogFilesPage /></ProtectedRoute>} />
-            <Route path="/todos-reminders"   element={<ProtectedRoute><TodosRemindersPage /></ProtectedRoute>} />
-            <Route path="/settings"          element={<ProtectedRoute><SettingsPage /></ProtectedRoute>} />
-            <Route path="/school-years"      element={<ProtectedRoute><SchoolYearsPage /></ProtectedRoute>} />
-            <Route path="/api-keys"          element={<ProtectedRoute><ApiKeysPage /></ProtectedRoute>} />
-            <Route path="/learn"             element={<ProtectedRoute><LearnConfigPage /></ProtectedRoute>} />
-            <Route path="/learn/ai"          element={<ProtectedRoute><LearnAiPage /></ProtectedRoute>} />
-            <Route path="/learn/teams"       element={<ProtectedRoute><LearnTeamsPage /></ProtectedRoute>} />
-            <Route path="/learn/courses"     element={<ProtectedRoute><LearnCoursesPage /></ProtectedRoute>} />
-            <Route path="/backups"           element={<ProtectedRoute><BackupsPage /></ProtectedRoute>} />
-            <Route path="/popups"            element={<ProtectedRoute><PopupsPage /></ProtectedRoute>} />
-            <Route path="/cluster"           element={<ProtectedRoute><ClusterPage /></ProtectedRoute>} />
+            <Route element={<AuthedShell />}>
+            <Route path="/dashboard"      element={<DashboardPage />} />
+            <Route path="/analytics"      element={<AnalyticsPage />} />
+            <Route path="/users"          element={<UsersPage />} />
+            <Route path="/classes"        element={<ClassesPage />} />
+            <Route path="/sessions"       element={<SessionsPage />} />
+            <Route path="/logs"           element={<Navigate to="/requests" replace />} />
+            <Route path="/requests"       element={<RequestsPage />} />
+            <Route path="/schools"        element={<SchoolsPage />} />
+            <Route path="/school"         element={<SchoolSettingsPage />} />
+            <Route path="/admins"         element={<AdminsPage />} />
+            <Route path="/logs/frontend"  element={<FrontendLogsPage />} />
+            <Route path="/logs/backend"   element={<BackendLogsPage />} />
+            <Route path="/logs/backend/files" element={<LogFilesPage />} />
+            <Route path="/audit"          element={<AuditPage />} />
+            <Route path="/system"         element={<SystemPage />} />
+            <Route path="/privacy"        element={<PrivacyPage />} />
+            <Route path="/dishes"         element={<DishesPage />} />
+            <Route path="/subject-images" element={<SubjectImagesPage />} />
+            <Route path="/comments"          element={<CommentsPage />} />
+            <Route path="/log-files"         element={<Navigate to="/logs/backend/files" replace />} />
+            <Route path="/todos-reminders"   element={<TodosRemindersPage />} />
+            <Route path="/settings"          element={<SettingsPage />} />
+            <Route path="/school-years"      element={<SchoolYearsPage />} />
+            <Route path="/api-keys"          element={<ApiKeysPage />} />
+            <Route path="/learn"             element={<LearnConfigPage />} />
+            <Route path="/learn/ai"          element={<LearnAiPage />} />
+            <Route path="/learn/teams"       element={<LearnTeamsPage />} />
+            <Route path="/learn/courses"     element={<LearnCoursesPage />} />
+            <Route path="/backups"           element={<BackupsPage />} />
+            <Route path="/popups"            element={<PopupsPage />} />
+            <Route path="/cluster"           element={<ClusterPage />} />
+            </Route>
             <Route path="*"                  element={<Navigate to="/" replace />} />
           </Routes>
         </Suspense>

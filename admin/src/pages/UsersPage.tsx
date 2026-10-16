@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { Shield, ScrollText, Users, RefreshCw, UserPlus, Trash2, Download, Upload, GraduationCap, UserCog, ShieldCheck, Wand2, KeyRound } from 'lucide-react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { Shield, ScrollText, Users, RefreshCw, UserPlus, Trash2, Download, Upload, GraduationCap, UserCog, ShieldCheck, KeyRound } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { useHanded } from '../useHanded';
 import { adminApi } from '../api';
 import { useToast } from '../components/Toast';
 import { useAutoRefresh } from '../hooks/useAutoRefresh';
@@ -9,8 +10,10 @@ import { UserDetailDrawer } from '../components/UserDetailDrawer';
 import { Avatar, Checkbox, Delta, Dialog, Empty, FieldLabel, Figures, IconButton, PageHeader, Pager, SearchField, Section, Segmented, Spinner, Status, Tag } from '../components/kit';
 import { Bars, SplitBar } from '../components/charts';
 import { AdminCountdown, clockOffset } from '../components/AdminCountdown';
-import { GrantAdminDialog, OneTimePasswordDialog } from '../components/GrantAdminDialog';
-import { PasswordInput, randomPassword } from '../components/PasswordInput';
+import { OneTimePasswordDialog } from '../components/GrantAdminDialog';
+import { AppointAdminDialog } from '../components/AppointAdminDialog';
+import { useAccess } from '../access';
+import { PasswordInput } from '../components/PasswordInput';
 import { ROLE_OPTIONS, roleLabel, roleTone } from '../roles';
 import type { AccountRole, AdminUser } from '../types';
 
@@ -26,13 +29,14 @@ function relativeDate(dateStr: string): string {
 
 type FilterTab = 'all' | 'students' | 'parents' | 'none' | 'admins';
 
-// Tabs that map to a server-side role filter (Schüler/Eltern/ohne Rolle).
-// 'admins' is filtered client-side on the already-fetched page (admin is a
-// separate flag).
-function roleForFilter(filter: FilterTab): AccountRole | undefined {
+// Every tab is a server-side filter, applied before paging — so totals and
+// pages describe the filtered accounts. (Admins used to be picked out of the
+// loaded page only, which spread them over many pages.)
+function roleForFilter(filter: FilterTab): AccountRole | 'admin' | undefined {
   if (filter === 'students') return 'student';
   if (filter === 'parents') return 'parent';
   if (filter === 'none') return 'none';
+  if (filter === 'admins') return 'admin';
   return undefined;
 }
 
@@ -115,10 +119,15 @@ function SkeletonRow() {
 
 export function UsersPage() {
   const { showToast } = useToast();
+  const { view, me, can, canGlobal } = useAccess();
+  const isGlobal = view?.kind === 'global';
+  // Global view: optionally one school's accounts; new accounts go to a school.
+  const [schoolFilter, setSchoolFilter] = useState('');
+  const [newSchool, setNewSchool] = useState(() => me?.schools.find((s) => s.isDefault)?.id ?? me?.schools[0]?.id ?? '');
   const navigate = useNavigate();
-  const location = useLocation();
   // The dashboard's jump field hands over a search term.
-  const handedSearch = (location.state as { search?: string } | null)?.search ?? '';
+  const handed = useHanded<{ search: string; open: string }>();
+  const handedSearch = handed.search ?? '';
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [total, setTotal] = useState(0);
   const [summary, setSummary] = useState<Summary | null>(null);
@@ -130,7 +139,8 @@ export function UsersPage() {
   const [pendingAdmin, setPendingAdmin] = useState<string | null>(null);
   const [deletingUid, setDeletingUid] = useState<string | null>(null);
   const [confirmDeleteUid, setConfirmDeleteUid] = useState<string | null>(null);
-  const [selectedUid, setSelectedUid] = useState<string | null>(null);
+  // The search hands over an account to open right away.
+  const [selectedUid, setSelectedUid] = useState<string | null>(handed.open ?? null);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [createForm, setCreateForm] = useState(EMPTY_FORM);
   const [creating, setCreating] = useState(false);
@@ -176,19 +186,21 @@ export function UsersPage() {
   const fetchUsers = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await adminApi.users(debouncedSearch || undefined, page, limit, roleForFilter(filter));
+      const res = await adminApi.users(debouncedSearch || undefined, page, limit, roleForFilter(filter), schoolFilter || undefined);
       setUsers(res.users);
       setTotal(res.total);
+      // A filter that shrank the list moves a page past its end back to the last one.
+      if (res.page !== page) setPage(res.page);
       setOffset(clockOffset(res.serverTime));
     } catch (err) {
       showToast(err instanceof Error ? err.message : 'Laden fehlgeschlagen', 'error');
     } finally {
       setLoading(false);
     }
-  }, [debouncedSearch, page, filter, showToast]);
+  }, [debouncedSearch, page, filter, schoolFilter, showToast]);
 
   // Reset to page 1 whenever the active filter changes.
-  useEffect(() => { setPage(1); }, [filter]);
+  useEffect(() => { setPage(1); }, [filter, schoolFilter]);
 
   useEffect(() => { void fetchUsers(); }, [fetchUsers]);
   useEffect(() => { fetchSummary(); }, [fetchSummary]);
@@ -201,8 +213,7 @@ export function UsersPage() {
   const { refresh, refreshing } = useAutoRefresh(refreshAll, 30000);
   useLive(['users'], () => { void refreshAll(); });
 
-  // 'admins' narrows the fetched page client-side; role tabs filter server-side.
-  const filteredUsers = filter === 'admins' ? users.filter((u) => u.isAdmin) : users;
+  const filteredUsers = users;
 
   const totalPages = Math.ceil(total / limit);
 
@@ -220,8 +231,9 @@ export function UsersPage() {
   }
 
   async function handleToggleAdmin(user: AdminUser) {
-    // Not an admin, WebUntis account: the one-time password popup.
-    if (!user.isAdmin && user.needsOneTimePassword) {
+    // Becoming an admin always starts with choosing the rights (and, for a
+    // WebUntis account, a one-time password) — never all rights at once.
+    if (!user.isAdmin) {
       setGrantUser(user);
       return;
     }
@@ -286,19 +298,13 @@ export function UsersPage() {
         webuntisKlasseId: createForm.webuntisKlasseId ? parseInt(createForm.webuntisKlasseId, 10) : 0,
         webuntisKlasseName: createForm.webuntisKlasseName.trim() || undefined,
         role: createForm.role,
-        isAdmin: createForm.isAdmin,
-        adminPassword: createForm.isAdmin && !password ? createForm.adminPassword : undefined,
+        ...(isGlobal && newSchool ? { schoolId: newSchool } : {}),
       });
       setUsers((prev) => [user, ...prev]);
       setTotal((t) => t + 1);
       setShowCreateModal(false);
-      // A new WebUntis admin: show the one-time password with its countdown.
-      if (user.adminSetupExpiresAt) {
-        setOtpView({
-          user,
-          known: { password: createForm.adminPassword, expiresAt: user.adminSetupExpiresAt, offset: clockOffset((user as AdminUser & { serverTime?: string }).serverTime) },
-        });
-      }
+      // An admin account: its rights (and one-time password) come next.
+      if (createForm.isAdmin) setGrantUser({ ...user, needsOneTimePassword: !password });
       setCreateForm(EMPTY_FORM);
       showToast(`Benutzer "${user.username}" erstellt`, 'success');
       fetchSummary();
@@ -412,6 +418,13 @@ export function UsersPage() {
                 />
               </FieldLabel>
             </div>
+            {isGlobal && (
+              <FieldLabel label="Schule">
+                <select className="field h-12 w-full px-4 text-[14.5px]" value={newSchool} onChange={(e) => setNewSchool(e.target.value)}>
+                  {me?.schools.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                </select>
+              </FieldLabel>
+            )}
             {/* Account type — Schüler, Eltern or no role */}
             <div className="flex flex-col gap-2">
               <span className="text-[13px] text-ink-2">Rolle</span>
@@ -426,37 +439,8 @@ export function UsersPage() {
               checked={createForm.isAdmin}
               onChange={(isAdmin) => setCreateForm((f) => ({ ...f, isAdmin }))}
               label="Admin"
-              hint="Darf sich im Admin-Panel anmelden. Die Rolle bleibt davon unberührt."
+              hint="Nach dem Anlegen wählst du die Rechte (und für ein WebUntis-Konto ein Einmal-Passwort). Die Rolle bleibt davon unberührt."
             />
-            {createForm.isAdmin && !createForm.password.trim() && (
-              <FieldLabel
-                label="Einmal-Passwort fürs Admin-Panel *"
-                hint="Ohne Passwort oben ist es ein WebUntis-Konto. Gilt 15 Minuten; beim ersten Login muss ein eigenes Passwort gesetzt werden, sonst verfällt der Admin-Zugang."
-              >
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    required
-                    minLength={8}
-                    autoComplete="off"
-                    autoCapitalize="none"
-                    spellCheck={false}
-                    value={createForm.adminPassword}
-                    onChange={(e) => setCreateForm((f) => ({ ...f, adminPassword: e.target.value }))}
-                    className="field h-12 min-w-0 flex-1 px-4 font-mono text-[14.5px]"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setCreateForm((f) => ({ ...f, adminPassword: randomPassword() }))}
-                    className="btn btn-quiet"
-                    title="Zufälliges Passwort erzeugen"
-                  >
-                    <Wand2 size={16} strokeWidth={1.7} />
-                    Generieren
-                  </button>
-                </div>
-              </FieldLabel>
-            )}
             <div className="mt-2 flex gap-3">
               <button type="button" onClick={() => setShowCreateModal(false)} className="btn btn-quiet flex-1">Abbrechen</button>
               <button type="submit" disabled={creating} className="btn btn-primary flex-1">
@@ -469,12 +453,13 @@ export function UsersPage() {
       )}
 
       {grantUser && (
-        <GrantAdminDialog
+        <AppointAdminDialog
           stableUid={grantUser.stableUid}
           username={grantUser.username}
+          schoolId={grantUser.schoolId ?? null}
+          needsOneTimePassword={grantUser.needsOneTimePassword}
           onClose={() => setGrantUser(null)}
-          onGranted={(expiresAt) => handleGranted(grantUser, expiresAt)}
-          onLapsed={handleGrantLapsed}
+          onDone={(expiresAt) => handleGranted(grantUser, expiresAt)}
         />
       )}
 
@@ -505,21 +490,28 @@ export function UsersPage() {
         />
       )}
 
-      <PageHeader title="Benutzer" subtitle="Konten, Rollen und Admin-Berechtigungen verwalten.">
+      <PageHeader title="Benutzer" subtitle={isGlobal ? 'Konten aller Schulen, Rollen und Admin-Zugänge. Filter gelten für alle Seiten.' : `Konten von ${view?.kind === 'school' ? view.school.name : ''}, ihre Rollen und Admin-Zugänge.`}>
         <IconButton icon={RefreshCw} label="Aktualisieren" size={42} busy={refreshing} onClick={() => void refresh()} />
-        <IconButton icon={Download} label="Vollständiges Backup als JSON herunterladen" size={42} busy={exporting} onClick={() => void handleExport()} />
-        <IconButton icon={Upload} label="Backup-JSON importieren (überschreibt alle Daten)" size={42} busy={importing} onClick={() => importInputRef.current?.click()} />
-        <input
-          ref={importInputRef}
-          type="file"
-          accept="application/json,.json"
-          className="hidden"
-          onChange={(e) => void handleImportFile(e)}
-        />
-        <button type="button" onClick={() => setShowCreateModal(true)} className="btn btn-primary">
-          <UserPlus size={16} strokeWidth={1.7} />
-          Neuer Benutzer
-        </button>
+        {/* The whole database — the installation's operators only. */}
+        {isGlobal && canGlobal('backups.manage') && (
+          <>
+            <IconButton icon={Download} label="Vollständiges Backup als JSON herunterladen" size={42} busy={exporting} onClick={() => void handleExport()} />
+            <IconButton icon={Upload} label="Backup-JSON importieren (überschreibt alle Daten)" size={42} busy={importing} onClick={() => importInputRef.current?.click()} />
+            <input
+              ref={importInputRef}
+              type="file"
+              accept="application/json,.json"
+              className="hidden"
+              onChange={(e) => void handleImportFile(e)}
+            />
+          </>
+        )}
+        {can('users.create') && (
+          <button type="button" onClick={() => setShowCreateModal(true)} className="btn btn-primary">
+            <UserPlus size={16} strokeWidth={1.7} />
+            Neuer Benutzer
+          </button>
+        )}
       </PageHeader>
 
       <Figures
@@ -573,6 +565,12 @@ export function UsersPage() {
         action={(
           <>
             <SearchField value={search} onChange={setSearch} placeholder="Benutzername suchen" className="w-full sm:w-[260px]" />
+            {isGlobal && (me?.schools.length ?? 0) > 1 && (
+              <select className="field h-11 px-4 text-[14px]" value={schoolFilter} onChange={(e) => setSchoolFilter(e.target.value)} aria-label="Schule">
+                <option value="">Alle Schulen</option>
+                {me?.schools.map((sc) => <option key={sc.id} value={sc.id}>{sc.name}</option>)}
+              </select>
+            )}
             <Segmented label="Konten filtern" value={filter} onChange={setFilter} options={TABS} />
           </>
         )}
@@ -607,7 +605,9 @@ export function UsersPage() {
                         <Avatar name={user.username} size={44} />
                         <div className="min-w-0">
                           <div className="truncate font-medium">{user.username}</div>
-                          <div className="truncate font-mono text-[11.5px] text-ink-3">{user.stableUid.slice(0, 8)}&hellip;</div>
+                          <div className="truncate text-[12px] text-ink-3">
+                            {isGlobal && user.schoolName ? `${user.schoolName} · ` : ''}{user.isUntisUser === false ? 'lokales Konto' : 'WebUntis'}
+                          </div>
                         </div>
                       </div>
                     </td>
@@ -631,7 +631,9 @@ export function UsersPage() {
                           : !user.isAdmin && <span className="text-[13.5px] text-ink-3">Keine Rolle</span>}
                         {user.isAdmin && (
                           <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
-                            <Status tone={user.adminSetupExpiresAt ? 'amber' : 'sky'}>Admin</Status>
+                            <Status tone={user.adminSetupExpiresAt ? 'amber' : user.adminKind === 'owner' || user.adminKind === 'global' ? 'violet' : user.adminKind === 'none' ? 'ink' : 'sky'}>
+                              {user.adminKind === 'owner' ? 'Server-Owner' : user.adminKind === 'global' ? 'Global-Admin' : user.adminKind === 'none' ? 'Admin ohne Rechte' : 'Schul-Admin'}
+                            </Status>
                             {user.adminSetupExpiresAt && (user.canViewOneTimePassword ? (
                               <button
                                 type="button"

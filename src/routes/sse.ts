@@ -4,7 +4,9 @@ import { requireAuth } from '../middleware/auth';
 import { sseLimiter } from '../middleware/rateLimiter';
 import { ForbiddenError } from '../utils/errors';
 import { sseManager } from '../services/sse';
-import { ratingsPayload } from '../services/dishRatings';
+import { allRatingsStreamKey, ratingsPayload, ratingsStreamKey } from '../services/dishRatings';
+import { commentsForDish, commentsStreamKey } from '../services/dishComments';
+import { menuContext } from '../services/schools';
 import { resolveDishKey } from '../utils/dishKey';
 
 const router = Router();
@@ -82,23 +84,26 @@ router.get('/reminders/:classId', sseLimiter, requireAuth, async (req: Request, 
 // Events: `dishRating` with { dishId, ratings, myRating }. No initial snapshot —
 // clients load that via POST /dish-ratings/batch.
 router.get('/dish-ratings', sseLimiter, requireAuth, async (req: Request, res: Response) => {
+  // The account's own school's menu.
+  const { menuId } = await menuContext(req);
   setupSseConnection(res);
-  sseManager.addClient('dishRatings:all', res, req.user!.stableUid);
+  sseManager.addClient(allRatingsStreamKey(menuId), res, req.user!.stableUid);
 });
 
 // GET /sse/dish-ratings/:dishId — stream dish rating changes
 router.get('/dish-ratings/:dishId', sseLimiter, requireAuth, async (req: Request, res: Response) => {
   const { stableUid } = req.user!;
   const dishId = await resolveDishKey(req.params['dishId'] as string);
+  const { menuId } = await menuContext(req);
 
   setupSseConnection(res);
 
   // Registered with the viewer's stableUid: broadcasts carry *their* myRating,
   // not the one of whoever just voted.
-  sseManager.addClient(`dishRatings:${dishId}`, res, stableUid);
+  sseManager.addClient(ratingsStreamKey(menuId, dishId), res, stableUid);
 
   // Send current ratings on connect
-  const rows = await prisma.dishRating.findMany({ where: { dishId } });
+  const rows = menuId ? await prisma.dishRating.findMany({ where: { dishId, menuId } }) : [];
 
   try {
     res.write(`event: dishRatings\ndata: ${JSON.stringify(ratingsPayload(rows, stableUid))}\n\n`);
@@ -150,14 +155,12 @@ router.get('/reminder-comments/:reminderId', sseLimiter, requireAuth, async (req
 // GET /sse/dish-comments/:dishId — stream comment changes for a dish
 router.get('/dish-comments/:dishId', sseLimiter, requireAuth, async (req: Request, res: Response) => {
   const dishId = await resolveDishKey(req.params['dishId'] as string);
+  const { menuId } = await menuContext(req);
 
   setupSseConnection(res);
-  sseManager.addClient(`dishComments:${dishId}`, res);
+  sseManager.addClient(commentsStreamKey(menuId, dishId), res);
 
-  const comments = await prisma.dishComment.findMany({
-    where: { dishId },
-    orderBy: { createdAt: 'asc' },
-  });
+  const comments = menuId ? await commentsForDish(menuId, dishId) : [];
 
   try {
     res.write(`event: dishComments\ndata: ${JSON.stringify(comments)}\n\n`);

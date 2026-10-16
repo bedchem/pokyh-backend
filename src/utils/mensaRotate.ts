@@ -49,9 +49,11 @@ function currentLocalMonday(): Date {
 }
 
 // ─── plan queries ────────────────────────────────────────────────────────────
+// Every operation works on one menu's summer or winter plan: menus of
+// different schools never move each other's weeks.
 
-async function planMondays(db: PrismaLike, plan: Plan): Promise<string[]> {
-  const dishes = await db.dish.findMany({ where: { plan }, select: { date: true } });
+async function planMondays(db: PrismaLike, menuId: string, plan: Plan): Promise<string[]> {
+  const dishes = await db.dish.findMany({ where: { menuId, plan }, select: { date: true } });
   const set = new Set<string>();
   for (const d of dishes) set.add(toUtcIso(utcMondayOf(new Date(d.date))));
   return [...set].sort();
@@ -59,16 +61,16 @@ async function planMondays(db: PrismaLike, plan: Plan): Promise<string[]> {
 
 // Return the last Monday of `plan` that is on or after this week's Monday.
 // Used to compute "where does plan X end" for the cross-plan handoff.
-export async function lastFutureMondayIso(db: PrismaLike, plan: Plan): Promise<string | null> {
+export async function lastFutureMondayIso(db: PrismaLike, menuId: string, plan: Plan): Promise<string | null> {
   const today = currentLocalMonday();
-  const mondays = await planMondays(db, plan);
+  const mondays = await planMondays(db, menuId, plan);
   const future = mondays.filter((m) => new Date(m + 'T00:00:00Z') >= today);
   return future.length > 0 ? future[future.length - 1] : null;
 }
 
 // Return the first Monday recorded for `plan`, regardless of past/future.
-export async function firstMondayIso(db: PrismaLike, plan: Plan): Promise<string | null> {
-  const mondays = await planMondays(db, plan);
+export async function firstMondayIso(db: PrismaLike, menuId: string, plan: Plan): Promise<string | null> {
+  const mondays = await planMondays(db, menuId, plan);
   return mondays.length > 0 ? mondays[0] : null;
 }
 
@@ -78,9 +80,9 @@ export async function firstMondayIso(db: PrismaLike, plan: Plan): Promise<string
 // other week is exactly (idx - anchorIdx) * 7 days from `target`, and each
 // dish keeps its weekday. Idempotent (no-op when nothing changes).
 export async function normalizePlanAroundAnchor(
-  db: PrismaLike, plan: Plan, chosenMondayIso: string, targetMondayIso: string,
+  db: PrismaLike, menuId: string, plan: Plan, chosenMondayIso: string, targetMondayIso: string,
 ): Promise<number> {
-  const dishes = await db.dish.findMany({ where: { plan }, select: { id: true, date: true } });
+  const dishes = await db.dish.findMany({ where: { menuId, plan }, select: { id: true, date: true } });
   if (dishes.length === 0) return 0;
 
   const mondaySet = new Set<string>();
@@ -109,11 +111,11 @@ export async function normalizePlanAroundAnchor(
 // and snapping each landing Monday into the plan's season window. Robust
 // against weeks that are far in the past (multi-cycle) — each past Monday
 // lands right after the current latest one.
-export async function rotatePastWeeks(plan: Plan, tx?: PrismaLike): Promise<number> {
+export async function rotatePastWeeks(menuId: string, plan: Plan, tx?: PrismaLike): Promise<number> {
   const db: PrismaLike = tx ?? prisma;
   const currentMonday = currentLocalMonday();
 
-  const mondays = await planMondays(db, plan);
+  const mondays = await planMondays(db, menuId, plan);
   if (mondays.length === 0) return 0;
 
   const past = mondays.filter((m) => new Date(m + 'T00:00:00Z') < currentMonday);
@@ -137,7 +139,7 @@ export async function rotatePastWeeks(plan: Plan, tx?: PrismaLike): Promise<numb
       const newMon = snapForwardToSeason(rawNext, plan);
       const shiftDays = Math.round((newMon.getTime() - monStart.getTime()) / 86400000);
       if (shiftDays === 0) { lastAnchor = newMon; continue; }
-      const r = await client.$executeRaw`UPDATE dishes SET date = DATE_ADD(date, INTERVAL ${shiftDays} DAY) WHERE plan = ${plan} AND date >= ${monStart} AND date < ${monEnd}`;
+      const r = await client.$executeRaw`UPDATE dishes SET date = DATE_ADD(date, INTERVAL ${shiftDays} DAY) WHERE menu_id = ${menuId} AND plan = ${plan} AND date >= ${monStart} AND date < ${monEnd}`;
       n += Number(r) || 0;
       lastAnchor = newMon;
     }
@@ -145,7 +147,7 @@ export async function rotatePastWeeks(plan: Plan, tx?: PrismaLike): Promise<numb
   }
 
   const rotated = tx ? await run(tx) : await prisma.$transaction((inner) => run(inner));
-  if (rotated > 0) logger.info('mensa rotate', { plan, rotated, pastWeeks: past.length });
+  if (rotated > 0) logger.info('mensa rotate', { menuId, plan, rotated, pastWeeks: past.length });
   return rotated;
 }
 

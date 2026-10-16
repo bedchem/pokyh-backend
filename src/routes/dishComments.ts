@@ -4,23 +4,27 @@ import { prisma } from '../db';
 import { optionalAuth, requireAuth } from '../middleware/auth';
 import { readLimiter, writeLimiter } from '../middleware/rateLimiter';
 import { ForbiddenError, NotFoundError } from '../utils/errors';
-import { sseManager } from '../services/sse';
 import { resolveDishKey } from '../utils/dishKey';
+import { commentsForDish, publishDishComments } from '../services/dishComments';
+import { menuContext } from '../services/schools';
+import { loadAccess } from '../services/adminAccess';
+import { can } from '../security/permissions';
 
 const router = Router();
 
-// Comments are keyed by dish stableKey — same rationale as dishRatings.
+// Comments are keyed by dish stableKey — same rationale as dishRatings — and
+// shown per menu: a signed-in account reads and writes the threads of its own
+// school's menu (services/schools.ts menuContext).
 
-async function getCommentsForDish(dishKey: string) {
-  return prisma.dishComment.findMany({
-    where: { dishId: dishKey },
-    orderBy: { createdAt: 'asc' },
-  });
+async function getCommentsForDish(menuId: string | null, dishKey: string) {
+  return menuId ? commentsForDish(menuId, dishKey) : [];
 }
 
-export function broadcastDishComments(dishKey: string, rawId: string, comments: unknown[]): void {
-  sseManager.broadcast(`dishComments:${dishKey}`, 'dishComments', comments);
-  if (rawId !== dishKey) sseManager.broadcast(`dishComments:${rawId}`, 'dishComments', comments);
+// The account behind an app session may moderate the comments of a school
+// when its admin login holds comments.moderate there (an operator in
+// ADMIN_USERNAMES everywhere). Read fresh, like every admin permission.
+async function mayModerate(username: string, schoolId: string | null): Promise<boolean> {
+  return can(await loadAccess(username), 'comments.moderate', schoolId);
 }
 
 const bodySchema = z.object({ body: z.string().min(1).max(2000) });
@@ -51,7 +55,8 @@ function decoyText(seed: string, length: number): string {
 router.get('/:dishId', readLimiter, optionalAuth, async (req: Request, res: Response) => {
   const raw = req.params['dishId'] as string;
   const key = await resolveDishKey(raw);
-  const comments = await getCommentsForDish(key);
+  const { menuId } = await menuContext(req);
+  const comments = await getCommentsForDish(menuId, key);
   if (req.user) {
     res.json(comments);
     return;
@@ -70,15 +75,17 @@ router.get('/:dishId', readLimiter, optionalAuth, async (req: Request, res: Resp
 // POST /dish-comments/:dishId
 router.post('/:dishId', writeLimiter, requireAuth, async (req: Request, res: Response) => {
   const raw = req.params['dishId'] as string;
-  const key = (await resolveDishKey(raw)) || raw;
+  const key = ((await resolveDishKey(raw)) || raw).slice(0, 180);
   const { stableUid, username } = req.user!;
   const { body } = bodySchema.parse(req.body);
+  const { menuId, schoolId } = await menuContext(req);
+  if (!menuId) throw new ForbiddenError('Deine Schule hat keinen Mensaplan');
 
   const comment = await prisma.dishComment.create({
-    data: { dishId: key, stableUid, username, body },
+    data: { dishId: key, stableUid, username, body, menuId, schoolId },
   });
 
-  broadcastDishComments(key, raw, await getCommentsForDish(key));
+  await publishDishComments(menuId, key);
   res.status(201).json(comment);
 });
 
@@ -96,7 +103,7 @@ router.patch('/:dishId/:commentId', writeLimiter, requireAuth, async (req: Reque
   const { body } = bodySchema.parse(req.body);
   const updated = await prisma.dishComment.update({ where: { id: commentId }, data: { body } });
 
-  broadcastDishComments(key, raw, await getCommentsForDish(key));
+  await publishDishComments(comment.menuId, comment.dishId);
   res.json(updated);
 });
 
@@ -104,20 +111,26 @@ router.patch('/:dishId/:commentId', writeLimiter, requireAuth, async (req: Reque
 router.delete('/:dishId/:commentId', writeLimiter, requireAuth, async (req: Request, res: Response) => {
   const raw = req.params['dishId'] as string;
   const commentId = req.params['commentId'] as string;
-  const { stableUid } = req.user!;
+  const { stableUid, username } = req.user!;
   const key = await resolveDishKey(raw);
 
   const comment = await prisma.dishComment.findUnique({ where: { id: commentId } });
   if (!comment || (comment.dishId !== key && comment.dishId !== raw)) throw new NotFoundError('Comment not found');
 
   const isOwner = comment.stableUid === stableUid;
-  const admin = await prisma.admin.findUnique({ where: { stableUid } });
-
-  if (!isOwner && !admin) throw new ForbiddenError('Only the author or an admin can delete this comment');
+  // Any admin account used to be enough; now only one that may moderate the
+  // comments of the author's school.
+  if (!isOwner) {
+    const admin = await prisma.admin.findUnique({ where: { stableUid }, select: { mustChangePassword: true } });
+    const moderator = (admin !== null && !admin.mustChangePassword) || (await loadAccess(username)).owner
+      ? await mayModerate(username, comment.schoolId)
+      : false;
+    if (!moderator) throw new ForbiddenError('Only the author or an admin can delete this comment');
+  }
 
   await prisma.dishComment.delete({ where: { id: commentId } });
 
-  broadcastDishComments(key, raw, await getCommentsForDish(key));
+  await publishDishComments(comment.menuId, comment.dishId);
   res.status(204).send();
 });
 

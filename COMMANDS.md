@@ -56,6 +56,22 @@ npm run make-admin <username>
 npm run revoke-admin <username>
 ```
 
+Rights per school are given in the panel under **Admins**. `make-admin`, and
+`create-user` when answered "Make admin? y", give global rights.
+
+## Test data (development only)
+
+```bash
+# Schools, admins with every preset, accounts, classes, dishes, comments and
+# history — all marked "test." / "(Test)" / "[Test]". Inside the dev container:
+docker compose exec -T -e SEED_TEST_PASSWORD='<password>' -e SEED_ADMIN_USERNAME='<you>' \
+  app node - --yes < scripts/seed-test-data.js
+# Remove it again (personal admin accounts stay):
+docker compose exec -T app node - --yes --remove < scripts/seed-test-data.js
+```
+
+Never run it against a production database.
+
 ## MySQL Database
 
 ```bash
@@ -88,6 +104,12 @@ npm run test:cluster
 # The updater's blue/green switch against real Docker (stand-in images; needs
 # node:22-alpine, mysql:8.0.40 and redis:7.4.1-alpine locally)
 npm run test:updater
+
+# Schools, permissions and the admin API against a throw-away MySQL (needs Docker)
+npm run test:admin
+
+# Endpoint benchmark on a seeded month of data (needs Docker)
+npm run bench -- --app .
 ```
 
 ## Cluster

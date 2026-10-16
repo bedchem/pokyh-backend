@@ -1,4 +1,5 @@
 import { ReactNode, useLayoutEffect, useRef, useState } from 'react';
+import { useChartPointer } from './chartPointer';
 
 // Small diagrams that share the dashboard chart's manners: soft sky and amber,
 // no gridlines, and the inverted tooltip card for the value under the pointer.
@@ -46,12 +47,22 @@ export function activeLabelFits(active: number, ticks: number[], labels: string[
 
 // Vertical bars that grow from the baseline; the latest one is in full colour.
 export function Bars({ values, labels, titles, unit, height = 132, color = '#4f96dc', tickEvery = 1, format, ariaLabel, onSelect }: BarsProps) {
-  const [hovered, setHovered] = useState<number | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(0);
   const peak = Math.max(1, ...values);
-  const active = hovered ?? values.length - 1;
   const show = format ?? ((v: number) => v.toLocaleString('de-AT'));
+  // The bar under a position: the plot is split into equal slots.
+  const pointer = useChartPointer({
+    count: values.length,
+    indexAt: (clientX) => {
+      const rect = rootRef.current?.getBoundingClientRect();
+      if (!rect || values.length === 0) return 0;
+      return Math.min(values.length - 1, Math.max(0, Math.floor(((clientX - rect.left) / rect.width) * values.length)));
+    },
+    bounds: () => null,
+    onSelect,
+  });
+  const active = pointer.active;
 
   useLayoutEffect(() => {
     const el = rootRef.current;
@@ -78,15 +89,22 @@ export function Bars({ values, labels, titles, unit, height = 132, color = '#4f9
   const extraLabel = activeLabelFits(active, ticks, labels, (i) => (i + 0.5) * slotPx);
 
   return (
-    <div ref={rootRef} className="bars" role="img" aria-label={ariaLabel} data-selectable={Boolean(onSelect)} onPointerLeave={() => setHovered(null)}>
+    <div
+      ref={rootRef}
+      className="bars"
+      role="group"
+      aria-roledescription="Balkendiagramm"
+      aria-label={`${ariaLabel}. Pfeiltasten wählen einen Balken.`}
+      tabIndex={0}
+      data-selectable={Boolean(onSelect)}
+      {...pointer.handlers}
+    >
+      <span className="sr-only" aria-live="polite">{`${titles?.[active] ?? labels[active] ?? ''}: ${show(values[active] ?? 0)} ${unit}`}</span>
       <div className="bars-plot" style={{ height }}>
         {values.map((value, i) => (
           <div
             key={i}
             className="bars-slot"
-            onPointerEnter={() => setHovered(i)}
-            onPointerDown={() => setHovered(i)}
-            onClick={onSelect ? () => onSelect(i) : undefined}
           >
             {i === active && (
               <div className="bars-tip chart-tip" aria-hidden="true">

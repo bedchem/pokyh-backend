@@ -1,14 +1,21 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo, createContext, useContext, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
+import { useHanded } from '../useHanded';
 import {
   UtensilsCrossed, Plus, Pencil, Trash2, Download, X, ChevronDown, ChevronUp, Leaf, Sprout, Star,
   GripVertical, CalendarPlus, Sun, Snowflake, RotateCcw,
 } from 'lucide-react';
-import { adminApi } from '../api';
-import type { AdminDishFull, AdminDish, AdminDishRatingEntry, DishPlan } from '../types';
+import { adminApi, setMenuContext } from '../api';
+import { useAccess } from '../access';
+import type { AdminDishFull, AdminDish, AdminDishRatingEntry, DishPlan, MensaMenu } from '../types';
 import { useToast } from '../components/Toast';
 import { useLive } from '../live';
-import { Collapse, Delta, Figures, PageHeader, SearchField, Segmented, Tag } from '../components/kit';
+import { Collapse, Delta, Figures, Notice, PageHeader, SearchField, Segmented, Spinner, Tag } from '../components/kit';
+
+// What the signed-in admin may change here: the menu (mensa.manage) and the
+// votes on it (comments.moderate). Without them the plan is shown read-only;
+// the server refuses such changes in any case.
+const MensaRights = createContext({ edit: true, moderate: true });
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -205,6 +212,7 @@ function RatingRow({
   entry: AdminDishRatingEntry;
   onChanged: () => void;
 }) {
+  const rights = useContext(MensaRights);
   const { showToast } = useToast();
   const [editing, setEditing] = useState(false);
   const [editStars, setEditStars] = useState(entry.stars);
@@ -265,7 +273,7 @@ function RatingRow({
         <div className="flex items-center gap-2 flex-shrink-0">
           <StarsDisplay value={entry.stars} />
           <span className="text-xs w-3 text-center" style={{ color: 'var(--gold-deep)' }}>{entry.stars}</span>
-          <button onClick={() => setEditing(true)}
+          {rights.moderate && <><button onClick={() => setEditing(true)}
             className="p-1.5 rounded-full transition-colors"
             style={{ color: 'rgb(var(--ink-rgb) / 0.5)' }}
             onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--sky-deep)'; }}
@@ -293,7 +301,7 @@ function RatingRow({
               onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'rgb(var(--ink-rgb) / 0.5)'; }}>
               <Trash2 size={13} />
             </button>
-          )}
+          )}</>}
         </div>
       )}
     </div>
@@ -660,6 +668,7 @@ function DishCard({ dish, ratingData, onEdit, onDelete, onDragStart, onDragEnd, 
   onDragEnd: () => void;
   isDragging: boolean;
 }) {
+  const rights = useContext(MensaRights);
   const [imgError, setImgError] = useState(false);
   const [confirmDel, setConfirmDel] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -679,7 +688,7 @@ function DishCard({ dish, ratingData, onEdit, onDelete, onDragStart, onDragEnd, 
 
   return (
     <div
-      draggable
+      draggable={rights.edit}
       onDragStart={(e) => {
         e.dataTransfer.setData('text/dish-id', dish.id);
         e.dataTransfer.effectAllowed = 'move';
@@ -737,7 +746,7 @@ function DishCard({ dish, ratingData, onEdit, onDelete, onDragStart, onDragEnd, 
       </div>
 
       {/* Actions */}
-      <div className="flex flex-shrink-0 items-center gap-1.5">
+      {rights.edit && <div className="flex flex-shrink-0 items-center gap-1.5">
         {confirmDel ? (
           <>
             <button type="button" onClick={handleDelete} disabled={deleting} className="btn btn-sm btn-danger">
@@ -755,7 +764,7 @@ function DishCard({ dish, ratingData, onEdit, onDelete, onDragStart, onDragEnd, 
             </button>
           </>
         )}
-      </div>
+      </div>}
     </div>
   );
 }
@@ -892,15 +901,19 @@ function WeekDropzone({
   );
 }
 
-// ─── DishesPage ───────────────────────────────────────────────────────────────
+// ─── MenuPlan ─────────────────────────────────────────────────────────────────
 
-export function DishesPage() {
+interface HandedDish { menuId: string; search: string; plan: DishPlan }
+
+function MenuPlan({ picker, note, handed }: { picker?: ReactNode; note?: ReactNode; handed: Partial<HandedDish> }) {
   const { showToast } = useToast();
-  const [activePlan, setActivePlan] = useState<DishPlan>(() => currentSeason());
+  const rights = useContext(MensaRights);
+  // The search hands over a dish: its plan, filtered to it, its weeks open.
+  const [activePlan, setActivePlan] = useState<DishPlan>(() => (handed.plan === 'summer' || handed.plan === 'winter' ? handed.plan : currentSeason()));
   const [dishes, setDishes] = useState<AdminDishFull[]>([]);
   const [ratingsMap, setRatingsMap] = useState<Map<string, AdminDish>>(new Map());
   const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState('');
+  const [search, setSearch] = useState(handed.search ?? '');
   const [editDish, setEditDish] = useState<AdminDishFull | null | 'new'>(null);
   const [showImport, setShowImport] = useState(false);
   // We store which weeks the user has *expanded*; everything else is collapsed.
@@ -962,7 +975,7 @@ export function DishesPage() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      if (!rotatedPlans.current.has(activePlan)) {
+      if (rights.edit && !rotatedPlans.current.has(activePlan)) {
         rotatedPlans.current.add(activePlan);
         try {
           const res = await adminApi.autoRotateDishes(activePlan);
@@ -974,13 +987,14 @@ export function DishesPage() {
       if (!cancelled) await loadDishes(activePlan);
     })();
     return () => { cancelled = true; };
-  }, [activePlan, loadDishes, showToast]);
+  }, [activePlan, loadDishes, showToast, rights.edit]);
 
   // Poll auto-rotate every 5 min AND whenever the tab regains focus, so a week
   // that expires while the admin is left open loops on its own without needing
   // a manual reload. Silent when there's nothing to rotate; reloads dishes if
   // rows were actually moved.
   useEffect(() => {
+    if (!rights.edit) return;
     let cancelled = false;
 
     async function poll() {
@@ -1002,7 +1016,7 @@ export function DishesPage() {
       window.clearInterval(intervalId);
       document.removeEventListener('visibilitychange', onVisible);
     };
-  }, [activePlan, loadDishes, showToast]);
+  }, [activePlan, loadDishes, showToast, rights.edit]);
 
   // ── drag handlers ──────────────────────────────────────────────────────────
 
@@ -1223,6 +1237,14 @@ export function DishesPage() {
   }
   const sortedWeeks = [...weeksMap.entries()].sort(([a], [b]) => a.localeCompare(b));
 
+  const openedForHanded = useRef(false);
+  useEffect(() => {
+    if (!handed.search || openedForHanded.current || dishes.length === 0) return;
+    openedForHanded.current = true;
+    setExpandedWeeks(new Set(sortedWeeks.map(([wk]) => wk)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dishes]);
+
   function toggleWeek(k: string) {
     setExpandedWeeks((prev) => {
       const next = new Set(prev);
@@ -1255,6 +1277,8 @@ export function DishesPage() {
         title="Speiseplan"
         subtitle={`${dishes.length} ${dishes.length === 1 ? 'Gericht' : 'Gerichte'} im ${activePlan === 'summer' ? 'Sommer' : 'Winter'}plan.`}
       >
+        {picker}
+        {rights.edit && <>
         <button type="button" onClick={() => setShowImport(true)} className="btn btn-quiet">
           <Download size={16} strokeWidth={1.7} />
           Importieren
@@ -1278,6 +1302,7 @@ export function DishesPage() {
             Reset auf JSON
           </button>
         )}
+        </>}
         <button
           type="button"
           onClick={expandedWeeks.size === 0 ? expandAll : collapseAll}
@@ -1287,6 +1312,7 @@ export function DishesPage() {
           {expandedWeeks.size === 0 ? <ChevronDown size={16} strokeWidth={1.7} /> : <ChevronUp size={16} strokeWidth={1.7} />}
           {expandedWeeks.size === 0 ? 'Ausklappen' : 'Einklappen'}
         </button>
+        {rights.edit && <>
         <button type="button" onClick={addNewWeek} className="btn btn-quiet">
           <CalendarPlus size={16} strokeWidth={1.7} />
           Neue Woche
@@ -1295,7 +1321,10 @@ export function DishesPage() {
           <Plus size={16} strokeWidth={1.8} />
           Neues Gericht
         </button>
+        </>}
       </PageHeader>
+
+      {note && <div className="mt-8">{note}</div>}
 
       <Figures
         className="mt-10"
@@ -1338,7 +1367,7 @@ export function DishesPage() {
               ? 'Keine Gerichte gefunden'
               : `Noch keine Gerichte im ${activePlan === 'summer' ? 'Sommer' : 'Winter'}plan`}
           </p>
-          {!search && (
+          {!search && rights.edit && (
             <button type="button" onClick={() => setShowImport(true)} className="btn btn-primary">
               <Download size={16} strokeWidth={1.7} />
               Aus externer URL importieren
@@ -1415,7 +1444,7 @@ export function DishesPage() {
                     style={{ background: isDragTarget ? 'var(--sky-wash)' : 'var(--well)' }}
                   >
                     {/* Week drag grip */}
-                    <div
+                    {rights.edit && <div
                       draggable
                       onDragStart={(e) => {
                         e.dataTransfer.setData('text/week-key', wk);
@@ -1430,7 +1459,7 @@ export function DishesPage() {
                       onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'rgb(var(--ink-rgb) / 0.42)'; }}
                     >
                       <GripVertical size={15} />
-                    </div>
+                    </div>}
 
                     {/* Clickable label → collapse; or inline editor when editing */}
                     {editingWeekKey === wk ? (
@@ -1514,7 +1543,7 @@ export function DishesPage() {
                     )}
 
                     {/* Edit week date */}
-                    {editingWeekKey !== wk && (
+                    {rights.edit && editingWeekKey !== wk && (
                       <button
                         onClick={() => { setEditingWeekKey(wk); setEditingWeekDraft(wk); }}
                         className="flex-shrink-0 p-1.5 rounded-full transition-colors"
@@ -1528,7 +1557,7 @@ export function DishesPage() {
                     )}
 
                     {/* Add dish to this week */}
-                    <button
+                    {rights.edit && <button
                       onClick={() => { setNewDishInitialDate(wk); setEditDish('new'); }}
                       className="flex-shrink-0 p-1.5 rounded-full transition-colors"
                       style={{ color: 'rgb(var(--ink-rgb) / 0.5)' }}
@@ -1537,7 +1566,7 @@ export function DishesPage() {
                       onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'rgb(var(--ink-rgb) / 0.5)'; }}
                     >
                       <Plus size={14} />
-                    </button>
+                    </button>}
 
                     {/* Collapse toggle */}
                     <button
@@ -1655,5 +1684,95 @@ export function DishesPage() {
       )}
 
     </div>
+  );
+}
+
+// ─── DishesPage ───────────────────────────────────────────────────────────────
+// A school's view edits the menu assigned to it (and shows nothing when it has
+// none — the app then shows no menu either). The global view picks any menu;
+// a menu several schools share changes for all of them at once.
+
+export function DishesPage() {
+  const { view, can, canGlobal } = useAccess();
+  const isGlobal = view?.kind === 'global';
+  const schoolMenu = view?.kind === 'school' ? view.school.menuId : null;
+  const rights = useMemo(() => ({ edit: can('mensa.manage'), moderate: can('comments.moderate') }), [can]);
+  const [menus, setMenus] = useState<MensaMenu[] | null>(null);
+  const [menuId, setMenuId] = useState<string | null>(null);
+  const handed = useHanded<HandedDish>();
+  const handedMenu = handed.menuId;
+
+  useEffect(() => {
+    let cancelled = false;
+    setMenus(null);
+    if (!isGlobal && !schoolMenu) return;
+    adminApi.menus().then(({ menus: list }) => {
+      if (cancelled) return;
+      setMenus(list);
+      if (isGlobal) {
+        const preferred = list.find((m) => m.id === handedMenu) ?? list.find((m) => m.isDefault) ?? list[0] ?? null;
+        setMenuContext(preferred?.id ?? null);
+        setMenuId(preferred?.id ?? '');
+      }
+    }).catch(() => { if (!cancelled) { setMenus([]); if (isGlobal) setMenuId(''); } });
+    return () => { cancelled = true; setMenuContext(null); };
+  }, [isGlobal, schoolMenu]);
+
+  if (view?.kind === 'school' && !schoolMenu) {
+    return (
+      <div>
+        <PageHeader title="Speiseplan" subtitle={view.school.name} />
+        <div className="mt-10 max-w-[720px]">
+          <Notice tone="amber" icon={UtensilsCrossed}>
+            Dieser Schule ist kein Mensaplan zugewiesen — die App zeigt für ihre Konten deshalb keine Mensa an.
+            {canGlobal('schools.manage') ? ' Zuweisen kannst du ihn in der globalen Ansicht unter „Schulen“.' : ' Ein Global-Admin kann unter „Schulen“ einen Plan zuweisen.'}
+          </Notice>
+        </div>
+      </div>
+    );
+  }
+
+  if (isGlobal && menuId === null) return <div className="mt-10"><Spinner /></div>;
+
+  if (isGlobal && menus && menus.length === 0) {
+    return (
+      <div>
+        <PageHeader title="Speiseplan" />
+        <div className="mt-10 max-w-[720px]">
+          <Notice tone="amber" icon={UtensilsCrossed}>Es gibt noch keinen Mensaplan. Lege unter „Schulen“ einen an und weise ihn Schulen zu.</Notice>
+        </div>
+      </div>
+    );
+  }
+
+  const shown = isGlobal ? menus?.find((m) => m.id === menuId) : menus?.find((m) => m.id === schoolMenu);
+  const picker = isGlobal && menus && menus.length > 1 ? (
+    <select
+      className="field h-11 px-4 text-[14px]"
+      value={menuId ?? ''}
+      onChange={(e) => { setMenuContext(e.target.value); setMenuId(e.target.value); }}
+      aria-label="Mensaplan"
+    >
+      {menus.map((m) => <option key={m.id} value={m.id}>{m.name}{m.schools.length === 0 ? ' (keiner Schule zugewiesen)' : ''}</option>)}
+    </select>
+  ) : null;
+
+  let note: ReactNode = null;
+  if (shown && shown.schools.length === 0) {
+    note = <Notice tone="amber" icon={UtensilsCrossed}>„{shown.name}“ ist keiner Schule zugewiesen und wird deshalb in keiner App angezeigt.</Notice>;
+  } else if (shown && (isGlobal ? shown.schools.length > 0 : shown.schools.length > 1)) {
+    note = (
+      <p className="text-[13.5px] text-ink-3">
+        {isGlobal ? `„${shown.name}“ gilt für: ` : 'Dieser Plan gilt auch für: '}
+        {shown.schools.filter((sc) => isGlobal || sc.id !== (view?.kind === 'school' ? view.school.id : '')).map((sc) => sc.name).join(', ')}
+        {rights.edit ? ' — Änderungen wirken dort mit.' : '.'}
+      </p>
+    );
+  }
+
+  return (
+    <MensaRights.Provider value={rights}>
+      <MenuPlan key={menuId ?? schoolMenu ?? ''} picker={picker} note={note} handed={menuId === null || !handed.menuId || handed.menuId === (menuId ?? schoolMenu) ? handed : {}} />
+    </MensaRights.Provider>
   );
 }

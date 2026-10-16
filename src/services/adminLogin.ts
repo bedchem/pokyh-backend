@@ -188,7 +188,12 @@ export async function expireLapsedAdminSetups(): Promise<number> {
     if (count === 0) continue;
     removed += 1;
     const user = await prisma.user.findUnique({ where: { stableUid }, select: { username: true } });
-    if (user) await clearSecondFactors(user.username);
+    if (user) {
+      await clearSecondFactors(user.username);
+      // The rights that came with the grant go with it, so a later new grant
+      // starts from nothing.
+      await prisma.adminGrant.deleteMany({ where: { username: user.username } });
+    }
     logger.info('Admin grant lapsed: no first login within the setup window', {
       action: 'admin_setup_expired', targetUid: stableUid, username: user?.username ?? null,
     });

@@ -103,6 +103,7 @@ export async function performRollover(
             classId:            cm?.classId ?? null,
             classCode:          cm ? (classCodeMap.get(cm.classId) ?? null) : null,
             className:          cm ? (classNameMap.get(cm.classId) ?? null) : null,
+            schoolId:           u.schoolId,
             createdAt:          u.createdAt,
           };
         }),
@@ -129,6 +130,7 @@ export async function performRollover(
               role:      m.role,
               joinedAt:  m.joinedAt.toISOString(),
             }))),
+            schoolId:         c.schoolId,
             createdAt:        c.createdAt,
           };
         }),
@@ -264,6 +266,7 @@ export async function rollbackRollover(schoolYearId: string): Promise<RollbackRe
           role:               u.role,
           webuntisKlasseId:   u.webuntisKlasseId,
           webuntisKlasseName: u.webuntisKlasseName,
+          schoolId:           u.schoolId,
           createdAt:          u.createdAt,
         })),
       });
@@ -281,6 +284,7 @@ export async function rollbackRollover(schoolYearId: string): Promise<RollbackRe
           webuntisKlasseId: c.webuntisKlasseId,
           createdBy:        c.createdBy,
           createdByName:    c.createdByName,
+          schoolId:         c.schoolId,
           createdAt:        c.createdAt,
         })),
       });

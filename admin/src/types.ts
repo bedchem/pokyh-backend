@@ -17,6 +17,12 @@ export interface AdminUser {
   todoCount: number;
   createdAt: string;
   updatedAt: string;
+  // Multi-school: the account's school, and what kind of admin it is.
+  schoolId?: string | null;
+  schoolName?: string | null;
+  isUntisUser?: boolean;
+  adminKind?: 'owner' | 'global' | 'school' | 'none' | null;
+  adminGrants?: Array<{ scope: string; preset: string; schoolName: string | null }>;
 }
 
 // "none": neither student nor parent, e.g. an admin outside any class.
@@ -131,6 +137,7 @@ export interface UsersResponse {
   total: number;
   page: number;
   limit: number;
+  pages?: number;
   // For countdowns that run against the server clock.
   serverTime: string;
 }
@@ -1422,4 +1429,355 @@ export interface TotpSetup {
   secret: string;
   otpauthUrl: string;
   qrSvg: string;
+}
+
+// ─── Schools, permissions and administration ─────────────────────────────────
+
+export type Permission = string;
+
+export interface PermissionDef {
+  key: Permission;
+  group: string;
+  scope: 'school' | 'global';
+  action: 'read' | 'create' | 'update' | 'delete' | 'admin';
+  label: string;
+  description: string;
+}
+
+export interface PermissionPreset {
+  key: string;
+  label: string;
+  description: string;
+  scope: 'school' | 'global';
+  permissions: Permission[];
+}
+
+export interface AccessCatalog {
+  groups: Array<{ key: string; label: string }>;
+  permissions: PermissionDef[];
+  presets: PermissionPreset[];
+}
+
+export interface MeSchool {
+  id: string;
+  slug: string;
+  name: string;
+  shortName: string;
+  active: boolean;
+  isDefault: boolean;
+  menuId: string | null;
+  permissions: Permission[];
+}
+
+export interface AdminMe {
+  username: string;
+  owner: boolean;
+  timezone: string;
+  hasAnyPermission: boolean;
+  global: Permission[];
+  globalView: boolean;
+  schools: MeSchool[];
+}
+
+export interface AdminSchool {
+  id: string;
+  slug: string;
+  name: string;
+  shortName: string;
+  webuntisSchool: string | null;
+  webuntisBase: string;
+  active: boolean;
+  isDefault: boolean;
+  // Joined on its first WebUntis sign-in, or the installation's own school.
+  origin: 'webuntis' | 'installation';
+  createdAt: string;
+  updatedAt: string;
+  users?: number;
+  admins?: number;
+  menu?: { id: string; name: string } | null;
+}
+
+export interface MensaMenu {
+  id: string;
+  name: string;
+  isDefault: boolean;
+  dishes: number;
+  schools: Array<{ id: string; name: string }>;
+  createdAt: string;
+}
+
+export interface AdminGrantView {
+  scope: string;
+  schoolName: string | null;
+  preset: string;
+  permissions: Permission[];
+  grantedBy: string | null;
+  updatedAt: string;
+}
+
+export interface AdminAccount {
+  stableUid: string;
+  username: string;
+  schoolId: string | null;
+  schoolName: string | null;
+  owner: boolean;
+  pending: boolean;
+  setupExpiresAt: string | null;
+  grants: AdminGrantView[];
+}
+
+export interface GrantInput {
+  scope: string;
+  permissions: Permission[];
+  preset?: string;
+}
+
+export interface AuditEvent {
+  id: string;
+  at: string;
+  actor: string;
+  action: string;
+  targetType: string;
+  targetId: string;
+  schoolId: string | null;
+  schoolName: string | null;
+  detail: Record<string, unknown>;
+  requestId: string | null;
+}
+
+export interface AuditEventsResponse {
+  events: AuditEvent[];
+  total: number;
+  page: number;
+  limit: number;
+  retentionDays: number;
+}
+
+// ─── Requests and monitoring ──────────────────────────────────────────────────
+
+export type RequestScopeChoice = 'app' | 'core' | 'learn' | 'admin' | 'all';
+
+export interface EndpointStat {
+  endpoint: string;
+  method: string;
+  count: number;
+  errors: number;
+  serverErrors: number;
+  avgMs: number;
+  maxMs: number;
+  p50Ms: number | null;
+  p95Ms: number | null;
+}
+
+export interface RequestsSummary {
+  day: string;
+  today: string;
+  firstDay: string;
+  scope: RequestScopeChoice;
+  schoolId: string | null;
+  totals: { count: number; clientErrors: number; serverErrors: number; avgMs: number; p50Ms: number | null; p95Ms: number | null };
+  hours: Array<{ hour: number; count: number; clientErrors: number; serverErrors: number; avgMs: number }>;
+  statuses: Array<{ status: number; count: number }>;
+  endpoints: EndpointStat[];
+  retentionDays: number;
+}
+
+export interface PerformanceReport {
+  hours: number;
+  endpoints: EndpointStat[];
+  slowest: EndpointStat[];
+  byScope: Array<{ scope: string; count: number; avgMs: number }>;
+  buckets: number[];
+}
+
+export interface SystemHealth {
+  process: { uptimeSeconds: number; node: string; rssMb: number; heapUsedMb: number; heapTotalMb: number };
+  host: { cpus: number; loadAvg: number[]; freeMemMb: number };
+  database: { ok: boolean; latencyMs: number | null; version: string | null; connections: number | null };
+  lastFiveMinutes: { requests: number; serverErrors: number; avgMs: number };
+}
+
+export interface SystemLogEntry {
+  timestamp: string | null;
+  level: string | null;
+  message: string;
+  requestId: string | null;
+  action: string | null;
+  method: string | null;
+  path: string | null;
+  status: number | null;
+  meta: Record<string, unknown>;
+}
+
+export interface SystemLogsResponse {
+  entries: SystemLogEntry[];
+  total: number;
+  truncated: boolean;
+  counts: Record<string, number>;
+  page: number;
+  limit: number;
+}
+
+export interface ClientErrorGroup {
+  fingerprint: string;
+  count: number;
+  firstAt: string | null;
+  lastAt: string | null;
+  source: string | null;
+  level: string | null;
+  name: string;
+  message: string;
+  page: string;
+  browser: string;
+  release: string;
+}
+
+export interface ClientErrorOccurrence {
+  id: string;
+  at: string;
+  source: string;
+  level: string;
+  name: string;
+  message: string;
+  stack: string | null;
+  page: string;
+  release: string;
+  browser: string;
+  requestId: string | null;
+  schoolName: string | null;
+}
+
+// ─── Comments grouped by dish ─────────────────────────────────────────────────
+
+export interface DishCommentGroup {
+  dishId: string;
+  name: string | null;
+  imageUrl: string;
+  deleted: boolean;
+  comments: number;
+  latestAt: string;
+  ratingCount: number;
+  avgStars: number | null;
+}
+
+export interface DishCommentGroupsResponse {
+  dishes: DishCommentGroup[];
+  total: number;
+  page: number;
+  limit: number;
+  menuId: string | null;
+  totalComments?: number;
+}
+
+export interface DishCommentItem {
+  id: string;
+  stableUid: string;
+  username: string;
+  body: string;
+  stars: number | null;
+  createdAt: string;
+  updatedAt: string;
+  edited: boolean;
+}
+
+export interface DishCommentsResponse {
+  dish: { dishId: string; name: string | null; imageUrl: string; deleted: boolean };
+  comments: DishCommentItem[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
+export interface ReminderCommentGroup {
+  reminderId: string;
+  title: string | null;
+  className: string | null;
+  remindAt: string | null;
+  comments: number;
+  latestAt: string | null;
+}
+
+export interface ReminderCommentItem {
+  id: string;
+  stableUid: string;
+  username: string;
+  body: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PrivacyOverview {
+  retention: Array<{ key: string; label: string; days: number | null; note: string }>;
+  consents: { usageStats: number; refused: number; undecided: number; accounts: number };
+  categories: Array<{ key: string; label: string; purpose: string; basis: string; retention: string; access: string }>;
+  openPoints: Array<{ kind: 'code' | 'operational' | 'controller' | 'legal'; text: string }>;
+}
+
+// ─── Panel search (/api/admin/search) ───────────────────────────────────────
+
+export type SearchKind = 'users' | 'classes' | 'admins' | 'dishes' | 'comments';
+
+export interface SearchUser {
+  id: string;
+  username: string;
+  role: string;
+  className: string | null;
+  local: boolean;
+  admin: boolean;
+  schoolId: string;
+  schoolName: string | null;
+}
+
+export interface SearchClass {
+  id: string;
+  name: string;
+  code: string;
+  webuntisKlasseId: number;
+  members: number;
+  schoolId: string;
+  schoolName: string | null;
+}
+
+export interface SearchAdmin {
+  username: string;
+  owner: boolean;
+  global: boolean;
+  schools: string[];
+  schoolId: string;
+  schoolName: string | null;
+}
+
+export interface SearchDish {
+  id: string;
+  name: string;
+  key: string;
+  plan: string;
+  imageUrl: string | null;
+  menuId: string | null;
+  menuName: string | null;
+  schoolIds: string[];
+}
+
+export interface SearchComment {
+  id: string;
+  type: 'dish' | 'reminder';
+  body: string;
+  username: string;
+  context: string | null;
+  dishKey: string | null;
+  menuId: string | null;
+  createdAt: string;
+  schoolId: string;
+  schoolName: string | null;
+}
+
+export interface SearchResponse {
+  query: string;
+  results: Partial<{
+    users: { total: number; items: SearchUser[] };
+    classes: { total: number; items: SearchClass[] };
+    admins: { total: number; items: SearchAdmin[] };
+    dishes: { total: number; items: SearchDish[] };
+    comments: { total: number; items: SearchComment[] };
+  }>;
 }

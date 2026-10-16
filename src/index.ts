@@ -33,7 +33,7 @@ import { learningDayKey } from './services/learnAnalytics';
 import { localDayAndHour } from './services/usageAnalytics';
 import { keyUnkeyedVisits } from './services/visitorKey';
 import { closeLearnCache } from './services/learnCache';
-import { withWwwOriginAlias } from './utils/cors';
+import { isSameOrigin, withWwwOriginAlias } from './utils/cors';
 import { loadTokenRevocations } from './utils/revokedTokens';
 import { mayRunExclusiveJob, ownsClusterWork } from './cluster/hooks';
 import { CLUSTER_PATH } from './cluster/protocol';
@@ -42,6 +42,8 @@ import { startClusterListener, stopClusterListener } from './cluster/listener';
 import { RELAY_SCRIPT_PATH, handleRelayScript } from './cluster/relaySetup';
 import { SETUP_PATH, createSetupRouter } from './cluster/provision';
 import { startCluster, stopCluster } from './cluster';
+import { migrateLegacyAdmins, migrateToSchools } from './services/multiSchool';
+import { backfillAccountDays } from './services/accountDays';
 
 const app = express();
 
@@ -112,16 +114,21 @@ const allowedOrigins = new Set([
   `https://localhost:${config.port}`,
 ]);
 
+// Same-origin requests (the admin panel calling the server it was loaded
+// from, under whatever name — localhost, 127.0.0.1, a LAN address) always
+// pass; the list above governs other origins only.
 app.use(
-  cors({
-    origin: (origin, callback) => {
-      if (!origin) return callback(null, true);
-      if (allowedOrigins.has(origin)) return callback(null, true);
-      callback(new Error(`CORS: origin ${origin} not allowed`));
-    },
-    credentials: true,
-    methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key', 'X-Server-Key', 'Idempotency-Key'],
+  cors((req, callback) => {
+    callback(null, {
+      origin: (origin, done) => {
+        if (!origin) return done(null, true);
+        if (allowedOrigins.has(origin) || isSameOrigin(origin, req.headers.host)) return done(null, true);
+        done(new Error(`CORS: origin ${origin} not allowed`));
+      },
+      credentials: true,
+      methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
+      allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key', 'X-Server-Key', 'Idempotency-Key', 'X-Pokyh-School'],
+    });
   })
 );
 
@@ -305,6 +312,9 @@ async function cleanupExpiredSessions() {
 async function cleanupExpiredRequestLogs() {
   const cutoff = new Date(Date.now() - config.requestLogRetentionDays * 24 * 60 * 60 * 1000);
   const { count } = await prisma.requestLog.deleteMany({ where: { createdAt: { lt: cutoff } } });
+  // Their per-day summary goes with them (node-local as well).
+  const cutoffDay = localDayAndHour(cutoff, config.usageAnalytics.timezone).dayKey;
+  await prisma.requestAccountDay.deleteMany({ where: { dayKey: { lt: cutoffDay } } });
   if (count > 0) logger.info('Request log retention cleanup', {
     action: 'request_log_retention_cleanup',
     deletedCount: count,
@@ -395,6 +405,22 @@ async function cleanupFrontendActivity() {
   });
 }
 
+// The admin audit trail is kept AUDIT_RETENTION_DAYS (at least 180). One
+// node is enough: the table is replicated.
+async function cleanupAuditEvents() {
+  if (!ownsClusterWork('job:audit-retention')) return;
+  const cutoff = new Date(Date.now() - config.auditRetentionDays * 24 * 60 * 60 * 1000);
+  const { count } = await prisma.adminAuditEvent.deleteMany({ where: { createdAt: { lt: cutoff } } });
+  if (count > 0) logger.info('Admin audit retention cleanup', { action: 'audit_retention_cleanup', deletedCount: count, retentionDays: config.auditRetentionDays });
+}
+
+// Error reports of the web app and the apps: node-local, short-lived.
+async function cleanupClientErrors() {
+  const cutoff = new Date(Date.now() - config.clientErrors.retentionDays * 24 * 60 * 60 * 1000);
+  const { count } = await prisma.clientErrorLog.deleteMany({ where: { createdAt: { lt: cutoff } } });
+  if (count > 0) logger.info('Client error retention cleanup', { action: 'client_error_cleanup', deletedCount: count, retentionDays: config.clientErrors.retentionDays });
+}
+
 // Website and app visitors (web_visits): the address, the place derived from
 // it, an app visit's link to its usage visit and a consenting account's name
 // are personal data and kept as long as the request logs. After that a row is
@@ -467,6 +493,30 @@ function startBackgroundJobs() {
   setInterval(() => void cleanupFrontendActivity().catch(() => {}), config.requestLogCleanupIntervalMs);
   setTimeout(() => void cleanupWebVisits().catch(() => {}), 30_000);
   setInterval(() => void cleanupWebVisits().catch(() => {}), config.requestLogCleanupIntervalMs);
+  setTimeout(() => void cleanupAuditEvents().catch(() => {}), 35_000);
+  setInterval(() => void cleanupAuditEvents().catch(() => {}), 24 * 60 * 60 * 1000);
+  setTimeout(() => void cleanupClientErrors().catch(() => {}), 40_000);
+  setInterval(() => void cleanupClientErrors().catch(() => {}), config.requestLogCleanupIntervalMs);
+
+  // Once per installation: admin accounts from before permissions existed
+  // become global admins (services/multiSchool.ts). On one node only; until
+  // it ran, those accounts have no rights (denied, not granted, by default).
+  // Retried until done — in a cluster the chosen node may be busy upgrading.
+  let legacyAdminsDone = false;
+  const migrateAdmins = () => {
+    if (legacyAdminsDone || !mayRunExclusiveJob('admin-grants-migration')) return;
+    void migrateLegacyAdmins()
+      .then(() => { legacyAdminsDone = true; })
+      .catch((err) => logger.warn(`admin grant migration failed (retrying): ${err instanceof Error ? err.message.split('\n')[0] : String(err)}`));
+  };
+  migrateAdmins();
+  // The Analytics page's per-day account summary, filled from the request
+  // logs once on a node that has none yet (services/accountDays.ts).
+  setTimeout(() => void backfillAccountDays().catch((err) => {
+    logger.warn(`account day backfill failed: ${err instanceof Error ? err.message.split('\n')[0] : String(err)}`);
+  }), 5_000);
+  const adminMigrationTimer = setInterval(() => { if (legacyAdminsDone) clearInterval(adminMigrationTimer); else migrateAdmins(); }, 15_000);
+  adminMigrationTimer.unref();
 
   // A WebUntis account made admin that did not sign in within its setup
   // window loses the grant and its one-time password. The node that made the
@@ -595,6 +645,11 @@ async function connectDatabaseWithRetry() {
       // Session revocations survive a restart through the database.
       try { await loadTokenRevocations(); } catch (err) {
         logger.warn(`token revocation load failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+      }
+      // Idempotent — the default school, and every school-specific row from
+      // before schools existed assigned to it (services/multiSchool.ts).
+      try { await migrateToSchools(); } catch (err) {
+        logger.warn(`multi-school migration failed (non-fatal, retried next start): ${err instanceof Error ? err.message.split('\n')[0] : String(err)}`);
       }
       // Blue/green (servers set up by the installer): a new container serves
       // HTTP at once, but takes over background work and the cluster only

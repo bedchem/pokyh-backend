@@ -3,6 +3,7 @@ import { logger } from '../utils/logger';
 import { invalidateDishesCache } from '../utils/cache';
 import { noteTokenRevocation } from '../utils/revokedTokens';
 import { publishDishRatings } from '../services/dishRatings';
+import { publishDishComments } from '../services/dishComments';
 import { sseManager } from '../services/sse';
 
 // What a locally handled request does besides writing its rows — pushing a
@@ -32,6 +33,21 @@ function collect(target: Set<string>, column: string, ...rows: Row[]): void {
   }
 }
 
+// A dish's votes and comments live per menu: "<menu id>|<dish key>".
+function collectDish(target: Set<string>, ...rows: Row[]): void {
+  for (const row of rows) {
+    const dish = row?.['dish_id'];
+    const menu = row?.['menu_id'];
+    if (typeof dish === 'string' && dish) target.add(`${typeof menu === 'string' ? menu : ''}|${dish}`);
+  }
+}
+
+function splitDish(value: string): [string | null, string] {
+  const cut = value.indexOf('|');
+  const menu = value.slice(0, cut);
+  return [menu === '' ? null : menu, value.slice(cut + 1)];
+}
+
 export function queueEffect(table: string, before: Row, after: Row): void {
   switch (table) {
     case 'todos':
@@ -44,10 +60,10 @@ export function queueEffect(table: string, before: Row, after: Row): void {
       collect(pending.commentReminders, 'reminder_id', before, after);
       break;
     case 'dish_ratings':
-      collect(pending.ratedDishes, 'dish_id', before, after);
+      collectDish(pending.ratedDishes, before, after);
       break;
     case 'dish_comments':
-      collect(pending.commentedDishes, 'dish_id', before, after);
+      collectDish(pending.commentedDishes, before, after);
       break;
     case 'dishes':
     case 'dish_images':
@@ -96,15 +112,13 @@ async function run(): Promise<void> {
     const comments = await prisma.comment.findMany({ where: { reminderId }, orderBy: { createdAt: 'asc' } });
     sseManager.broadcast(key, 'reminderComments', comments);
   }
-  for (const dishKey of take(pending.ratedDishes)) {
-    if (sseManager.getClientCount(`dishRatings:${dishKey}`) === 0 && sseManager.getClientCount('dishRatings:all') === 0) continue;
-    await publishDishRatings(dishKey);
+  for (const value of take(pending.ratedDishes)) {
+    const [menuId, dishKey] = splitDish(value);
+    await publishDishRatings(menuId, dishKey);
   }
-  for (const dishKey of take(pending.commentedDishes)) {
-    const key = `dishComments:${dishKey}`;
-    if (sseManager.getClientCount(key) === 0) continue;
-    const comments = await prisma.dishComment.findMany({ where: { dishId: dishKey }, orderBy: { createdAt: 'asc' } });
-    sseManager.broadcast(key, 'dishComments', comments);
+  for (const value of take(pending.commentedDishes)) {
+    const [menuId, dishKey] = splitDish(value);
+    await publishDishComments(menuId, dishKey);
   }
 }
 

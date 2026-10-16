@@ -7,6 +7,7 @@ import { clientIp } from '../middleware/requestLogger';
 import { logger } from '../utils/logger';
 import { hasUsageConsent } from '../services/privacyConsent';
 import { recordWebVisit } from '../services/webVisits';
+import { schoolOfUser } from '../services/schools';
 import { config } from '../config';
 
 const router = Router();
@@ -69,9 +70,13 @@ router.post('/', limiter, optionalAuth, async (req: Request, res: Response): Pro
     userAgent,
   });
 
+  // The account's school, also for an anonymous page view (a coarse group:
+  // a school's admins see their own school's activity only).
+  const schoolId = req.user ? await schoolOfUser(req.user.stableUid).catch(() => null) : null;
+
   // Non-blocking DB write
   prisma.frontendActivityLog.create({
-    data: { event, page: page ?? null, detail: detail ?? null, stableUid, username, ip, userAgent },
+    data: { event, page: page ?? null, detail: detail ?? null, stableUid, username, ip, userAgent, schoolId },
   }).catch(() => {});
 
   // Every page view of the website, signed in or not, is also one website

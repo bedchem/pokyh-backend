@@ -133,6 +133,23 @@ export function useLiveStatus(): boolean {
   return useSyncExternalStore(subscribeStatus, () => connected);
 }
 
+// Calls `onChange` (at most every few seconds) when one of `areas` changes;
+// returns the unsubscribe function. For code outside a component's hooks.
+export function subscribeLive(areas: readonly string[], onChange: () => void, minGapMs = 2000): () => void {
+  const wanted = new Set(areas);
+  let timer: number | undefined;
+  const listener: Listener = (changed) => {
+    if (!changed.includes('all') && !changed.some((area) => wanted.has(area))) return;
+    if (timer !== undefined) return;
+    timer = window.setTimeout(() => { timer = undefined; onChange(); }, minGapMs);
+  };
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+    window.clearTimeout(timer);
+  };
+}
+
 // Calls onChange when one of the given areas changes on the server. Bursts are
 // folded into one call, calls keep a minimum distance, and a hidden tab waits
 // until it is looked at again.

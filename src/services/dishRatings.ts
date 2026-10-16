@@ -10,7 +10,7 @@ import { sseManager } from './sse';
 
 export type DishRatingsPayload = { ratings: Record<string, number>; myRating: number | null };
 
-type RatingRow = { dishId: string; stableUid: string; username: string | null; stars: number; updatedAt: Date };
+type RatingRow = { dishId: string; stableUid: string; username: string | null; stars: number; updatedAt: Date; menuId: string | null };
 
 export function ratingsPayload(rows: { stableUid: string; stars: number }[], viewerUid: string | undefined): DishRatingsPayload {
   const ratings: Record<string, number> = {};
@@ -22,12 +22,23 @@ export function ratingsPayload(rows: { stableUid: string; stars: number }[], vie
   return { ratings, myRating };
 }
 
+// Stream keys are per menu: a dish of the same name in another school's
+// menu is another dish, with its own votes and listeners.
+export function ratingsStreamKey(menuId: string | null, dishKey: string): string {
+  return `dishRatings:${menuId ?? 'none'}:${dishKey}`;
+}
+
+export function allRatingsStreamKey(menuId: string | null): string {
+  return `dishRatings:all:${menuId ?? 'none'}`;
+}
+
 // Push the current ratings of a dish to everyone listening — the dish's own
-// stream and the all-dishes stream — each with their own myRating.
-export async function publishDishRatings(dishKey: string): Promise<void> {
-  const rows = await prisma.dishRating.findMany({ where: { dishId: dishKey }, select: { stableUid: true, stars: true } });
-  sseManager.broadcastPerClient(`dishRatings:${dishKey}`, 'dishRatings', (uid) => ratingsPayload(rows, uid));
-  sseManager.broadcastPerClient('dishRatings:all', 'dishRating', (uid) => ({ dishId: dishKey, ...ratingsPayload(rows, uid) }));
+// stream and the all-dishes stream of its menu — each with their own myRating.
+export async function publishDishRatings(menuId: string | null, dishKey: string): Promise<void> {
+  if (sseManager.getClientCount(ratingsStreamKey(menuId, dishKey)) === 0 && sseManager.getClientCount(allRatingsStreamKey(menuId)) === 0) return;
+  const rows = await prisma.dishRating.findMany({ where: { dishId: dishKey, menuId }, select: { stableUid: true, stars: true } });
+  sseManager.broadcastPerClient(ratingsStreamKey(menuId, dishKey), 'dishRatings', (uid) => ratingsPayload(rows, uid));
+  sseManager.broadcastPerClient(allRatingsStreamKey(menuId), 'dishRating', (uid) => ({ dishId: dishKey, ...ratingsPayload(rows, uid) }));
 }
 
 // Collapse the given rows onto `target` per dish: the newest vote wins, every
@@ -136,8 +147,8 @@ export async function reclaimDishRatings(stableUid: string, username: string): P
 
   const [moved, removed] = await collapseOnto(mine, { stableUid, username });
   if (moved || removed) {
-    const dishKeys = new Set(mine.map((r) => r.dishId));
-    await Promise.all([...dishKeys].map((k) => publishDishRatings(k)));
+    const keys = new Map(mine.map((r) => [`${r.menuId ?? ''}|${r.dishId}`, r]));
+    await Promise.all([...keys.values()].map((r) => publishDishRatings(r.menuId, r.dishId)));
     logger.info('dish ratings reclaimed', { moved, removed });
   }
 }

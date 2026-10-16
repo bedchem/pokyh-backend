@@ -5,6 +5,7 @@ import { config } from '../config';
 import { tokenAccount } from '../middleware/auth';
 import { clientIp } from '../middleware/requestLogger';
 import { visitorKeyFor } from './visitorKey';
+import { schoolOfUser } from './schools';
 import { classifyUserAgent, localDayAndHour, type UsageDevice } from './usageAnalytics';
 import { countryFromHeader, placeFromHeader, sendsGpc, visitPage, visitorIp, visitorSource } from './webVisitMeta';
 
@@ -66,6 +67,8 @@ async function visitorFields(req: Request, userAgent: string, namedUid: string |
     signedIn: Boolean(account),
     stableUid: anonymous ? null : namedUid,
     accountKey: anonymous ? null : accountKey,
+    // A signed-in visit's school, as on the usage visits.
+    schoolId: account ? await schoolOfUser(account) : null,
     dayKey,
     hour,
     createdAt: now,

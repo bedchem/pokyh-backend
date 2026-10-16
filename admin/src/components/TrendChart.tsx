@@ -1,7 +1,9 @@
-import { useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { ChevronLeft, ChevronRight, RotateCcw } from 'lucide-react';
 import gsap from 'gsap';
 import { prefersReducedMotion } from '../motion';
 import { activeLabelFits, labelsClear } from './charts';
+import { useChartPointer, type PageDirection } from './chartPointer';
 
 export interface TrendSeries {
   key: string;
@@ -25,6 +27,12 @@ interface TrendChartProps {
   ariaLabel: string;
   // Makes a point clickable (pointer or Enter), e.g. to list who is behind it.
   onSelect?: (index: number) => void;
+  // Paging to the previous (-1) or next (1) period: drag past an edge,
+  // Page Up/Down. Absent: the chart shows one fixed period.
+  onPage?: (direction: PageDirection) => void;
+  // Whether there is a later period to page to.
+  canPageForward?: boolean;
+  canPageBack?: boolean;
 }
 
 const GUTTER = 46;
@@ -84,13 +92,12 @@ function monotonePath(points: Array<[number, number]>): string {
   return d;
 }
 
-export function TrendChart({ labels, titles, series, tickEvery = 1, restIndex, drawKey, ariaLabel, onSelect }: TrendChartProps) {
+export function TrendChart({ labels, titles, series, tickEvery = 1, restIndex, drawKey, ariaLabel, onSelect, onPage, canPageForward = true, canPageBack = true }: TrendChartProps) {
   const gradientId = useId().replace(/:/g, '');
   const rootRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const tipRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(0);
-  const [hovered, setHovered] = useState<number | null>(null);
 
   useLayoutEffect(() => {
     const el = rootRef.current;
@@ -123,8 +130,32 @@ export function TrendChart({ labels, titles, series, tickEvery = 1, restIndex, d
   }, [series, count, plotWidth, baseline]);
 
   const ready = width > 0 && count > 0;
-  const fallback = restIndex ?? count - 1;
-  const active = Math.min(Math.max(hovered ?? fallback, 0), Math.max(count - 1, 0));
+
+  function indexFromPointer(clientX: number): number {
+    const rect = rootRef.current!.getBoundingClientRect();
+    if (count <= 1) return 0;
+    const ratio = (clientX - rect.left - GUTTER) / plotWidth;
+    return Math.min(count - 1, Math.max(0, Math.round(ratio * (count - 1))));
+  }
+
+  const pager = onPage
+    ? (direction: PageDirection) => { if (direction === 1 ? canPageForward : canPageBack) onPage(direction); }
+    : undefined;
+  const pointer = useChartPointer({
+    count,
+    indexAt: indexFromPointer,
+    bounds: () => {
+      const rect = rootRef.current?.getBoundingClientRect();
+      return rect ? { left: rect.left + GUTTER, right: rect.left + GUTTER + plotWidth } : null;
+    },
+    onSelect,
+    onPage: pager,
+    rest: restIndex,
+  });
+  const active = pointer.active;
+  const { setSelected } = pointer;
+  // A new period starts without a chosen point.
+  useEffect(() => { setSelected(null); }, [drawKey, setSelected]);
 
   // Draw the lines in from the left whenever the range changes.
   useLayoutEffect(() => {
@@ -144,24 +175,6 @@ export function TrendChart({ labels, titles, series, tickEvery = 1, restIndex, d
     // The draw-in belongs to the range, not to each refresh of its numbers.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [drawKey, ready]);
-
-  function indexFromPointer(clientX: number): number {
-    const rect = rootRef.current!.getBoundingClientRect();
-    if (count <= 1) return 0;
-    const ratio = (clientX - rect.left - GUTTER) / plotWidth;
-    return Math.min(count - 1, Math.max(0, Math.round(ratio * (count - 1))));
-  }
-
-  function onKeyDown(e: React.KeyboardEvent) {
-    if (count === 0) return;
-    if (e.key === 'ArrowLeft') setHovered(Math.max(0, active - 1));
-    else if (e.key === 'ArrowRight') setHovered(Math.min(count - 1, active + 1));
-    else if (e.key === 'Home') setHovered(0);
-    else if (e.key === 'End') setHovered(count - 1);
-    else if (e.key === 'Escape') setHovered(null);
-    else return;
-    e.preventDefault();
-  }
 
   if (count === 0) {
     return (
@@ -190,27 +203,38 @@ export function TrendChart({ labels, titles, series, tickEvery = 1, restIndex, d
   const ticks = labels.map((_, i) => i).filter((i) => i % every === 0 || (i === lastIndex && showLast));
   const extraLabel = activeLabelFits(active, ticks, labels, (i) => geometry.xAt(i));
 
+  const latest = restIndex ?? count - 1;
+  const away = pointer.selected !== null && pointer.selected !== latest;
+  const status = `${titles[active] ?? ''}: ${series.map((s) => `${s.label} ${(s.values[active] ?? 0).toLocaleString('de-AT')}`).join(', ')}`;
   return (
     <div
       ref={rootRef}
       className="chart"
       style={{ height: baseline + 44, cursor: onSelect ? 'pointer' : undefined }}
-      role="img"
-      aria-label={ariaLabel}
+      role="group"
+      aria-roledescription="Diagramm"
+      aria-label={`${ariaLabel}. Pfeiltasten wählen einen Punkt${onPage ? ', Bild auf/ab blättert den Zeitraum' : ''}.`}
       tabIndex={0}
-      onPointerMove={(e) => setHovered(indexFromPointer(e.clientX))}
-      onPointerDown={(e) => setHovered(indexFromPointer(e.clientX))}
-      onPointerLeave={() => setHovered(null)}
-      onBlur={() => setHovered(null)}
-      onClick={onSelect ? (e) => onSelect(indexFromPointer(e.clientX)) : undefined}
-      onKeyDown={(e) => {
-        if (onSelect && e.key === 'Enter') {
-          onSelect(active);
-          return;
-        }
-        onKeyDown(e);
-      }}
+      {...pointer.handlers}
     >
+      {/* The chosen point, read out to screen readers as it changes. */}
+      <span className="sr-only" aria-live="polite">{status}</span>
+      {away && (
+        <button
+          type="button"
+          className="chart-latest"
+          onClick={(e) => { e.stopPropagation(); setSelected(null); }}
+          onPointerDown={(e) => e.stopPropagation()}
+          onPointerUp={(e) => e.stopPropagation()}
+        >
+          <RotateCcw size={13} strokeWidth={1.9} /> Aktuell
+        </button>
+      )}
+      {pointer.overscroll !== 0 && (
+        <span className="chart-page-hint" data-side={pointer.overscroll === -1 ? 'left' : 'right'} aria-hidden="true">
+          {pointer.overscroll === -1 ? <><ChevronLeft size={15} strokeWidth={2} /> früher</> : <>später <ChevronRight size={15} strokeWidth={2} /></>}
+        </span>
+      )}
       {ready && (
         <>
           <svg ref={svgRef} width={width} height={baseline + 8} aria-hidden="true">

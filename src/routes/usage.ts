@@ -10,6 +10,7 @@ import { hasClassIdentity } from '../utils/accountClass';
 import { hasUsageConsent } from '../services/privacyConsent';
 import { visitorKeyFor } from '../services/visitorKey';
 import { recordAppVisit } from '../services/webVisits';
+import { schoolOfUser } from '../services/schools';
 import {
   USAGE_CLIENTS,
   USAGE_DEVICES,
@@ -84,17 +85,26 @@ async function classOf(stableUid: string): Promise<string | null> {
   return klasse;
 }
 
-// Adds to a class's totals for the day. Best effort: a lost addition never
-// costs the ping itself.
+// Adds to a class's totals for the day — across every school, and within
+// the account's school (class names are only unique there). Best effort: a
+// lost addition never costs the ping itself.
 async function addToClass(account: string, dayKey: string, seconds: number, visits: number, people: number): Promise<void> {
   if (seconds === 0 && visits === 0 && people === 0) return;
   const klasse = await classOf(account);
   if (!klasse) return;
-  await prisma.usageClassDay.upsert({
-    where: { dayKey_klasse: { dayKey, klasse } },
-    create: { dayKey, klasse, seconds, visits, people },
-    update: { seconds: { increment: seconds }, visits: { increment: visits }, people: { increment: people } },
-  });
+  const schoolId = await schoolOfUser(account);
+  await Promise.all([
+    prisma.usageClassDay.upsert({
+      where: { dayKey_klasse: { dayKey, klasse } },
+      create: { dayKey, klasse, seconds, visits, people },
+      update: { seconds: { increment: seconds }, visits: { increment: visits }, people: { increment: people } },
+    }),
+    prisma.usageSchoolClassDay.upsert({
+      where: { dayKey_schoolId_klasse: { dayKey, schoolId, klasse } },
+      create: { dayKey, schoolId, klasse, seconds, visits, people },
+      update: { seconds: { increment: seconds }, visits: { increment: visits }, people: { increment: people } },
+    }),
+  ]);
 }
 
 // `account` is who sent the ping; `named` whether the row may say so.
@@ -126,6 +136,9 @@ async function applyPing(ping: Ping, account: string | null, named: boolean, dev
         screens,
         startedAt: now,
         lastSeenAt: now,
+        // The account's school, also for an anonymous visit: a coarse group
+        // so a school's figures count only its own people. Guests: none.
+        schoolId: account ? await schoolOfUser(account) : null,
       },
     });
     if (account) await addToClass(account, dayKey, credited, 1, firstToday ? 1 : 0).catch(() => {});

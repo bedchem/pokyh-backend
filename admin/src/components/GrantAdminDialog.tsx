@@ -4,6 +4,7 @@ import { adminApi } from '../api';
 import { AdminCountdown, clockOffset } from './AdminCountdown';
 import { Dialog, FieldLabel, Notice, Spinner } from './kit';
 import { randomPassword } from './PasswordInput';
+import type { GrantInput } from '../types';
 
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
@@ -73,9 +74,11 @@ function OneTimePasswordView({ username, password, expiresAt, offset, onLapsed }
  * (or generates) a one-time password — the WebUntis password never opens the
  * panel. Step two: the password with its countdown, to pass on.
  */
-export function GrantAdminDialog({ stableUid, username, onClose, onGranted, onLapsed }: {
+export function GrantAdminDialog({ stableUid, username, grant, onClose, onGranted, onLapsed }: {
   stableUid: string;
   username: string;
+  // The rights that come with it (chosen before, AppointAdminDialog).
+  grant?: GrantInput;
   onClose: () => void;
   // The grant is made; the dialog stays open on the password.
   onGranted: (adminSetupExpiresAt: string | null) => void;
@@ -95,7 +98,7 @@ export function GrantAdminDialog({ stableUid, username, onClose, onGranted, onLa
     setBusy(true);
     setError(null);
     try {
-      const result = await adminApi.grantAdmin(stableUid, password);
+      const result = await adminApi.grantAdmin(stableUid, password, grant);
       if (result.adminSetupExpiresAt) setGranted({ expiresAt: result.adminSetupExpiresAt, offset: clockOffset(result.serverTime) });
       onGranted(result.adminSetupExpiresAt);
       if (!result.adminSetupExpiresAt) onClose();

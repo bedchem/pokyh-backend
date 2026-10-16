@@ -4,6 +4,7 @@ require('dotenv').config({ quiet: true });
 const { PrismaClient } = require('@prisma/client');
 const { v4: uuidv4 } = require('uuid');
 const { askNewPassword } = require('./_auth');
+const { grantGlobalAdmin } = require('./_grants');
 
 const prisma = new PrismaClient();
 
@@ -35,7 +36,9 @@ async function main() {
     update: { canCreateClass: true, passwordHash, mustChangePassword: false, setupExpiresAt: null, oneTimePasswordEnc: null },
   });
 
-  console.log(`\n✅ "${username}" is now an admin — login with this password at /admin/\n`);
+  await grantGlobalAdmin(prisma, user.username, 'cli:make-admin');
+
+  console.log(`\n✅ "${username}" is now a global admin — login with this password at /admin/\n`);
 }
 
 main()

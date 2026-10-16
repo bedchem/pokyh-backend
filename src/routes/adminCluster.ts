@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { z } from 'zod';
-import { requireAdmin } from '../middleware/requireAdmin';
+import { requireAdmin, requirePermission } from '../middleware/requireAdmin';
 import { writeLimiter } from '../middleware/rateLimiter';
 import { logger } from '../utils/logger';
 import {
@@ -63,14 +63,14 @@ async function guarded(res: Response, action: () => Promise<void>): Promise<void
 const peerIdSchema = z.string().uuid();
 const addressSchema = z.string().trim().min(1).max(255);
 
-router.get('/', requireAdmin, async (_req: Request, res: Response): Promise<void> => {
+router.get('/', requireAdmin, requirePermission('cluster.manage'), async (_req: Request, res: Response): Promise<void> => {
   res.setHeader('Cache-Control', 'no-store');
   res.json(await clusterStatus());
 });
 
 const inviteSchema = z.object({ ownAddress: addressSchema });
 
-router.post('/invites', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+router.post('/invites', requireAdmin, requirePermission('cluster.manage'), writeLimiter, async (req: Request, res: Response): Promise<void> => {
   const body = inviteSchema.parse(req.body);
   await guarded(res, async () => {
     const invite = await createInvite({ ownAddress: body.ownAddress, createdBy: actor(req) });
@@ -82,7 +82,7 @@ router.post('/invites', requireAdmin, writeLimiter, async (req: Request, res: Re
 
 const joinSchema = z.object({ code: z.string().trim().min(10).max(2048), ownAddress: addressSchema });
 
-router.post('/join', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+router.post('/join', requireAdmin, requirePermission('cluster.manage'), writeLimiter, async (req: Request, res: Response): Promise<void> => {
   const body = joinSchema.parse(req.body);
   await guarded(res, async () => {
     const peer = await joinCluster({ code: body.code, ownAddress: body.ownAddress, createdBy: actor(req) });
@@ -97,7 +97,7 @@ const updatePeerSchema = z.object({
   enabled: z.boolean().optional(),
 });
 
-router.patch('/peers/:id', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+router.patch('/peers/:id', requireAdmin, requirePermission('cluster.manage'), writeLimiter, async (req: Request, res: Response): Promise<void> => {
   const id = peerIdSchema.parse(req.params['id']);
   const body = updatePeerSchema.parse(req.body);
   await guarded(res, async () => {
@@ -111,7 +111,7 @@ router.patch('/peers/:id', requireAdmin, writeLimiter, async (req: Request, res:
 
 const resyncSchema = z.object({ acceptStale: z.boolean().optional() });
 
-router.post('/peers/:id/resync', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+router.post('/peers/:id/resync', requireAdmin, requirePermission('cluster.manage'), writeLimiter, async (req: Request, res: Response): Promise<void> => {
   const id = peerIdSchema.parse(req.params['id']);
   const body = resyncSchema.parse(req.body ?? {});
   await guarded(res, async () => {
@@ -123,7 +123,7 @@ router.post('/peers/:id/resync', requireAdmin, writeLimiter, async (req: Request
   });
 });
 
-router.post('/peers/:id/verify', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+router.post('/peers/:id/verify', requireAdmin, requirePermission('cluster.manage'), writeLimiter, async (req: Request, res: Response): Promise<void> => {
   const id = peerIdSchema.parse(req.params['id']);
   await guarded(res, async () => {
     const result = await verifyNow(id);
@@ -132,7 +132,7 @@ router.post('/peers/:id/verify', requireAdmin, writeLimiter, async (req: Request
   });
 });
 
-router.delete('/peers/:id', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+router.delete('/peers/:id', requireAdmin, requirePermission('cluster.manage'), writeLimiter, async (req: Request, res: Response): Promise<void> => {
   const id = peerIdSchema.parse(req.params['id']);
   await guarded(res, async () => {
     const result = await removePeer(id);
@@ -145,7 +145,7 @@ router.delete('/peers/:id', requireAdmin, writeLimiter, async (req: Request, res
 // Rows edited elsewhere since are overwritten, so the caller has to confirm.
 const rebuildSchema = z.object({ confirmation: z.literal('REBUILD') });
 
-router.post('/rebuild', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+router.post('/rebuild', requireAdmin, requirePermission('cluster.manage'), writeLimiter, async (req: Request, res: Response): Promise<void> => {
   rebuildSchema.parse(req.body);
   await guarded(res, async () => {
     const result = await rebuildFromThisNode();
@@ -174,7 +174,7 @@ const installSchema = z.object({
   clusterFrom: z.string().trim().max(1000).optional(),
 });
 
-router.post('/node-installs', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+router.post('/node-installs', requireAdmin, requirePermission('cluster.manage'), writeLimiter, async (req: Request, res: Response): Promise<void> => {
   const body = installSchema.parse(req.body);
   await guarded(res, async () => {
     const install = await createNodeInstall({
@@ -195,14 +195,14 @@ router.post('/node-installs', requireAdmin, writeLimiter, async (req: Request, r
   });
 });
 
-router.get('/node-installs', requireAdmin, async (_req: Request, res: Response): Promise<void> => {
+router.get('/node-installs', requireAdmin, requirePermission('cluster.manage'), async (_req: Request, res: Response): Promise<void> => {
   await guarded(res, async () => {
     res.setHeader('Cache-Control', 'no-store');
     res.json({ installs: await listNodeInstalls() });
   });
 });
 
-router.delete('/node-installs/:id', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+router.delete('/node-installs/:id', requireAdmin, requirePermission('cluster.manage'), writeLimiter, async (req: Request, res: Response): Promise<void> => {
   const id = peerIdSchema.parse(req.params['id']);
   await guarded(res, async () => {
     await revokeNodeInstall(id);
@@ -212,7 +212,7 @@ router.delete('/node-installs/:id', requireAdmin, writeLimiter, async (req: Requ
 });
 
 // Renews this node's certificate on every linked node at once.
-router.post('/certificate/rotate', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+router.post('/certificate/rotate', requireAdmin, requirePermission('cluster.manage'), writeLimiter, async (req: Request, res: Response): Promise<void> => {
   await guarded(res, async () => {
     const result = await rotateCertificate();
     logger.info('Admin action: cluster certificate renewed', { action: 'cluster_certificate_rotated', adminUsername: actor(req), peers: result.peers });
@@ -222,7 +222,7 @@ router.post('/certificate/rotate', requireAdmin, writeLimiter, async (req: Reque
 
 // ─── How this node is reached, relays ────────────────────────────────────────
 
-router.get('/reach', requireAdmin, async (_req: Request, res: Response): Promise<void> => {
+router.get('/reach', requireAdmin, requirePermission('cluster.manage'), async (_req: Request, res: Response): Promise<void> => {
   await guarded(res, async () => {
     res.setHeader('Cache-Control', 'no-store');
     res.json(reachStatus());
@@ -238,7 +238,7 @@ const reachEntrySchema = z.object({
 });
 const reachSchema = z.object({ entries: z.array(reachEntrySchema).max(8) });
 
-router.put('/reach', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+router.put('/reach', requireAdmin, requirePermission('cluster.manage'), writeLimiter, async (req: Request, res: Response): Promise<void> => {
   const body = reachSchema.parse(req.body);
   await guarded(res, async () => {
     const result = await updateReach(body.entries);
@@ -249,7 +249,7 @@ router.put('/reach', requireAdmin, writeLimiter, async (req: Request, res: Respo
 
 const relayKeySchema = z.object({ key: z.string().trim().min(10).max(4096) });
 
-router.post('/relays', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+router.post('/relays', requireAdmin, requirePermission('cluster.manage'), writeLimiter, async (req: Request, res: Response): Promise<void> => {
   const body = relayKeySchema.parse(req.body);
   await guarded(res, async () => {
     const relay = await addClusterRelay(body.key, actor(req));
@@ -265,7 +265,7 @@ const relayUpdateSchema = z.object({
   name: z.string().trim().max(60).optional(),
 });
 
-router.patch('/relays/:id', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+router.patch('/relays/:id', requireAdmin, requirePermission('cluster.manage'), writeLimiter, async (req: Request, res: Response): Promise<void> => {
   const id = peerIdSchema.parse(req.params['id']);
   const body = relayUpdateSchema.parse(req.body);
   await guarded(res, async () => {
@@ -275,7 +275,7 @@ router.patch('/relays/:id', requireAdmin, writeLimiter, async (req: Request, res
   });
 });
 
-router.delete('/relays/:id', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+router.delete('/relays/:id', requireAdmin, requirePermission('cluster.manage'), writeLimiter, async (req: Request, res: Response): Promise<void> => {
   const id = peerIdSchema.parse(req.params['id']);
   await guarded(res, async () => {
     await removeClusterRelay(id);
@@ -293,7 +293,7 @@ const relayCommandSchema = z.object({
   name: z.string().trim().max(60).default('relay'),
 });
 
-router.post('/relay-command', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+router.post('/relay-command', requireAdmin, requirePermission('cluster.manage'), writeLimiter, async (req: Request, res: Response): Promise<void> => {
   const body = relayCommandSchema.parse(req.body);
   await guarded(res, async () => {
     const result = createRelayCommand(body);
@@ -305,7 +305,7 @@ router.post('/relay-command', requireAdmin, writeLimiter, async (req: Request, r
 
 const nodeSchema = z.object({ name: z.string().trim().min(1).max(120) });
 
-router.patch('/node', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+router.patch('/node', requireAdmin, requirePermission('cluster.manage'), writeLimiter, async (req: Request, res: Response): Promise<void> => {
   const body = nodeSchema.parse(req.body);
   await guarded(res, async () => {
     await setNodeName(body.name);
@@ -318,7 +318,7 @@ router.patch('/node', requireAdmin, writeLimiter, async (req: Request, res: Resp
 // Settings are cluster-wide (replicated); retry and roll back act on this
 // node only — the one whose admin panel is open.
 
-router.get('/updates', requireAdmin, async (_req: Request, res: Response): Promise<void> => {
+router.get('/updates', requireAdmin, requirePermission('cluster.manage'), async (_req: Request, res: Response): Promise<void> => {
   res.setHeader('Cache-Control', 'no-store');
   res.json(await updateStatus());
 });
@@ -330,7 +330,7 @@ const updateSettingsSchema = z.object({
   requireCi: z.boolean(),
 });
 
-router.put('/updates/settings', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+router.put('/updates/settings', requireAdmin, requirePermission('cluster.manage'), writeLimiter, async (req: Request, res: Response): Promise<void> => {
   const parsed = updateSettingsSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: 'Invalid update settings' });
@@ -343,14 +343,14 @@ router.put('/updates/settings', requireAdmin, writeLimiter, async (req: Request,
   });
 });
 
-router.post('/updates/check', requireAdmin, writeLimiter, async (_req: Request, res: Response): Promise<void> => {
+router.post('/updates/check', requireAdmin, requirePermission('cluster.manage'), writeLimiter, async (_req: Request, res: Response): Promise<void> => {
   await guarded(res, async () => {
     await checkUpdatesNow();
     res.json(await updateStatus());
   });
 });
 
-router.post('/updates/release', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+router.post('/updates/release', requireAdmin, requirePermission('cluster.manage'), writeLimiter, async (req: Request, res: Response): Promise<void> => {
   const parsed = z.object({ commit: z.string().regex(/^[0-9a-f]{40}$/) }).safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: 'Invalid commit' });
@@ -363,7 +363,7 @@ router.post('/updates/release', requireAdmin, writeLimiter, async (req: Request,
   });
 });
 
-router.post('/updates/retry', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+router.post('/updates/retry', requireAdmin, requirePermission('cluster.manage'), writeLimiter, async (req: Request, res: Response): Promise<void> => {
   await guarded(res, async () => {
     retryUpdate(actor(req));
     logger.info('Cluster update retried', { action: 'cluster_update_retry', admin: actor(req) });
@@ -371,7 +371,7 @@ router.post('/updates/retry', requireAdmin, writeLimiter, async (req: Request, r
   });
 });
 
-router.post('/updates/rollback', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+router.post('/updates/rollback', requireAdmin, requirePermission('cluster.manage'), writeLimiter, async (req: Request, res: Response): Promise<void> => {
   await guarded(res, async () => {
     rollBack(actor(req));
     logger.warn('Cluster node rolled back', { action: 'cluster_update_rollback', admin: actor(req) });
@@ -387,7 +387,7 @@ const wayTestSchema = z.object({
 });
 
 // "Test this way": does it arrive at this node?
-router.post('/reach/test', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+router.post('/reach/test', requireAdmin, requirePermission('cluster.manage'), writeLimiter, async (req: Request, res: Response): Promise<void> => {
   const parsed = wayTestSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: 'Invalid way' });
@@ -399,7 +399,7 @@ router.post('/reach/test', requireAdmin, writeLimiter, async (req: Request, res:
 });
 
 // What the cluster exchanges — the same for every node (replication scope).
-router.put('/scope', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+router.put('/scope', requireAdmin, requirePermission('cluster.manage'), writeLimiter, async (req: Request, res: Response): Promise<void> => {
   const parsed = z.object({ learn: z.boolean() }).safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: 'Invalid scope' });

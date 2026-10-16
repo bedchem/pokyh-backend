@@ -5,8 +5,10 @@ import { requireAuth } from '../middleware/auth';
 import { readLimiter, writeLimiter } from '../middleware/rateLimiter';
 import { ForbiddenError, NotFoundError, ConflictError } from '../utils/errors';
 import { generateClassCode, generateClassId } from '../utils/uid';
-import { config } from '../config';
 import { mayJoinClass } from '../utils/accountClass';
+import { defaultSchoolId, schoolOfUser } from '../services/schools';
+import { loadAccess } from '../services/adminAccess';
+import { can } from '../security/permissions';
 
 const router = Router();
 
@@ -23,10 +25,11 @@ router.get('/mine', readLimiter, requireAuth, async (req: Request, res: Response
     return;
   }
 
+  const schoolId = await schoolOfUser(stableUid);
   const membership = await prisma.classMember.findFirst({
     where: {
       stableUid,
-      class: { webuntisKlasseId: klasseId },
+      class: { webuntisKlasseId: klasseId, schoolId },
     },
     include: {
       class: {
@@ -96,20 +99,21 @@ const createClassSchema = z.object({
 
 router.post('/', writeLimiter, requireAuth, async (req: Request, res: Response) => {
   const { stableUid, username } = req.user!;
+  const schoolId = await schoolOfUser(stableUid);
 
-  const admin = await prisma.admin.findUnique({ where: { stableUid } });
-  // Match the canonical admin sources used by api.pokyh.com/admin and Learn.
-  // An operator configured through ADMIN_USERNAMES must not lose class access,
-  // while every non-admin token remains unable to create a class.
-  if (!admin && !config.adminUsernames.includes(username)) {
+  // Like the admin panel: an admin account (or an operator configured through
+  // ADMIN_USERNAMES) that may manage the classes of this account's school.
+  const admin = await prisma.admin.findUnique({ where: { stableUid }, select: { mustChangePassword: true } });
+  const access = await loadAccess(username);
+  if (!((admin && !admin.mustChangePassword) || access.owner) || !can(access, 'classes.manage', schoolId)) {
     throw new ForbiddenError('Admin access required');
   }
 
   const body = createClassSchema.parse(req.body);
 
-  // Check for existing class with this webuntisKlasseId
+  // Check for existing class with this webuntisKlasseId (ids are per school)
   const existing = await prisma.class.findFirst({
-    where: { webuntisKlasseId: body.webuntisKlasseId },
+    where: { webuntisKlasseId: body.webuntisKlasseId, schoolId },
   });
   if (existing) {
     throw new ConflictError('A class with this WebUntis class ID already exists');
@@ -126,6 +130,7 @@ router.post('/', writeLimiter, requireAuth, async (req: Request, res: Response) 
       webuntisKlasseId: body.webuntisKlasseId,
       createdBy: stableUid,
       createdByName: username,
+      schoolId,
     },
   });
 
@@ -152,7 +157,8 @@ router.post('/join', writeLimiter, requireAuth, async (req: Request, res: Respon
   }
 
   const cls = await prisma.class.findUnique({ where: { code: body.code } });
-  if (!cls) {
+  // A code only opens a class of the account's own school.
+  if (!cls || (cls.schoolId ?? defaultSchoolId()) !== (await schoolOfUser(stableUid))) {
     throw new NotFoundError('Class not found with that code');
   }
 

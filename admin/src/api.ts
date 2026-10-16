@@ -1,7 +1,41 @@
 import type { AdminStats, AdminClass, AdminSession, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish, AdminDishFull, AdminDishImportResult, AdminDishShiftResult, AdminDishRotateResult, AdminDishResetResult, AdminDishAnchorResult, DishPlan, AdminCommentsResponse, FileLogFile, FileLogResponse, FileLogEntry, FrontendActivityLogsResponse, FrontendActivityStats, AllTodosResponse, AllRemindersResponse, SchoolYearsResponse, ArchivedUsersResponse, ArchivedClass, ArchivedTodosResponse, ArchivedRemindersResponse, RolloverResult, RollbackResult, AdminApiKey, CreatedApiKey, LearnConfigValues, LearnAiConfigValues, LearnAiGrant, LearnAiTeamGrant, AdminLearnTeam, LearnTeamAssignableRole, AdminLearnCoursesResponse, AdminLearnCourseAccessResponse, AdminLearnCourse, AdminLearnCourseAccess, LearnCoursePermission, LearnCourseStatus, LearnCourseVisibility, AdminLearnCourseVocabularyResponse, AdminLearnVocabularyImportResponse, BackupsResponse, AdminPopup, PopupInput, ClusterStatus, ClusterInstall, CreatedClusterInstall, ClusterReach, ReachEntry, AdminAnalytics, AnalyticsRange, AnalyticsPeople, PeopleFilters, AnalyticsBreakdown, BreakdownKind, AnalyticsDishes, AnalyticsVisitors, AnalyticsVisitorIp, AnalyticsPersonDetail, VisitSource, ClusterUpdates, ClusterUpdateSettings, PopupTargetUser, PopupTargetClass, ClusterScope, WayTestResult, ReachKind, LoginResult, PasskeyChallenge, AdminSecurityStatus, TotpSetup, AdminPasskey, AccountRole } from './types';
+import type { SearchKind, SearchResponse } from './types';
+import type { AdminMe, AccessCatalog, AdminSchool, MensaMenu, AdminAccount, AdminGrantView, GrantInput, AuditEventsResponse, RequestScopeChoice, RequestsSummary, PerformanceReport, SystemHealth, SystemLogsResponse, ClientErrorGroup, ClientErrorOccurrence, PrivacyOverview, DishCommentGroupsResponse, DishCommentsResponse, ReminderCommentGroup, ReminderCommentItem } from './types';
 import type { AuthenticationResponseJSON, PublicKeyCredentialCreationOptionsJSON, PublicKeyCredentialRequestOptionsJSON, RegistrationResponseJSON } from '@simplewebauthn/browser';
 
 const TOKEN_KEY = 'pokyh_admin_token';
+
+// The school the panel is looking at (null: the global view of every school).
+// Every request names it in X-Pokyh-School; the server checks the admin's
+// rights in that school and limits what it answers to it. Set by access.tsx
+// before any page renders.
+let schoolContext: string | null = null;
+
+export function setSchoolContext(schoolId: string | null): void {
+  schoolContext = schoolId;
+}
+
+export function currentSchoolContext(): string | null {
+  return schoolContext;
+}
+
+// The global view's Mensa pages work on one chosen menu; a school's view
+// always on the school's own (the server ignores this there).
+let menuContext: string | null = null;
+
+export function setMenuContext(menuId: string | null): void {
+  menuContext = menuId;
+}
+
+const MENU_PATHS = ['/api/admin/dishes', '/api/admin/dish-ratings', '/api/admin/comments/dishes'];
+
+// The Analytics page can page back in time: its rolling periods then end on
+// this day instead of today, for the page and everything it opens.
+let analyticsEnd: string | null = null;
+
+export function setAnalyticsEnd(end: string | null): void {
+  analyticsEnd = end;
+}
 
 function getToken(): string | null {
   return localStorage.getItem(TOKEN_KEY);
@@ -15,10 +49,17 @@ function clearToken(): void {
   localStorage.removeItem(TOKEN_KEY);
 }
 
+export class ApiError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+  }
+}
+
 async function request<T>(
   method: string,
   path: string,
   body?: unknown,
+  signal?: AbortSignal,
 ): Promise<T> {
   const token = getToken();
   const headers: Record<string, string> = {
@@ -26,6 +67,19 @@ async function request<T>(
   };
   if (token) {
     headers['Authorization'] = `Bearer ${token}`;
+  }
+  if (schoolContext) headers['X-Pokyh-School'] = schoolContext;
+
+  if (menuContext && !schoolContext && MENU_PATHS.some((prefix) => path.startsWith(prefix))) {
+    if (method === 'GET' || method === 'DELETE') {
+      path += `${path.includes('?') ? '&' : '?'}menuId=${encodeURIComponent(menuContext)}`;
+    } else if (body === undefined || (typeof body === 'object' && body !== null && !Array.isArray(body))) {
+      body = { ...(body as Record<string, unknown> | undefined), menuId: menuContext };
+    }
+  }
+
+  if (analyticsEnd && method === 'GET' && path.startsWith('/api/admin/analytics')) {
+    path += `${path.includes('?') ? '&' : '?'}end=${analyticsEnd}`;
   }
 
   if (import.meta.env.DEV) {
@@ -36,6 +90,7 @@ async function request<T>(
     method,
     headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
+    signal,
   });
 
   if (res.status === 401) {
@@ -53,7 +108,7 @@ async function request<T>(
     } catch {
       // ignore
     }
-    throw new Error(message);
+    throw new ApiError(message, res.status);
   }
 
   if (res.status === 204) {
@@ -151,10 +206,11 @@ export const adminApi = {
   stats: (): Promise<AdminStats> =>
     request<AdminStats>('GET', '/api/admin/stats'),
 
-  users: (search?: string, page = 1, limit = 20, role?: AccountRole): Promise<UsersResponse> => {
+  users: (search?: string, page = 1, limit = 20, role?: AccountRole | 'admin', schoolId?: string): Promise<UsersResponse> => {
     const params = new URLSearchParams();
     if (search) params.set('search', search);
     if (role) params.set('role', role);
+    if (schoolId) params.set('schoolId', schoolId);
     params.set('page', String(page));
     params.set('limit', String(limit));
     return request<UsersResponse>('GET', `/api/admin/users?${params.toString()}`);
@@ -164,7 +220,7 @@ export const adminApi = {
     request<AdminUserDetail>('GET', `/api/admin/users/${stableUid}`),
 
   // isAdmin without a password (a WebUntis account) needs adminPassword, the one-time password.
-  createUser: (data: { username: string; password?: string; webuntisKlasseId?: number; webuntisKlasseName?: string; role?: AccountRole; isAdmin?: boolean; adminPassword?: string }): Promise<import('./types').AdminUser> =>
+  createUser: (data: { username: string; password?: string; webuntisKlasseId?: number; webuntisKlasseName?: string; role?: AccountRole; isAdmin?: boolean; adminPassword?: string; schoolId?: string; grant?: GrantInput }): Promise<import('./types').AdminUser> =>
     request<import('./types').AdminUser>('POST', '/api/admin/users', data),
 
   setUserRole: (stableUid: string, role: AccountRole): Promise<{ stableUid: string; role: string }> =>
@@ -211,8 +267,8 @@ export const adminApi = {
     request<void>('DELETE', `/api/admin/users/${stableUid}/classes/${classId}`),
 
   // A WebUntis account needs `password`: its one-time password for the panel.
-  grantAdmin: (stableUid: string, password?: string): Promise<{ ok: boolean; adminSetupExpiresAt: string | null; canViewOneTimePassword: boolean; serverTime: string }> =>
-    request('POST', `/api/admin/users/${stableUid}/grant-admin`, password ? { password } : {}),
+  grantAdmin: (stableUid: string, password?: string, grant?: GrantInput): Promise<{ ok: boolean; adminSetupExpiresAt: string | null; canViewOneTimePassword: boolean; serverTime: string }> =>
+    request('POST', `/api/admin/users/${stableUid}/grant-admin`, { ...(password ? { password } : {}), ...(grant ? { grant } : {}) }),
 
   // The pending grant's one-time password again — only for the admin who granted it.
   oneTimePassword: (stableUid: string): Promise<{ password: string; adminSetupExpiresAt: string; serverTime: string }> =>
@@ -220,6 +276,103 @@ export const adminApi = {
 
   revokeAdmin: (stableUid: string): Promise<void> =>
     request<void>('DELETE', `/api/admin/users/${stableUid}/revoke-admin`),
+
+  // ── Access, schools, menus ────────────────────────────────────────────────
+  me: (): Promise<AdminMe> => request<AdminMe>('GET', '/api/admin/me'),
+
+  accessCatalog: (): Promise<AccessCatalog> => request<AccessCatalog>('GET', '/api/admin/access/catalog'),
+
+  schools: (): Promise<{ schools: AdminSchool[] }> => request('GET', '/api/admin/schools'),
+
+  school: (id: string): Promise<{ school: AdminSchool }> => request('GET', `/api/admin/schools/${encodeURIComponent(id)}`),
+
+  // Schools are never created here: each joins on its first WebUntis sign-in.
+  updateSchool: (id: string, data: Partial<{ name: string; shortName: string; slug: string; active: boolean }>): Promise<{ school: AdminSchool }> =>
+    request('PATCH', `/api/admin/schools/${encodeURIComponent(id)}`, data),
+
+  assignMenu: (schoolId: string, menuId: string | null): Promise<{ schoolId: string; menuId: string | null }> =>
+    request('PUT', `/api/admin/schools/${encodeURIComponent(schoolId)}/menu`, { menuId }),
+
+  menus: (): Promise<{ menus: MensaMenu[] }> => request('GET', '/api/admin/menus'),
+
+  createMenu: (name: string): Promise<{ menu: MensaMenu }> => request('POST', '/api/admin/menus', { name }),
+
+  renameMenu: (id: string, name: string): Promise<{ menu: { id: string; name: string } }> =>
+    request('PATCH', `/api/admin/menus/${encodeURIComponent(id)}`, { name }),
+
+  deleteMenu: (id: string): Promise<void> => request<void>('DELETE', `/api/admin/menus/${encodeURIComponent(id)}`),
+
+  admins: (): Promise<{ admins: AdminAccount[] }> => request('GET', '/api/admin/admins'),
+
+  setGrant: (username: string, scope: string, permissions: string[], preset?: string): Promise<{ grant: AdminGrantView | null }> =>
+    request('PUT', `/api/admin/admins/${encodeURIComponent(username)}/grants/${encodeURIComponent(scope)}`, { permissions, preset }),
+
+  removeGrant: (username: string, scope: string): Promise<void> =>
+    request<void>('DELETE', `/api/admin/admins/${encodeURIComponent(username)}/grants/${encodeURIComponent(scope)}`),
+
+  auditEvents: (params: { page?: number; limit?: number; actor?: string; action?: string; from?: string; to?: string } = {}): Promise<AuditEventsResponse> => {
+    const p = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== '') p.set(k, String(v));
+    return request('GET', `/api/admin/audit-events?${p.toString()}`);
+  },
+
+  // ── Requests, monitoring, logs ────────────────────────────────────────────
+  requestsSummary: (day?: string, scope: RequestScopeChoice = 'app'): Promise<RequestsSummary> =>
+    request('GET', `/api/admin/requests/summary?scope=${scope}${day ? `&day=${day}` : ''}`),
+
+  performance: (hours = 24): Promise<PerformanceReport> => request('GET', `/api/admin/monitoring/performance?hours=${hours}`),
+
+  health: (): Promise<SystemHealth> => request('GET', '/api/admin/monitoring/health'),
+
+  systemLogs: (params: { level?: string; days?: number; search?: string; requestId?: string; page?: number; limit?: number } = {}): Promise<SystemLogsResponse> => {
+    const p = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== '') p.set(k, String(v));
+    return request('GET', `/api/admin/system-logs?${p.toString()}`);
+  },
+
+  clientErrors: (params: { source?: string; level?: string; days?: number; search?: string } = {}): Promise<{ groups: ClientErrorGroup[]; days: number; retentionDays: number }> => {
+    const p = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== '') p.set(k, String(v));
+    return request('GET', `/api/admin/client-errors?${p.toString()}`);
+  },
+
+  clientErrorOccurrences: (fingerprint: string, days = 30): Promise<{ occurrences: ClientErrorOccurrence[] }> =>
+    request('GET', `/api/admin/client-errors?fingerprint=${fingerprint}&days=${days}`),
+
+  // The panel reports its own errors; never throws, and only while signed
+  // in (a report must never end a session or redirect).
+  reportPanelError: (report: { message: string; name?: string; stack?: string; page?: string; release?: string }): void => {
+    if (!getToken()) return;
+    void request<void>('POST', '/api/admin/client-errors', report).catch(() => undefined);
+  },
+
+  privacyOverview: (): Promise<PrivacyOverview> => request('GET', '/api/admin/privacy/overview'),
+
+  // Everything the admin may see, across all their schools (whatever the view).
+  search: (q: string, kinds: SearchKind[] | null, signal?: AbortSignal): Promise<SearchResponse> => {
+    const p = new URLSearchParams({ q });
+    if (kinds && kinds.length > 0) p.set('types', kinds.join(','));
+    return request('GET', `/api/admin/search?${p.toString()}`, undefined, signal);
+  },
+
+  // ── Comments grouped by dish ──────────────────────────────────────────────
+  dishCommentGroups: (params: { page?: number; limit?: number; search?: string; sort?: 'latest' | 'comments' | 'rating' | 'name' } = {}): Promise<DishCommentGroupsResponse> => {
+    const p = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== '') p.set(k, String(v));
+    return request('GET', `/api/admin/comments/dishes?${p.toString()}`);
+  },
+
+  dishComments: (dishId: string, sort: 'newest' | 'oldest' | 'rating-low' | 'rating-high' = 'newest'): Promise<DishCommentsResponse> =>
+    request('GET', `/api/admin/comments/dishes/${encodeURIComponent(dishId)}?sort=${sort}&limit=200`),
+
+  reminderCommentGroups: (params: { page?: number; limit?: number; search?: string } = {}): Promise<{ reminders: ReminderCommentGroup[]; total: number; page: number; limit: number }> => {
+    const p = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== '') p.set(k, String(v));
+    return request('GET', `/api/admin/comments/reminders?${p.toString()}`);
+  },
+
+  reminderComments: (reminderId: string): Promise<{ reminder: { reminderId: string; title: string; classId: string }; comments: ReminderCommentItem[] }> =>
+    request('GET', `/api/admin/comments/reminders/${encodeURIComponent(reminderId)}`),
 
   classes: (): Promise<AdminClass[]> =>
     request<AdminClass[]>('GET', '/api/admin/classes'),
@@ -245,7 +398,7 @@ export const adminApi = {
     username?: string;
     from?: string;
     to?: string;
-    scope?: 'learn' | 'core';
+    scope?: 'learn' | 'core' | 'admin';
   }): Promise<LogsResponse> => {
     const p = new URLSearchParams();
     if (params?.page) p.set('page', String(params.page));

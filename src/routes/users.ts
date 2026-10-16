@@ -3,6 +3,7 @@ import { prisma } from '../db';
 import { requireAuth } from '../middleware/auth';
 import { readLimiter } from '../middleware/rateLimiter';
 import { NotFoundError } from '../utils/errors';
+import { defaultSchoolId, schoolOfUser } from '../services/schools';
 
 const router = Router();
 
@@ -39,7 +40,8 @@ router.get('/:userId', readLimiter, requireAuth, async (req: Request, res: Respo
     },
   });
 
-  if (!user) {
+  // Accounts of other schools are not visible from the app.
+  if (!user || (user.schoolId ?? defaultSchoolId()) !== (await schoolOfUser(req.user!.stableUid))) {
     throw new NotFoundError('User not found');
   }
 

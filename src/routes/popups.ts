@@ -3,11 +3,14 @@ import { z } from 'zod';
 import type { Popup, Prisma } from '@prisma/client';
 import { prisma } from '../db';
 import { optionalAuth } from '../middleware/auth';
-import { requireAdmin } from '../middleware/requireAdmin';
+import { inScope, requireAdmin, requirePermission, scopeSchool } from '../middleware/requireAdmin';
+import { audit } from '../services/audit';
+import { schoolById, schoolOfUser } from '../services/schools';
 import { writeLimiter } from '../middleware/rateLimiter';
 import { logger } from '../utils/logger';
 import { NotFoundError, ValidationError } from '../utils/errors';
 import { renderPopupContent } from '../services/popupRender';
+import { likeText } from '../utils/like';
 
 // ─── Announcement popups ──────────────────────────────────────────────────────
 // Admin CRUD lives under /api/admin/popups (JWT admin), the client feed under
@@ -68,6 +71,8 @@ function adminRow(p: PopupWithTargets) {
       .map((target) => ({ id: target.klasseId, name: target.klasseName }))
       .sort((a, b) => a.name.localeCompare(b.name)),
     createdBy: p.createdBy,
+    // Null: every school.
+    schoolId: p.schoolId,
     createdAt: p.createdAt.toISOString(),
     updatedAt: p.updatedAt.toISOString(),
   };
@@ -89,14 +94,18 @@ const popupSchema = z.object({
   // these users and the members of these classes (signed in).
   targetUsers: z.array(z.string().trim().min(1).max(191)).max(MAX_TARGET_USERS).default([]),
   targetClasses: z.array(z.number().int().positive()).max(MAX_TARGET_CLASSES).default([]),
+  // Global view only: one school, or null/absent for every school.
+  schoolId: z.string().trim().toLowerCase().max(36).nullable().optional(),
 });
 
 // The classes a popup can be meant for: every WebUntis class a user signed
 // in with, and every class group created in the app, by id.
-async function knownClasses(): Promise<Map<number, { name: string; users: number }>> {
+// WebUntis class ids are per school, so classes are always of one school.
+async function knownClasses(schoolId: string | null): Promise<Map<number, { name: string; users: number }>> {
+  const ofSchool = schoolId ? { schoolId } : {};
   const [fromUsers, groups] = await Promise.all([
-    prisma.user.groupBy({ by: ['webuntisKlasseId', 'webuntisKlasseName'], where: { webuntisKlasseId: { gt: 0 } }, _count: { _all: true } }),
-    prisma.class.findMany({ where: { webuntisKlasseId: { gt: 0 } }, select: { webuntisKlasseId: true, name: true } }),
+    prisma.user.groupBy({ by: ['webuntisKlasseId', 'webuntisKlasseName'], where: { webuntisKlasseId: { gt: 0 }, ...ofSchool }, _count: { _all: true } }),
+    prisma.class.findMany({ where: { webuntisKlasseId: { gt: 0 }, ...ofSchool }, select: { webuntisKlasseId: true, name: true } }),
   ]);
   const classes = new Map<number, { name: string; users: number }>();
   for (const row of fromUsers) {
@@ -112,17 +121,20 @@ async function knownClasses(): Promise<Map<number, { name: string; users: number
   return classes;
 }
 
-// Checks the chosen people and classes exist; returns what is stored.
-async function resolveTargets(body: z.infer<typeof popupSchema>) {
+// Checks the chosen people and classes exist — in the popup's school; returns
+// what is stored.
+async function resolveTargets(body: z.infer<typeof popupSchema>, schoolId: string | null) {
   const users = [...new Set(body.targetUsers)];
   const classIds = [...new Set(body.targetClasses)];
   if (users.length > 0) {
-    const found = await prisma.user.count({ where: { stableUid: { in: users } } });
+    const found = await prisma.user.count({ where: { stableUid: { in: users }, ...(schoolId ? { schoolId } : {}) } });
     if (found !== users.length) throw new ValidationError('Mindestens ein ausgewählter Benutzer existiert nicht (mehr)');
   }
   const classes: Array<{ klasseId: number; klasseName: string }> = [];
   if (classIds.length > 0) {
-    const known = await knownClasses();
+    // A class id names a class in one school only.
+    if (!schoolId) throw new ValidationError('Klassen kann nur ein Popup für eine bestimmte Schule ansprechen');
+    const known = await knownClasses(schoolId);
     for (const id of classIds) {
       const entry = known.get(id);
       if (!entry) throw new ValidationError('Mindestens eine ausgewählte Klasse existiert nicht (mehr)');
@@ -164,22 +176,37 @@ function audienceFor(body: z.infer<typeof popupSchema>): (typeof AUDIENCES)[numb
 
 const admin = Router();
 
-admin.get('/', requireAdmin, async (_req: Request, res: Response): Promise<void> => {
-  const popups = await prisma.popup.findMany({ orderBy: { createdAt: 'desc' }, include: withTargets });
+// The school a popup written by this request is for: a school's view writes
+// for its school; the global view for the one named, or for every school.
+async function popupSchool(req: Request, body: z.infer<typeof popupSchema>): Promise<string | null> {
+  const scoped = scopeSchool(req);
+  if (scoped) return scoped;
+  if (!body.schoolId) return null;
+  const school = await schoolById(body.schoolId);
+  if (!school) throw new ValidationError('Unbekannte Schule');
+  return school.id;
+}
+
+admin.get('/', requireAdmin, requirePermission('popups.view'), async (req: Request, res: Response): Promise<void> => {
+  const schoolId = scopeSchool(req);
+  const popups = await prisma.popup.findMany({ where: schoolId ? { schoolId } : {}, orderBy: { createdAt: 'desc' }, include: withTargets });
   res.json({ popups: popups.map(adminRow) });
 });
 
 // For choosing who a popup is meant for: users by name (search), and every
 // known class.
-admin.get('/targets', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+admin.get('/targets', requireAdmin, requirePermission('popups.manage'), async (req: Request, res: Response): Promise<void> => {
   const query = z.string().trim().max(100).default('').parse(req.query['q'] ?? '');
+  // The global view picks among one school's people and classes (?forSchool=).
+  const forSchool = typeof req.query['forSchool'] === 'string' ? (await schoolById(req.query['forSchool'].trim().toLowerCase()))?.id ?? null : null;
+  const schoolId = scopeSchool(req) ?? forSchool;
   const users = await prisma.user.findMany({
-    where: query ? { username: { contains: query } } : {},
+    where: { ...(query ? { username: { contains: likeText(query) } } : {}), ...(schoolId ? { schoolId } : {}) },
     select: { stableUid: true, username: true, webuntisKlasseName: true },
     orderBy: { username: 'asc' },
     take: 25,
   });
-  const classes = [...(await knownClasses()).entries()]
+  const classes = [...(schoolId ? await knownClasses(schoolId) : new Map<number, { name: string; users: number }>()).entries()]
     .map(([id, entry]) => ({ id, name: entry.name, users: entry.users }))
     .sort((a, b) => a.name.localeCompare(b.name, 'de'));
   res.setHeader('Cache-Control', 'no-store');
@@ -190,19 +217,21 @@ admin.get('/targets', requireAdmin, async (req: Request, res: Response): Promise
 });
 
 // Live preview for the editor — the exact HTML clients would receive.
-admin.post('/render', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+admin.post('/render', requireAdmin, requirePermission('popups.manage'), async (req: Request, res: Response): Promise<void> => {
   const { content } = z.object({ content: z.string().max(100_000) }).parse(req.body);
   res.json({ html: renderPopupContent(content) });
 });
 
-admin.post('/', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+admin.post('/', requireAdmin, requirePermission('popups.manage'), writeLimiter, async (req: Request, res: Response): Promise<void> => {
   const body = popupSchema.parse(req.body);
   const data = { ...normalize(body), audience: audienceFor(body) };
-  const targets = await resolveTargets(body);
+  const schoolId = await popupSchool(req, body);
+  const targets = await resolveTargets(body, schoolId);
   const adminUsername = req.adminUser?.username ?? 'admin';
   const popup = await prisma.popup.create({
     data: {
       ...data,
+      schoolId,
       createdBy: adminUsername,
       targetUsers: { create: targets.users.map((stableUid) => ({ stableUid })) },
       targetClasses: { create: targets.classes },
@@ -213,15 +242,18 @@ admin.post('/', requireAdmin, writeLimiter, async (req: Request, res: Response):
     action: 'popup_created', adminUsername, popupId: popup.id, platform: popup.platform,
     targetUsers: targets.users.length, targetClasses: targets.classes.length,
   });
+  audit(req, 'popup.create', { type: 'popup', id: popup.id }, { title: popup.title }, schoolId);
   res.status(201).json({ popup: adminRow(popup) });
 });
 
-admin.put('/:id', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+admin.put('/:id', requireAdmin, requirePermission('popups.manage'), writeLimiter, async (req: Request, res: Response): Promise<void> => {
   const id = z.string().uuid().parse(req.params['id']);
   const body = popupSchema.parse(req.body);
-  const existing = await prisma.popup.findUnique({ where: { id }, select: { id: true } });
-  if (!existing) throw new NotFoundError('Popup nicht gefunden');
-  const targets = await resolveTargets(body);
+  const existing = await prisma.popup.findUnique({ where: { id }, select: { id: true, schoolId: true } });
+  // A school's view reaches its own popups; every-school popups are global.
+  if (!existing || !inScope(req, existing.schoolId) || (scopeSchool(req) !== null && existing.schoolId === null)) throw new NotFoundError('Popup nicht gefunden');
+  const schoolId = scopeSchool(req) ?? (body.schoolId === undefined ? existing.schoolId : await popupSchool(req, body));
+  const targets = await resolveTargets(body, schoolId);
   // One update: the old choice of people is replaced atomically.
   const popup = await prisma.popup.update({
     where: { id },
@@ -229,6 +261,7 @@ admin.put('/:id', requireAdmin, writeLimiter, async (req: Request, res: Response
       ...normalize(body),
       audience: audienceFor(body),
       ...(body.resetSeen ? { revision: { increment: 1 } } : {}),
+      schoolId,
       targetUsers: { deleteMany: {}, create: targets.users.map((stableUid) => ({ stableUid })) },
       targetClasses: { deleteMany: {}, create: targets.classes },
     },
@@ -239,21 +272,30 @@ admin.put('/:id', requireAdmin, writeLimiter, async (req: Request, res: Response
     action: 'popup_updated', adminUsername, popupId: id, resetSeen: !!body.resetSeen,
     targetUsers: targets.users.length, targetClasses: targets.classes.length,
   });
+  audit(req, 'popup.update', { type: 'popup', id }, { title: popup.title }, schoolId);
   res.json({ popup: adminRow(popup) });
 });
 
-admin.patch('/:id/enabled', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+async function popupInScope(req: Request, id: string): Promise<void> {
+  const existing = await prisma.popup.findUnique({ where: { id }, select: { schoolId: true } });
+  if (!existing || !inScope(req, existing.schoolId) || (scopeSchool(req) !== null && existing.schoolId === null)) throw new NotFoundError('Popup nicht gefunden');
+}
+
+admin.patch('/:id/enabled', requireAdmin, requirePermission('popups.manage'), writeLimiter, async (req: Request, res: Response): Promise<void> => {
   const id = z.string().uuid().parse(req.params['id']);
   const { enabled } = z.object({ enabled: z.boolean() }).parse(req.body);
+  await popupInScope(req, id);
   const popup = await prisma.popup.update({ where: { id }, data: { enabled }, include: withTargets });
   logger.info('Admin action: popup toggled', { action: 'popup_toggled', adminUsername: req.adminUser?.username, popupId: id, enabled });
   res.json({ popup: adminRow(popup) });
 });
 
-admin.delete('/:id', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+admin.delete('/:id', requireAdmin, requirePermission('popups.manage'), writeLimiter, async (req: Request, res: Response): Promise<void> => {
   const id = z.string().uuid().parse(req.params['id']);
+  await popupInScope(req, id);
   await prisma.popup.delete({ where: { id } });
   logger.info('Admin action: popup deleted', { action: 'popup_deleted', adminUsername: req.adminUser?.username, popupId: id });
+  audit(req, 'popup.delete', { type: 'popup', id });
   res.status(204).send();
 });
 
@@ -271,6 +313,8 @@ client.get('/active', optionalAuth, async (req: Request, res: Response): Promise
   const audience = z.enum(['user', 'guest']).default('user').parse(req.query['audience']);
   const now = new Date();
   const user = audience === 'user' ? req.user : undefined;
+  // Popups for every school, and those of the signed-in account's school.
+  const schoolId = user ? await schoolOfUser(user.stableUid) : null;
   const meantFor: Prisma.PopupWhereInput[] = [{ targetUsers: { none: {} }, targetClasses: { none: {} } }];
   if (user) {
     meantFor.push({ targetUsers: { some: { stableUid: user.stableUid } } });
@@ -285,6 +329,7 @@ client.get('/active', optionalAuth, async (req: Request, res: Response): Promise
         { OR: [{ startsAt: null }, { startsAt: { lte: now } }] },
         { OR: [{ endsAt: null }, { endsAt: { gt: now } }] },
         { OR: meantFor },
+        { OR: [{ schoolId: null }, ...(schoolId ? [{ schoolId }] : [])] },
       ],
     },
     orderBy: { createdAt: 'asc' },

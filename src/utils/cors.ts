@@ -25,3 +25,22 @@ export function withWwwOriginAlias(value: string): string[] {
     return [configured];
   }
 }
+
+/**
+ * Whether a browser Origin is the server's own address, i.e. the request is
+ * same-origin (the admin panel served by this very server, reached under any
+ * name: localhost, 127.0.0.1, a LAN address or a domain). Browsers send an
+ * Origin on same-origin POSTs too; CORS exists to limit *other* origins and
+ * must never block those. A page on another origin cannot make its Origin
+ * equal the Host of the server it calls, so this admits nothing cross-origin.
+ */
+export function isSameOrigin(origin: string, host: string | undefined): boolean {
+  if (!host) return false;
+  try {
+    const url = new URL(origin);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
+    return url.host.toLowerCase() === host.trim().toLowerCase();
+  } catch {
+    return false;
+  }
+}

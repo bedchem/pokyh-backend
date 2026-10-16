@@ -262,8 +262,15 @@ every node is reachable. Backups and log clean-up stay per node.
 
 A React + Vite single-page app built into the image and served at **`/admin/`** (same origin,
 JWT-protected): dashboard, analytics, users, classes, sessions, dishes and images, comments,
-to-dos and reminders, popups, school years, logs, API keys, backups, Pokyh Learn and the cluster.
+to-dos and reminders, popups, school years, requests, frontend and backend logs, audit, admins and
+permissions, schools, privacy overview, API keys, backups, Pokyh Learn and the cluster.
 Every cluster setting carries an **ⓘ** that explains in plain words what it does.
+
+**Schools and permissions** — any school on WebUntis can use Pokyh: a school joins on the first
+WebUntis sign-in of one of its accounts and is never created by hand. Each school's data is kept
+apart, admins hold rights per school or globally, and the panel switches between the global view
+and one school (top left). Mensa plans are assigned to schools; a school without one shows no
+Mensa. See [`docs/multi-school.md`](docs/multi-school.md).
 
 **Popups** — announcements shown in the app and on the website, with a live preview. Each popup
 can be shown on all platforms or one, to signed-in users, guests or both, once or several times in
@@ -577,7 +584,15 @@ when the API's domain is proxied — then open that port to the other nodes.
 npm test                # unit tests: pure modules, crypto, installer, edge, updater policy, rollout, scope …
 npm run test:cluster    # multi-node end-to-end tests (needs Docker; never touches your .env or database)
 npm run test:updater    # the updater's blue/green switch against real Docker with Caddy
+npm run test:admin      # schools, permissions and the admin API against a real MySQL (needs Docker)
+npm run bench           # endpoint timings and SQL per request on a seeded month of data (needs Docker)
 ```
+
+[`tests/admin/access.e2e.mjs`](tests/admin/access.e2e.mjs) — schools joining on their first
+sign-in, isolation between schools by id, header and body, deny-by-default permissions, no
+self-elevation, revocation at once, user filters across pages, request logs apart from the panel's
+own traffic, menus and comments per school, scrubbed error reports, the audit trail and the one-time
+migration of existing admins.
 
 `npm run test:cluster` starts a throw-away MySQL container and real backend processes:
 

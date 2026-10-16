@@ -12,8 +12,10 @@ import {
   MessageCircle,
   MonitorSmartphone,
   RefreshCw,
+  School,
   ScrollText,
   ShieldCheck,
+  Sparkles,
   UserPlus,
   Users,
   UtensilsCrossed,
@@ -22,14 +24,18 @@ import {
 } from 'lucide-react';
 import gsap from 'gsap';
 import { adminApi } from '../api';
+import { useAccess } from '../access';
 import { useAuth } from '../hooks/useAuth';
 import { useAutoRefresh } from '../hooks/useAutoRefresh';
 import { useLive } from '../live';
 import { prefersReducedMotion } from '../motion';
 import { TrendChart, type TrendSeries } from '../components/TrendChart';
 import { RankBars, Ring, SplitBar } from '../components/charts';
-import { Avatar, Count, Delta, Figures, Section, Segmented, TONES, toneFor } from '../components/kit';
-import type { AdminComment, AdminStats, AdminUser, FrontendActivityStats, RequestsChartPoint, TopEndpoint } from '../types';
+import { Avatar, Count, Delta, Figures, Notice, Section, Segmented, Tag, TONES, toneFor } from '../components/kit';
+import type { AdminComment, AdminSchool, AdminStats, AdminUser, FrontendActivityStats, RequestsChartPoint, TopEndpoint } from '../types';
+
+// Schools that joined within this many days show as new on the overview.
+const NEW_SCHOOL_DAYS = 14;
 
 const LINE_SKY = '#4f96dc';
 const LINE_AMBER = '#f2a55c';
@@ -109,6 +115,11 @@ function Skeleton() {
 
 export function DashboardPage() {
   const { username } = useAuth();
+  const { view, me, can, canGlobal } = useAccess();
+  const isGlobal = view?.kind === 'global';
+  // The global view adds the schools: who joined, who has no menu yet.
+  const [schools, setSchools] = useState<AdminSchool[] | null>(null);
+  const showSchools = isGlobal && canGlobal('schools.view');
   const [stats, setStats] = useState<AdminStats | null>(null);
   const [recentUsers, setRecentUsers] = useState<AdminUser[]>([]);
   const [comments, setComments] = useState<AdminComment[]>([]);
@@ -144,6 +155,13 @@ export function DashboardPage() {
   }, []);
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
+
+  const fetchSchools = useCallback(() => {
+    if (!showSchools) return;
+    adminApi.schools().then((r) => setSchools(r.schools)).catch(() => setSchools([]));
+  }, [showSchools]);
+  useEffect(() => { fetchSchools(); }, [fetchSchools]);
+  useLive(['schools'], fetchSchools, 3000);
 
   const { refresh, refreshing } = useAutoRefresh(fetchAll, 15000);
   // Anything the dashboard shows refreshes the moment it changes on the server.
@@ -235,11 +253,18 @@ export function DashboardPage() {
     { label: 'Erinnerungen', value: stats.totalReminders },
   ];
 
+  // Only what this admin may open in this view.
   const quickLinks = [
-    { to: '/users',   label: 'Benutzer verwalten', icon: UserPlus },
-    { to: '/logs',    label: 'Logs öffnen',        icon: ScrollText },
-    { to: '/backups', label: 'Backups öffnen',     icon: DatabaseBackup },
-  ];
+    { to: '/users',    label: 'Benutzer verwalten', icon: UserPlus,       show: can('users.view') },
+    { to: '/requests', label: 'Anfragen öffnen',    icon: ScrollText,     show: can('requests.view') },
+    { to: '/schools',  label: 'Schulen öffnen',     icon: School,         show: showSchools },
+    { to: '/backups',  label: 'Backups öffnen',     icon: DatabaseBackup, show: isGlobal && canGlobal('backups.manage') },
+  ].filter((link) => link.show).slice(0, 3);
+
+  const roleLabel = me?.owner ? 'Server-Owner' : isGlobal ? 'Global-Admin' : 'Schul-Admin';
+  const newSchools = (schools ?? []).filter((sc) => sc.origin === 'webuntis' && Date.now() - new Date(sc.createdAt).getTime() < NEW_SCHOOL_DAYS * 86_400_000);
+  const schoolsWithoutMenu = (schools ?? []).filter((sc) => sc.active && !sc.menu);
+  const topSchools = [...(schools ?? [])].sort((a, b) => (b.users ?? 0) - (a.users ?? 0)).slice(0, 6);
 
   const profileTone = TONES[toneFor(username)];
 
@@ -252,7 +277,9 @@ export function DashboardPage() {
               Hallo, {username}
             </h1>
             <p data-rise className="mt-2 text-[15px] text-ink-3">
-              {greeting()} — der Server läuft seit {formatUptime(stats.serverUptime ?? 0)}.
+              {view?.kind === 'school'
+                ? <>{greeting()} — du siehst <span className="text-ink-2">{view.school.name}</span>.</>
+                : <>{greeting()} — alle Schulen{schools ? ` (${schools.length})` : ''}; der Server läuft seit {formatUptime(stats.serverUptime ?? 0)}.</>}
             </p>
           </div>
           <div data-rise className="flex flex-shrink-0 items-center gap-3">
@@ -283,18 +310,54 @@ export function DashboardPage() {
                 : <Delta>keine neuen</Delta>,
             },
             { label: 'Sessions', value: stats.totalActiveSessions, icon: MonitorSmartphone, to: '/sessions', note: <Delta>aktiv</Delta> },
-            { label: 'Anfragen', value: requestsToday, icon: Activity, to: '/logs', note: <Delta>⌀ {Math.round(stats.avgResponseTimeToday ?? 0)} ms</Delta> },
+            { label: 'Anfragen', value: requestsToday, icon: Activity, to: '/requests', note: <Delta>⌀ {Math.round(stats.avgResponseTimeToday ?? 0)} ms</Delta> },
             {
               label: 'Fehler',
               value: errorsToday,
               icon: AlertTriangle,
-              to: '/logs',
+              to: '/requests',
               note: errorsToday > 0
                 ? <Delta trend="up" tone="rose">{errorRate.toLocaleString('de-AT', { maximumFractionDigits: 1 })} %</Delta>
                 : <Delta tone="mint">keine heute</Delta>,
             },
           ]}
         />
+
+        {showSchools && schools && schools.length > 0 && (
+          <Section
+            className="mt-[52px]"
+            title="Schulen"
+            meta={newSchools.length > 0 ? `${newSchools.length} neu in ${NEW_SCHOOL_DAYS} Tagen` : `${schools.length}`}
+            action={<Link to="/schools" className="btn btn-sm btn-line">Alle Schulen</Link>}
+          >
+            {schoolsWithoutMenu.length > 0 && (
+              <div className="mt-6">
+                <Notice tone="amber" icon={UtensilsCrossed}>
+                  {schoolsWithoutMenu.length === 1 ? `${schoolsWithoutMenu[0]!.name} hat` : `${schoolsWithoutMenu.length} Schulen haben`} keinen Mensaplan — ihre App zeigt keine Mensa.
+                </Notice>
+              </div>
+            )}
+            <ul className="rows mt-4">
+              {topSchools.map((sc) => {
+                const fresh = newSchools.includes(sc);
+                return (
+                  <li key={sc.id} className="row-line flex items-center gap-4 py-[9px]">
+                    <span className="orb h-11 w-11"><School size={18} strokeWidth={1.6} /></span>
+                    <span className="min-w-0 flex-1">
+                      <span className="flex items-center gap-2">
+                        <span className="truncate text-[14.5px] font-medium">{sc.name}</span>
+                        {fresh && <Tag tone="mint"><Sparkles size={11} /> neu</Tag>}
+                        {!sc.active && <Tag tone="rose">deaktiviert</Tag>}
+                      </span>
+                      <span className="block truncate text-[12.5px] text-ink-3">{sc.menu ? sc.menu.name : 'kein Mensaplan'}</span>
+                    </span>
+                    <span className="tabular flex-shrink-0 text-[14px]"><Count value={sc.users ?? 0} /> <span className="text-ink-3">Konten</span></span>
+                  </li>
+                );
+              })}
+            </ul>
+          </Section>
+        )}
 
         <section className="mt-[52px]" aria-labelledby="dash-trend">
           <div data-rise className="flex items-center justify-between gap-4">
@@ -460,7 +523,7 @@ export function DashboardPage() {
           <div className="mt-[18px] truncate text-[16px] font-medium">{username}</div>
           <div className="mt-1 flex items-center justify-center gap-1.5 text-[13.5px] text-ink-3">
             <ShieldCheck size={14} strokeWidth={1.7} />
-            Administrator
+            {roleLabel}
           </div>
           <div className="mt-[22px] flex justify-center gap-5">
             {quickLinks.map(({ to, label, icon: Icon }) => (

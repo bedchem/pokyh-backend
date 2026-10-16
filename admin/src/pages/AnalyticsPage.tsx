@@ -4,6 +4,7 @@ import {
   BookOpen,
   CalendarDays,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   Clock,
   Flame,
@@ -27,7 +28,8 @@ import {
   UtensilsCrossed,
   type LucideIcon,
 } from 'lucide-react';
-import { adminApi } from '../api';
+import { adminApi, setAnalyticsEnd } from '../api';
+import { todayDayKey } from '../components/format';
 import { useAutoRefresh } from '../hooks/useAutoRefresh';
 import { useLive, useLiveStatus } from '../live';
 import { useTheme } from '../theme';
@@ -308,6 +310,14 @@ function Skeleton() {
   );
 }
 
+// Local day keys (YYYY-MM-DD) moved by whole days.
+function shiftDay(dayKey: string, days: number): string {
+  const d = new Date(`${dayKey}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+
 // ─── Page ───────────────────────────────────────────────────────────────────
 
 export function AnalyticsPage() {
@@ -328,7 +338,9 @@ export function AnalyticsPage() {
   // While the admin stream is connected every change reaches the page at once.
   const streaming = useLiveStatus();
 
-  const setRange = (next: AnalyticsRange) => { setRangeState(next); remember(RANGE_KEY, next); };
+  // Paging back through history: the last day of a rolling period (null: today).
+  const [end, setEnd] = useState<string | null>(null);
+  const setRange = (next: AnalyticsRange) => { setEnd(null); setRangeState(next); remember(RANGE_KEY, next); };
   const setTab = (next: TabKey) => { setTabState(next); remember(TAB_KEY, next); };
   const setMetric = (next: Metric) => { setMetricState(next); remember(METRIC_KEY, next); };
 
@@ -348,6 +360,7 @@ export function AnalyticsPage() {
 
   const load = useCallback(async (fresh = false) => {
     try {
+      setAnalyticsEnd(end);
       const next = await adminApi.analytics(range, fresh);
       setData(next);
       setError(null);
@@ -356,7 +369,9 @@ export function AnalyticsPage() {
     } finally {
       setLoading(false);
     }
-  }, [range]);
+  }, [range, end]);
+  // Other pages never inherit the shifted period.
+  useEffect(() => () => setAnalyticsEnd(null), []);
 
   useEffect(() => {
     setLoading(true);
@@ -519,6 +534,19 @@ export function AnalyticsPage() {
     sessions: `Wie oft Pokyh pro ${unitWord} geöffnet wurde, in den Apps und auf der Website.${trend?.unit === 'day' ? ' Klick auf einen Tag zeigt, wer da war.' : ''}`,
   };
 
+  // Paging a rolling period (7/30/90/365 days) back or forward in time.
+  const rolling = /^\d+$/.test(range) && range.length <= 3;
+  const span = rolling ? Number(range) : 0;
+  const earliest = `${Math.min(...(data.availableYears.length > 0 ? data.availableYears : [Number(data.period.toKey.slice(0, 4))]))}-01-01`;
+  const canBack = rolling && data.period.fromKey > earliest;
+  const canForward = rolling && end !== null;
+  const page = (direction: -1 | 1) => {
+    if (!rolling || (direction === -1 ? !canBack : !canForward)) return;
+    const next = shiftDay(data.period.toKey, direction * span);
+    setLoading(true);
+    setEnd(direction === 1 && next >= todayDayKey() ? null : next);
+  };
+
   const onSelectPoint = metric === 'visitors'
     ? () => showVisitors()
     : trend?.unit === 'day'
@@ -613,7 +641,18 @@ export function AnalyticsPage() {
                 </span>
               )}
               <div className="hero-action flex items-center gap-3">
-                {!phone && <span className="text-[13.5px] text-ink-3">{rangeLabel}</span>}
+                {rolling ? (
+                  <div className="period-pager" role="group" aria-label="Zeitraum blättern">
+                    <button type="button" className="orb h-9 w-9" onClick={() => page(-1)} disabled={!canBack} aria-label="Früherer Zeitraum">
+                      <ChevronLeft size={16} strokeWidth={1.8} />
+                    </button>
+                    <span className="min-w-0 truncate text-[13.5px] text-ink-2">{rangeLabel}</span>
+                    <button type="button" className="orb h-9 w-9" onClick={() => page(1)} disabled={!canForward} aria-label="Späterer Zeitraum">
+                      <ChevronRight size={16} strokeWidth={1.8} />
+                    </button>
+                    {end && <button type="button" className="btn btn-sm btn-quiet" onClick={() => { setLoading(true); setEnd(null); }}>Heute</button>}
+                  </div>
+                ) : !phone && <span className="text-[13.5px] text-ink-3">{rangeLabel}</span>}
                 {action && (
                   <button type="button" className="btn btn-sm btn-quiet" onClick={action.open}>
                     <action.icon size={14} strokeWidth={1.8} /> {action.label} <ChevronRight size={14} strokeWidth={1.8} />
@@ -631,6 +670,9 @@ export function AnalyticsPage() {
                   tickEvery={trend.tickEvery}
                   drawKey={`${metric}-${data.period.key}`}
                   onSelect={onSelectPoint}
+                  onPage={rolling ? page : undefined}
+                  canPageBack={canBack}
+                  canPageForward={canForward}
                   ariaLabel={`${tiles.find((t) => t.key === metric)?.label ?? ''} je ${unitWord}, ${rangeLabel}`}
                 />
               ) : (

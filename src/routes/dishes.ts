@@ -5,6 +5,8 @@ import { dishesCache, currentSeason, dishesCacheKey } from '../utils/cache';
 import { rotatePastWeeks } from '../utils/mensaRotate';
 import { slugifyDishName } from '../utils/dishKey';
 import { logger } from '../utils/logger';
+import { optionalAuth } from '../middleware/auth';
+import { menuContext } from '../services/schools';
 
 const router = Router();
 
@@ -59,13 +61,23 @@ function dishToJson(d: {
 }
 
 // GET /dishes — mensa.json-compatible response (cached in-memory, TTL via env).
+// The menu of one school: a signed-in account's own, a guest's ?school=
+// (id or slug), or the default school's — what every client got before
+// schools existed. A school without a menu gets an empty one.
 // Automatically serves the season-appropriate plan: April–October = summer,
 // otherwise winter. On cache miss we also opportunistically rotate any past
 // weeks to the end of the plan so the menu is always "rolling" without any
 // admin action. The rotate is idempotent and no-op when nothing has expired.
-router.get('/', readLimiter, async (_req: Request, res: Response): Promise<void> => {
+router.get('/', readLimiter, optionalAuth, async (req: Request, res: Response): Promise<void> => {
+  const { menuId } = await menuContext(req);
+  // `available: false`: this school has no menu — the app shows no Mensa at
+  // all rather than an empty week.
+  if (!menuId) {
+    res.json({ available: false, menu: { dishes: [] } });
+    return;
+  }
   const season = currentSeason();
-  const cacheKey = dishesCacheKey(season);
+  const cacheKey = dishesCacheKey(menuId, season);
   const cached = dishesCache.get(cacheKey);
   if (cached !== undefined) {
     res.json(cached);
@@ -73,7 +85,7 @@ router.get('/', readLimiter, async (_req: Request, res: Response): Promise<void>
   }
 
   try {
-    await rotatePastWeeks(season);
+    await rotatePastWeeks(menuId, season);
   } catch (err) {
     // Rotation failure must not block serving the (possibly stale) menu.
     logger.warn('opportunistic rotate failed', {
@@ -82,11 +94,11 @@ router.get('/', readLimiter, async (_req: Request, res: Response): Promise<void>
   }
 
   const dishes = await prisma.dish.findMany({
-    where: { plan: season },
+    where: { menuId, plan: season },
     orderBy: [{ date: 'asc' }, { sortOrder: 'asc' }, { nameDe: 'asc' }],
   });
 
-  const payload = { menu: { dishes: dishes.map(dishToJson) } };
+  const payload = { available: true, menu: { dishes: dishes.map(dishToJson) } };
   dishesCache.set(cacheKey, payload);
   res.json(payload);
 });

@@ -19,6 +19,8 @@ async function main() {
   }
 
   const deleted = await prisma.admin.deleteMany({ where: { stableUid: user.stableUid } });
+  // The rights go with the admin standing, so a later new grant starts from nothing.
+  await prisma.adminGrant.deleteMany({ where: { username: user.username } });
   // Second factors must not come back to life if the name is made admin again.
   await prisma.adminTotp.deleteMany({ where: { username: user.username } });
   await prisma.adminPasskey.deleteMany({ where: { username: user.username } });

@@ -6,6 +6,7 @@ import { config } from '../config';
 import { requireAdmin } from '../middleware/requireAdmin';
 import { clientIp } from '../middleware/requestLogger';
 import { logger } from '../utils/logger';
+import { audit } from '../services/audit';
 import { UnauthorizedError, ValidationError } from '../utils/errors';
 import { passkeyRelyingParty } from '../security/adminLogin';
 import {
@@ -89,6 +90,8 @@ async function completeLogin(req: Request, res: Response, username: string, meth
   }
   const token = issueAdminToken(still.account.username);
   logger.info('Admin login successful', { action: 'admin_login', method, username: still.account.username, ip: clientIp(req), userAgent: req.headers['user-agent'] });
+  // The access record of system administrators (Garante, 27 Nov 2008).
+  audit(req, 'admin.login', { type: 'admin', id: still.account.username }, { method }, null, still.account.username);
   res.json({ token });
 }
 

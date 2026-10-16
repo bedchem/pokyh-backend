@@ -22,6 +22,7 @@ import { adminApi } from '../api';
 import { useToast } from './Toast';
 import { AdminCountdown, clockOffset } from './AdminCountdown';
 import { GrantAdminDialog, OneTimePasswordDialog } from './GrantAdminDialog';
+import { AppointAdminDialog } from './AppointAdminDialog';
 import { PasswordInput } from './PasswordInput';
 import { roleLabel } from '../roles';
 import type { AdminUserDetail, AdminTodo, AdminUserClass } from '../types';
@@ -446,6 +447,7 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
   const [newPassword, setNewPassword] = useState('');
   const [settingPassword, setSettingPassword] = useState(false);
   const [showGrantDialog, setShowGrantDialog] = useState(false);
+  const [showAppoint, setShowAppoint] = useState(false);
   const [showOtp, setShowOtp] = useState(false);
   // Server clock minus local clock, measured when the details arrived.
   const offset = useMemo(() => clockOffset(user?.serverTime), [user?.serverTime]);
@@ -496,9 +498,10 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
 
   async function handleToggleAdmin() {
     if (!user) return;
-    // A WebUntis account first gets a one-time password (popup).
-    if (!user.isAdmin && user.needsOneTimePassword) {
-      setShowGrantDialog(true);
+    // Becoming an admin starts with choosing the rights (and, for a WebUntis
+    // account, a one-time password) — never all rights at once.
+    if (!user.isAdmin) {
+      setShowAppoint(true);
       return;
     }
     setTogglingAdmin(true);
@@ -564,6 +567,17 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
 
   return (
     <>
+      {showAppoint && user && (
+        <AppointAdminDialog
+          stableUid={user.stableUid}
+          username={user.username}
+          schoolId={user.schoolId ?? null}
+          needsOneTimePassword={user.needsOneTimePassword}
+          onClose={() => setShowAppoint(false)}
+          onDone={handleGranted}
+        />
+      )}
+
       {showGrantDialog && user && (
         <GrantAdminDialog
           stableUid={user.stableUid}

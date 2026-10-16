@@ -2,6 +2,8 @@ import { Request, Response, NextFunction } from 'express';
 import { prisma } from '../db';
 import { config } from '../config';
 import { logger } from '../utils/logger';
+import { schoolOfUser } from '../services/schools';
+import { noteAccountDay } from '../services/accountDays';
 
 // Paths to skip logging (health checks, static assets, admin panel HTML). The
 // usage heartbeat arrives once a minute from every open app; logging each one
@@ -12,6 +14,17 @@ const SKIP_PREFIXES = ['/admin/', '/admin'];
 
 export function clientIp(req: Request): string {
   return (req.ip ?? req.socket.remoteAddress ?? 'unknown').slice(0, 45);
+}
+
+// Feature areas of the request log. "admin" is the admin panel's own API
+// traffic: it is shown on the Anfragen page apart from the apps' requests and
+// never counted as app activity.
+export type RequestScope = 'admin' | 'learn' | 'core';
+
+export function requestScopeOf(path: string): RequestScope {
+  if (path === '/api/admin' || path.startsWith('/api/admin/')) return 'admin';
+  if (path === '/learn' || path.startsWith('/learn/')) return 'learn';
+  return 'core';
 }
 
 export function requestLogger(req: Request, res: Response, next: NextFunction): void {
@@ -25,10 +38,13 @@ export function requestLogger(req: Request, res: Response, next: NextFunction): 
   }
 
   const start = Date.now();
+  // Read now: by the time the response finishes, a router has cut its mount
+  // path off req.path ("/api/admin/analytics" would be logged as "/").
+  const path = req.path;
 
   // Feature segmentation: lets the admin Logs page filter by area without a
   // second logging pipeline (see GET /api/admin/logs's `scope` query param).
-  const scope: 'learn' | 'core' = req.path.startsWith('/learn') ? 'learn' : 'core';
+  const scope = requestScopeOf(path);
 
   res.on('finish', () => {
     const duration = Date.now() - start;
@@ -41,7 +57,7 @@ export function requestLogger(req: Request, res: Response, next: NextFunction): 
     const username = req.user?.username ?? req.adminUser?.username ?? req.adminUser?.role ?? null;
     const logMeta = {
       method: req.method,
-      path: req.path,
+      path,
       status: res.statusCode,
       duration,
       ip,
@@ -53,7 +69,7 @@ export function requestLogger(req: Request, res: Response, next: NextFunction): 
 
     if (config.debug) {
       const statusColor = res.statusCode >= 500 ? '\x1b[31m' : res.statusCode >= 400 ? '\x1b[33m' : res.statusCode >= 200 ? '\x1b[32m' : '\x1b[0m';
-      logger.debug(`[log] ${statusColor}${res.statusCode}\x1b[0m ${req.method} ${req.path} ${duration}ms user=${username ?? '-'} ip=${ip} reqId=${req.id}`);
+      logger.debug(`[log] ${statusColor}${res.statusCode}\x1b[0m ${req.method} ${path} ${duration}ms user=${username ?? '-'} ip=${ip} reqId=${req.id}`);
     }
 
     // Log 4xx/5xx to file logger for persistent tracking
@@ -63,11 +79,22 @@ export function requestLogger(req: Request, res: Response, next: NextFunction): 
       logger.warn('HTTP 4xx error', logMeta);
     }
 
+    // The account's school (cached), or the school an admin was looking at.
+    const account = req.user?.stableUid;
+    const school: Promise<string | null> = account
+      ? schoolOfUser(account).catch(() => null)
+      : Promise.resolve(req.adminScope?.schoolId ?? null);
+    // An account's first request of the day (on this device kind) is the
+    // Analytics page's evidence that it was active (services/accountDays.ts).
+    if (account && res.statusCode < 400) {
+      void school.then((schoolId) => noteAccountDay(account, req.headers['user-agent'], schoolId));
+    }
+
     // Non-blocking DB write — never fails silently
-    prisma.requestLog.create({
+    void school.then((schoolId) => prisma.requestLog.create({
       data: {
         method: req.method,
-        path: req.path.slice(0, 500),
+        path: path.slice(0, 500),
         status: res.statusCode,
         duration,
         ip,
@@ -81,9 +108,10 @@ export function requestLogger(req: Request, res: Response, next: NextFunction): 
         // can include user-controlled input. Status plus request ID is enough
         // for support correlation without retaining that input.
         error: res.statusCode >= 500 ? 'server_error' : res.statusCode >= 400 ? 'client_error' : null,
+        schoolId,
       },
-    }).catch((e) => {
-      if (config.debug) logger.warn('[requestLogger] DB write failed', { message: e.message, requestId: req.id });
+    })).catch((e) => {
+      if (config.debug) logger.warn('[requestLogger] DB write failed', { message: e instanceof Error ? e.message : String(e), requestId: req.id });
     });
   });
 

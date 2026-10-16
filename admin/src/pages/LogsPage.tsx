@@ -620,7 +620,7 @@ const EVENT_COLORS: Record<string, string> = {
   logout:    'var(--amber-deep)',
 };
 
-function FrontendActivityTab({ autoRefresh }: { autoRefresh: boolean }) {
+export function FrontendActivityTab({ autoRefresh }: { autoRefresh: boolean }) {
   const { showToast } = useToast();
   const [data, setData] = useState<{ logs: FrontendActivityLog[]; total: number } | null>(null);
   const [stats, setStats] = useState<FrontendActivityStats | null>(null);

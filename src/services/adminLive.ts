@@ -75,6 +75,13 @@ const AREAS: Record<string, string[]> = {
   import: ['all'],
   restore: ['all'],
   'school-years': ['all'],
+  // Schools, menus and administrators' rights.
+  schools: ['schools'],
+  menus: ['schools', 'dishes'],
+  admins: ['access', 'users'],
+  grants: ['access', 'users'],
+  // Error reports of the apps; the panel's own reports change nothing shown.
+  'client-errors': ['client-errors'],
   // Registering a push token changes nothing the panel shows.
   push: [],
   // The usage heartbeat is announced on its own, throttled (see adminLive).

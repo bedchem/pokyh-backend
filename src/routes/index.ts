@@ -22,6 +22,10 @@ import { popupsAdminRouter, popupsRouter } from './popups';
 import { clusterAdminRouter } from './adminCluster';
 import { analyticsAdminRouter } from './adminAnalytics';
 import { adminSecurityRouter } from './adminSecurity';
+import { adminAccessRouter } from './adminSchools';
+import { adminMonitoringRouter } from './adminMonitoring';
+import { adminSearchRouter } from './adminSearch';
+import { clientErrorsRouter } from './clientErrors';
 import { config } from '../config';
 
 const router = Router();
@@ -47,6 +51,9 @@ router.use('/api/admin/popups', popupsAdminRouter);
 router.use('/api/admin/cluster', clusterAdminRouter);
 router.use('/api/admin/analytics', analyticsAdminRouter);
 router.use('/api/admin', adminSecurityRouter);
+router.use('/api/admin', adminAccessRouter);
+router.use('/api/admin', adminMonitoringRouter);
+router.use('/api/admin', adminSearchRouter);
 router.use('/api/admin', adminRouter);
 
 // Public dish catalog — no API key required (read-only menu data)
@@ -76,6 +83,8 @@ router.use('/sse', sseRouter);
 router.use('/subject-images', subjectImagesRouter);
 // Frontend activity tracking
 router.use('/activity-log', activityLogRouter);
+// Error reports of the web app and the apps (validated, scrubbed, no IP)
+router.use('/client-errors', clientErrorsRouter);
 // Foreground heartbeat behind the admin Analytics page (device kind and time only)
 router.use('/usage', usageRouter);
 // Privacy notice acknowledgement and the usage-statistics consent

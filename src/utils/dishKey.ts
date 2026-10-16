@@ -71,6 +71,22 @@ export function slugifyDishName(name: string): string {
 // pre-migration cache, or already the stable key) to the current stable key.
 // Returns null when the id doesn't map to any known dish AND doesn't look like
 // an already-migrated key (i.e. genuinely unknown).
+// The same for many ids at once: one query instead of one per id (the menu
+// asks for the ratings of every dish of a week in one batch).
+export async function resolveDishKeys(idsOrKeys: string[]): Promise<Map<string, string>> {
+  const unique = [...new Set(idsOrKeys.filter(Boolean))];
+  const found = unique.length > 0
+    ? await prisma.dish.findMany({ where: { id: { in: unique } }, select: { id: true, stableKey: true, nameDe: true } })
+    : [];
+  const byId = new Map(found.map((d) => [d.id, d]));
+  const out = new Map<string, string>();
+  for (const id of unique) {
+    const dish = byId.get(id);
+    out.set(id, dish ? (dish.stableKey || slugifyDishName(dish.nameDe)) : id);
+  }
+  return out;
+}
+
 export async function resolveDishKey(idOrKey: string): Promise<string> {
   if (!idOrKey) return '';
   // First: is it an internal UUID for an existing dish? Then use that dish's key.

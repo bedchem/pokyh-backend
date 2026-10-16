@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
@@ -6,19 +7,21 @@ import { v4 as uuidv4 } from 'uuid';
 import { rateLimit } from 'express-rate-limit';
 import https from 'https';
 import http from 'http';
+import dns from 'dns';
+import net from 'net';
 import fs from 'fs/promises';
 import path from 'path';
 import sharp from 'sharp';
 import { createHash, randomBytes } from 'crypto';
 import { config } from '../config';
 import { prisma } from '../db';
-import { requireAdmin } from '../middleware/requireAdmin';
+import { inScope, requireAdmin, requirePermission, schoolWhere, scopeSchool } from '../middleware/requireAdmin';
 import { generateClassCode, generateClassId } from '../utils/uid';
 import { revokeUserTokens } from '../utils/revokedTokens';
 import { logger } from '../utils/logger';
 import { invalidateDishesCache } from '../utils/cache';
 import { publishDishRatings } from '../services/dishRatings';
-import { broadcastDishComments } from './dishComments';
+import { publishDishComments } from '../services/dishComments';
 import { getLearnConfig, updateLearnConfig } from '../services/learnConfig';
 import { getLearnAiConfig, updateLearnAiConfig } from '../services/learnAiConfig';
 import { ensureModelReady } from '../services/learnAiOllama';
@@ -47,6 +50,7 @@ import {
 import { slugifyDishName } from '../utils/dishKey';
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from '../utils/errors';
 import { intQueryParam } from '../utils/duration';
+import { endpointOf } from '../utils/endpoint';
 import { clientIp } from '../middleware/requestLogger';
 import { sseManager } from '../services/sse';
 import { ADMIN_LIVE_KEY } from '../services/adminLive';
@@ -67,6 +71,11 @@ import {
 import { adminCanSignIn, grantNeedsOneTimePassword, mayViewOneTimePassword, validOneTimePassword } from '../security/adminLogin';
 import { clearSecondFactors, issueSecondFactorTicket, secondFactorMethods } from '../services/adminSecondFactor';
 import { hasClassIdentity, parseAccountRole } from '../utils/accountClass';
+import { audit } from '../services/audit';
+import { assertMayAppointAdmin, assertMayRemoveAdmin, checkGrantRequest, clearGrants, grantsOf, isOwner, parseGrantRequest, setGrant } from '../services/adminAccess';
+import { DEFAULT_MENU_ID, defaultSchoolId, forgetUserSchool, listSchools, menuOfSchool, schoolById, schoolsOfMenu } from '../services/schools';
+import { GLOBAL_SCOPE, can } from '../security/permissions';
+import { likeText } from '../utils/like';
 
 function safeParseTags(raw: string): string[] {
   try { return JSON.parse(raw) as string[]; } catch { return []; }
@@ -128,7 +137,52 @@ function weekOrdinalFromSourceId(sourceId: string | null | undefined): number {
 const FETCH_TIMEOUT_MS = 10_000;
 const FETCH_MAX_BYTES = 5 * 1024 * 1024;
 
-function fetchUrl(url: string): Promise<string> {
+class BlockedAddressError extends Error {}
+
+// Loopback, private, link-local (cloud metadata), carrier-grade NAT and
+// multicast ranges: what a server can reach but the internet cannot.
+function isInternalAddress(address: string): boolean {
+  if (net.isIPv4(address)) {
+    const [a = 0, b = 0] = address.split('.').map(Number);
+    return a === 0 || a === 10 || a === 127 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31)
+      || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127) || a >= 224;
+  }
+  const v6 = address.toLowerCase();
+  if (v6.startsWith('::ffff:')) return isInternalAddress(v6.slice(7));
+  return v6 === '::' || v6 === '::1' || v6.startsWith('fc') || v6.startsWith('fd') || v6.startsWith('fe8') || v6.startsWith('fe9')
+    || v6.startsWith('fea') || v6.startsWith('feb') || v6.startsWith('ff');
+}
+
+const BLOCKED = 'Diese Adresse zeigt ins interne Netz und ist für den Import nicht erlaubt';
+
+// Resolves like the default lookup, but refuses a name that leads to an
+// internal address. Used for the connection itself, so a name that changes
+// its answer between a check and the request (DNS rebinding) is caught too.
+const publicLookup: net.LookupFunction = (hostname, options, callback) => {
+  dns.lookup(hostname, { ...options, all: true }, (err, addresses) => {
+    if (err) {
+      callback(err, '', 0);
+      return;
+    }
+    const list = addresses as unknown as dns.LookupAddress[];
+    if (list.length === 0 || list.some((a) => isInternalAddress(a.address))) {
+      callback(new BlockedAddressError(BLOCKED), '', 0);
+      return;
+    }
+    if (options.all) (callback as unknown as (e: null, all: dns.LookupAddress[]) => void)(null, list);
+    else callback(null, list[0]!.address, list[0]!.family);
+  });
+};
+
+// Whoever may change the Mensa of every school, or the operator's own
+// MENSA_IMPORT_URL, may fetch from anywhere — as before schools existed. A
+// school's Mensa manager only from the public internet: the server must not
+// become their way into the internal network (SSRF).
+function importMayReachInternal(req: Request, url: string): boolean {
+  return can(req.adminAccess!, 'mensa.manage', null) || (config.mensaImportUrl !== '' && url === config.mensaImportUrl);
+}
+
+function fetchUrl(url: string, { publicOnly = false }: { publicOnly?: boolean } = {}): Promise<string> {
   return new Promise((resolve, reject) => {
     let parsed: URL;
     try {
@@ -141,8 +195,13 @@ function fetchUrl(url: string): Promise<string> {
       reject(new Error('unsupported URL scheme'));
       return;
     }
+    const literal = parsed.hostname.replace(/^\[|\]$/g, '');
+    if (publicOnly && (parsed.hostname === 'localhost' || (net.isIP(literal) && isInternalAddress(literal)))) {
+      reject(new BlockedAddressError(BLOCKED));
+      return;
+    }
     const lib = parsed.protocol === 'https:' ? https : http;
-    const req = lib.get(parsed, { headers: { 'User-Agent': 'pokyh-backend/1.0' } }, (res) => {
+    const req = lib.get(parsed, { headers: { 'User-Agent': 'pokyh-backend/1.0' }, ...(publicOnly ? { lookup: publicLookup } : {}) }, (res) => {
       const status = res.statusCode ?? 0;
       if (status < 200 || status >= 300) {
         res.resume();
@@ -168,6 +227,91 @@ function fetchUrl(url: string): Promise<string> {
 }
 
 const router = Router();
+
+// ` AND <column> = <school>` for raw SQL of a school-scoped request, nothing
+// for the global view.
+function schoolSql(req: Request, column = 'school_id'): Prisma.Sql {
+  const schoolId = scopeSchool(req);
+  return schoolId ? Prisma.sql` AND ${Prisma.raw(column)} = ${schoolId}` : Prisma.empty;
+}
+
+// The apps' traffic: the admin panel's own requests are not app activity.
+// Every row has a scope (rows from before it existed are filled with "core"
+// once, services/multiSchool.ts), so a plain comparison suffices and stays
+// readable from the (created_at, scope, …) index.
+const APP_TRAFFIC = Prisma.sql` AND scope <> 'admin'`;
+const APP_TRAFFIC_WHERE = { scope: { not: 'admin' } };
+
+// A user the request may see: in its school, or any in the global view.
+// Null for an unknown id and for another school's account alike, so the
+// answer never tells which ids exist elsewhere.
+async function userInScope(req: Request, stableUid: string) {
+  const user = await prisma.user.findUnique({ where: { stableUid } });
+  return user && inScope(req, user.schoolId) ? user : null;
+}
+
+async function classInScope(req: Request, id: string) {
+  const cls = await prisma.class.findUnique({ where: { id } });
+  return cls && inScope(req, cls.schoolId) ? cls : null;
+}
+
+async function reminderInScope(req: Request, id: string) {
+  const reminder = await prisma.reminder.findUnique({ where: { id }, include: { class: { select: { schoolId: true } } } });
+  return reminder && inScope(req, reminder.class.schoolId) ? reminder : null;
+}
+
+// ─── Menus ──────────────────────────────────────────────────────────────────
+// A school's view works on the menu assigned to that school; the global view
+// names one (?menuId= / body menuId), the default menu otherwise. Changing a
+// menu changes it for every school that shows it, so that needs the Mensa
+// right in each of them.
+
+async function menuFor(req: Request, requested: unknown): Promise<string | null> {
+  const schoolId = scopeSchool(req);
+  const asked = typeof requested === 'string' && requested.trim() ? requested.trim().toLowerCase() : null;
+  if (schoolId) {
+    const own = await menuOfSchool(schoolId);
+    return own && (!asked || asked === own) ? own : null;
+  }
+  const menu = await prisma.mensaMenu.findUnique({ where: { id: asked ?? DEFAULT_MENU_ID }, select: { id: true } });
+  return menu?.id ?? null;
+}
+
+async function assertMayEditMenu(req: Request, menuId: string): Promise<void> {
+  const schools = await schoolsOfMenu(menuId);
+  const access = req.adminAccess!;
+  const ok = schools.length === 0 ? can(access, 'mensa.manage', null) : schools.every((id) => can(access, 'mensa.manage', id));
+  if (!ok) throw new ForbiddenError('Dieser Mensaplan wird auch von Schulen genutzt, für die du keine Mensa-Rechte hast');
+}
+
+async function editableMenu(req: Request, requested: unknown): Promise<string> {
+  const menuId = await menuFor(req, requested);
+  if (!menuId) throw new NotFoundError(scopeSchool(req) ? 'Dieser Schule ist kein Mensaplan zugewiesen' : 'Mensaplan nicht gefunden');
+  await assertMayEditMenu(req, menuId);
+  return menuId;
+}
+
+async function editableDish(req: Request, id: string) {
+  const dish = await prisma.dish.findUnique({ where: { id } });
+  if (!dish || !dish.menuId) throw new NotFoundError('Dish not found');
+  const schoolId = scopeSchool(req);
+  if (schoolId && (await menuOfSchool(schoolId)) !== dish.menuId) throw new NotFoundError('Dish not found');
+  await assertMayEditMenu(req, dish.menuId);
+  return dish;
+}
+
+// The school a new record of a global-view request goes to: the one named
+// in the body (it must exist), else the default school.
+async function targetSchoolFor(req: Request, requested: unknown): Promise<string> {
+  const scoped = scopeSchool(req);
+  if (scoped) return scoped;
+  if (typeof requested === 'string' && requested.trim() !== '') {
+    const school = await schoolById(requested.trim().toLowerCase());
+    if (!school) throw new ValidationError('Unbekannte Schule');
+    return school.id;
+  }
+  return defaultSchoolId();
+}
 
 // Rate limiter for login (env-overridable, default 10 per 15 minutes per IP)
 const loginLimiter = rateLimit({
@@ -243,6 +387,8 @@ async function answerPasswordAccepted(req: Request, res: Response, username: str
 
   const token = issueAdminToken(username);
   logger.info('Admin login successful', { action: 'admin_login', method, username, ip: loginIp, userAgent: req.headers['user-agent'] });
+  // The access record of system administrators (Garante, 27 Nov 2008).
+  audit(req, 'admin.login', { type: 'admin', id: username }, { method }, null, username);
   res.json({ token });
 }
 
@@ -261,7 +407,9 @@ router.post('/auth/password-setup', loginLimiter, async (req: Request, res: Resp
 
 // ─── GET /api/admin/stats ─────────────────────────────────────────────────────
 
-router.get('/stats', requireAdmin, async (_req: Request, res: Response): Promise<void> => {
+router.get('/stats', requireAdmin, requirePermission('dashboard.view'), async (req: Request, res: Response): Promise<void> => {
+  const inSchool = schoolWhere(req);
+  const schoolId = scopeSchool(req);
   const startOfToday = new Date();
   startOfToday.setHours(0, 0, 0, 0);
 
@@ -281,15 +429,18 @@ router.get('/stats', requireAdmin, async (_req: Request, res: Response): Promise
     newUsersToday,
     newUsersThisWeek,
   ] = await Promise.all([
-    prisma.user.count(),
-    prisma.admin.count(),
-    prisma.class.count(),
-    prisma.todo.count(),
-    prisma.reminder.count(),
-    prisma.refreshToken.count({ where: { revokedAt: null, expiresAt: { gt: new Date() } } }),
-    prisma.requestLog.count({ where: { createdAt: { gte: startOfToday } } }),
-    prisma.user.count({ where: { createdAt: { gte: startOfToday } } }),
-    prisma.user.count({ where: { createdAt: { gte: startOfWeek } } }),
+    prisma.user.count({ where: inSchool }),
+    // A school's admins: everyone with rights in it (global admins aside).
+    schoolId
+      ? prisma.adminGrant.count({ where: { scope: schoolId } })
+      : prisma.admin.count(),
+    prisma.class.count({ where: inSchool }),
+    prisma.todo.count({ where: schoolId ? { user: { schoolId } } : {} }),
+    prisma.reminder.count({ where: schoolId ? { class: { schoolId } } : {} }),
+    prisma.refreshToken.count({ where: { revokedAt: null, expiresAt: { gt: new Date() }, ...(schoolId ? { user: { schoolId } } : {}) } }),
+    prisma.requestLog.count({ where: { createdAt: { gte: startOfToday }, ...APP_TRAFFIC_WHERE, ...inSchool } }),
+    prisma.user.count({ where: { createdAt: { gte: startOfToday }, ...inSchool } }),
+    prisma.user.count({ where: { createdAt: { gte: startOfWeek }, ...inSchool } }),
   ]);
 
   type DayRow = { date: string | Date; count: bigint };
@@ -299,7 +450,7 @@ router.get('/stats', requireAdmin, async (_req: Request, res: Response): Promise
     prisma.$queryRaw<DayRow[]>`
       SELECT DATE(created_at) as date, COUNT(*) as count
       FROM users
-      WHERE created_at >= DATE_SUB(NOW(), INTERVAL 14 DAY)
+      WHERE created_at >= DATE_SUB(NOW(), INTERVAL 14 DAY)${schoolSql(req)}
       GROUP BY DATE(created_at)
       ORDER BY date ASC
     `,
@@ -308,7 +459,7 @@ router.get('/stats', requireAdmin, async (_req: Request, res: Response): Promise
         SUM(CASE WHEN status >= 500 THEN 1 ELSE 0 END) AS errors,
         ROUND(AVG(duration)) AS avgMs
       FROM request_logs
-      WHERE created_at >= ${startOfToday}
+      WHERE created_at >= ${startOfToday}${APP_TRAFFIC}${schoolSql(req)}
     `,
   ]);
 
@@ -339,8 +490,8 @@ router.get('/stats', requireAdmin, async (_req: Request, res: Response): Promise
 
 // ─── POST /api/admin/users ────────────────────────────────────────────────────
 
-router.post('/users', requireAdmin, async (req: Request, res: Response): Promise<void> => {
-  const { username, password, webuntisKlasseId, webuntisKlasseName, role, isAdmin, adminPassword } = req.body as {
+router.post('/users', requireAdmin, requirePermission('users.create'), async (req: Request, res: Response): Promise<void> => {
+  const { username, password, webuntisKlasseId, webuntisKlasseName, role, isAdmin, adminPassword, schoolId: requestedSchool, grant: rawGrant } = req.body as {
     username?: string;
     password?: string;
     webuntisKlasseId?: number;
@@ -349,6 +500,10 @@ router.post('/users', requireAdmin, async (req: Request, res: Response): Promise
     isAdmin?: unknown;
     // The one-time password of a new admin without an own password (a WebUntis account).
     adminPassword?: unknown;
+    // Global view only: the school the account belongs to (default school otherwise).
+    schoolId?: unknown;
+    // For a new admin: what they may do, in which scope.
+    grant?: unknown;
   };
 
   // Only the known account roles are accepted; default to "student".
@@ -374,6 +529,18 @@ router.post('/users', requireAdmin, async (req: Request, res: Response): Promise
     return;
   }
   const grantingAdmin = req.adminUser!.username;
+  if (typeof username !== 'string' || username.trim().length > 100) {
+    res.status(400).json({ error: 'Username is required' });
+    return;
+  }
+  const schoolId = await targetSchoolFor(req, requestedSchool);
+  const grant = makeAdmin ? parseGrantRequest(rawGrant) : null;
+  // Refuse before anything is created: making an admin and every right in
+  // the grant must be the creating admin's own.
+  if (makeAdmin) {
+    assertMayAppointAdmin(req, schoolId);
+    if (grant) await checkGrantRequest(req, grant, schoolId);
+  }
 
   const existing = await prisma.user.findUnique({ where: { username: username.trim().toLowerCase() } });
   if (existing) {
@@ -392,6 +559,7 @@ router.post('/users', requireAdmin, async (req: Request, res: Response): Promise
       webuntisKlasseName: withClass ? webuntisKlasseName?.trim() || '' : '',
       isUntisUser: !passwordHash,
       role: accountRole,
+      schoolId,
       ...(passwordHash ? { passwordHash } : {}),
     },
   });
@@ -405,8 +573,11 @@ router.post('/users', requireAdmin, async (req: Request, res: Response): Promise
   const setupExpiresAt = adminData && 'setupExpiresAt' in adminData ? adminData.setupExpiresAt : null;
   if (setupExpiresAt) scheduleSetupExpiry(setupExpiresAt);
 
+  audit(req, 'user.create', { type: 'user', id: stableUid }, { role: accountRole, admin: makeAdmin, local: Boolean(passwordHash) }, schoolId);
   if (makeAdmin) {
     logger.info('Admin action: grant admin', { action: 'grant_admin', adminUsername: grantingAdmin, targetUid: stableUid, oneTimePassword: oneTimeAdmin });
+    audit(req, 'admin.appoint', { type: 'admin', id: user.username }, { oneTimePassword: oneTimeAdmin }, schoolId);
+    if (grant) await setGrant(req, user.username, grant.scope, grant.permissions, grant.preset);
   }
 
   res.status(201).json({
@@ -420,6 +591,7 @@ router.post('/users', requireAdmin, async (req: Request, res: Response): Promise
     serverTime: new Date().toISOString(),
     needsOneTimePassword: grantNeedsOneTimePassword({ isUntisUser: user.isUntisUser, hasPassword: Boolean(user.passwordHash) }),
     role: user.role,
+    schoolId: user.schoolId,
     todoCount: 0,
     classId: null,
     classCode: null,
@@ -434,7 +606,7 @@ router.post('/users', requireAdmin, async (req: Request, res: Response): Promise
 // identity and no ClassMember row at all. Admin rights are independent of
 // the role: granting or revoking admin never changes it.
 
-router.patch('/users/:stableUid/role', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.patch('/users/:stableUid/role', requireAdmin, requirePermission('users.update'), async (req: Request, res: Response): Promise<void> => {
   const stableUid = String(req.params['stableUid'] ?? '');
   const { role } = req.body as { role?: unknown };
 
@@ -443,7 +615,7 @@ router.patch('/users/:stableUid/role', requireAdmin, async (req: Request, res: R
     return;
   }
 
-  const user = await prisma.user.findUnique({ where: { stableUid } });
+  const user = await userInScope(req, stableUid);
   if (!user) {
     res.status(404).json({ error: 'User not found' });
     return;
@@ -473,13 +645,14 @@ router.patch('/users/:stableUid/role', requireAdmin, async (req: Request, res: R
 
   const adminUsername = adminUsernameFromReq(req.headers['authorization']);
   logger.info('Admin action: set user role', { action: 'set_user_role', adminUsername, stableUid, role });
+  audit(req, 'user.role', { type: 'user', id: stableUid }, { from: user.role, to: role }, user.schoolId);
 
   res.json({ stableUid, role });
 });
 
 // ─── PATCH /api/admin/users/:stableUid/password ───────────────────────────────
 
-router.patch('/users/:stableUid/password', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.patch('/users/:stableUid/password', requireAdmin, requirePermission('users.update'), async (req: Request, res: Response): Promise<void> => {
   const stableUid = String(req.params['stableUid'] ?? '');
   const { password } = req.body as { password?: unknown };
 
@@ -493,11 +666,15 @@ router.patch('/users/:stableUid/password', requireAdmin, async (req: Request, re
     return;
   }
 
-  const user = await prisma.user.findUnique({ where: { stableUid } });
+  const user = await userInScope(req, stableUid);
   if (!user) {
     res.status(404).json({ error: 'User not found' });
     return;
   }
+  // An admin's account password can open the panel: setting it is taking
+  // the account over, so it needs every right that admin holds.
+  const targetIsAdmin = isOwner(user.username) || (await prisma.admin.findUnique({ where: { stableUid }, select: { stableUid: true } })) !== null;
+  if (targetIsAdmin) await assertMayRemoveAdmin(req, user.username, user.schoolId);
 
   const passwordHash = await bcrypt.hash(password, config.bcryptRounds);
   await prisma.user.update({
@@ -512,60 +689,75 @@ router.patch('/users/:stableUid/password', requireAdmin, async (req: Request, re
     data: { revokedAt: new Date() },
   });
   revokeUserTokens(stableUid);
+  audit(req, 'user.password', { type: 'user', id: stableUid }, { admin: targetIsAdmin }, user.schoolId);
 
   res.status(204).end();
 });
 
 // ─── GET /api/admin/users ─────────────────────────────────────────────────────
 
-router.get('/users', requireAdmin, async (req: Request, res: Response): Promise<void> => {
-  const search = typeof req.query['search'] === 'string' ? req.query['search'] : undefined;
-  // Optional role filter: 'student', 'parent' or 'none'. Anything else means "no filter".
+router.get('/users', requireAdmin, requirePermission('users.view'), async (req: Request, res: Response): Promise<void> => {
+  const search = typeof req.query['search'] === 'string' ? req.query['search'].trim().slice(0, 100) : '';
+  // One filter for the kind of account: 'student', 'parent', 'none' (no role
+  // and no admin), 'admin' (has panel access). Anything else: all accounts.
+  // Every filter runs in the database before paging, so totals and pages
+  // always describe the filtered set (the panel used to filter admins on the
+  // loaded page only, which spread two admins over several pages).
   const roleRaw = typeof req.query['role'] === 'string' ? req.query['role'] : undefined;
-  const roleFilter = roleRaw === 'student' || roleRaw === 'parent' || roleRaw === 'none' ? roleRaw : undefined;
+  const kind = roleRaw === 'student' || roleRaw === 'parent' || roleRaw === 'none' || roleRaw === 'admin' ? roleRaw : undefined;
   const page = intQueryParam(req.query['page'], 1, 1, 1_000_000);
   const limit = intQueryParam(req.query['limit'], 20, 1, 100);
-  const skip = (page - 1) * limit;
+  // Global view: optionally one school's accounts.
+  const filterSchoolRaw = typeof req.query['schoolId'] === 'string' ? req.query['schoolId'].trim().toLowerCase() : '';
+  const filterSchool = scopeSchool(req) ?? (filterSchoolRaw ? (await schoolById(filterSchoolRaw))?.id ?? '__none__' : null);
 
   // A lapsed grant must not show up as admin when the panel's countdown ends.
   await expireLapsedAdminSetups();
 
-  // "Without a role" means no role at all: an admin set to "none" still has
-  // the admin role and is not listed there.
-  const adminUidsForFilter = roleFilter === 'none'
-    ? (await prisma.admin.findMany({ select: { stableUid: true } })).map((a) => a.stableUid)
-    : [];
-  const where = {
-    ...(search ? { username: { contains: search } } : {}),
-    ...(roleFilter ? { role: roleFilter } : {}),
-    ...(adminUidsForFilter.length > 0 ? { stableUid: { notIn: adminUidsForFilter } } : {}),
-  };
-
-  const [users, total] = await Promise.all([
-    prisma.user.findMany({
-      where,
-      skip,
-      take: limit,
-      orderBy: { createdAt: 'desc' },
-      include: {
-        _count: { select: { todos: true } },
-        classMembers: {
-          include: { class: { select: { id: true, code: true } } },
-          take: 1,
-          orderBy: { joinedAt: 'desc' },
-        },
-      },
-    }),
-    prisma.user.count({ where }),
-  ]);
-
-  // Fetch admins set for these users
-  const uids = users.map((u) => u.stableUid);
-  const admins = await prisma.admin.findMany({
-    where: { stableUid: { in: uids } },
+  const adminRows = await prisma.admin.findMany({
     select: { stableUid: true, mustChangePassword: true, setupExpiresAt: true, oneTimePasswordEnc: true, grantedBy: true },
   });
-  const adminByUid = new Map(admins.map((a) => [a.stableUid, a]));
+  const adminUids = adminRows.map((a) => a.stableUid);
+  const where: Prisma.UserWhereInput = {
+    ...(search ? { username: { contains: likeText(search) } } : {}),
+    ...(filterSchool ? { schoolId: filterSchool } : {}),
+    ...(kind === 'admin'
+      ? { OR: [{ stableUid: { in: adminUids } }, { username: { in: config.adminUsernames.map((n) => n.toLowerCase()) } }] }
+      : kind === 'none'
+        // "Without a role" means no role at all: an admin set to "none" still
+        // has the admin role and is not listed there.
+        ? { role: 'none', ...(adminUids.length > 0 ? { stableUid: { notIn: adminUids } } : {}) }
+        : kind ? { role: kind } : {}),
+  };
+
+  const total = await prisma.user.count({ where });
+  // A page past the end (the filter shrank the set) shows the last page.
+  const lastPage = Math.max(1, Math.ceil(total / limit));
+  const effectivePage = Math.min(page, lastPage);
+  const users = await prisma.user.findMany({
+    where,
+    skip: (effectivePage - 1) * limit,
+    take: limit,
+    // The id breaks ties, so no account appears on two pages or on none.
+    orderBy: [{ createdAt: 'desc' }, { stableUid: 'asc' }],
+    include: {
+      _count: { select: { todos: true } },
+      classMembers: {
+        include: { class: { select: { id: true, code: true } } },
+        take: 1,
+        orderBy: { joinedAt: 'desc' },
+      },
+    },
+  });
+
+  const adminByUid = new Map(adminRows.map((a) => [a.stableUid, a]));
+  const names = users.filter((u) => adminByUid.has(u.stableUid)).map((u) => u.username);
+  const grantRows = names.length > 0
+    ? await prisma.adminGrant.findMany({ where: { username: { in: names } }, select: { username: true, scope: true, preset: true } })
+    : [];
+  const grantsByName = new Map<string, Array<{ scope: string; preset: string }>>();
+  for (const g of grantRows) grantsByName.set(g.username, [...(grantsByName.get(g.username) ?? []), { scope: g.scope, preset: g.preset }]);
+  const schools = new Map((await listSchools()).map((sc) => [sc.id, sc]));
   const viewer = req.adminUser!.username;
   const now = new Date();
 
@@ -573,6 +765,8 @@ router.get('/users', requireAdmin, async (req: Request, res: Response): Promise<
     const withClass = hasClassIdentity(u.role);
     const membership = withClass ? u.classMembers[0] : undefined;
     const admin = adminByUid.get(u.stableUid);
+    const school = u.schoolId ? schools.get(u.schoolId) : undefined;
+    const grants = grantsByName.get(u.username) ?? [];
     return {
       stableUid: u.stableUid,
       username: u.username,
@@ -580,7 +774,11 @@ router.get('/users', requireAdmin, async (req: Request, res: Response): Promise<
       webuntisKlasseName: withClass ? u.webuntisKlasseName : '',
       classId: membership?.classId ?? null,
       classCode: membership?.class?.code ?? null,
-      isAdmin: admin !== undefined,
+      isAdmin: admin !== undefined || isOwner(u.username),
+      // "owner" (ADMIN_USERNAMES), "global" (a global grant), "school" (school
+      // grants only), "none" (panel access without any right yet), or null.
+      adminKind: isOwner(u.username) ? 'owner' : admin ? (grants.some((g) => g.scope === GLOBAL_SCOPE) ? 'global' : grants.length > 0 ? 'school' : 'none') : null,
+      adminGrants: grants.map((g) => ({ scope: g.scope, preset: g.preset, schoolName: g.scope === GLOBAL_SCOPE ? null : schools.get(g.scope)?.name ?? null })),
       // Set while a WebUntis account made admin has not signed in yet; the
       // grant lapses at this moment.
       adminSetupExpiresAt: admin?.mustChangePassword ? admin.setupExpiresAt?.toISOString() ?? null : null,
@@ -589,6 +787,9 @@ router.get('/users', requireAdmin, async (req: Request, res: Response): Promise<
       // "Admin vergeben" asks for a one-time password for this account.
       needsOneTimePassword: grantNeedsOneTimePassword({ isUntisUser: u.isUntisUser, hasPassword: Boolean(u.passwordHash) }),
       role: u.role,
+      isUntisUser: u.isUntisUser,
+      schoolId: u.schoolId,
+      schoolName: school?.name ?? null,
       todoCount: u._count.todos,
       createdAt: u.createdAt.toISOString(),
       updatedAt: u.updatedAt.toISOString(),
@@ -596,12 +797,12 @@ router.get('/users', requireAdmin, async (req: Request, res: Response): Promise<
   });
 
   // The panel's countdowns run against the server clock.
-  res.json({ users: result, total, page, limit, serverTime: new Date().toISOString() });
+  res.json({ users: result, total, page: effectivePage, limit, pages: lastPage, serverTime: new Date().toISOString() });
 });
 
 // ─── GET /api/admin/users/:stableUid ─────────────────────────────────────────
 
-router.get('/users/:stableUid', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.get('/users/:stableUid', requireAdmin, requirePermission('users.view'), async (req: Request, res: Response): Promise<void> => {
   const stableUid = String(req.params['stableUid']);
 
   await expireLapsedAdminSetups();
@@ -619,13 +820,15 @@ router.get('/users/:stableUid', requireAdmin, async (req: Request, res: Response
     prisma.admin.findUnique({ where: { stableUid } }),
   ]);
 
-  if (!user) {
+  if (!user || !inScope(req, user.schoolId)) {
     res.status(404).json({ error: 'User not found' });
     return;
   }
 
   const withClass = hasClassIdentity(user.role);
   const needsOneTimePassword = grantNeedsOneTimePassword({ isUntisUser: user.isUntisUser, hasPassword: Boolean(user.passwordHash) });
+  const school = user.schoolId ? await schoolById(user.schoolId) : null;
+  const grants = isAdmin ? await grantsOf(user.username) : [];
   res.json({
     stableUid: user.stableUid,
     username: user.username,
@@ -644,6 +847,11 @@ router.get('/users/:stableUid', requireAdmin, async (req: Request, res: Response
       : false,
     serverTime: new Date().toISOString(),
     role: user.role,
+    isUntisUser: user.isUntisUser,
+    schoolId: user.schoolId,
+    schoolName: school?.name ?? null,
+    isOwner: isOwner(user.username),
+    adminGrants: grants,
     createdAt: user.createdAt.toISOString(),
     updatedAt: user.updatedAt.toISOString(),
     todos: user.todos.map((t) => ({
@@ -667,23 +875,39 @@ router.get('/users/:stableUid', requireAdmin, async (req: Request, res: Response
 
 // ─── DELETE /api/admin/users/:stableUid ──────────────────────────────────────
 
-router.delete('/users/:stableUid', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.delete('/users/:stableUid', requireAdmin, requirePermission('users.delete'), async (req: Request, res: Response): Promise<void> => {
   const stableUid = String(req.params['stableUid']);
-  const adminJwt = req.headers['authorization']?.replace('Bearer ', '');
-  let adminUsername = 'admin';
-  try { if (adminJwt) adminUsername = (jwt.decode(adminJwt) as Record<string, string>)?.['username'] ?? 'admin'; } catch {}
+  const adminUsername = req.adminUser!.username;
+  const target = await userInScope(req, stableUid);
+  if (!target) {
+    res.status(404).json({ error: 'User not found' });
+    return;
+  }
+  // Deleting an admin's account ends their admin standing: that needs every
+  // right they hold, like revoking it.
+  const targetIsAdmin = isOwner(target.username) || (await prisma.admin.findUnique({ where: { stableUid }, select: { stableUid: true } })) !== null;
+  if (targetIsAdmin) await assertMayRemoveAdmin(req, target.username, target.schoolId);
   revokeUserTokens(stableUid);
   const deleted = await prisma.user.delete({ where: { stableUid } }).catch(() => null);
-  if (deleted) await clearStaleSecondFactors(deleted.username);
+  if (deleted) {
+    await clearStaleSecondFactors(deleted.username);
+    await clearGrants(deleted.username);
+    forgetUserSchool(stableUid);
+  }
   logger.info('Admin action: delete user', { action: 'delete_user', adminUsername, targetUid: stableUid });
+  audit(req, 'user.delete', { type: 'user', id: stableUid }, { admin: targetIsAdmin }, target.schoolId);
   res.status(204).send();
 });
 
 // ─── PATCH /api/admin/users/:stableUid/todos/:todoId ─────────────────────────
 
-router.patch('/users/:stableUid/todos/:todoId', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.patch('/users/:stableUid/todos/:todoId', requireAdmin, requirePermission('todos.manage'), async (req: Request, res: Response): Promise<void> => {
   const stableUid = String(req.params['stableUid']);
   const todoId = String(req.params['todoId']);
+  if (!(await userInScope(req, stableUid))) {
+    res.status(404).json({ error: 'User not found' });
+    return;
+  }
   const { title, details, done, dueAt } = req.body as {
     title?: string;
     details?: string;
@@ -719,16 +943,20 @@ router.patch('/users/:stableUid/todos/:todoId', requireAdmin, async (req: Reques
 
 // ─── DELETE /api/admin/users/:stableUid/todos/:todoId ────────────────────────
 
-router.delete('/users/:stableUid/todos/:todoId', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.delete('/users/:stableUid/todos/:todoId', requireAdmin, requirePermission('todos.manage'), async (req: Request, res: Response): Promise<void> => {
   const stableUid = String(req.params['stableUid']);
   const todoId = String(req.params['todoId']);
+  if (!(await userInScope(req, stableUid))) {
+    res.status(404).json({ error: 'User not found' });
+    return;
+  }
   await prisma.todo.deleteMany({ where: { id: todoId, stableUid } });
   res.status(204).send();
 });
 
 // ─── POST /api/admin/users/:stableUid/todos ───────────────────────────────────
 
-router.post('/users/:stableUid/todos', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.post('/users/:stableUid/todos', requireAdmin, requirePermission('todos.manage'), async (req: Request, res: Response): Promise<void> => {
   const stableUid = String(req.params['stableUid']);
   const { title, details, dueAt } = req.body as { title?: string; details?: string; dueAt?: string | null };
 
@@ -737,7 +965,7 @@ router.post('/users/:stableUid/todos', requireAdmin, async (req: Request, res: R
     return;
   }
 
-  const user = await prisma.user.findUnique({ where: { stableUid } });
+  const user = await userInScope(req, stableUid);
   if (!user) {
     res.status(404).json({ error: 'User not found' });
     return;
@@ -765,16 +993,20 @@ router.post('/users/:stableUid/todos', requireAdmin, async (req: Request, res: R
 
 // ─── DELETE /api/admin/users/:stableUid/classes/:classId ─────────────────────
 
-router.delete('/users/:stableUid/classes/:classId', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.delete('/users/:stableUid/classes/:classId', requireAdmin, requirePermission('classes.manage'), async (req: Request, res: Response): Promise<void> => {
   const stableUid = String(req.params['stableUid']);
   const classId = String(req.params['classId']);
+  if (!(await userInScope(req, stableUid))) {
+    res.status(404).json({ error: 'User not found' });
+    return;
+  }
   await prisma.classMember.deleteMany({ where: { stableUid, classId } });
   res.status(204).send();
 });
 
 // ─── POST /api/admin/users/:stableUid/grant-admin ────────────────────────────
 
-router.post('/users/:stableUid/grant-admin', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.post('/users/:stableUid/grant-admin', requireAdmin, requirePermission('users.view'), async (req: Request, res: Response): Promise<void> => {
   const stableUid = String(req.params['stableUid']);
   const adminUsername = req.adminUser!.username;
   const answer = (adminSetupExpiresAt: Date | null) => res.json({
@@ -784,11 +1016,17 @@ router.post('/users/:stableUid/grant-admin', requireAdmin, async (req: Request, 
     serverTime: new Date().toISOString(),
   });
 
-  const user = await prisma.user.findUnique({ where: { stableUid }, select: { isUntisUser: true, passwordHash: true } });
+  const user = await userInScope(req, stableUid);
   if (!user) {
     res.status(404).json({ error: 'User not found' });
     return;
   }
+  // Appointing an admin, and every right of the grant that comes with it,
+  // must be the appointing admin's own; checked before anything changes.
+  assertMayAppointAdmin(req, user.schoolId);
+  const grant = parseGrantRequest((req.body ?? {} as Record<string, unknown>)['grant']);
+  if (grant) await checkGrantRequest(req, grant, user.schoolId);
+  const giveGrant = async () => { if (grant) await setGrant(req, user.username, grant.scope, grant.permissions, grant.preset); };
 
   const needsOneTimePassword = grantNeedsOneTimePassword({ isUntisUser: user.isUntisUser, hasPassword: Boolean(user.passwordHash) });
   if (!needsOneTimePassword) {
@@ -798,6 +1036,8 @@ router.post('/users/:stableUid/grant-admin', requireAdmin, async (req: Request, 
       update: { canCreateClass: true },
     });
     logger.info('Admin action: grant admin', { action: 'grant_admin', adminUsername, targetUid: stableUid });
+    audit(req, 'admin.appoint', { type: 'admin', id: user.username }, {}, user.schoolId);
+    await giveGrant();
     answer(null);
     return;
   }
@@ -809,6 +1049,7 @@ router.post('/users/:stableUid/grant-admin', requireAdmin, async (req: Request, 
   // grant is replaced by this one (new password, new deadline).
   const existing = await prisma.admin.findUnique({ where: { stableUid } });
   if (existing && adminCanSignIn({ adminHash: existing.passwordHash, mustChangePassword: existing.mustChangePassword, needsOneTimePassword })) {
+    await giveGrant();
     answer(null);
     return;
   }
@@ -823,6 +1064,8 @@ router.post('/users/:stableUid/grant-admin', requireAdmin, async (req: Request, 
   }
   const setupExpiresAt = await grantAdminWithOneTimePassword(stableUid, password, adminUsername);
   logger.info('Admin action: grant admin', { action: 'grant_admin', adminUsername, targetUid: stableUid, oneTimePassword: true });
+  audit(req, 'admin.appoint', { type: 'admin', id: user.username }, { oneTimePassword: true }, user.schoolId);
+  await giveGrant();
   answer(setupExpiresAt);
 });
 
@@ -831,9 +1074,13 @@ router.post('/users/:stableUid/grant-admin', requireAdmin, async (req: Request, 
 // granted it, only until the new admin has their own password or the grant
 // lapses. Never any other password.
 
-router.get('/users/:stableUid/one-time-password', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.get('/users/:stableUid/one-time-password', requireAdmin, requirePermission('users.view'), async (req: Request, res: Response): Promise<void> => {
   const stableUid = String(req.params['stableUid']);
   const viewer = req.adminUser!.username;
+  if (!(await userInScope(req, stableUid))) {
+    res.status(404).json({ error: 'User not found' });
+    return;
+  }
   await expireLapsedAdminSetups();
   const found = await viewOneTimePassword(stableUid, viewer);
   res.setHeader('Cache-Control', 'no-store');
@@ -847,17 +1094,22 @@ router.get('/users/:stableUid/one-time-password', requireAdmin, async (req: Requ
 
 // ─── DELETE /api/admin/users/:stableUid/revoke-admin ─────────────────────────
 
-router.delete('/users/:stableUid/revoke-admin', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.delete('/users/:stableUid/revoke-admin', requireAdmin, requirePermission('users.view'), async (req: Request, res: Response): Promise<void> => {
   const stableUid = String(req.params['stableUid']);
-  const adminJwt = req.headers['authorization']?.replace('Bearer ', '');
-  let adminUsername = 'admin';
-  try { if (adminJwt) adminUsername = (jwt.decode(adminJwt) as Record<string, string>)?.['username'] ?? 'admin'; } catch {}
+  const adminUsername = req.adminUser!.username;
+  const target = await userInScope(req, stableUid);
+  if (!target) {
+    res.status(404).json({ error: 'User not found' });
+    return;
+  }
+  await assertMayRemoveAdmin(req, target.username, target.schoolId);
 
   await prisma.admin.deleteMany({ where: { stableUid } });
-  const target = await prisma.user.findUnique({ where: { stableUid }, select: { username: true } });
-  if (target) await clearStaleSecondFactors(target.username);
+  await clearGrants(target.username);
+  await clearStaleSecondFactors(target.username);
 
   logger.info('Admin action: revoke admin', { action: 'revoke_admin', adminUsername, targetUid: stableUid });
+  audit(req, 'admin.revoke', { type: 'admin', id: target.username }, {}, target.schoolId);
   res.status(204).send();
 });
 
@@ -871,8 +1123,9 @@ async function clearStaleSecondFactors(username: string): Promise<void> {
 
 // ─── GET /api/admin/classes ───────────────────────────────────────────────────
 
-router.get('/classes', requireAdmin, async (_req: Request, res: Response): Promise<void> => {
+router.get('/classes', requireAdmin, requirePermission('classes.view'), async (req: Request, res: Response): Promise<void> => {
   const classes = await prisma.class.findMany({
+    where: schoolWhere(req),
     orderBy: { createdAt: 'desc' },
     include: {
       // Legacy parent rows remain filtered defensively while normal login and
@@ -892,6 +1145,7 @@ router.get('/classes', requireAdmin, async (_req: Request, res: Response): Promi
     id: c.id,
     name: c.name,
     code: c.code,
+    schoolId: c.schoolId,
     webuntisKlasseId: c.webuntisKlasseId,
     createdBy: c.createdBy,
     createdByName: c.createdByName,
@@ -909,8 +1163,10 @@ router.get('/classes', requireAdmin, async (_req: Request, res: Response): Promi
 
 // ─── GET /api/admin/sessions ──────────────────────────────────────────────────
 
-router.get('/sessions', requireAdmin, async (_req: Request, res: Response): Promise<void> => {
+router.get('/sessions', requireAdmin, requirePermission('sessions.view'), async (req: Request, res: Response): Promise<void> => {
+  const schoolId = scopeSchool(req);
   const tokens = await prisma.refreshToken.findMany({
+    where: schoolId ? { user: { schoolId } } : {},
     take: 50,
     orderBy: { createdAt: 'desc' },
     include: {
@@ -933,17 +1189,18 @@ router.get('/sessions', requireAdmin, async (_req: Request, res: Response): Prom
 });
 
 // ─── DELETE /api/admin/sessions ── revoke all active + delete all expired/revoked
-router.delete('/sessions', requireAdmin, async (req: Request, res: Response): Promise<void> => {
-  const adminJwt = req.headers['authorization']?.replace('Bearer ', '');
-  let adminUsername = 'admin';
-  try { if (adminJwt) adminUsername = (jwt.decode(adminJwt) as Record<string, string>)?.['username'] ?? 'admin'; } catch {}
+router.delete('/sessions', requireAdmin, requirePermission('sessions.revoke'), async (req: Request, res: Response): Promise<void> => {
+  const adminUsername = req.adminUser!.username;
+  // A school's admin signs out that school's accounts only.
+  const schoolId = scopeSchool(req);
+  const ofSchool = schoolId ? { user: { schoolId } } : {};
 
   const active = await prisma.refreshToken.findMany({
-    where: { revokedAt: null },
+    where: { revokedAt: null, ...ofSchool },
     select: { stableUid: true },
   });
 
-  await prisma.refreshToken.deleteMany({});
+  await prisma.refreshToken.deleteMany({ where: ofSchool });
 
   const seen = new Set<string>();
   for (const t of active) {
@@ -954,17 +1211,20 @@ router.delete('/sessions', requireAdmin, async (req: Request, res: Response): Pr
   }
 
   logger.info('Admin action: delete all sessions', { action: 'delete_all_sessions', adminUsername, affectedUsers: seen.size });
+  audit(req, 'sessions.revoke_all', { type: 'sessions', id: schoolId ?? 'all' }, { affectedUsers: seen.size });
   res.status(204).send();
 });
 
 // ─── DELETE /api/admin/sessions/inactive ── delete only revoked/expired sessions
-router.delete('/sessions/inactive', requireAdmin, async (_req: Request, res: Response): Promise<void> => {
+router.delete('/sessions/inactive', requireAdmin, requirePermission('sessions.revoke'), async (req: Request, res: Response): Promise<void> => {
+  const schoolId = scopeSchool(req);
   await prisma.refreshToken.deleteMany({
     where: {
       OR: [
         { revokedAt: { not: null } },
         { expiresAt: { lt: new Date() } },
       ],
+      ...(schoolId ? { user: { schoolId } } : {}),
     },
   });
 
@@ -973,10 +1233,14 @@ router.delete('/sessions/inactive', requireAdmin, async (_req: Request, res: Res
 
 // ─── DELETE /api/admin/sessions/:id ──────────────────────────────────────────
 
-router.delete('/sessions/:id', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.delete('/sessions/:id', requireAdmin, requirePermission('sessions.revoke'), async (req: Request, res: Response): Promise<void> => {
   const id = String(req.params['id']);
 
-  const token = await prisma.refreshToken.findUnique({ where: { id }, select: { stableUid: true } });
+  const token = await prisma.refreshToken.findUnique({ where: { id }, select: { stableUid: true, user: { select: { schoolId: true } } } });
+  if (!token || !inScope(req, token.user.schoolId)) {
+    res.status(404).json({ error: 'Session not found' });
+    return;
+  }
 
   await prisma.refreshToken.updateMany({
     where: { id, revokedAt: null },
@@ -984,7 +1248,8 @@ router.delete('/sessions/:id', requireAdmin, async (req: Request, res: Response)
   });
 
   // Force-expire any active access JWTs for this user immediately
-  if (token) revokeUserTokens(token.stableUid);
+  revokeUserTokens(token.stableUid);
+  audit(req, 'sessions.revoke', { type: 'user', id: token.stableUid }, {}, token.user.schoolId);
 
   res.status(204).send();
 });
@@ -992,7 +1257,7 @@ router.delete('/sessions/:id', requireAdmin, async (req: Request, res: Response)
 // ─── GET /api/admin/logs ──────────────────────────────────────────────────────
 // General request logs with optional filters
 
-router.get('/logs', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.get('/logs', requireAdmin, requirePermission('requests.view'), async (req: Request, res: Response): Promise<void> => {
   const page = intQueryParam(req.query['page'], 1, 1, 1_000_000);
   const limit = intQueryParam(req.query['limit'], 50, 1, 200);
   const skip = (page - 1) * limit;
@@ -1001,15 +1266,21 @@ router.get('/logs', requireAdmin, async (req: Request, res: Response): Promise<v
   const status = Number.isFinite(statusRaw) ? statusRaw : undefined;
   const pathFilter = req.query['path'] ? String(req.query['path']) : undefined;
   const username = req.query['username'] ? String(req.query['username']) : undefined;
-  const scope = req.query['scope'] === 'learn' || req.query['scope'] === 'core' ? String(req.query['scope']) : undefined;
+  const scopeRaw = String(req.query['scope'] ?? '');
+  // The admin panel's own requests only for who monitors the system, and
+  // never in a school's view.
+  const seesAdminTraffic = scopeSchool(req) === null && can(req.adminAccess!, 'system.monitoring.view', null);
+  const scope = scopeRaw === 'learn' || scopeRaw === 'core' || (scopeRaw === 'admin' && seesAdminTraffic) ? scopeRaw : undefined;
   const from = req.query['from'] ? new Date(String(req.query['from'])) : undefined;
-  const to = req.query['to'] ? new Date(String(req.query['to']) + 'T23:59:59.999Z') : undefined;
+  // A day (YYYY-MM-DD, to its end) or an exact time (the panel's local days).
+  const toRaw = req.query['to'] ? String(req.query['to']) : '';
+  const to = toRaw ? new Date(toRaw.includes('T') ? toRaw : `${toRaw}T23:59:59.999Z`) : undefined;
 
-  const where: Record<string, unknown> = {};
+  const where: Prisma.RequestLogWhereInput = { ...schoolWhere(req), ...(scope || seesAdminTraffic ? {} : APP_TRAFFIC_WHERE) };
   if (method) where['method'] = method;
   if (status) where['status'] = { gte: status, lt: status + 100 };
-  if (pathFilter) where['path'] = { contains: pathFilter };
-  if (username) where['username'] = { contains: username };
+  if (pathFilter) where['path'] = { contains: likeText(pathFilter) };
+  if (username) where['username'] = { contains: likeText(username) };
   if (scope) where['scope'] = scope;
   if (from || to) {
     where['createdAt'] = {
@@ -1023,19 +1294,31 @@ router.get('/logs', requireAdmin, async (req: Request, res: Response): Promise<v
     prisma.requestLog.count({ where }),
   ]);
 
-  res.json({ logs, total, page, limit });
+  res.json({ logs: logs.map((log) => networkDetailsFor(req, log)), total, page, limit });
 });
+
+// Addresses and user agents are for the system's operators (security,
+// abuse); a school's view gets path, status, time and account only.
+function networkDetailsFor<T extends { ip: string | null; userAgent: string | null }>(req: Request, log: T): T {
+  if (scopeSchool(req) === null && can(req.adminAccess!, 'system.logs.view', null)) return log;
+  return { ...log, ip: null, userAgent: null };
+}
 
 // ─── GET /api/admin/logs/users/:stableUid ────────────────────────────────────
 // Per-user request log
 
-router.get('/logs/users/:stableUid', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.get('/logs/users/:stableUid', requireAdmin, requirePermission('requests.view'), async (req: Request, res: Response): Promise<void> => {
   const stableUid = String(req.params['stableUid']);
   const page = intQueryParam(req.query['page'], 1, 1, 1_000_000);
   const limit = intQueryParam(req.query['limit'], 50, 1, 200);
   const skip = (page - 1) * limit;
 
-  const [logs, total, user] = await Promise.all([
+  const user = await userInScope(req, stableUid);
+  if (!user) {
+    res.status(404).json({ error: 'User not found' });
+    return;
+  }
+  const [logs, total] = await Promise.all([
     prisma.requestLog.findMany({
       where: { stableUid },
       orderBy: { createdAt: 'desc' },
@@ -1043,46 +1326,50 @@ router.get('/logs/users/:stableUid', requireAdmin, async (req: Request, res: Res
       take: limit,
     }),
     prisma.requestLog.count({ where: { stableUid } }),
-    prisma.user.findUnique({ where: { stableUid }, select: { username: true } }),
   ]);
 
-  res.json({ logs, total, page, limit, user });
+  res.json({ logs: logs.map((log) => networkDetailsFor(req, log)), total, page, limit, user: { username: user.username } });
 });
 
 // ─── POST /api/admin/classes ──────────────────────────────────────────────────
 
-router.post('/classes', requireAdmin, async (req: Request, res: Response): Promise<void> => {
-  const { name, code, webuntisKlasseId } = req.body as {
+router.post('/classes', requireAdmin, requirePermission('classes.manage'), async (req: Request, res: Response): Promise<void> => {
+  const { name, code, webuntisKlasseId, schoolId: requestedSchool } = req.body as {
     name?: string;
     code?: string;
     webuntisKlasseId?: number;
+    schoolId?: unknown;
   };
 
-  if (!name || name.trim().length < 1) {
+  if (!name || typeof name !== 'string' || name.trim().length < 1) {
     res.status(400).json({ error: 'Class name is required' });
     return;
   }
 
-  const classCode = (code?.trim().toUpperCase() ?? generateClassCode()).slice(0, 6);
+  const classCode = (typeof code === 'string' && code.trim() ? code.trim().toUpperCase() : generateClassCode()).slice(0, 6);
+  const schoolId = await targetSchoolFor(req, requestedSchool);
 
   const newClass = await prisma.class.create({
     data: {
       id: generateClassId(),
-      name: name.trim(),
+      name: name.trim().slice(0, 100),
       code: classCode,
-      webuntisKlasseId: webuntisKlasseId ?? 0,
+      webuntisKlasseId: typeof webuntisKlasseId === 'number' && Number.isInteger(webuntisKlasseId) ? webuntisKlasseId : 0,
       createdBy: 'admin',
-      createdByName: config.adminUsername,
+      createdByName: req.adminUser!.username,
+      schoolId,
     },
     include: {
       members: { select: { stableUid: true, username: true, joinedAt: true } },
     },
   });
 
+  audit(req, 'class.create', { type: 'class', id: newClass.id }, { name: newClass.name }, schoolId);
   res.status(201).json({
     id: newClass.id,
     name: newClass.name,
     code: newClass.code,
+    schoolId: newClass.schoolId,
     webuntisKlasseId: newClass.webuntisKlasseId,
     createdBy: newClass.createdBy,
     createdByName: newClass.createdByName,
@@ -1094,16 +1381,26 @@ router.post('/classes', requireAdmin, async (req: Request, res: Response): Promi
 
 // ─── DELETE /api/admin/classes/:id ───────────────────────────────────────────
 
-router.delete('/classes/:id', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.delete('/classes/:id', requireAdmin, requirePermission('classes.manage'), async (req: Request, res: Response): Promise<void> => {
   const id = String(req.params['id']);
+  const cls = await classInScope(req, id);
+  if (!cls) {
+    res.status(404).json({ error: 'Class not found' });
+    return;
+  }
   await prisma.class.delete({ where: { id } }).catch(() => null);
+  audit(req, 'class.delete', { type: 'class', id }, { name: cls.name }, cls.schoolId);
   res.status(204).send();
 });
 
 // ─── GET /api/admin/classes/:id/reminders ────────────────────────────────────
 
-router.get('/classes/:id/reminders', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.get('/classes/:id/reminders', requireAdmin, requirePermission('classes.view'), async (req: Request, res: Response): Promise<void> => {
   const id = String(req.params['id']);
+  if (!(await classInScope(req, id))) {
+    res.status(404).json({ error: 'Class not found' });
+    return;
+  }
   const reminders = await prisma.reminder.findMany({
     where: { classId: id },
     orderBy: { remindAt: 'asc' },
@@ -1124,7 +1421,7 @@ router.get('/classes/:id/reminders', requireAdmin, async (req: Request, res: Res
 
 // ─── POST /api/admin/classes/:id/reminders ────────────────────────────────────
 
-router.post('/classes/:id/reminders', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.post('/classes/:id/reminders', requireAdmin, requirePermission('classes.manage'), async (req: Request, res: Response): Promise<void> => {
   const id = String(req.params['id']);
   const { title, body, remindAt } = req.body as { title?: string; body?: string; remindAt?: string };
 
@@ -1137,7 +1434,7 @@ router.post('/classes/:id/reminders', requireAdmin, async (req: Request, res: Re
     return;
   }
 
-  const cls = await prisma.class.findUnique({ where: { id } });
+  const cls = await classInScope(req, id);
   if (!cls) {
     res.status(404).json({ error: 'Class not found' });
     return;
@@ -1150,7 +1447,7 @@ router.post('/classes/:id/reminders', requireAdmin, async (req: Request, res: Re
       body: body ? String(body).slice(0, 5000) : '',
       remindAt: new Date(remindAt),
       createdBy: 'admin',
-      createdByName: config.adminUsername,
+      createdByName: req.adminUser!.username,
       createdByUsername: 'admin',
     },
   });
@@ -1170,9 +1467,13 @@ router.post('/classes/:id/reminders', requireAdmin, async (req: Request, res: Re
 
 // ─── PATCH /api/admin/reminders/:id ──────────────────────────────────────────
 
-router.patch('/reminders/:id', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.patch('/reminders/:id', requireAdmin, requirePermission('classes.manage'), async (req: Request, res: Response): Promise<void> => {
   const id = String(req.params['id']);
   const { title, body, remindAt } = req.body as { title?: string; body?: string; remindAt?: string };
+  if (!(await reminderInScope(req, id))) {
+    res.status(404).json({ error: 'Reminder not found' });
+    return;
+  }
 
   const data: Record<string, unknown> = {};
   if (title !== undefined) data['title'] = String(title).trim().slice(0, 500);
@@ -1196,23 +1497,35 @@ router.patch('/reminders/:id', requireAdmin, async (req: Request, res: Response)
 
 // ─── DELETE /api/admin/reminders/:id ─────────────────────────────────────────
 
-router.delete('/reminders/:id', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.delete('/reminders/:id', requireAdmin, requirePermission('classes.manage'), async (req: Request, res: Response): Promise<void> => {
   const id = String(req.params['id']);
+  const reminder = await reminderInScope(req, id);
+  if (!reminder) {
+    res.status(404).json({ error: 'Reminder not found' });
+    return;
+  }
   await prisma.reminder.delete({ where: { id } }).catch(() => null);
+  audit(req, 'reminder.delete', { type: 'reminder', id }, {}, reminder.class.schoolId);
   res.status(204).send();
 });
 
 // ─── POST /api/admin/classes/:id/members ─────────────────────────────────────
 
-router.post('/classes/:id/members', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.post('/classes/:id/members', requireAdmin, requirePermission('classes.manage'), async (req: Request, res: Response): Promise<void> => {
   const id = String(req.params['id']);
   const { username } = req.body as { username?: string };
   if (!username?.trim()) {
     res.status(400).json({ error: 'username required' });
     return;
   }
+  const cls = await classInScope(req, id);
+  if (!cls) {
+    res.status(404).json({ error: 'Class not found' });
+    return;
+  }
   const user = await prisma.user.findUnique({ where: { username: username.trim().toLowerCase() } });
-  if (!user) {
+  // Only an account of the class's own school can join it.
+  if (!user || (user.schoolId ?? defaultSchoolId()) !== (cls.schoolId ?? defaultSchoolId())) {
     res.status(404).json({ error: `User "${username.trim()}" not found` });
     return;
   }
@@ -1222,11 +1535,6 @@ router.post('/classes/:id/members', requireAdmin, async (req: Request, res: Resp
         ? 'Eltern-Accounts werden keiner Klasse zugeteilt'
         : 'Konten ohne Rolle werden keiner Klasse zugeteilt',
     });
-    return;
-  }
-  const cls = await prisma.class.findUnique({ where: { id } });
-  if (!cls) {
-    res.status(404).json({ error: 'Class not found' });
     return;
   }
   await prisma.classMember.upsert({
@@ -1240,16 +1548,17 @@ router.post('/classes/:id/members', requireAdmin, async (req: Request, res: Resp
 // ─── GET /api/admin/stats/requests-chart ─────────────────────────────────────
 // Requests per hour for the last 24 hours
 
-router.get('/stats/requests-chart', requireAdmin, async (_req: Request, res: Response): Promise<void> => {
+router.get('/stats/requests-chart', requireAdmin, requirePermission('dashboard.view'), async (req: Request, res: Response): Promise<void> => {
   type HourRow = { hour: string; count: bigint; errors: bigint };
 
+  // The apps' requests only: the panel's own polling is not activity.
   const rows = await prisma.$queryRaw<HourRow[]>`
     SELECT
       DATE_FORMAT(created_at, '%Y-%m-%d %H:00') AS hour,
       COUNT(*) AS count,
       SUM(CASE WHEN status >= 400 THEN 1 ELSE 0 END) AS errors
     FROM request_logs
-    WHERE created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
+    WHERE created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)${APP_TRAFFIC}${schoolSql(req)}
     GROUP BY hour
     ORDER BY hour ASC
   `;
@@ -1287,32 +1596,42 @@ router.get('/live', requireAdmin, (_req: Request, res: Response): void => {
 
 // ─── GET /api/admin/stats/top-endpoints ──────────────────────────────────────
 
-router.get('/stats/top-endpoints', requireAdmin, async (_req: Request, res: Response): Promise<void> => {
-  type EndpointRow = { path: string; count: bigint; avgMs: number };
+router.get('/stats/top-endpoints', requireAdmin, requirePermission('dashboard.view'), async (req: Request, res: Response): Promise<void> => {
+  type EndpointRow = { path: string; count: bigint; totalMs: unknown };
 
+  // Raw paths first (ids included), then grouped by route in code: a route
+  // such as /dish-ratings/:id would otherwise split into hundreds of rows.
   const rows = await prisma.$queryRaw<EndpointRow[]>`
-    SELECT
-      path,
-      COUNT(*) AS count,
-      ROUND(AVG(duration)) AS avgMs
+    SELECT path, COUNT(*) AS count, SUM(duration) AS totalMs
     FROM request_logs
-    WHERE created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
+    WHERE created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)${APP_TRAFFIC}${schoolSql(req)}
     GROUP BY path
     ORDER BY count DESC
-    LIMIT 8
+    LIMIT 500
   `;
+  const grouped = new Map<string, { path: string; count: number; totalMs: number }>();
+  for (const row of rows) {
+    const path = endpointOf(row.path);
+    const entry = grouped.get(path) ?? { path, count: 0, totalMs: 0 };
+    entry.count += Number(row.count);
+    entry.totalMs += Number(row.totalMs ?? 0);
+    grouped.set(path, entry);
+  }
 
-  res.json(rows.map((r) => ({
-    path: r.path,
-    count: Number(r.count),
-    avgMs: Number(r.avgMs ?? 0),
-  })));
+  res.json([...grouped.values()]
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 8)
+    .map((e) => ({ path: e.path, count: e.count, avgMs: e.count > 0 ? Math.round(e.totalMs / e.count) : 0 })));
 });
 
 // ─── GET /api/admin/classes/:id/todos ────────────────────────────────────────
 
-router.get('/classes/:id/todos', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.get('/classes/:id/todos', requireAdmin, requirePermission('todos.view'), async (req: Request, res: Response): Promise<void> => {
   const id = String(req.params['id']);
+  if (!(await classInScope(req, id))) {
+    res.status(404).json({ error: 'Class not found' });
+    return;
+  }
 
   const members = await prisma.classMember.findMany({
     where: { classId: id },
@@ -1349,11 +1668,15 @@ router.get('/classes/:id/todos', requireAdmin, async (req: Request, res: Respons
 // ─── GET /api/admin/dishes ───────────────────────────────────────────────────
 // Optional ?plan=summer|winter filter. Omit to return both plans.
 
-router.get('/dishes', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.get('/dishes', requireAdmin, requirePermission('mensa.view'), async (req: Request, res: Response): Promise<void> => {
   const planParam = req.query['plan'];
-  const where = planParam === 'summer' || planParam === 'winter' ? { plan: planParam } : undefined;
+  const menuId = await menuFor(req, req.query['menuId']);
+  if (!menuId) {
+    res.json([]);
+    return;
+  }
   const dishes = await prisma.dish.findMany({
-    where,
+    where: { menuId, ...(planParam === 'summer' || planParam === 'winter' ? { plan: planParam } : {}) },
     orderBy: [{ date: 'asc' }, { sortOrder: 'asc' }, { nameDe: 'asc' }],
   });
   res.json(dishes.map(dishRow));
@@ -1361,7 +1684,7 @@ router.get('/dishes', requireAdmin, async (req: Request, res: Response): Promise
 
 // ─── POST /api/admin/dishes ───────────────────────────────────────────────────
 
-router.post('/dishes', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.post('/dishes', requireAdmin, requirePermission('mensa.manage'), async (req: Request, res: Response): Promise<void> => {
   const b = req.body as Record<string, unknown>;
   if (!b['nameDe'] || String(b['nameDe']).trim().length < 1) {
     res.status(400).json({ error: 'nameDe is required' });
@@ -1371,9 +1694,11 @@ router.post('/dishes', requireAdmin, async (req: Request, res: Response): Promis
     res.status(400).json({ error: 'date is required' });
     return;
   }
+  const menuId = await editableMenu(req, b['menuId']);
 
   const dish = await prisma.dish.create({
     data: {
+      menuId,
       nameDe: String(b['nameDe']).trim(),
       nameIt: b['nameIt'] ? String(b['nameIt']).trim() : '',
       nameEn: b['nameEn'] ? String(b['nameEn']).trim() : '',
@@ -1404,9 +1729,10 @@ router.post('/dishes', requireAdmin, async (req: Request, res: Response): Promis
 
 // ─── PATCH /api/admin/dishes/:id ──────────────────────────────────────────────
 
-router.patch('/dishes/:id', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.patch('/dishes/:id', requireAdmin, requirePermission('mensa.manage'), async (req: Request, res: Response): Promise<void> => {
   const id = String(req.params['id']);
   const b = req.body as Record<string, unknown>;
+  await editableDish(req, id);
 
   const data: Record<string, unknown> = {};
   if (b['nameDe'] !== undefined) {
@@ -1445,29 +1771,33 @@ router.patch('/dishes/:id', requireAdmin, async (req: Request, res: Response): P
 
 // ─── DELETE /api/admin/dishes/:id ────────────────────────────────────────────
 
-router.delete('/dishes/:id', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.delete('/dishes/:id', requireAdmin, requirePermission('mensa.manage'), async (req: Request, res: Response): Promise<void> => {
   const id = String(req.params['id']);
+  const dish = await editableDish(req, id);
   await prisma.dish.delete({ where: { id } }).catch(() => null);
+  await prisma.dishImage.deleteMany({ where: { dishId: id } });
   invalidateDishesCache();
+  audit(req, 'mensa.dish.delete', { type: 'dish', id }, { name: dish.nameDe, menuId: dish.menuId });
   res.status(204).send();
 });
 
 // ─── POST /api/admin/dishes/import-url ───────────────────────────────────────
 // Fetches the external mensa.json URL and bulk-upserts all dishes
 
-router.post('/dishes/import-url', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.post('/dishes/import-url', requireAdmin, requirePermission('mensa.manage'), async (req: Request, res: Response): Promise<void> => {
   const url = String(req.body?.url || config.mensaImportUrl);
   const plan = parsePlan(req.body?.plan);
   if (!url) {
     res.status(400).json({ error: 'Enter the address of the menu (mensa.json) or set MENSA_IMPORT_URL' });
     return;
   }
+  const menuId = await editableMenu(req, req.body?.menuId);
 
   let raw: string;
   try {
-    raw = await fetchUrl(url);
-  } catch {
-    res.status(502).json({ error: 'Failed to fetch external URL' });
+    raw = await fetchUrl(url, { publicOnly: !importMayReachInternal(req, url) });
+  } catch (err) {
+    res.status(502).json({ error: err instanceof BlockedAddressError ? err.message : 'Failed to fetch external URL' });
     return;
   }
 
@@ -1546,20 +1876,21 @@ router.post('/dishes/import-url', requireAdmin, async (req: Request, res: Respon
       isVegan: d['isVegan'] === true,
       date: new Date(dateRaw),
       plan,
+      menuId,
       sourceId,
       stableKey: slugifyDishName(name.de.trim()),
       weekOrdinal: weekOrdinalFromSourceId(sourceId) || dateToOrdinalFallback.get(dateRaw) || 0,
     };
 
-    // Match by (plan, sourceId) so the same source JSON can populate BOTH
-    // plans independently. Fall back to plain id for legacy rows that were
-    // imported before sourceId existed and don't yet have it.
+    // Match by (menu, plan, sourceId) so the same source JSON can populate
+    // BOTH plans — and several menus — independently. Fall back to plain id
+    // for legacy rows that were imported before sourceId existed.
     let existing = sourceId
-      ? await prisma.dish.findFirst({ where: { plan, sourceId } })
+      ? await prisma.dish.findFirst({ where: { menuId, plan, sourceId } })
       : null;
     if (!existing && sourceId) {
       const legacy = await prisma.dish.findUnique({ where: { id: sourceId } });
-      if (legacy && legacy.plan === plan) existing = legacy;
+      if (legacy && legacy.plan === plan && legacy.menuId === menuId) existing = legacy;
     }
 
     if (existing) {
@@ -1572,6 +1903,7 @@ router.post('/dishes/import-url', requireAdmin, async (req: Request, res: Respon
   }
 
   invalidateDishesCache();
+  audit(req, 'mensa.import', { type: 'menu', id: menuId }, { plan, imported, updated });
   res.json({ imported, updated, total: imported + updated, plan });
 });
 
@@ -1579,19 +1911,20 @@ router.post('/dishes/import-url', requireAdmin, async (req: Request, res: Respon
 // Wipes every dish for the given plan and re-imports fresh from the source URL.
 // Handy when local edits have drifted too far from the canonical mensa.json.
 
-router.post('/dishes/reset', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.post('/dishes/reset', requireAdmin, requirePermission('mensa.manage'), async (req: Request, res: Response): Promise<void> => {
   const plan = parsePlan(req.body?.plan);
   const url = String(req.body?.url || config.mensaImportUrl);
   if (!url) {
     res.status(400).json({ error: 'Enter the address of the menu (mensa.json) or set MENSA_IMPORT_URL' });
     return;
   }
+  const menuId = await editableMenu(req, req.body?.menuId);
 
   let raw: string;
   try {
-    raw = await fetchUrl(url);
-  } catch {
-    res.status(502).json({ error: 'Failed to fetch external URL' });
+    raw = await fetchUrl(url, { publicOnly: !importMayReachInternal(req, url) });
+  } catch (err) {
+    res.status(502).json({ error: err instanceof BlockedAddressError ? err.message : 'Failed to fetch external URL' });
     return;
   }
 
@@ -1637,7 +1970,7 @@ router.post('/dishes/reset', requireAdmin, async (req: Request, res: Response): 
   }
 
   const result = await prisma.$transaction(async (tx) => {
-    const deleted = await tx.dish.deleteMany({ where: { plan } });
+    const deleted = await tx.dish.deleteMany({ where: { menuId, plan } });
     let imported = 0;
     for (const d of list) {
       const rawId = d['id'];
@@ -1670,6 +2003,7 @@ router.post('/dishes/reset', requireAdmin, async (req: Request, res: Response): 
           isVegan: d['isVegan'] === true,
           date: new Date(dateRaw),
           plan,
+          menuId,
           sourceId,
           stableKey: slugifyDishName(name.de.trim()),
           weekOrdinal: weekOrdinalFromSourceId(sourceId) || dateToOrdinalFallback.get(dateRaw) || 0,
@@ -1681,6 +2015,7 @@ router.post('/dishes/reset', requireAdmin, async (req: Request, res: Response): 
   });
 
   invalidateDishesCache();
+  audit(req, 'mensa.reset', { type: 'menu', id: menuId }, { plan, ...result });
   res.json({ ...result, plan });
 });
 
@@ -1688,7 +2023,7 @@ router.post('/dishes/reset', requireAdmin, async (req: Request, res: Response): 
 // Shifts date of every dish in `plan` with date >= fromWeek by offsetDays.
 // Used to cascade a manual week-date change to all following weeks.
 
-router.post('/dishes/cascade-shift', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.post('/dishes/cascade-shift', requireAdmin, requirePermission('mensa.manage'), async (req: Request, res: Response): Promise<void> => {
   const plan = parsePlan(req.body?.plan);
   const fromWeekRaw = req.body?.fromWeek ? String(req.body.fromWeek) : '';
   const offsetDays = Number(req.body?.offsetDays);
@@ -1707,10 +2042,11 @@ router.post('/dishes/cascade-shift', requireAdmin, async (req: Request, res: Res
   }
 
   const fromDate = new Date(fromWeekRaw + 'T00:00:00Z');
+  const menuId = await editableMenu(req, req.body?.menuId);
 
   // Prisma updateMany can't express DATE_ADD, so we shift with one raw UPDATE
   // for atomicity and constant round-trips regardless of row count.
-  const shifted = await prisma.$executeRaw`UPDATE dishes SET date = DATE_ADD(date, INTERVAL ${offsetDays} DAY) WHERE plan = ${plan} AND date >= ${fromDate}`;
+  const shifted = await prisma.$executeRaw`UPDATE dishes SET date = DATE_ADD(date, INTERVAL ${offsetDays} DAY) WHERE menu_id = ${menuId} AND plan = ${plan} AND date >= ${fromDate}`;
 
   invalidateDishesCache();
   res.json({ shifted: Number(shifted) || 0 });
@@ -1731,7 +2067,7 @@ router.post('/dishes/cascade-shift', requireAdmin, async (req: Request, res: Res
 //
 // All in one transaction so the client never sees a torn state.
 
-router.post('/dishes/anchor-week', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.post('/dishes/anchor-week', requireAdmin, requirePermission('mensa.manage'), async (req: Request, res: Response): Promise<void> => {
   const plan = parsePlan(req.body?.plan);
   const chosenRaw = req.body?.chosenWeek ? String(req.body.chosenWeek) : '';
   const targetRaw = req.body?.targetMonday ? String(req.body.targetMonday) : '';
@@ -1742,24 +2078,25 @@ router.post('/dishes/anchor-week', requireAdmin, async (req: Request, res: Respo
     return;
   }
 
+  const menuId = await editableMenu(req, req.body?.menuId);
   const result = await prisma.$transaction(async (tx) => {
-    const normalized = await normalizePlanAroundAnchor(tx, plan, chosenRaw, targetRaw);
-    const rotated = await rotatePastWeeks(plan, tx);
+    const normalized = await normalizePlanAroundAnchor(tx, menuId, plan, chosenRaw, targetRaw);
+    const rotated = await rotatePastWeeks(menuId, plan, tx);
 
     let otherAligned = 0;
     let otherAnchorDate: string | null = null;
     let otherRotated = 0;
     if (alignOther) {
-      const lastMon = await lastFutureMondayIso(tx, plan);
-      const otherFirst = await firstMondayIso(tx, otherPlan(plan));
+      const lastMon = await lastFutureMondayIso(tx, menuId, plan);
+      const otherFirst = await firstMondayIso(tx, menuId, otherPlan(plan));
       if (lastMon && otherFirst) {
         // First Monday after this plan's end, then snap into the other plan's
         // season (in case this plan ends deep inside its own season).
         const rawStart = isoAddDays(lastMon, 7);
         const snapped = snapForwardToSeason(new Date(rawStart + 'T00:00:00Z'), otherPlan(plan));
         otherAnchorDate = snapped.toISOString().split('T')[0]!;
-        otherAligned = await normalizePlanAroundAnchor(tx, otherPlan(plan), otherFirst, otherAnchorDate);
-        otherRotated = await rotatePastWeeks(otherPlan(plan), tx);
+        otherAligned = await normalizePlanAroundAnchor(tx, menuId, otherPlan(plan), otherFirst, otherAnchorDate);
+        otherRotated = await rotatePastWeeks(menuId, otherPlan(plan), tx);
       }
     }
 
@@ -1773,21 +2110,28 @@ router.post('/dishes/anchor-week', requireAdmin, async (req: Request, res: Respo
 // ─── POST /api/admin/dishes/auto-rotate ──────────────────────────────────────
 // Delegates to the shared rotate helper. Cheap to call repeatedly.
 
-router.post('/dishes/auto-rotate', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.post('/dishes/auto-rotate', requireAdmin, requirePermission('mensa.manage'), async (req: Request, res: Response): Promise<void> => {
   const plan = parsePlan(req.body?.plan);
-  const rotated = await rotatePastWeeks(plan);
+  const menuId = await editableMenu(req, req.body?.menuId);
+  const rotated = await rotatePastWeeks(menuId, plan);
   if (rotated > 0) invalidateDishesCache();
   res.json({ rotated });
 });
 
 // ─── GET /api/admin/dish-ratings ─────────────────────────────────────────────
 
-router.get('/dish-ratings', requireAdmin, async (_req: Request, res: Response): Promise<void> => {
+router.get('/dish-ratings', requireAdmin, requirePermission('comments.view'), async (req: Request, res: Response): Promise<void> => {
+  const menuId = await menuFor(req, req.query['menuId']);
+  if (!menuId) {
+    res.json([]);
+    return;
+  }
+  // A school's view: the votes of its own accounts only (names and stars are
+  // personal data of another school's pupils otherwise).
   const [allDishes, rows] = await Promise.all([
-    prisma.dish.findMany({ orderBy: { nameDe: 'asc' } }),
-    prisma.dishRating.findMany({ orderBy: [{ dishId: 'asc' }, { createdAt: 'asc' }] }),
+    prisma.dish.findMany({ where: { menuId }, orderBy: { nameDe: 'asc' } }),
+    prisma.dishRating.findMany({ where: { menuId, ...schoolWhere(req) }, orderBy: [{ dishId: 'asc' }, { createdAt: 'asc' }] }),
   ]);
-
   const uids = [...new Set(rows.map((r) => r.stableUid))];
   const users = uids.length > 0
     ? await prisma.user.findMany({ where: { stableUid: { in: uids } }, select: { stableUid: true, username: true } })
@@ -1851,7 +2195,7 @@ router.get('/dish-ratings', requireAdmin, async (_req: Request, res: Response): 
 
 // ─── PATCH /api/admin/dish-ratings/:dishId/:stableUid ────────────────────────
 
-router.patch('/dish-ratings/:dishId/:stableUid', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.patch('/dish-ratings/:dishId/:stableUid', requireAdmin, requirePermission('comments.moderate'), async (req: Request, res: Response): Promise<void> => {
   const dishId = String(req.params['dishId']);
   const stableUid = String(req.params['stableUid']);
   const { stars } = req.body as { stars?: number };
@@ -1860,26 +2204,38 @@ router.patch('/dish-ratings/:dishId/:stableUid', requireAdmin, async (req: Reque
     res.status(400).json({ error: 'stars must be an integer 1-5' });
     return;
   }
+  const rating = await prisma.dishRating.findUnique({ where: { dishId_stableUid: { dishId, stableUid } } });
+  if (!rating || !inScope(req, rating.schoolId)) {
+    res.status(404).json({ error: 'Rating not found' });
+    return;
+  }
 
   await prisma.dishRating.update({
     where: { dishId_stableUid: { dishId, stableUid } },
     data: { stars },
   });
-  await publishDishRatings(dishId);
+  await publishDishRatings(rating.menuId, dishId);
+  audit(req, 'rating.update', { type: 'rating', id: `${dishId}/${stableUid}` }, { from: rating.stars, to: stars }, rating.schoolId);
 
   res.status(204).send();
 });
 
 // ─── DELETE /api/admin/dish-ratings/:dishId/:stableUid ───────────────────────
 
-router.delete('/dish-ratings/:dishId/:stableUid', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.delete('/dish-ratings/:dishId/:stableUid', requireAdmin, requirePermission('comments.moderate'), async (req: Request, res: Response): Promise<void> => {
   const dishId = String(req.params['dishId']);
   const stableUid = String(req.params['stableUid']);
+  const rating = await prisma.dishRating.findUnique({ where: { dishId_stableUid: { dishId, stableUid } } });
+  if (!rating || !inScope(req, rating.schoolId)) {
+    res.status(404).json({ error: 'Rating not found' });
+    return;
+  }
 
   await prisma.dishRating.delete({
     where: { dishId_stableUid: { dishId, stableUid } },
   }).catch(() => null);
-  await publishDishRatings(dishId);
+  await publishDishRatings(rating.menuId, dishId);
+  audit(req, 'rating.delete', { type: 'rating', id: `${dishId}/${stableUid}` }, { stars: rating.stars }, rating.schoolId);
 
   res.status(204).send();
 });
@@ -1887,48 +2243,47 @@ router.delete('/dish-ratings/:dishId/:stableUid', requireAdmin, async (req: Requ
 // ─── GET /api/admin/comments ─────────────────────────────────────────────────
 // Returns all reminder comments + dish comments, newest first, paginated
 
-router.get('/comments', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.get('/comments', requireAdmin, requirePermission('comments.view'), async (req: Request, res: Response): Promise<void> => {
   const page = intQueryParam(req.query['page'], 1, 1, 1_000_000);
   const limit = intQueryParam(req.query['limit'], 50, 1, 100);
   const skip = (page - 1) * limit;
   const type = String(req.query['type'] ?? 'all');
-  const search = String(req.query['search'] ?? '').trim().toLowerCase();
+  const search = String(req.query['search'] ?? '').trim().toLowerCase().slice(0, 100);
   const sortBy = (['createdAt', 'username', 'body'] as const).includes(req.query['sortBy'] as 'createdAt')
     ? (req.query['sortBy'] as 'createdAt' | 'username' | 'body')
     : 'createdAt';
   const sortOrder = req.query['sortOrder'] === 'asc' ? 'asc' : 'desc';
+  const schoolId = scopeSchool(req);
 
   const where: Record<string, unknown> = search
-    ? { OR: [{ body: { contains: search } }, { username: { contains: search } }] }
+    ? { OR: [{ body: { contains: likeText(search) } }, { username: { contains: likeText(search) } }] }
     : {};
+  // Reminder comments belong to a class's school, dish comments to their
+  // author's.
+  const reminderWhere = { ...where, ...(schoolId ? { reminder: { class: { schoolId } } } : {}) };
+  const dishWhere = { ...where, ...(schoolId ? { schoolId } : {}) };
 
-  const orderBy = { [sortBy]: sortOrder };
+  const orderBy = [{ [sortBy]: sortOrder }, { id: 'asc' as const }];
+  // "all" merges both lists: each side needs at most skip+limit rows.
+  const window = type === 'all' ? { skip: 0, take: skip + limit } : { skip, take: limit };
 
   const [reminderComments, dishComments, totalReminder, totalDish] = await Promise.all([
     type === 'dish' ? Promise.resolve([]) : prisma.comment.findMany({
-      where,
+      where: reminderWhere,
       orderBy,
-      skip: type === 'all' ? 0 : skip,
-      take: type === 'all' ? undefined : limit,
+      ...window,
       include: { reminder: { select: { id: true, title: true, classId: true } } },
     }),
     type === 'reminder' ? Promise.resolve([]) : prisma.dishComment.findMany({
-      where,
+      where: dishWhere,
       orderBy,
-      skip: type === 'all' ? 0 : skip,
-      take: type === 'all' ? undefined : limit,
+      ...window,
     }),
-    type === 'dish' ? Promise.resolve(0) : prisma.comment.count({ where }),
-    type === 'reminder' ? Promise.resolve(0) : prisma.dishComment.count({ where }),
+    type === 'dish' ? Promise.resolve(0) : prisma.comment.count({ where: reminderWhere }),
+    type === 'reminder' ? Promise.resolve(0) : prisma.dishComment.count({ where: dishWhere }),
   ]);
 
-  // Resolve each dishComment's dishId (which is a stableKey after migration) to
-  // a human name for the "contextTitle" column. One query, then Map lookup.
-  const keys = [...new Set(dishComments.map((c) => c.dishId))];
-  const dishesForKeys = keys.length > 0
-    ? await prisma.dish.findMany({ where: { stableKey: { in: keys } }, select: { stableKey: true, nameDe: true } })
-    : [];
-  const keyToName = new Map(dishesForKeys.map((d) => [d.stableKey, d.nameDe]));
+  const names = await dishNames(dishComments.map((c) => ({ menuId: c.menuId, dishId: c.dishId })));
 
   const allComments = [
     ...reminderComments.map((c) => ({
@@ -1952,7 +2307,7 @@ router.get('/comments', requireAdmin, async (req: Request, res: Response): Promi
       createdAt: c.createdAt.toISOString(),
       updatedAt: c.updatedAt.toISOString(),
       contextId: c.dishId,
-      contextTitle: keyToName.get(c.dishId) ?? c.dishId,
+      contextTitle: names.get(`${c.menuId ?? ''}|${c.dishId}`)?.name ?? c.dishId,
       classId: null,
     })),
   ].sort((a, b) => {
@@ -1971,29 +2326,241 @@ router.get('/comments', requireAdmin, async (req: Request, res: Response): Promi
   });
 });
 
+// The name and picture of dishes by menu and stable key — from any plan and
+// day the dish appears on. A dish that no longer exists has none: the panel
+// shows it as deleted, its comments stay reachable.
+async function dishNames(refs: Array<{ menuId: string | null; dishId: string }>): Promise<Map<string, { name: string; imageUrl: string }>> {
+  const keys = [...new Set(refs.map((r) => r.dishId))];
+  const out = new Map<string, { name: string; imageUrl: string }>();
+  if (keys.length === 0) return out;
+  const dishes = await prisma.dish.findMany({
+    where: { stableKey: { in: keys } },
+    select: { menuId: true, stableKey: true, nameDe: true, imageUrl: true },
+    orderBy: { date: 'asc' },
+  });
+  for (const d of dishes) {
+    const id = `${d.menuId ?? ''}|${d.stableKey}`;
+    const known = out.get(id);
+    if (!known || (!known.imageUrl && d.imageUrl)) out.set(id, { name: d.nameDe, imageUrl: d.imageUrl });
+  }
+  return out;
+}
+
+// ─── GET /api/admin/comments/dishes ──────────────────────────────────────────
+// The Kommentare page's main view: one row per dish of a menu with its
+// comment count, latest comment and rating — grouped by the dish's stable
+// key (what comments and votes reference), never by display name. A school's
+// view counts its own accounts' comments and votes only.
+
+router.get('/comments/dishes', requireAdmin, requirePermission('comments.view'), async (req: Request, res: Response): Promise<void> => {
+  const menuId = await menuFor(req, req.query['menuId']);
+  const page = intQueryParam(req.query['page'], 1, 1, 1_000_000);
+  const limit = intQueryParam(req.query['limit'], 30, 1, 100);
+  const search = String(req.query['search'] ?? '').trim().slice(0, 100);
+  const sortRaw = String(req.query['sort'] ?? 'latest');
+  const sort = sortRaw === 'comments' || sortRaw === 'rating' || sortRaw === 'name' ? sortRaw : 'latest';
+  if (!menuId) {
+    res.json({ dishes: [], total: 0, page: 1, limit, menuId: null });
+    return;
+  }
+  // Dish keys whose name matches the search, so a dish is found by its name
+  // as well as by what was written about it.
+  let nameKeys: string[] = [];
+  if (search) {
+    const named = await prisma.dish.findMany({
+      where: { menuId, OR: [{ nameDe: { contains: likeText(search) } }, { nameIt: { contains: likeText(search) } }, { nameEn: { contains: likeText(search) } }] },
+      select: { stableKey: true },
+      distinct: ['stableKey'],
+      take: 500,
+    });
+    nameKeys = named.map((d) => d.stableKey);
+  }
+  const like = `%${search.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+  const searchSql = search
+    ? Prisma.sql` AND (c.body LIKE ${like} OR c.username LIKE ${like}${nameKeys.length > 0 ? Prisma.sql` OR c.dish_id IN (${Prisma.join(nameKeys)})` : Prisma.empty})`
+    : Prisma.empty;
+
+  type GroupRow = { dishId: string; comments: bigint; latest: Date };
+  const groups = await prisma.$queryRaw<GroupRow[]>`
+    SELECT c.dish_id AS dishId, COUNT(*) AS comments, MAX(c.created_at) AS latest
+    FROM dish_comments c
+    WHERE c.menu_id = ${menuId}${schoolSql(req, 'c.school_id')}${searchSql}
+    GROUP BY c.dish_id`;
+
+  type RatingRow = { dishId: string; n: bigint; avgStars: unknown };
+  const keys = groups.map((g) => g.dishId);
+  const ratings = keys.length > 0
+    ? await prisma.$queryRaw<RatingRow[]>`
+        SELECT dish_id AS dishId, COUNT(*) AS n, AVG(stars) AS avgStars FROM dish_ratings
+        WHERE menu_id = ${menuId} AND dish_id IN (${Prisma.join(keys)})${schoolSql(req)}
+        GROUP BY dish_id`
+    : [];
+  const ratingOf = new Map(ratings.map((r) => [r.dishId, { count: Number(r.n), avg: Math.round(Number(r.avgStars ?? 0) * 10) / 10 }]));
+  const names = await dishNames(keys.map((dishId) => ({ menuId, dishId })));
+
+  const rows = groups.map((g) => {
+    const known = names.get(`${menuId}|${g.dishId}`);
+    const rating = ratingOf.get(g.dishId);
+    return {
+      dishId: g.dishId,
+      name: known?.name ?? null,
+      imageUrl: known?.imageUrl ?? '',
+      deleted: !known,
+      comments: Number(g.comments),
+      latestAt: new Date(g.latest).toISOString(),
+      ratingCount: rating?.count ?? 0,
+      avgStars: rating && rating.count > 0 ? rating.avg : null,
+    };
+  });
+  rows.sort((a, b) => {
+    if (sort === 'comments') return b.comments - a.comments || b.latestAt.localeCompare(a.latestAt);
+    if (sort === 'rating') return (b.avgStars ?? -1) - (a.avgStars ?? -1) || b.comments - a.comments;
+    if (sort === 'name') return (a.name ?? a.dishId).localeCompare(b.name ?? b.dishId, 'de');
+    return b.latestAt.localeCompare(a.latestAt);
+  });
+  const total = rows.length;
+  const pageRows = rows.slice((page - 1) * limit, page * limit);
+  res.json({ dishes: pageRows, total, page, limit, menuId, totalComments: rows.reduce((sum, r) => sum + r.comments, 0) });
+});
+
+// ─── GET /api/admin/comments/dishes/:dishId ──────────────────────────────────
+// One dish's comments, each with its author's rating of that dish.
+
+router.get('/comments/dishes/:dishId', requireAdmin, requirePermission('comments.view'), async (req: Request, res: Response): Promise<void> => {
+  const dishId = String(req.params['dishId']).slice(0, 200);
+  const menuId = await menuFor(req, req.query['menuId']);
+  const page = intQueryParam(req.query['page'], 1, 1, 1_000_000);
+  const limit = intQueryParam(req.query['limit'], 50, 1, 200);
+  const sortRaw = String(req.query['sort'] ?? 'newest');
+  if (!menuId) {
+    res.status(404).json({ error: 'Mensaplan nicht gefunden' });
+    return;
+  }
+  const where: Prisma.DishCommentWhereInput = { menuId, dishId, ...schoolWhere(req) };
+  const [all, ratings, names] = await Promise.all([
+    prisma.dishComment.findMany({ where, orderBy: [{ createdAt: sortRaw === 'oldest' ? 'asc' : 'desc' }, { id: 'asc' }] }),
+    prisma.dishRating.findMany({ where: { menuId, dishId, ...schoolWhere(req) }, select: { stableUid: true, stars: true } }),
+    dishNames([{ menuId, dishId }]),
+  ]);
+  const starsOf = new Map(ratings.map((r) => [r.stableUid, r.stars]));
+  const comments = all.map((c) => ({
+    id: c.id,
+    stableUid: c.stableUid,
+    username: c.username,
+    body: c.body,
+    stars: starsOf.get(c.stableUid) ?? null,
+    createdAt: c.createdAt.toISOString(),
+    updatedAt: c.updatedAt.toISOString(),
+    edited: c.updatedAt.getTime() - c.createdAt.getTime() > 1000,
+  }));
+  if (sortRaw === 'rating-low') comments.sort((a, b) => (a.stars ?? 6) - (b.stars ?? 6));
+  if (sortRaw === 'rating-high') comments.sort((a, b) => (b.stars ?? 0) - (a.stars ?? 0));
+  const known = names.get(`${menuId}|${dishId}`);
+  res.json({
+    dish: { dishId, name: known?.name ?? null, imageUrl: known?.imageUrl ?? '', deleted: !known },
+    comments: comments.slice((page - 1) * limit, page * limit),
+    total: comments.length,
+    page,
+    limit,
+  });
+});
+
+// ─── GET /api/admin/comments/reminders ───────────────────────────────────────
+// Reminder comments grouped by their reminder, newest activity first.
+
+router.get('/comments/reminders', requireAdmin, requirePermission('comments.view'), async (req: Request, res: Response): Promise<void> => {
+  const page = intQueryParam(req.query['page'], 1, 1, 1_000_000);
+  const limit = intQueryParam(req.query['limit'], 30, 1, 100);
+  const search = String(req.query['search'] ?? '').trim().slice(0, 100);
+  const schoolId = scopeSchool(req);
+  const groups = await prisma.comment.groupBy({
+    by: ['reminderId'],
+    where: {
+      ...(schoolId ? { reminder: { class: { schoolId } } } : {}),
+      ...(search ? { OR: [{ body: { contains: likeText(search) } }, { username: { contains: likeText(search) } }, { reminder: { title: { contains: likeText(search) } } }] } : {}),
+    },
+    _count: { _all: true },
+    _max: { createdAt: true },
+  });
+  groups.sort((a, b) => (b._max.createdAt?.getTime() ?? 0) - (a._max.createdAt?.getTime() ?? 0));
+  const pageGroups = groups.slice((page - 1) * limit, page * limit);
+  const reminders = await prisma.reminder.findMany({
+    where: { id: { in: pageGroups.map((g) => g.reminderId) } },
+    select: { id: true, title: true, classId: true, remindAt: true, class: { select: { name: true } } },
+  });
+  const byId = new Map(reminders.map((r) => [r.id, r]));
+  res.json({
+    reminders: pageGroups.map((g) => {
+      const r = byId.get(g.reminderId);
+      return {
+        reminderId: g.reminderId,
+        title: r?.title ?? null,
+        className: r?.class.name ?? null,
+        remindAt: r?.remindAt.toISOString() ?? null,
+        comments: g._count._all,
+        latestAt: g._max.createdAt?.toISOString() ?? null,
+      };
+    }),
+    total: groups.length,
+    page,
+    limit,
+  });
+});
+
+router.get('/comments/reminders/:reminderId', requireAdmin, requirePermission('comments.view'), async (req: Request, res: Response): Promise<void> => {
+  const reminder = await reminderInScope(req, String(req.params['reminderId']));
+  if (!reminder) {
+    res.status(404).json({ error: 'Reminder not found' });
+    return;
+  }
+  const comments = await prisma.comment.findMany({ where: { reminderId: reminder.id }, orderBy: [{ createdAt: 'desc' }, { id: 'asc' }] });
+  res.json({
+    reminder: { reminderId: reminder.id, title: reminder.title, classId: reminder.classId },
+    comments: comments.map((c) => ({
+      id: c.id,
+      stableUid: c.stableUid,
+      username: c.username,
+      body: c.body,
+      createdAt: c.createdAt.toISOString(),
+      updatedAt: c.updatedAt.toISOString(),
+    })),
+  });
+});
+
 // ─── DELETE /api/admin/comments/reminder/:id ─────────────────────────────────
 
-router.delete('/comments/reminder/:id', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.delete('/comments/reminder/:id', requireAdmin, requirePermission('comments.moderate'), async (req: Request, res: Response): Promise<void> => {
   const id = String(req.params['id']);
+  const comment = await prisma.comment.findUnique({ where: { id }, include: { reminder: { select: { class: { select: { schoolId: true } } } } } });
+  if (!comment || !inScope(req, comment.reminder.class.schoolId)) {
+    res.status(404).json({ error: 'Comment not found' });
+    return;
+  }
   await prisma.comment.delete({ where: { id } }).catch(() => null);
+  audit(req, 'comment.delete', { type: 'reminder_comment', id }, { reminderId: comment.reminderId }, comment.reminder.class.schoolId);
   res.status(204).send();
 });
 
 // ─── DELETE /api/admin/comments/dish/:id ─────────────────────────────────────
 
-router.delete('/comments/dish/:id', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.delete('/comments/dish/:id', requireAdmin, requirePermission('comments.moderate'), async (req: Request, res: Response): Promise<void> => {
   const id = String(req.params['id']);
+  const comment = await prisma.dishComment.findUnique({ where: { id } });
+  if (!comment || !inScope(req, comment.schoolId)) {
+    res.status(404).json({ error: 'Comment not found' });
+    return;
+  }
   const deleted = await prisma.dishComment.delete({ where: { id } }).catch(() => null);
   if (deleted) {
-    const comments = await prisma.dishComment.findMany({ where: { dishId: deleted.dishId }, orderBy: { createdAt: 'asc' } });
-    broadcastDishComments(deleted.dishId, deleted.dishId, comments);
+    await publishDishComments(deleted.menuId, deleted.dishId);
+    audit(req, 'comment.delete', { type: 'dish_comment', id }, { dishId: deleted.dishId }, deleted.schoolId);
   }
   res.status(204).send();
 });
 
 // ─── GET /api/admin/file-logs ─────────────────────────────────────────────────
 
-router.get('/file-logs', requireAdmin, async (_req: Request, res: Response): Promise<void> => {
+router.get('/file-logs', requireAdmin, requirePermission('system.logs.view'), async (_req: Request, res: Response): Promise<void> => {
   const logDir = path.join(process.cwd(), 'logs');
   let files: string[] = [];
   try { files = await fs.readdir(logDir); } catch { files = []; }
@@ -2016,7 +2583,7 @@ router.get('/file-logs', requireAdmin, async (_req: Request, res: Response): Pro
 
 // ─── GET /api/admin/file-logs/:date ──────────────────────────────────────────
 
-router.get('/file-logs/:date', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.get('/file-logs/:date', requireAdmin, requirePermission('system.logs.view'), async (req: Request, res: Response): Promise<void> => {
   const dateParam = String(req.params['date']);
   // Path traversal protection
   if (!/^\d{4}-\d{2}-\d{2}$/.test(dateParam)) {
@@ -2060,7 +2627,7 @@ function normalizeSubjectKey(s: string): string {
 }
 
 // GET /api/admin/subject-images/:subject/preview — serve image for admin panel
-router.get('/subject-images/:subject/preview', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.get('/subject-images/:subject/preview', requireAdmin, requirePermission('subjectimages.manage'), async (req: Request, res: Response): Promise<void> => {
   const subject = normalizeSubjectKey(req.params['subject'] as string);
   const row = await prisma.subjectImage.findUnique({ where: { subject } });
   if (!row) { res.status(404).end(); return; }
@@ -2073,7 +2640,7 @@ router.get('/subject-images/:subject/preview', requireAdmin, async (req: Request
 });
 
 // GET /api/admin/subject-images — list all known subjects with image status
-router.get('/subject-images', requireAdmin, async (_req: Request, res: Response): Promise<void> => {
+router.get('/subject-images', requireAdmin, requirePermission('subjectimages.manage'), async (_req: Request, res: Response): Promise<void> => {
   const [subjects, images] = await Promise.all([
     prisma.knownSubject.findMany({ orderBy: { longName: 'asc' } }),
     prisma.subjectImage.findMany({ select: { subject: true, mimeType: true, updatedAt: true } }),
@@ -2104,7 +2671,7 @@ const subjectImageUploadSchema = z.object({
   crop:     cropSchema,
 });
 
-router.put('/subject-images/:subject', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.put('/subject-images/:subject', requireAdmin, requirePermission('subjectimages.manage'), async (req: Request, res: Response): Promise<void> => {
   const subject = normalizeSubjectKey(req.params['subject'] as string);
   if (!subject) { res.status(400).json({ error: 'Invalid subject' }); return; }
 
@@ -2138,7 +2705,7 @@ router.put('/subject-images/:subject', requireAdmin, async (req: Request, res: R
 });
 
 // DELETE /api/admin/subject-images/:subject — remove image
-router.delete('/subject-images/:subject', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.delete('/subject-images/:subject', requireAdmin, requirePermission('subjectimages.manage'), async (req: Request, res: Response): Promise<void> => {
   const subject = normalizeSubjectKey(req.params['subject'] as string);
   await prisma.subjectImage.delete({ where: { subject } }).catch(() => null);
   res.status(204).send();
@@ -2153,10 +2720,9 @@ function dishImageUrl(dishId: string): string {
 
 // PUT /api/admin/dishes/:id/image — upload/replace a dish image (optional crop).
 // Stored as WebP in the DB; the dish's imageUrl is pointed at the served route.
-router.put('/dishes/:id/image', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.put('/dishes/:id/image', requireAdmin, requirePermission('mensa.manage'), async (req: Request, res: Response): Promise<void> => {
   const id = String(req.params['id']);
-  const dish = await prisma.dish.findUnique({ where: { id } });
-  if (!dish) { res.status(404).json({ error: 'Dish not found' }); return; }
+  await editableDish(req, id);
 
   const body = subjectImageUploadSchema.parse(req.body);
   if (!ALLOWED_MIME.has(body.mimeType)) {
@@ -2186,8 +2752,9 @@ router.put('/dishes/:id/image', requireAdmin, async (req: Request, res: Response
 });
 
 // DELETE /api/admin/dishes/:id/image — remove the uploaded image
-router.delete('/dishes/:id/image', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.delete('/dishes/:id/image', requireAdmin, requirePermission('mensa.manage'), async (req: Request, res: Response): Promise<void> => {
   const id = String(req.params['id']);
+  await editableDish(req, id);
   await prisma.dishImage.delete({ where: { dishId: id } }).catch(() => null);
   await prisma.dish.update({ where: { id }, data: { imageUrl: '' } }).catch(() => null);
   invalidateDishesCache();
@@ -2197,7 +2764,7 @@ router.delete('/dishes/:id/image', requireAdmin, async (req: Request, res: Respo
 // ─── GET /api/admin/activity-logs ────────────────────────────────────────────
 // Frontend activity logs (page views, downloads, logins, etc.)
 
-router.get('/activity-logs', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.get('/activity-logs', requireAdmin, requirePermission('logs.frontend.view'), async (req: Request, res: Response): Promise<void> => {
   const page  = intQueryParam(req.query['page'], 1, 1, 1_000_000);
   const limit = intQueryParam(req.query['limit'], 50, 1, 200);
   const skip  = (page - 1) * limit;
@@ -2206,9 +2773,9 @@ router.get('/activity-logs', requireAdmin, async (req: Request, res: Response): 
   const from = req.query['from'] ? new Date(String(req.query['from']))                        : undefined;
   const to   = req.query['to']   ? new Date(String(req.query['to']) + 'T23:59:59.999Z')       : undefined;
 
-  const where: Record<string, unknown> = {};
+  const where: Record<string, unknown> = { ...schoolWhere(req) };
   if (event)    where['event']    = event;
-  if (username) where['username'] = { contains: username };
+  if (username) where['username'] = { contains: likeText(username) };
   if (from || to) {
     where['createdAt'] = {
       ...(from && !isNaN(from.getTime()) ? { gte: from } : {}),
@@ -2217,16 +2784,18 @@ router.get('/activity-logs', requireAdmin, async (req: Request, res: Response): 
   }
 
   const [logs, total] = await Promise.all([
-    prisma.frontendActivityLog.findMany({ where, orderBy: { createdAt: 'desc' }, skip, take: limit }),
+    prisma.frontendActivityLog.findMany({ where, orderBy: [{ createdAt: 'desc' }, { id: 'asc' }], skip, take: limit }),
     prisma.frontendActivityLog.count({ where }),
   ]);
 
-  res.json({ logs, total, page, limit });
+  res.json({ logs: logs.map((log) => networkDetailsFor(req, log)), total, page, limit });
 });
 
 // ─── GET /api/admin/activity-logs/stats ──────────────────────────────────────
 
-router.get('/activity-logs/stats', requireAdmin, async (_req: Request, res: Response): Promise<void> => {
+router.get('/activity-logs/stats', requireAdmin, requirePermission('dashboard.view'), async (req: Request, res: Response): Promise<void> => {
+  const inSchool = schoolSql(req);
+  const schoolId = scopeSchool(req);
   // "Today" is the local day the Analytics page counts in, not the server's.
   const tz = config.usageAnalytics.timezone;
   const startOfToday = startOfLocalDay(localDayAndHour(new Date(), tz).dayKey, tz);
@@ -2235,32 +2804,32 @@ router.get('/activity-logs/stats', requireAdmin, async (_req: Request, res: Resp
   type PageRow  = { page: string; count: bigint };
 
   const [totalToday, uniqueUsersToday, eventBreakdown, topPages, activeUsersToday, eventsToday, topPagesToday] = await Promise.all([
-    prisma.frontendActivityLog.count({ where: { createdAt: { gte: startOfToday } } }),
+    prisma.frontendActivityLog.count({ where: { createdAt: { gte: startOfToday }, ...schoolWhere(req) } }),
     prisma.$queryRaw<{ cnt: bigint }[]>`
       SELECT COUNT(DISTINCT username) AS cnt FROM frontend_activity_logs
-      WHERE created_at >= ${startOfToday} AND username IS NOT NULL
+      WHERE created_at >= ${startOfToday} AND username IS NOT NULL${inSchool}
     `,
     prisma.$queryRaw<EventRow[]>`
       SELECT event, COUNT(*) AS count FROM frontend_activity_logs
-      WHERE created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+      WHERE created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)${inSchool}
       GROUP BY event ORDER BY count DESC
     `,
     prisma.$queryRaw<PageRow[]>`
       SELECT page, COUNT(*) AS count FROM frontend_activity_logs
-      WHERE page IS NOT NULL AND created_at >= DATE_SUB(NOW(), INTERVAL 1 DAY)
+      WHERE page IS NOT NULL AND created_at >= DATE_SUB(NOW(), INTERVAL 1 DAY)${inSchool}
       GROUP BY page ORDER BY count DESC LIMIT 10
     `,
     // The dashboard's "today" figures: active users as Analytics counts them,
     // and events and pages of today only.
-    activeToday().catch(() => 0),
+    activeToday(new Date(), schoolId).catch(() => 0),
     prisma.$queryRaw<EventRow[]>`
       SELECT event, COUNT(*) AS count FROM frontend_activity_logs
-      WHERE created_at >= ${startOfToday}
+      WHERE created_at >= ${startOfToday}${inSchool}
       GROUP BY event ORDER BY count DESC
     `,
     prisma.$queryRaw<PageRow[]>`
       SELECT page, COUNT(*) AS count FROM frontend_activity_logs
-      WHERE page IS NOT NULL AND created_at >= ${startOfToday}
+      WHERE page IS NOT NULL AND created_at >= ${startOfToday}${inSchool}
       GROUP BY page ORDER BY count DESC LIMIT 10
     `,
   ]);
@@ -2277,7 +2846,7 @@ router.get('/activity-logs/stats', requireAdmin, async (_req: Request, res: Resp
 });
 
 // GET /api/admin/audit-log — recent admin actions from file logs (last 3 days)
-router.get('/audit-log', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.get('/audit-log', requireAdmin, requirePermission('system.logs.view'), async (req: Request, res: Response): Promise<void> => {
   const limit = intQueryParam(req.query['limit'], 100, 1, 200);
   const logDir = path.join(process.cwd(), 'logs');
   const entries: unknown[] = [];
@@ -2305,7 +2874,7 @@ router.get('/audit-log', requireAdmin, async (req: Request, res: Response): Prom
 // ─── GET /api/admin/todos ─────────────────────────────────────────────────────
 // All todos across all users, server-side paginated. status=active|done|archived|all
 
-router.get('/todos', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.get('/todos', requireAdmin, requirePermission('todos.view'), async (req: Request, res: Response): Promise<void> => {
   const page    = intQueryParam(req.query['page'], 1, 1, 1_000_000);
   const limit   = intQueryParam(req.query['limit'], 50, 1, 200);
   const skip    = (page - 1) * limit;
@@ -2313,8 +2882,9 @@ router.get('/todos', requireAdmin, async (req: Request, res: Response): Promise<
   const status  = String(req.query['status'] ?? 'all');
   const uid     = String(req.query['stableUid'] ?? '').trim();
 
-  const where: Record<string, unknown> = {};
-  if (search) where['title'] = { contains: search };
+  const schoolId = scopeSchool(req);
+  const where: Record<string, unknown> = schoolId ? { user: { schoolId } } : {};
+  if (search) where['title'] = { contains: likeText(search) };
   if (uid) where['stableUid'] = uid;
   if (status === 'active')        { where['done'] = false; where['archivedAt'] = null; }
   else if (status === 'done')     { where['done'] = true;  where['archivedAt'] = null; }
@@ -2322,7 +2892,7 @@ router.get('/todos', requireAdmin, async (req: Request, res: Response): Promise<
   // 'all' → no filter
 
   const [todos, total] = await Promise.all([
-    prisma.todo.findMany({ where: where as never, orderBy: { createdAt: 'desc' }, skip, take: limit }),
+    prisma.todo.findMany({ where: where as never, orderBy: [{ createdAt: 'desc' }, { id: 'asc' }], skip, take: limit }),
     prisma.todo.count({ where: where as never }),
   ]);
 
@@ -2349,7 +2919,7 @@ router.get('/todos', requireAdmin, async (req: Request, res: Response): Promise<
 // ─── GET /api/admin/reminders ─────────────────────────────────────────────────
 // All reminders across all classes, server-side paginated. status=active|archived|all
 
-router.get('/reminders', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.get('/reminders', requireAdmin, requirePermission('todos.view'), async (req: Request, res: Response): Promise<void> => {
   const page    = intQueryParam(req.query['page'], 1, 1, 1_000_000);
   const limit   = intQueryParam(req.query['limit'], 50, 1, 200);
   const skip    = (page - 1) * limit;
@@ -2357,14 +2927,15 @@ router.get('/reminders', requireAdmin, async (req: Request, res: Response): Prom
   const status  = String(req.query['status'] ?? 'all');
   const classId = String(req.query['classId'] ?? '').trim();
 
-  const where: Record<string, unknown> = {};
-  if (search) where['title'] = { contains: search };
+  const schoolId = scopeSchool(req);
+  const where: Record<string, unknown> = schoolId ? { class: { schoolId } } : {};
+  if (search) where['title'] = { contains: likeText(search) };
   if (classId) where['classId'] = classId;
   if (status === 'active')        { where['archivedAt'] = null; }
   else if (status === 'archived') { where['archivedAt'] = { not: null }; }
 
   const [reminders, total] = await Promise.all([
-    prisma.reminder.findMany({ where: where as never, orderBy: { remindAt: 'desc' }, skip, take: limit }),
+    prisma.reminder.findMany({ where: where as never, orderBy: [{ remindAt: 'desc' }, { id: 'asc' }], skip, take: limit }),
     prisma.reminder.count({ where: where as never }),
   ]);
 
@@ -2390,19 +2961,21 @@ router.get('/reminders', requireAdmin, async (req: Request, res: Response): Prom
 // ─── GET /api/admin/archive/todos ────────────────────────────────────────────
 // Archived (expired >24h) todos — server-only, admin-viewable.
 
-router.get('/archive/todos', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.get('/archive/todos', requireAdmin, requirePermission('todos.view'), async (req: Request, res: Response): Promise<void> => {
   const page = intQueryParam(req.query['page'], 1, 1, 1_000_000);
   const limit = intQueryParam(req.query['limit'], 50, 1, 200);
   const skip = (page - 1) * limit;
 
+  const schoolId = scopeSchool(req);
+  const archived = { archivedAt: { not: null }, ...(schoolId ? { user: { schoolId } } : {}) };
   const [todos, total] = await Promise.all([
     prisma.todo.findMany({
-      where: { archivedAt: { not: null } },
-      orderBy: { archivedAt: 'desc' },
+      where: archived,
+      orderBy: [{ archivedAt: 'desc' }, { id: 'asc' }],
       skip,
       take: limit,
     }),
-    prisma.todo.count({ where: { archivedAt: { not: null } } }),
+    prisma.todo.count({ where: archived }),
   ]);
 
   const uids = [...new Set(todos.map((t) => t.stableUid))];
@@ -2430,19 +3003,21 @@ router.get('/archive/todos', requireAdmin, async (req: Request, res: Response): 
 
 // ─── GET /api/admin/archive/reminders ────────────────────────────────────────
 
-router.get('/archive/reminders', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.get('/archive/reminders', requireAdmin, requirePermission('todos.view'), async (req: Request, res: Response): Promise<void> => {
   const page = intQueryParam(req.query['page'], 1, 1, 1_000_000);
   const limit = intQueryParam(req.query['limit'], 50, 1, 200);
   const skip = (page - 1) * limit;
 
+  const schoolId = scopeSchool(req);
+  const archived = { archivedAt: { not: null }, ...(schoolId ? { class: { schoolId } } : {}) };
   const [reminders, total] = await Promise.all([
     prisma.reminder.findMany({
-      where: { archivedAt: { not: null } },
-      orderBy: { archivedAt: 'desc' },
+      where: archived,
+      orderBy: [{ archivedAt: 'desc' }, { id: 'asc' }],
       skip,
       take: limit,
     }),
-    prisma.reminder.count({ where: { archivedAt: { not: null } } }),
+    prisma.reminder.count({ where: archived }),
   ]);
 
   res.json({
@@ -2465,7 +3040,7 @@ router.get('/archive/reminders', requireAdmin, async (req: Request, res: Respons
 // ─── GET /api/admin/export ────────────────────────────────────────────────────
 // Full database dump as a single JSON document (complete backup).
 
-router.get('/export', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.get('/export', requireAdmin, requirePermission('backups.manage'), async (req: Request, res: Response): Promise<void> => {
   const [
     users, admins, classes, classMembers, todos, reminders, comments,
     dishComments, dishes, dishRatings, refreshTokens, pushSubscriptions,
@@ -2534,7 +3109,7 @@ const importSchema = z.object({
   data: z.record(z.array(z.record(z.any()))),
 });
 
-router.post('/import', requireAdmin, async (req2: Request, res: Response): Promise<void> => {
+router.post('/import', requireAdmin, requirePermission('backups.manage'), async (req2: Request, res: Response): Promise<void> => {
   const parsed = importSchema.safeParse(req2.body);
   if (!parsed.success) {
     res.status(422).json({ error: 'Invalid import format' });
@@ -2649,7 +3224,7 @@ router.post('/import', requireAdmin, async (req2: Request, res: Response): Promi
 
 import { computeSchoolYear, performRollover, rollbackRollover } from '../services/schoolYearArchiver';
 
-router.get('/school-years', requireAdmin, async (_req: Request, res: Response): Promise<void> => {
+router.get('/school-years', requireAdmin, requirePermission('schoolyears.manage'), async (_req: Request, res: Response): Promise<void> => {
   const years = await prisma.schoolYear.findMany({ orderBy: { startYear: 'desc' } });
   const current = computeSchoolYear(new Date());
   res.json({
@@ -2663,7 +3238,7 @@ router.get('/school-years', requireAdmin, async (_req: Request, res: Response): 
 
 // ─── GET /api/admin/school-years/:id/users ────────────────────────────────────
 
-router.get('/school-years/:id/users', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.get('/school-years/:id/users', requireAdmin, requirePermission('schoolyears.manage'), async (req: Request, res: Response): Promise<void> => {
   const id      = String(req.params['id']);
   const page    = intQueryParam(req.query['page'], 1, 1, 1_000_000);
   const limit   = intQueryParam(req.query['limit'], 50, 1, 200);
@@ -2672,7 +3247,7 @@ router.get('/school-years/:id/users', requireAdmin, async (req: Request, res: Re
   const role    = String(req.query['role']   ?? '').trim();
 
   const where: Record<string, unknown> = { schoolYearId: id };
-  if (search) where['username'] = { contains: search };
+  if (search) where['username'] = { contains: likeText(search) };
   if (role === 'student' || role === 'parent' || role === 'none') where['role'] = role;
 
   const [users, total] = await Promise.all([
@@ -2684,7 +3259,7 @@ router.get('/school-years/:id/users', requireAdmin, async (req: Request, res: Re
 
 // ─── GET /api/admin/school-years/:id/classes ──────────────────────────────────
 
-router.get('/school-years/:id/classes', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.get('/school-years/:id/classes', requireAdmin, requirePermission('schoolyears.manage'), async (req: Request, res: Response): Promise<void> => {
   const id = String(req.params['id']);
   const classes = await prisma.archivedClass.findMany({
     where: { schoolYearId: id }, orderBy: { name: 'asc' },
@@ -2700,7 +3275,7 @@ router.get('/school-years/:id/classes', requireAdmin, async (req: Request, res: 
 
 // ─── GET /api/admin/school-years/:id/todos ────────────────────────────────────
 
-router.get('/school-years/:id/todos', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.get('/school-years/:id/todos', requireAdmin, requirePermission('schoolyears.manage'), async (req: Request, res: Response): Promise<void> => {
   const id      = String(req.params['id']);
   const page    = intQueryParam(req.query['page'], 1, 1, 1_000_000);
   const limit   = intQueryParam(req.query['limit'], 50, 1, 200);
@@ -2709,7 +3284,7 @@ router.get('/school-years/:id/todos', requireAdmin, async (req: Request, res: Re
   const status  = String(req.query['status'] ?? 'all');
 
   const where: Record<string, unknown> = { schoolYearId: id };
-  if (search) where['title'] = { contains: search };
+  if (search) where['title'] = { contains: likeText(search) };
   if (status === 'active')        { where['done'] = false; where['archivedAt'] = null; }
   else if (status === 'done')     { where['done'] = true;  where['archivedAt'] = null; }
   else if (status === 'archived') { where['archivedAt'] = { not: null }; }
@@ -2734,7 +3309,7 @@ router.get('/school-years/:id/todos', requireAdmin, async (req: Request, res: Re
 
 // ─── GET /api/admin/school-years/:id/reminders ────────────────────────────────
 
-router.get('/school-years/:id/reminders', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.get('/school-years/:id/reminders', requireAdmin, requirePermission('schoolyears.manage'), async (req: Request, res: Response): Promise<void> => {
   const id      = String(req.params['id']);
   const page    = intQueryParam(req.query['page'], 1, 1, 1_000_000);
   const limit   = intQueryParam(req.query['limit'], 50, 1, 200);
@@ -2743,7 +3318,7 @@ router.get('/school-years/:id/reminders', requireAdmin, async (req: Request, res
   const status  = String(req.query['status'] ?? 'all');
 
   const where: Record<string, unknown> = { schoolYearId: id };
-  if (search) where['title'] = { contains: search };
+  if (search) where['title'] = { contains: likeText(search) };
   if (status === 'active')        { where['archivedAt'] = null; }
   else if (status === 'archived') { where['archivedAt'] = { not: null }; }
 
@@ -2767,7 +3342,7 @@ router.get('/school-years/:id/reminders', requireAdmin, async (req: Request, res
 
 // ─── POST /api/admin/school-years/rollover ────────────────────────────────────
 
-router.post('/school-years/rollover', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.post('/school-years/rollover', requireAdmin, requirePermission('schoolyears.manage'), async (req: Request, res: Response): Promise<void> => {
   const note = String(req.body?.['note'] ?? '').slice(0, 500);
   try {
     const result = await performRollover(note || 'Manuell');
@@ -2783,7 +3358,7 @@ router.post('/school-years/rollover', requireAdmin, async (req: Request, res: Re
 // Undo a rollover: restore the archived year into the live tables and delete the
 // archive. Only the most recently archived year may be rolled back.
 
-router.post('/school-years/:id/rollback', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.post('/school-years/:id/rollback', requireAdmin, requirePermission('schoolyears.manage'), async (req: Request, res: Response): Promise<void> => {
   const id = String(req.params['id']);
   try {
     const result = await rollbackRollover(id);
@@ -2800,7 +3375,7 @@ router.post('/school-years/:id/rollback', requireAdmin, async (req: Request, res
 // stored or returned again after creation). This is separate from, and
 // additive to, the static master API_KEY env var, which is not listed here.
 
-router.get('/api-keys', requireAdmin, async (_req: Request, res: Response): Promise<void> => {
+router.get('/api-keys', requireAdmin, requirePermission('apikeys.manage'), async (_req: Request, res: Response): Promise<void> => {
   const keys = await prisma.apiKey.findMany({ orderBy: { createdAt: 'desc' } });
   res.json({
     apiKeys: keys.map((k) => ({
@@ -2837,7 +3412,7 @@ const createApiKeySchema = z.object({
   ),
 });
 
-router.post('/api-keys', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+router.post('/api-keys', requireAdmin, requirePermission('apikeys.manage'), writeLimiter, async (req: Request, res: Response): Promise<void> => {
   const parsed = createApiKeySchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(422).json({ error: parsed.error.errors.map((e) => e.message).join('; ') });
@@ -2878,7 +3453,7 @@ router.post('/api-keys', requireAdmin, writeLimiter, async (req: Request, res: R
 
 // ─── PATCH /api/admin/api-keys/:id/revoke ─────────────────────────────────────
 
-router.patch('/api-keys/:id/revoke', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+router.patch('/api-keys/:id/revoke', requireAdmin, requirePermission('apikeys.manage'), writeLimiter, async (req: Request, res: Response): Promise<void> => {
   const id = String(req.params['id']);
   const adminUsername = adminUsernameFromReq(req.headers['authorization']);
   try {
@@ -2897,7 +3472,7 @@ router.patch('/api-keys/:id/revoke', requireAdmin, writeLimiter, async (req: Req
 // WebUntis authorization reference is write-only: only whether one is set is
 // reported, never the value itself.
 
-router.get('/learn-config', requireAdmin, async (_req: Request, res: Response): Promise<void> => {
+router.get('/learn-config', requireAdmin, requirePermission('learn.manage'), async (_req: Request, res: Response): Promise<void> => {
   const cfg = await getLearnConfig();
   res.json({
     legalGateEnabled: cfg.legalGateEnabled,
@@ -2967,7 +3542,7 @@ const learnConfigSchema = z.object({
   importMaxVocabularyPerCourse: z.number().int().positive().optional(),
 });
 
-router.patch('/learn-config', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+router.patch('/learn-config', requireAdmin, requirePermission('learn.manage'), writeLimiter, async (req: Request, res: Response): Promise<void> => {
   const parsed = learnConfigSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(422).json({ error: parsed.error.errors.map((e) => e.message).join('; ') });
@@ -3000,7 +3575,7 @@ router.patch('/learn-config', requireAdmin, writeLimiter, async (req: Request, r
 // LearnAiTeamAccessGrant (team) — this config's `enabled` flag is only the
 // platform-wide kill-switch, never a substitute for a grant.
 
-router.get('/learn-ai/config', requireAdmin, async (_req: Request, res: Response): Promise<void> => {
+router.get('/learn-ai/config', requireAdmin, requirePermission('learn.manage'), async (_req: Request, res: Response): Promise<void> => {
   const cfg = await getLearnAiConfig();
   res.json(cfg);
 });
@@ -3016,7 +3591,7 @@ const learnAiConfigSchema = z.object({
   ollamaTimeoutMs: z.number().int().positive().optional(),
 });
 
-router.patch('/learn-ai/config', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+router.patch('/learn-ai/config', requireAdmin, requirePermission('learn.manage'), writeLimiter, async (req: Request, res: Response): Promise<void> => {
   const parsed = learnAiConfigSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(422).json({ error: parsed.error.errors.map((e) => e.message).join('; ') });
@@ -3034,7 +3609,7 @@ router.patch('/learn-ai/config', requireAdmin, writeLimiter, async (req: Request
   res.json({ ok: true });
 });
 
-router.get('/learn-ai/grants', requireAdmin, async (_req: Request, res: Response): Promise<void> => {
+router.get('/learn-ai/grants', requireAdmin, requirePermission('learn.manage'), async (_req: Request, res: Response): Promise<void> => {
   const grants = await listAiAccessGrants();
   res.json({ grants });
 });
@@ -3044,7 +3619,7 @@ const learnAiGrantSchema = z.object({
   note: z.string().trim().max(500).optional(),
 });
 
-router.post('/learn-ai/grants', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+router.post('/learn-ai/grants', requireAdmin, requirePermission('learn.manage'), writeLimiter, async (req: Request, res: Response): Promise<void> => {
   const body = learnAiGrantSchema.parse(req.body);
   const user = await prisma.user.findUnique({ where: { username: body.username }, select: { stableUid: true } });
   if (!user) {
@@ -3057,7 +3632,7 @@ router.post('/learn-ai/grants', requireAdmin, writeLimiter, async (req: Request,
   res.json({ ok: true });
 });
 
-router.delete('/learn-ai/grants/:stableUid', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+router.delete('/learn-ai/grants/:stableUid', requireAdmin, requirePermission('learn.manage'), writeLimiter, async (req: Request, res: Response): Promise<void> => {
   const stableUid = String(req.params['stableUid']);
   const adminUsername = adminUsernameFromReq(req.headers['authorization']);
   await revokeAiAccess(stableUid, adminUsername);
@@ -3065,7 +3640,7 @@ router.delete('/learn-ai/grants/:stableUid', requireAdmin, writeLimiter, async (
   res.json({ ok: true });
 });
 
-router.get('/learn-ai/team-grants', requireAdmin, async (_req: Request, res: Response): Promise<void> => {
+router.get('/learn-ai/team-grants', requireAdmin, requirePermission('learn.manage'), async (_req: Request, res: Response): Promise<void> => {
   const grants = await listAiTeamAccessGrants();
   res.json({ grants });
 });
@@ -3075,7 +3650,7 @@ const learnAiTeamGrantSchema = z.object({
   note: z.string().trim().max(500).optional(),
 });
 
-router.post('/learn-ai/team-grants', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+router.post('/learn-ai/team-grants', requireAdmin, requirePermission('learn.manage'), writeLimiter, async (req: Request, res: Response): Promise<void> => {
   const body = learnAiTeamGrantSchema.parse(req.body);
   const team = await prisma.learnTeam.findUnique({ where: { id: body.teamId }, select: { id: true, name: true } });
   if (!team) {
@@ -3088,7 +3663,7 @@ router.post('/learn-ai/team-grants', requireAdmin, writeLimiter, async (req: Req
   res.json({ ok: true });
 });
 
-router.delete('/learn-ai/team-grants/:teamId', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+router.delete('/learn-ai/team-grants/:teamId', requireAdmin, requirePermission('learn.manage'), writeLimiter, async (req: Request, res: Response): Promise<void> => {
   const teamId = String(req.params['teamId']);
   const adminUsername = adminUsernameFromReq(req.headers['authorization']);
   await revokeAiAccessFromTeam(teamId, adminUsername);
@@ -3314,7 +3889,7 @@ function learnCourseAdminRow(course: {
   };
 }
 
-router.get('/learn/courses', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.get('/learn/courses', requireAdmin, requirePermission('learn.manage'), async (req: Request, res: Response): Promise<void> => {
   const query = adminLearnCourseListQuerySchema.parse(req.query);
   const where = {
     ...(query.status ? { status: query.status } : {}),
@@ -3322,10 +3897,10 @@ router.get('/learn/courses', requireAdmin, async (req: Request, res: Response): 
     ...(query.teamId ? { teamId: query.teamId } : {}),
     ...(query.q ? {
       OR: [
-        { title: { contains: query.q } },
-        { slug: { contains: query.q } },
-        { subject: { contains: query.q } },
-        { language: { contains: query.q } },
+        { title: { contains: likeText(query.q) } },
+        { slug: { contains: likeText(query.q) } },
+        { subject: { contains: likeText(query.q) } },
+        { language: { contains: likeText(query.q) } },
       ],
     } : {}),
   };
@@ -3348,7 +3923,7 @@ router.get('/learn/courses', requireAdmin, async (req: Request, res: Response): 
   });
 });
 
-router.get('/learn/courses/:courseId/access', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.get('/learn/courses/:courseId/access', requireAdmin, requirePermission('learn.manage'), async (req: Request, res: Response): Promise<void> => {
   const courseId = z.string().uuid().parse(req.params['courseId']);
   const query = adminLearnCourseAccessQuerySchema.parse(req.query);
   const course = await prisma.learnCourse.findUnique({
@@ -3391,7 +3966,7 @@ router.get('/learn/courses/:courseId/access', requireAdmin, async (req: Request,
   });
 });
 
-router.patch('/learn/courses/:courseId/lifecycle', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.patch('/learn/courses/:courseId/lifecycle', requireAdmin, requirePermission('learn.manage'), async (req: Request, res: Response): Promise<void> => {
   const courseId = z.string().uuid().parse(req.params['courseId']);
   const body = adminLearnCourseLifecycleSchema.parse(req.body);
   const actor = await learnAdminActor(req);
@@ -3413,7 +3988,7 @@ router.patch('/learn/courses/:courseId/lifecycle', requireAdmin, async (req: Req
   }
 });
 
-router.post('/learn/courses/:courseId/access', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.post('/learn/courses/:courseId/access', requireAdmin, requirePermission('learn.manage'), async (req: Request, res: Response): Promise<void> => {
   const courseId = z.string().uuid().parse(req.params['courseId']);
   const body = adminLearnCourseAccessSchema.parse(req.body);
   const actor = await learnAdminActor(req);
@@ -3455,7 +4030,7 @@ router.post('/learn/courses/:courseId/access', requireAdmin, async (req: Request
   });
 });
 
-router.delete('/learn/courses/:courseId/access/:stableUid', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.delete('/learn/courses/:courseId/access/:stableUid', requireAdmin, requirePermission('learn.manage'), async (req: Request, res: Response): Promise<void> => {
   const courseId = z.string().uuid().parse(req.params['courseId']);
   const stableUid = z.string().trim().min(1).max(100).parse(req.params['stableUid']);
   const actor = await learnAdminActor(req);
@@ -3474,7 +4049,7 @@ router.delete('/learn/courses/:courseId/access/:stableUid', requireAdmin, async 
 // the admin's own authoritative view of curated content, not a quiz surface
 // a learner could read answers from.
 
-router.get('/learn/courses/:courseId/vocabulary', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.get('/learn/courses/:courseId/vocabulary', requireAdmin, requirePermission('learn.manage'), async (req: Request, res: Response): Promise<void> => {
   const courseId = z.string().uuid().parse(req.params['courseId']);
   const query = adminLearnVocabularyQuerySchema.parse(req.query);
   const course = await prisma.learnCourse.findUnique({ where: { id: courseId }, select: adminLearnCourseMetadataSelect });
@@ -3484,8 +4059,8 @@ router.get('/learn/courses/:courseId/vocabulary', requireAdmin, async (req: Requ
     courseId,
     ...(query.q ? {
       OR: [
-        { sourceText: { contains: query.q } },
-        { targetText: { contains: query.q } },
+        { sourceText: { contains: likeText(query.q) } },
+        { targetText: { contains: likeText(query.q) } },
       ],
     } : {}),
   };
@@ -3511,7 +4086,7 @@ router.get('/learn/courses/:courseId/vocabulary', requireAdmin, async (req: Requ
   });
 });
 
-router.get('/learn/courses/:courseId/vocabulary/export', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.get('/learn/courses/:courseId/vocabulary/export', requireAdmin, requirePermission('learn.manage'), async (req: Request, res: Response): Promise<void> => {
   const courseId = z.string().uuid().parse(req.params['courseId']);
   const actor = await learnAdminActor(req);
   const course = await prisma.learnCourse.findUnique({
@@ -3552,7 +4127,7 @@ router.get('/learn/courses/:courseId/vocabulary/export', requireAdmin, async (re
   });
 });
 
-router.post('/learn/courses/:courseId/vocabulary/import', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+router.post('/learn/courses/:courseId/vocabulary/import', requireAdmin, requirePermission('learn.manage'), writeLimiter, async (req: Request, res: Response): Promise<void> => {
   const courseId = z.string().uuid().parse(req.params['courseId']);
   const actor = await learnAdminActor(req);
   const course = await prisma.learnCourse.findUnique({
@@ -3609,7 +4184,7 @@ router.post('/learn/courses/:courseId/vocabulary/import', requireAdmin, writeLim
   });
 });
 
-router.delete('/learn/courses/:courseId', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.delete('/learn/courses/:courseId', requireAdmin, requirePermission('learn.manage'), async (req: Request, res: Response): Promise<void> => {
   const courseId = z.string().uuid().parse(req.params['courseId']);
   const body = adminLearnCourseDeleteSchema.parse(req.body);
   const actor = await learnAdminActor(req);
@@ -3693,7 +4268,7 @@ const learnTeamAdminInclude = {
   _count: { select: { members: true, courses: true } },
 };
 
-router.get('/learn/teams', requireAdmin, async (_req: Request, res: Response): Promise<void> => {
+router.get('/learn/teams', requireAdmin, requirePermission('learn.manage'), async (_req: Request, res: Response): Promise<void> => {
   const teams = await prisma.learnTeam.findMany({
     orderBy: { updatedAt: 'desc' },
     include: learnTeamAdminInclude,
@@ -3702,7 +4277,7 @@ router.get('/learn/teams', requireAdmin, async (_req: Request, res: Response): P
   res.json({ teams: teams.map(learnTeamAdminRow) });
 });
 
-router.post('/learn/teams', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.post('/learn/teams', requireAdmin, requirePermission('learn.manage'), async (req: Request, res: Response): Promise<void> => {
   const body = adminLearnTeamCreateSchema.parse(req.body);
   const actor = await learnAdminActor(req);
   const team = await prisma.$transaction(async (tx) => {
@@ -3726,7 +4301,7 @@ router.post('/learn/teams', requireAdmin, async (req: Request, res: Response): P
 // Retrofits the starter vocabulary courses (and access to them for every
 // current member) onto a team created before this existed. Idempotent —
 // safe to call repeatedly.
-router.post('/learn/teams/:teamId/seed-vocab-courses', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.post('/learn/teams/:teamId/seed-vocab-courses', requireAdmin, requirePermission('learn.manage'), async (req: Request, res: Response): Promise<void> => {
   const teamId = z.string().uuid().parse(req.params['teamId']);
   const actor = await learnAdminActor(req);
   const team = await prisma.learnTeam.findUnique({ where: { id: teamId }, select: { id: true, name: true } });
@@ -3739,7 +4314,7 @@ router.post('/learn/teams/:teamId/seed-vocab-courses', requireAdmin, async (req:
   res.json({ created });
 });
 
-router.patch('/learn/teams/:teamId', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.patch('/learn/teams/:teamId', requireAdmin, requirePermission('learn.manage'), async (req: Request, res: Response): Promise<void> => {
   const teamId = z.string().uuid().parse(req.params['teamId']);
   const body = adminLearnTeamUpdateSchema.parse(req.body);
   const actor = await learnAdminActor(req);
@@ -3757,7 +4332,7 @@ router.patch('/learn/teams/:teamId', requireAdmin, async (req: Request, res: Res
   }
 });
 
-router.post('/learn/teams/:teamId/members', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.post('/learn/teams/:teamId/members', requireAdmin, requirePermission('learn.manage'), async (req: Request, res: Response): Promise<void> => {
   const teamId = z.string().uuid().parse(req.params['teamId']);
   const body = adminLearnTeamMemberSchema.parse(req.body);
   const actor = await learnAdminActor(req);
@@ -3788,7 +4363,7 @@ router.post('/learn/teams/:teamId/members', requireAdmin, async (req: Request, r
   res.json({ member: { ...member, username: user.username } });
 });
 
-router.delete('/learn/teams/:teamId/members/:stableUid', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.delete('/learn/teams/:teamId/members/:stableUid', requireAdmin, requirePermission('learn.manage'), async (req: Request, res: Response): Promise<void> => {
   const teamId = z.string().uuid().parse(req.params['teamId']);
   const stableUid = z.string().trim().min(1).max(100).parse(req.params['stableUid']);
   const actor = await learnAdminActor(req);
@@ -3818,7 +4393,7 @@ router.delete('/learn/teams/:teamId/members/:stableUid', requireAdmin, async (re
 // action rather than folding OWNER into the generic role dropdown (which
 // could otherwise make an accidental ownership grant as easy as any other
 // role edit).
-router.post('/learn/teams/:teamId/owner', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.post('/learn/teams/:teamId/owner', requireAdmin, requirePermission('learn.manage'), async (req: Request, res: Response): Promise<void> => {
   const teamId = z.string().uuid().parse(req.params['teamId']);
   const body = adminLearnTeamOwnerSchema.parse(req.body);
   const actor = await learnAdminActor(req);
@@ -3841,7 +4416,7 @@ router.post('/learn/teams/:teamId/owner', requireAdmin, async (req: Request, res
   res.json({ ok: true });
 });
 
-router.delete('/learn/teams/:teamId', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.delete('/learn/teams/:teamId', requireAdmin, requirePermission('learn.manage'), async (req: Request, res: Response): Promise<void> => {
   const teamId = z.string().uuid().parse(req.params['teamId']);
   const body = adminLearnTeamDeleteSchema.parse(req.body);
   const actor = await learnAdminActor(req);
@@ -3861,7 +4436,7 @@ router.delete('/learn/teams/:teamId', requireAdmin, async (req: Request, res: Re
 // Full-database (mysqldump) scheduled + manual backups. Files live on the
 // `backups` volume, not in the database itself — see src/services/dbBackup.ts.
 
-router.get('/backups', requireAdmin, async (_req: Request, res: Response): Promise<void> => {
+router.get('/backups', requireAdmin, requirePermission('backups.manage'), async (_req: Request, res: Response): Promise<void> => {
   const [backupConfig, files] = await Promise.all([getBackupConfig(), listBackups()]);
   res.json({
     config: {
@@ -3881,7 +4456,7 @@ const backupConfigSchema = z.object({
   retentionDays: z.number().int().min(1).max(365).optional(),
 });
 
-router.patch('/backups/config', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+router.patch('/backups/config', requireAdmin, requirePermission('backups.manage'), writeLimiter, async (req: Request, res: Response): Promise<void> => {
   const parsed = backupConfigSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(422).json({ error: parsed.error.errors.map((e) => e.message).join('; ') });
@@ -3893,7 +4468,7 @@ router.patch('/backups/config', requireAdmin, writeLimiter, async (req: Request,
   res.json({ ok: true });
 });
 
-router.post('/backups/run', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+router.post('/backups/run', requireAdmin, requirePermission('backups.manage'), writeLimiter, async (req: Request, res: Response): Promise<void> => {
   const adminUsername = adminUsernameFromReq(req.headers['authorization']);
   try {
     const result = await runBackup('manual');
@@ -3904,7 +4479,7 @@ router.post('/backups/run', requireAdmin, writeLimiter, async (req: Request, res
   }
 });
 
-router.get('/backups/:filename/download', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.get('/backups/:filename/download', requireAdmin, requirePermission('backups.manage'), async (req: Request, res: Response): Promise<void> => {
   const filename = String(req.params['filename']);
   const filePath = resolveBackupPath(filename);
   if (!filePath) throw new ValidationError('Invalid backup filename');
@@ -3915,7 +4490,7 @@ router.get('/backups/:filename/download', requireAdmin, async (req: Request, res
   });
 });
 
-router.delete('/backups/:filename', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+router.delete('/backups/:filename', requireAdmin, requirePermission('backups.manage'), writeLimiter, async (req: Request, res: Response): Promise<void> => {
   const filePath = resolveBackupPath(String(req.params['filename']));
   if (!filePath) throw new ValidationError('Invalid backup filename');
   const adminUsername = adminUsernameFromReq(req.headers['authorization']);
@@ -3933,7 +4508,7 @@ const restoreBackupSchema = z.object({ confirmation: z.string() });
 // Restoring overwrites every table in the live database. Requires the exact
 // filename typed back as confirmation, mirroring this file's other
 // irreversible-action pattern (e.g. course/team deletion by exact-name match).
-router.post('/backups/:filename/restore', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+router.post('/backups/:filename/restore', requireAdmin, requirePermission('backups.manage'), writeLimiter, async (req: Request, res: Response): Promise<void> => {
   const filename = String(req.params['filename']);
   const body = restoreBackupSchema.parse(req.body);
   if (body.confirmation !== filename) throw new ValidationError('Confirmation must exactly match the backup filename');
@@ -3949,7 +4524,7 @@ router.post('/backups/:filename/restore', requireAdmin, writeLimiter, async (req
   res.json({ ok: true });
 });
 
-router.post('/backups/prune', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+router.post('/backups/prune', requireAdmin, requirePermission('backups.manage'), writeLimiter, async (req: Request, res: Response): Promise<void> => {
   const adminUsername = adminUsernameFromReq(req.headers['authorization']);
   const pruned = await pruneOldBackups();
   logger.info('Admin action: backup retention pruned manually', { action: 'backup_pruned_manual', adminUsername, pruned });

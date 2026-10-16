@@ -13,6 +13,8 @@ import { isSafeIdentifier, type SqlTable } from './sqlgen';
 const NODE_LOCAL_TABLES = new Set([
   'request_logs',
   'frontend_activity_logs',
+  'client_error_logs',
+  'request_account_days',
   'backup_config',
   '_prisma_migrations',
 ]);

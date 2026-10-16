@@ -5,6 +5,7 @@ const readline = require('readline');
 const { PrismaClient } = require('@prisma/client');
 const { v4: uuidv4 } = require('uuid');
 const { askNewPassword } = require('./_auth');
+const { grantGlobalAdmin } = require('./_grants');
 
 const prisma = new PrismaClient();
 
@@ -53,7 +54,8 @@ async function main() {
 
   if (makeAdmin) {
     await prisma.admin.create({ data: { stableUid, canCreateClass: true, passwordHash } });
-    console.log(`✅ Granted admin access — login at /admin/ with the password you set`);
+    await grantGlobalAdmin(prisma, username, 'cli:create-user');
+    console.log(`✅ Granted global admin access — login at /admin/ with the password you set`);
   }
 
   console.log();

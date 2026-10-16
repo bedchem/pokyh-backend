@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
+import { useHanded } from '../useHanded';
 import {
   Building2, Users, ChevronDown, ChevronRight, Plus, X,
   RefreshCw, UserMinus, UserPlus, Bell, Clock, Loader2, Trash2,
@@ -933,8 +934,10 @@ export function ClassesPage() {
   const { showToast } = useToast();
   const [classes, setClasses] = useState<AdminClass[]>([]);
   const [loading, setLoading] = useState(true);
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const [search, setSearch] = useState('');
+  // The search hands over a class to show, opened.
+  const handed = useHanded<{ open: string; search: string }>();
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set(handed.open ? [handed.open] : []));
+  const [search, setSearch] = useState(handed.search ?? '');
   const [showModal, setShowModal] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);

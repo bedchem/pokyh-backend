@@ -2,13 +2,13 @@ import { Router, Request, Response } from 'express';
 import { Prisma } from '@prisma/client';
 import { prisma } from '../db';
 import { config } from '../config';
-import { requireAdmin } from '../middleware/requireAdmin';
+import { inScope, requireAdmin, requirePermission, scopeSchool } from '../middleware/requireAdmin';
+import { can } from '../security/permissions';
 import { TtlCache } from '../utils/cache';
 import {
   LENGTH_BANDS,
   ONLINE_WINDOW_MS,
   USAGE_PLATFORMS,
-  classifyUserAgent,
   addDays,
   dayAxis,
   daysBetween,
@@ -43,46 +43,66 @@ import { accountKeyOf } from '../services/webVisits';
 
 const router = Router();
 
-const cache = new TtlCache<AnalyticsResponse>(2 * 1000);
+// Five seconds: the length of one usage announcement's throttle window, so
+// the refetches that follow one announcement share one computation. Keys
+// carry the school — a school's figures never answer another view.
+const cache = new TtlCache<AnalyticsResponse>(5 * 1000);
+// One computation per key at a time: panels that ask together wait for it.
+const inFlight = new Map<string, Promise<AnalyticsResponse>>();
 const userAgentCache = new TtlCache<UaRow[]>(5 * 60 * 1000);
 
-type UaRow = { uid: string; ua: string; lastAt: Date };
+// What the request logs say about who used which kind of device and client,
+// from their per-day summary (request_account_days, services/accountDays.ts):
+// a few thousand rows instead of every request of the period.
+type UaRow = { uid: string; device: string; client: string; lastAt: Date };
 
-// Who used which user agent in [since, until) — the platform evidence from the
-// request logs, for clients that report no visits (older app versions).
-async function requestLogUserAgents(key: string, since: Date, until: Date, fresh: boolean): Promise<UaRow[]> {
-  const cached = fresh ? undefined : userAgentCache.get(key);
+// ` AND school_id = …` for a school's view, nothing for the global one.
+function inSchool(schoolId: string | null, column = 'school_id'): Prisma.Sql {
+  return schoolId ? Prisma.sql` AND ${Prisma.raw(column)} = ${schoolId}` : Prisma.empty;
+}
+
+function dayRangeOf(since: Date, until: Date, tz: string): { fromKey: string; toKey: string } {
+  return { fromKey: localDayAndHour(since, tz).dayKey, toKey: localDayAndHour(new Date(until.getTime() - 1), tz).dayKey };
+}
+
+// Who used which device and client in [since, until) — the platform evidence
+// from the request logs, for clients that report no visits (older app
+// versions).
+async function requestLogUserAgents(key: string, since: Date, until: Date, fresh: boolean, schoolId: string | null): Promise<UaRow[]> {
+  const cacheKey = `${schoolId ?? 'all'}|${key}`;
+  const cached = fresh ? undefined : userAgentCache.get(cacheKey);
   if (cached) return cached;
+  const { fromKey, toKey } = dayRangeOf(since, until, config.usageAnalytics.timezone);
   const rows = await prisma.$queryRaw<UaRow[]>`
-    SELECT stable_uid AS uid, user_agent AS ua, MAX(created_at) AS lastAt
-    FROM request_logs
-    WHERE created_at >= ${since} AND created_at < ${until} AND stable_uid IS NOT NULL AND user_agent IS NOT NULL
-    GROUP BY stable_uid, user_agent`;
-  userAgentCache.set(key, rows);
+    SELECT stable_uid AS uid, device, client, MAX(last_at) AS lastAt
+    FROM request_account_days
+    WHERE day_key >= ${fromKey} AND day_key <= ${toKey}${inSchool(schoolId)}
+    GROUP BY stable_uid, device, client`;
+  userAgentCache.set(cacheKey, rows);
   return rows;
 }
 
 // The same evidence, but only from the local days `keepDay` accepts — for
-// lists narrowed to a day or to weekdays. Grouped by hour like requestLogDays,
-// then folded back to one row per account and user agent.
-async function requestLogUserAgentsOn(key: string, since: Date, until: Date, tz: string, keepDay: (dayKey: string) => boolean): Promise<UaRow[]> {
-  const cached = userAgentCache.get(key);
+// lists narrowed to a day or to weekdays.
+async function requestLogUserAgentsOn(key: string, since: Date, until: Date, tz: string, keepDay: (dayKey: string) => boolean, schoolId: string | null): Promise<UaRow[]> {
+  const cacheKey = `${schoolId ?? 'all'}|${key}`;
+  const cached = userAgentCache.get(cacheKey);
   if (cached) return cached;
-  const rows = await prisma.$queryRaw<Array<UaRow & { h: string }>>`
-    SELECT stable_uid AS uid, user_agent AS ua, DATE_FORMAT(created_at, '%Y-%m-%d %H') AS h, MAX(created_at) AS lastAt
-    FROM request_logs
-    WHERE created_at >= ${since} AND created_at < ${until} AND stable_uid IS NOT NULL AND user_agent IS NOT NULL
-    GROUP BY stable_uid, user_agent, h`;
+  const { fromKey, toKey } = dayRangeOf(since, until, tz);
+  const rows = await prisma.$queryRaw<Array<UaRow & { dayKey: string }>>`
+    SELECT stable_uid AS uid, device, client, day_key AS dayKey, last_at AS lastAt
+    FROM request_account_days
+    WHERE day_key >= ${fromKey} AND day_key <= ${toKey}${inSchool(schoolId)}`;
   const merged = new Map<string, UaRow>();
   for (const row of rows) {
-    if (!keepDay(localDayAndHour(new Date(`${row.h.replace(' ', 'T')}:00:00Z`), tz).dayKey)) continue;
+    if (!keepDay(row.dayKey)) continue;
     const lastAt = new Date(row.lastAt);
-    const id = `${row.uid}\n${row.ua}`;
+    const id = `${row.uid}\n${row.device}\n${row.client}`;
     const known = merged.get(id);
-    if (!known || lastAt > known.lastAt) merged.set(id, { uid: row.uid, ua: row.ua, lastAt });
+    if (!known || lastAt > known.lastAt) merged.set(id, { uid: row.uid, device: row.device, client: row.client, lastAt });
   }
   const result = [...merged.values()];
-  userAgentCache.set(key, result);
+  userAgentCache.set(cacheKey, result);
   return result;
 }
 
@@ -91,31 +111,25 @@ const logDayCache = new TtlCache<Map<string, LogDay>>(60 * 1000);
 
 // Who was active on which local day according to the request logs, by
 // platform — for the days the visit heartbeat did not measure (before it
-// existed, older app versions). Grouped by hour to keep the result small; the
-// logs reach back REQUEST_LOG_RETENTION_DAYS. Stored times are UTC.
-async function requestLogDays(since: Date, until: Date, tz: string, fresh: boolean): Promise<Map<string, LogDay>> {
-  const key = `${since.getTime()}|${until.getTime()}`;
+// existed, older app versions). The logs reach back REQUEST_LOG_RETENTION_DAYS.
+async function requestLogDays(since: Date, until: Date, tz: string, fresh: boolean, schoolId: string | null = null): Promise<Map<string, LogDay>> {
+  const key = `${schoolId ?? 'all'}|${since.getTime()}|${until.getTime()}`;
   const cached = fresh ? undefined : logDayCache.get(key);
   if (cached) return cached;
-  const rows = await prisma.$queryRaw<Array<{ uid: string; ua: string; h: string }>>`
-    SELECT stable_uid AS uid, user_agent AS ua, DATE_FORMAT(created_at, '%Y-%m-%d %H') AS h
-    FROM request_logs
-    WHERE created_at >= ${since} AND created_at < ${until} AND stable_uid IS NOT NULL AND user_agent IS NOT NULL
-    GROUP BY stable_uid, user_agent, h`;
-  const kinds = new Map<string, ReturnType<typeof classifyUserAgent>>();
+  const { fromKey, toKey } = dayRangeOf(since, until, tz);
+  const rows = await prisma.$queryRaw<Array<{ uid: string; device: string; client: string; dayKey: string }>>`
+    SELECT stable_uid AS uid, device, client, day_key AS dayKey
+    FROM request_account_days
+    WHERE day_key >= ${fromKey} AND day_key <= ${toKey}${inSchool(schoolId)}`;
   const days = new Map<string, LogDay>();
   for (const row of rows) {
-    if (!kinds.has(row.ua)) kinds.set(row.ua, classifyUserAgent(row.ua));
-    const kind = kinds.get(row.ua);
-    if (!kind) continue;
-    const { dayKey } = localDayAndHour(new Date(`${row.h.replace(' ', 'T')}:00:00Z`), tz);
-    let day = days.get(dayKey);
+    let day = days.get(row.dayKey);
     if (!day) {
       day = { all: new Set(), byPlatform: { ios: new Set(), android: new Set(), web: new Set(), other: new Set() } };
-      days.set(dayKey, day);
+      days.set(row.dayKey, day);
     }
     day.all.add(row.uid);
-    day.byPlatform[platformOf(kind.device, kind.client)].add(row.uid);
+    day.byPlatform[platformOf(row.device, row.client)].add(row.uid);
   }
   logDayCache.set(key, days);
   return days;
@@ -182,9 +196,21 @@ async function resolvePeriod(query: Request['query']): Promise<Period> {
     key = 'all';
   } else {
     const n = (RANGE_DAYS as readonly number[]).includes(Number(raw)) ? Number(raw) : 30;
-    fromKey = dayAxis(n, tz)[0]!;
-    label = n === 365 ? 'letzte 12 Monate' : `letzte ${n} Tage`;
-    key = String(n);
+    // ?end=YYYY-MM-DD moves the window back in time (the panel pages through
+    // history); never past today.
+    const endRaw = typeof query['end'] === 'string' ? query['end'] : '';
+    if (endRaw && !/^\d{4}-\d{2}-\d{2}$/.test(endRaw)) throw new BadPeriod('Invalid end');
+    const end = endRaw && endRaw < todayKey ? endRaw : todayKey;
+    toKey = end;
+    fromKey = addDays(end, -(n - 1));
+    if (end === todayKey) {
+      label = n === 365 ? 'letzte 12 Monate' : `letzte ${n} Tage`;
+      key = String(n);
+    } else {
+      const fmt = (k: string) => `${k.slice(8, 10)}.${k.slice(5, 7)}.${k.slice(0, 4)}`;
+      label = `${fmt(fromKey)} – ${fmt(end)}`;
+      key = `${n}@${end}`;
+    }
   }
   return {
     key,
@@ -444,9 +470,10 @@ const EMPTY_VISITS: VisitSummary = {
 
 // Never rejects: a missing table (the schema not applied yet) must not cost
 // the rest of the page.
-async function visitSummary(fromKey: string, toKey: string): Promise<VisitSummary> {
+async function visitSummary(fromKey: string, toKey: string, schoolId: string | null): Promise<VisitSummary> {
   try {
-    const inPeriod = Prisma.sql`day_key >= ${fromKey} AND day_key <= ${toKey}`;
+    // A school's view: its accounts' signed-in visits (guests have no school).
+    const inPeriod = Prisma.sql`day_key >= ${fromKey} AND day_key <= ${toKey}${inSchool(schoolId)}`;
     type DayRow = { dayKey: string; views: bigint; visitors: bigint; signedVisitors: bigint; guestViews: unknown };
     type CountryRow = { country: string; views: bigint; visitors: bigint };
     type TotalRow = { views: bigint; appViews: unknown; webIps: bigint; webSignedIps: bigint; ips: bigint };
@@ -468,7 +495,7 @@ async function visitSummary(fromKey: string, toKey: string): Promise<VisitSummar
                COUNT(DISTINCT CASE WHEN client = 'web' AND signed_in THEN ip END) AS webSignedIps,
                COUNT(DISTINCT ip) AS ips
         FROM web_visits WHERE ${inPeriod}`,
-      prisma.$queryRaw<Array<{ k: string | null }>>`SELECT MIN(day_key) AS k FROM web_visits WHERE client = 'web'`,
+      prisma.$queryRaw<Array<{ k: string | null }>>`SELECT MIN(day_key) AS k FROM web_visits WHERE client = 'web'${inSchool(schoolId)}`,
     ]);
     const countries = (rows: CountryRow[]) => rows.map((row) => ({ country: row.country, views: num(row.views), visitors: num(row.visitors) }));
     return {
@@ -493,7 +520,11 @@ async function visitSummary(fromKey: string, toKey: string): Promise<VisitSummar
   }
 }
 
-async function buildAnalytics(period: Period, fresh: boolean): Promise<AnalyticsResponse> {
+async function buildAnalytics(period: Period, fresh: boolean, schoolId: string | null): Promise<AnalyticsResponse> {
+  // Every query below is narrowed to one school in a school's view.
+  const S = inSchool(schoolId);
+  const ofSchool = schoolId ? { schoolId } : {};
+  const userOfSchool = schoolId ? { user: { schoolId } } : {};
   const tz = config.usageAnalytics.timezone;
   const now = new Date();
   const { axis, fromKey, toKey, since, until } = period;
@@ -508,7 +539,7 @@ async function buildAnalytics(period: Period, fresh: boolean): Promise<Analytics
   // Different accounts can only be counted while the server logs reach back.
   const logsFrom = dayAxis(config.requestLogRetentionDays, tz, now)[0]!;
   const mode: AnalyticsResponse['platforms']['mode'] = fromKey >= logsFrom ? 'accounts' : 'dailyAverage';
-  const inPeriod = Prisma.sql`day_key >= ${fromKey} AND day_key <= ${toKey}`;
+  const inPeriod = Prisma.sql`day_key >= ${fromKey} AND day_key <= ${toKey}${S}`;
 
   type DailyRow = { dayKey: string; platform: string; sessions: bigint; users: bigint; seconds: unknown; userSeconds: unknown };
   type DayTotalRow = { dayKey: string; users: bigint; sessions: bigint; seconds: unknown; userSeconds: unknown };
@@ -529,7 +560,7 @@ async function buildAnalytics(period: Period, fresh: boolean): Promise<Analytics
   type ClassRow = { name: string; seconds: unknown; sessions: unknown; people: unknown; days: bigint };
 
   // Runs beside the queries below; it never rejects.
-  const visitsPromise = visitSummary(fromKey, toKey);
+  const visitsPromise = visitSummary(fromKey, toKey, schoolId);
   // The accounts behind each app version: app openings keep an account's
   // pseudonym as long as the logs reach back. Null when that is not the whole
   // period or the table is missing — never rejects, like the summary above.
@@ -602,7 +633,7 @@ async function buildAnalytics(period: Period, fresh: boolean): Promise<Analytics
     prisma.$queryRaw<TripleRow[]>`
       SELECT DISTINCT stable_uid AS uid, device, client
       FROM usage_sessions WHERE ${inPeriod} AND stable_uid IS NOT NULL`,
-    requestLogUserAgents(`page|${period.key}`, since, until, fresh),
+    requestLogUserAgents(`page|${period.key}`, since, until, fresh, schoolId),
     prisma.$queryRaw<HourRow[]>`
       SELECT start_hour AS hour, COUNT(*) AS sessions, SUM(active_seconds) AS seconds
       FROM usage_sessions WHERE ${inPeriod}
@@ -619,9 +650,9 @@ async function buildAnalytics(period: Period, fresh: boolean): Promise<Analytics
       GROUP BY band`,
     prisma.$queryRaw<OnlineRow[]>`
       SELECT ${PLATFORM_SQL} AS platform, COUNT(DISTINCT COALESCE(stable_uid, visitor_key, id)) AS visitors
-      FROM usage_sessions WHERE last_seen_at >= ${onlineSince}
+      FROM usage_sessions WHERE last_seen_at >= ${onlineSince}${S}
       GROUP BY platform`,
-    prisma.$queryRaw<CountRow[]>`SELECT COUNT(DISTINCT ${PERSON_SQL}) AS n FROM usage_sessions WHERE day_key = ${todayKey}`,
+    prisma.$queryRaw<CountRow[]>`SELECT COUNT(DISTINCT ${PERSON_SQL}) AS n FROM usage_sessions WHERE day_key = ${todayKey}${S}`,
     Promise.resolve([] as CountRow[]),
     Promise.resolve([] as CountRow[]),
     prisma.$queryRaw<VersionRow[]>`
@@ -632,68 +663,85 @@ async function buildAnalytics(period: Period, fresh: boolean): Promise<Analytics
     prisma.$queryRaw<PageRow[]>`
       SELECT page, COUNT(*) AS views, COUNT(DISTINCT stable_uid) AS users
       FROM frontend_activity_logs
-      WHERE event = 'page_view' AND created_at >= ${since} AND created_at < ${until} AND page IS NOT NULL
+      WHERE event = 'page_view' AND created_at >= ${since} AND created_at < ${until} AND page IS NOT NULL${S}
       GROUP BY page ORDER BY views DESC LIMIT 60`,
     prisma.$queryRaw<UserActiveDaysRow[]>`
       SELECT stable_uid AS uid, COUNT(DISTINCT day_key) AS activeDays
       FROM usage_sessions WHERE ${inPeriod} AND stable_uid IS NOT NULL
       GROUP BY stable_uid`,
     prisma.user.findMany({
+      where: ofSchool,
       select: { stableUid: true, role: true, isUntisUser: true, webuntisKlasseName: true, createdAt: true },
     }),
-    prisma.$queryRaw<CountRow[]>`SELECT COUNT(DISTINCT stable_uid) AS n FROM push_subscriptions`,
-    prisma.learnProfile.count(),
+    schoolId
+      ? prisma.$queryRaw<CountRow[]>`SELECT COUNT(DISTINCT p.stable_uid) AS n FROM push_subscriptions p JOIN users u ON u.stable_uid = p.stable_uid WHERE u.school_id = ${schoolId}`
+      : prisma.$queryRaw<CountRow[]>`SELECT COUNT(DISTINCT stable_uid) AS n FROM push_subscriptions`,
+    prisma.learnProfile.count({ where: userOfSchool }),
     prisma.admin.findMany({ select: { stableUid: true } }),
-    prisma.class.count(),
+    prisma.class.count({ where: ofSchool }),
     Promise.all([
-      prisma.todo.count({ where: { createdAt: { gte: since, lt: until } } }),
-      prisma.todo.count({ where: { createdAt: { gte: since, lt: until }, done: true } }),
-      prisma.reminder.count({ where: { createdAt: { gte: since, lt: until } } }),
-      prisma.comment.count({ where: { createdAt: { gte: since, lt: until } } }),
-      prisma.dishComment.count({ where: { createdAt: { gte: since, lt: until } } }),
-      prisma.dishRating.count({ where: { updatedAt: { gte: since, lt: until } } }),
+      prisma.todo.count({ where: { createdAt: { gte: since, lt: until }, ...userOfSchool } }),
+      prisma.todo.count({ where: { createdAt: { gte: since, lt: until }, done: true, ...userOfSchool } }),
+      prisma.reminder.count({ where: { createdAt: { gte: since, lt: until }, ...(schoolId ? { class: { schoolId } } : {}) } }),
+      prisma.comment.count({ where: { createdAt: { gte: since, lt: until }, ...(schoolId ? { reminder: { class: { schoolId } } } : {}) } }),
+      prisma.dishComment.count({ where: { createdAt: { gte: since, lt: until }, ...ofSchool } }),
+      prisma.dishRating.count({ where: { updatedAt: { gte: since, lt: until }, ...ofSchool } }),
     ]),
     prisma.learnActivityDaily.aggregate({
-      where: { dayKey: { gte: fromKey, lte: toKey } },
+      where: { dayKey: { gte: fromKey, lte: toKey }, ...userOfSchool },
       _sum: { answerCount: true, correctCount: true, durationMs: true },
     }),
-    prisma.$queryRaw<CountRow[]>`SELECT COUNT(DISTINCT stable_uid) AS n FROM learn_activity_daily WHERE day_key >= ${fromKey} AND day_key <= ${toKey}`,
+    schoolId
+      ? prisma.$queryRaw<CountRow[]>`
+          SELECT COUNT(DISTINCT a.stable_uid) AS n FROM learn_activity_daily a JOIN users u ON u.stable_uid = a.stable_uid
+          WHERE a.day_key >= ${fromKey} AND a.day_key <= ${toKey} AND u.school_id = ${schoolId}`
+      : prisma.$queryRaw<CountRow[]>`SELECT COUNT(DISTINCT stable_uid) AS n FROM learn_activity_daily WHERE day_key >= ${fromKey} AND day_key <= ${toKey}`,
     prisma.$queryRaw<Array<{ event: string; n: bigint }>>`
       SELECT event, COUNT(*) AS n FROM frontend_activity_logs
-      WHERE created_at >= ${since} AND created_at < ${until} GROUP BY event`,
+      WHERE created_at >= ${since} AND created_at < ${until}${S} GROUP BY event`,
     // Mensa records over all time: a dish's ratings outlive the range.
     prisma.$queryRaw<DishAggRow[]>`
-      SELECT dish_id AS dishId, COUNT(*) AS n, AVG(stars) AS avgStars FROM dish_ratings
+      SELECT dish_id AS dishId, COUNT(*) AS n, AVG(stars) AS avgStars FROM dish_ratings WHERE 1 = 1${S}
       GROUP BY dish_id HAVING COUNT(*) >= 3 ORDER BY avgStars DESC, n DESC LIMIT 1`,
     prisma.$queryRaw<DishAggRow[]>`
-      SELECT dish_id AS dishId, COUNT(*) AS n, AVG(stars) AS avgStars FROM dish_ratings
+      SELECT dish_id AS dishId, COUNT(*) AS n, AVG(stars) AS avgStars FROM dish_ratings WHERE 1 = 1${S}
       GROUP BY dish_id ORDER BY n DESC LIMIT 1`,
     prisma.$queryRaw<DishAggRow[]>`
-      SELECT dish_id AS dishId, COUNT(*) AS n, NULL AS avgStars FROM dish_comments
+      SELECT dish_id AS dishId, COUNT(*) AS n, NULL AS avgStars FROM dish_comments WHERE 1 = 1${S}
       GROUP BY dish_id ORDER BY n DESC LIMIT 1`,
-    prisma.$queryRaw<StarRow[]>`SELECT stars, COUNT(*) AS n FROM dish_ratings GROUP BY stars`,
-    prisma.dishRating.aggregate({ _avg: { stars: true } }),
+    prisma.$queryRaw<StarRow[]>`SELECT stars, COUNT(*) AS n FROM dish_ratings WHERE 1 = 1${S} GROUP BY stars`,
+    prisma.dishRating.aggregate({ where: ofSchool, _avg: { stars: true } }),
     // Anonymous class totals; a class shows from CLASS_MIN_PEOPLE
-    // person-days up, so no single person stands out.
-    prisma.$queryRaw<ClassRow[]>`
-      SELECT klasse AS name, SUM(seconds) AS seconds, SUM(visits) AS sessions,
-             SUM(people) AS people, COUNT(*) AS days
-      FROM usage_class_days
-      WHERE day_key >= ${fromKey} AND day_key <= ${toKey}
-      GROUP BY klasse
-      HAVING SUM(people) >= ${CLASS_MIN_PEOPLE}
-      ORDER BY seconds DESC LIMIT 10`,
-    prisma.privacyConsent.count({ where: { usageStats: true } }),
-    // Accounts active in the last 7 and 30 days: the server logs (everyone)
-    // and named visits, together.
-    prisma.$queryRaw<UidRow[]>`SELECT DISTINCT stable_uid AS uid FROM request_logs WHERE created_at >= ${weekStart} AND stable_uid IS NOT NULL`,
-    prisma.$queryRaw<UidRow[]>`SELECT DISTINCT stable_uid AS uid FROM request_logs WHERE created_at >= ${monthStart} AND stable_uid IS NOT NULL`,
-    prisma.$queryRaw<UidRow[]>`SELECT DISTINCT stable_uid AS uid FROM usage_sessions WHERE day_key >= ${weekKey} AND stable_uid IS NOT NULL`,
-    prisma.$queryRaw<UidRow[]>`SELECT DISTINCT stable_uid AS uid FROM usage_sessions WHERE day_key >= ${monthKey} AND stable_uid IS NOT NULL`,
+    // person-days up, so no single person stands out. Class names are only
+    // unique within a school, so a school's view reads its own totals.
+    schoolId
+      ? prisma.$queryRaw<ClassRow[]>`
+          SELECT klasse AS name, SUM(seconds) AS seconds, SUM(visits) AS sessions,
+                 SUM(people) AS people, COUNT(*) AS days
+          FROM usage_school_class_days
+          WHERE day_key >= ${fromKey} AND day_key <= ${toKey} AND school_id = ${schoolId}
+          GROUP BY klasse
+          HAVING SUM(people) >= ${CLASS_MIN_PEOPLE}
+          ORDER BY seconds DESC LIMIT 10`
+      : prisma.$queryRaw<ClassRow[]>`
+          SELECT klasse AS name, SUM(seconds) AS seconds, SUM(visits) AS sessions,
+                 SUM(people) AS people, COUNT(*) AS days
+          FROM usage_class_days
+          WHERE day_key >= ${fromKey} AND day_key <= ${toKey}
+          GROUP BY klasse
+          HAVING SUM(people) >= ${CLASS_MIN_PEOPLE}
+          ORDER BY seconds DESC LIMIT 10`,
+    prisma.privacyConsent.count({ where: { usageStats: true, ...userOfSchool } }),
+    // Accounts active in the last 7 and 30 days: the server logs (everyone,
+    // through their per-day summary) and named visits, together.
+    prisma.$queryRaw<UidRow[]>`SELECT DISTINCT stable_uid AS uid FROM request_account_days WHERE day_key >= ${weekKey}${S}`,
+    prisma.$queryRaw<UidRow[]>`SELECT DISTINCT stable_uid AS uid FROM request_account_days WHERE day_key >= ${monthKey}${S}`,
+    prisma.$queryRaw<UidRow[]>`SELECT DISTINCT stable_uid AS uid FROM usage_sessions WHERE day_key >= ${weekKey} AND stable_uid IS NOT NULL${S}`,
+    prisma.$queryRaw<UidRow[]>`SELECT DISTINCT stable_uid AS uid FROM usage_sessions WHERE day_key >= ${monthKey} AND stable_uid IS NOT NULL${S}`,
     // People per day over the last 30 days, for "täglich da".
     prisma.$queryRaw<DayCountRow[]>`
       SELECT day_key AS dayKey, COUNT(DISTINCT ${PERSON_SQL}) AS n FROM usage_sessions
-      WHERE day_key >= ${monthKey} GROUP BY day_key`,
+      WHERE day_key >= ${monthKey}${S} GROUP BY day_key`,
     // Web visitors per day by device and how the site was opened, for the
     // per-day averages of long periods.
     prisma.$queryRaw<WebRow[]>`
@@ -703,10 +751,10 @@ async function buildAnalytics(period: Period, fresh: boolean): Promise<Analytics
              COUNT(DISTINCT CASE WHEN client = 'browser' THEN ${PERSON_SQL} END) AS browser
       FROM usage_sessions WHERE ${inPeriod} AND client <> 'app' GROUP BY day_key`,
     // A choice was made (it has a time) and it was no.
-    prisma.privacyConsent.count({ where: { usageStats: false, usageStatsAt: { not: null } } }),
+    prisma.privacyConsent.count({ where: { usageStats: false, usageStatsAt: { not: null }, ...userOfSchool } }),
     // Active accounts per day from the server logs: the period, the last 30
     // days ("täglich da") and today, whatever the period.
-    requestLogDays(since < monthStart ? since : monthStart, until > now ? until : now, tz, fresh),
+    requestLogDays(since < monthStart ? since : monthStart, until > now ? until : now, tz, fresh, schoolId),
   ]);
 
   // ── Platforms: visits and request logs together ──────────────────────────
@@ -724,10 +772,7 @@ async function buildAnalytics(period: Period, fresh: boolean): Promise<Analytics
   for (const row of triples) addUse(row.uid, row.device, row.client);
   // A user agent cannot tell an installed website from a browser tab, so log
   // rows only ever say "web" — enough for the platform, not for PWA/browser.
-  for (const row of uaRows) {
-    const kind = classifyUserAgent(row.ua);
-    if (kind) addUse(row.uid, kind.device, kind.client);
-  }
+  for (const row of uaRows) addUse(row.uid, row.device, row.client);
   const activeUids = new Set<string>();
   const platformsPerUser = new Map<string, number>();
   for (const [, uids] of perPlatform) {
@@ -889,7 +934,9 @@ async function buildAnalytics(period: Period, fresh: boolean): Promise<Analytics
   let untis = 0;
   let oldest = now.getTime();
   // An admin set to "none" has the admin role; it is not counted as role-less.
-  const adminUids = new Set(adminRows.map((row) => row.stableUid));
+  // A school's admins are its own accounts with panel access.
+  const accountUids = new Set(users.map((user) => user.stableUid));
+  const adminUids = new Set(adminRows.map((row) => row.stableUid).filter((uid) => !schoolId || accountUids.has(uid)));
   for (const user of users) {
     if (user.role === 'parent') parents += 1;
     else if (user.role === 'none') { if (!adminUids.has(user.stableUid)) noRole += 1; }
@@ -1043,7 +1090,7 @@ async function buildAnalytics(period: Period, fresh: boolean): Promise<Analytics
       newInRange,
       withPush: num(pushRows[0]?.n),
       withLearn: learnProfiles,
-      admins: adminRows.length,
+      admins: adminUids.size,
       classes: classCount,
       oldestDays: users.length > 0 ? Math.floor((now.getTime() - oldest) / 86_400_000) : 0,
       usageConsents,
@@ -1085,17 +1132,18 @@ async function buildAnalytics(period: Period, fresh: boolean): Promise<Analytics
 // "Heute aktiv" exactly as the Analytics page counts it (engagement.dau), for
 // the dashboard: different people in today's visits, or the server logs where
 // they saw more.
-export async function activeToday(now = new Date()): Promise<number> {
+export async function activeToday(now = new Date(), schoolId: string | null = null): Promise<number> {
   const tz = config.usageAnalytics.timezone;
   const todayKey = localDayAndHour(now, tz).dayKey;
   const [[row], logDays] = await Promise.all([
-    prisma.$queryRaw<Array<{ n: bigint }>>`SELECT COUNT(DISTINCT ${PERSON_SQL}) AS n FROM usage_sessions WHERE day_key = ${todayKey}`,
-    requestLogDays(startOfLocalDay(todayKey, tz), startOfLocalDay(addDays(todayKey, 1), tz), tz, false),
+    prisma.$queryRaw<Array<{ n: bigint }>>`SELECT COUNT(DISTINCT ${PERSON_SQL}) AS n FROM usage_sessions WHERE day_key = ${todayKey}${inSchool(schoolId)}`,
+    requestLogDays(startOfLocalDay(todayKey, tz), startOfLocalDay(addDays(todayKey, 1), tz), tz, false, schoolId),
   ]);
   return Math.max(num(row?.n), logDays.get(todayKey)?.all.size ?? 0);
 }
 
-router.get('/', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.get('/', requireAdmin, requirePermission('analytics.view'), async (req: Request, res: Response): Promise<void> => {
+  const schoolId = scopeSchool(req);
   let period: Period;
   try {
     period = await resolvePeriod(req.query);
@@ -1106,7 +1154,7 @@ router.get('/', requireAdmin, async (req: Request, res: Response): Promise<void>
     }
     throw err;
   }
-  const key = period.key;
+  const key = `${schoolId ?? 'all'}|${period.key}`;
   const fresh = req.query['fresh'] === '1';
 
   const cached = fresh ? undefined : cache.get(key);
@@ -1116,7 +1164,14 @@ router.get('/', requireAdmin, async (req: Request, res: Response): Promise<void>
   }
 
   try {
-    const result = await buildAnalytics(period, fresh);
+    // Requests that arrive while the same figures are being computed wait
+    // for that computation instead of starting their own.
+    let running = inFlight.get(key);
+    if (!running) {
+      running = buildAnalytics(period, fresh, schoolId).finally(() => inFlight.delete(key));
+      inFlight.set(key, running);
+    }
+    const result = await running;
     cache.set(key, result);
     res.json(result);
   } catch (err) {
@@ -1229,7 +1284,8 @@ function readFilters(query: Request['query']) {
   return { platform: platform as UsagePlatform | null, day, hours, weekdays, klasse, segment: segment as Segment | null, page, created, band };
 }
 
-router.get('/people', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.get('/people', requireAdmin, requirePermission('analytics.view'), async (req: Request, res: Response): Promise<void> => {
+  const schoolId = scopeSchool(req);
   let filters: ReturnType<typeof readFilters>;
   let period: Period;
   try {
@@ -1258,6 +1314,7 @@ router.get('/people', requireAdmin, async (req: Request, res: Response): Promise
   const until = startOfLocalDay(addDays(toKey, 1), tz);
 
   const conditions: Prisma.Sql[] = [Prisma.sql`day_key >= ${fromKey}`, Prisma.sql`day_key <= ${toKey}`, Prisma.sql`stable_uid IS NOT NULL`];
+  if (schoolId) conditions.push(Prisma.sql`school_id = ${schoolId}`);
   if (platform) conditions.push(Prisma.sql`${PLATFORM_SQL} = ${platform}`);
   if (day) conditions.push(Prisma.sql`day_key = ${day}`);
   if (hours.length > 0) conditions.push(Prisma.sql`start_hour IN (${Prisma.join(hours)})`);
@@ -1269,7 +1326,7 @@ router.get('/people', requireAdmin, async (req: Request, res: Response): Promise
     if (Number.isFinite(upper)) conditions.push(Prisma.sql`active_seconds < ${upper}`);
   }
   if (klasse) {
-    conditions.push(Prisma.sql`stable_uid IN (SELECT stable_uid FROM users WHERE webuntis_klasse_name = ${klasse} AND role <> 'parent')`);
+    conditions.push(Prisma.sql`stable_uid IN (SELECT stable_uid FROM users WHERE webuntis_klasse_name = ${klasse} AND role <> 'parent'${inSchool(schoolId)})`);
   }
   const where = Prisma.join(conditions, ' AND ');
 
@@ -1287,11 +1344,11 @@ router.get('/people', requireAdmin, async (req: Request, res: Response): Promise
     && (weekdays.length === 0 || weekdays.includes(weekdayOf(dayKey)));
   const logRows = (): Promise<UaRow[]> => {
     if (!withLogs) return Promise.resolve([]);
-    if (!dayFiltered) return requestLogUserAgents(`people|${fromKey}|${toKey}`, since, until, false);
+    if (!dayFiltered) return requestLogUserAgents(`people|${fromKey}|${toKey}`, since, until, false, schoolId);
     // One day needs only that day's logs.
     const from = day !== null && day >= fromKey ? startOfLocalDay(day, tz) : since;
     const to = day !== null && day <= toKey ? startOfLocalDay(addDays(day, 1), tz) : until;
-    return requestLogUserAgentsOn(`people|${fromKey}|${toKey}|${day ?? ''}|${weekdays.join(',')}`, from, to, tz, logDayMatches);
+    return requestLogUserAgentsOn(`people|${fromKey}|${toKey}|${day ?? ''}|${weekdays.join(',')}`, from, to, tz, logDayMatches, schoolId);
   };
 
   type VisitRow = { uid: string; device: string; client: string; version: string; visits: bigint; seconds: unknown; lastSeenAt: Date };
@@ -1314,7 +1371,7 @@ router.get('/people', requireAdmin, async (req: Request, res: Response): Promise
       ? prisma.$queryRaw<PageViewRow[]>`
           SELECT stable_uid AS uid, page, COUNT(*) AS views, MAX(created_at) AS lastAt
           FROM frontend_activity_logs
-          WHERE event = 'page_view' AND created_at >= ${since} AND created_at < ${until} AND stable_uid IS NOT NULL AND page IS NOT NULL
+          WHERE event = 'page_view' AND created_at >= ${since} AND created_at < ${until} AND stable_uid IS NOT NULL AND page IS NOT NULL${inSchool(schoolId)}
           GROUP BY stable_uid, page`
       : Promise.resolve([] as PageViewRow[]),
   ]);
@@ -1347,8 +1404,7 @@ router.get('/people', requireAdmin, async (req: Request, res: Response): Promise
     if (text) entry.details.push({ text, at: row.lastSeenAt.getTime() });
   }
   for (const row of uaRows) {
-    const kind = classifyUserAgent(row.ua);
-    if (!kind) continue;
+    const kind = { device: row.device, client: row.client };
     const rowPlatform = platformOf(kind.device, kind.client);
     if (platform && rowPlatform !== platform) continue;
     const known = byUid.has(row.uid);
@@ -1373,11 +1429,14 @@ router.get('/people', requireAdmin, async (req: Request, res: Response): Promise
   const createdFrom = created ? startOfLocalDay(created, tz) : null;
   const createdTo = createdFrom ? new Date(createdFrom.getTime() + 36 * 60 * 60 * 1000) : null;
   const accounts = await prisma.user.findMany({
-    where: createdFrom && createdTo
-      ? { createdAt: { gte: createdFrom, lt: createdTo } }
-      : segment === 'inactive' || segment === 'consented'
-        ? (klasse ? { webuntisKlasseName: klasse, role: { not: 'parent' } } : {})
-        : { stableUid: { in: [...byUid.keys()] } },
+    where: {
+      ...(schoolId ? { schoolId } : {}),
+      ...(createdFrom && createdTo
+        ? { createdAt: { gte: createdFrom, lt: createdTo } }
+        : segment === 'inactive' || segment === 'consented'
+          ? (klasse ? { webuntisKlasseName: klasse, role: { not: 'parent' } } : {})
+          : { stableUid: { in: [...byUid.keys()] } }),
+    },
     select: { stableUid: true, username: true, webuntisKlasseName: true, role: true, createdAt: true },
   });
 
@@ -1388,7 +1447,7 @@ router.get('/people', requireAdmin, async (req: Request, res: Response): Promise
   let loyalThreshold = 2;
   if (segment === 'loyal') {
     const [row] = await prisma.$queryRaw<Array<{ n: bigint }>>`
-      SELECT COUNT(DISTINCT day_key) AS n FROM usage_sessions WHERE day_key >= ${fromKey} AND day_key <= ${toKey}`;
+      SELECT COUNT(DISTINCT day_key) AS n FROM usage_sessions WHERE day_key >= ${fromKey} AND day_key <= ${toKey}${inSchool(schoolId)}`;
     loyalThreshold = Math.max(2, Math.ceil(num(row?.n) / 2));
   }
   const keep = (account: typeof accounts[number], entry: Entry | undefined): boolean => {
@@ -1447,7 +1506,8 @@ router.get('/people', requireAdmin, async (req: Request, res: Response): Promise
 const BREAKDOWN_KINDS = ['todos', 'reminders', 'reminderComments', 'downloads', 'learn'] as const;
 type BreakdownKind = typeof BREAKDOWN_KINDS[number];
 
-router.get('/breakdown', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.get('/breakdown', requireAdmin, requirePermission('analytics.view'), async (req: Request, res: Response): Promise<void> => {
+  const schoolId = scopeSchool(req);
   const kind = String(req.query['kind'] ?? '') as BreakdownKind;
   if (!(BREAKDOWN_KINDS as readonly string[]).includes(kind)) {
     res.status(400).json({ error: 'Unknown kind' });
@@ -1474,28 +1534,28 @@ router.get('/breakdown', requireAdmin, async (req: Request, res: Response): Prom
         SELECT CASE WHEN u.role = 'parent' THEN 'Eltern' WHEN u.webuntis_klasse_name = '' THEN 'ohne Klasse' ELSE u.webuntis_klasse_name END AS label,
                COUNT(*) AS value, SUM(t.done) AS a, COUNT(DISTINCT t.stable_uid) AS b, NULL AS c
         FROM todos t JOIN users u ON u.stable_uid = t.stable_uid
-        WHERE t.created_at >= ${since} AND t.created_at < ${until}
+        WHERE t.created_at >= ${since} AND t.created_at < ${until}${inSchool(schoolId, 'u.school_id')}
         GROUP BY label`;
       break;
     case 'reminders':
       rows = await prisma.$queryRaw<Row[]>`
         SELECT c.name AS label, COUNT(*) AS value, NULL AS a, NULL AS b, NULL AS c
         FROM reminders r JOIN classes c ON c.id = r.class_id
-        WHERE r.created_at >= ${since} AND r.created_at < ${until}
+        WHERE r.created_at >= ${since} AND r.created_at < ${until}${inSchool(schoolId, 'c.school_id')}
         GROUP BY c.id, c.name`;
       break;
     case 'reminderComments':
       rows = await prisma.$queryRaw<Row[]>`
         SELECT c.name AS label, COUNT(*) AS value, COUNT(DISTINCT m.reminder_id) AS a, NULL AS b, NULL AS c
         FROM comments m JOIN classes c ON c.id = m.class_id
-        WHERE m.created_at >= ${since} AND m.created_at < ${until}
+        WHERE m.created_at >= ${since} AND m.created_at < ${until}${inSchool(schoolId, 'c.school_id')}
         GROUP BY c.id, c.name`;
       break;
     case 'downloads':
       rows = await prisma.$queryRaw<Row[]>`
         SELECT detail AS label, COUNT(*) AS value, COUNT(DISTINCT stable_uid) AS a, NULL AS b, NULL AS c
         FROM frontend_activity_logs
-        WHERE event = 'download' AND created_at >= ${since} AND created_at < ${until}
+        WHERE event = 'download' AND created_at >= ${since} AND created_at < ${until}${inSchool(schoolId)}
         GROUP BY detail`;
       break;
     case 'learn':
@@ -1503,7 +1563,8 @@ router.get('/breakdown', requireAdmin, async (req: Request, res: Response): Prom
         SELECT c.title AS label, SUM(a.answer_count) AS value, SUM(a.correct_count) AS a,
                COUNT(DISTINCT a.stable_uid) AS b, SUM(a.duration_ms) AS c
         FROM learn_activity_daily a JOIN learn_courses c ON c.id = a.course_id
-        WHERE a.day_key >= ${fromKey} AND a.day_key <= ${toKey}
+        ${schoolId ? Prisma.sql`JOIN users u ON u.stable_uid = a.stable_uid` : Prisma.empty}
+        WHERE a.day_key >= ${fromKey} AND a.day_key <= ${toKey}${inSchool(schoolId, 'u.school_id')}
         GROUP BY c.id, c.title`;
       break;
   }
@@ -1536,15 +1597,17 @@ router.get('/breakdown', requireAdmin, async (req: Request, res: Response): Prom
 
 const DISHES_LIMIT = 500;
 
-router.get('/dishes', requireAdmin, async (_req: Request, res: Response): Promise<void> => {
+router.get('/dishes', requireAdmin, requirePermission('analytics.view'), async (req: Request, res: Response): Promise<void> => {
+  // A school's view: its accounts' votes and comments only.
+  const S = inSchool(scopeSchool(req));
   type RatingRow = { dishKey: string; ratings: bigint; avgStars: unknown; s1: unknown; s2: unknown; s3: unknown; s4: unknown; s5: unknown };
   type CommentRow = { dishKey: string; comments: bigint };
   const [ratingRows, commentRows] = await Promise.all([
     prisma.$queryRaw<RatingRow[]>`
       SELECT dish_id AS dishKey, COUNT(*) AS ratings, AVG(stars) AS avgStars,
              SUM(stars = 1) AS s1, SUM(stars = 2) AS s2, SUM(stars = 3) AS s3, SUM(stars = 4) AS s4, SUM(stars = 5) AS s5
-      FROM dish_ratings GROUP BY dish_id`,
-    prisma.$queryRaw<CommentRow[]>`SELECT dish_id AS dishKey, COUNT(*) AS comments FROM dish_comments GROUP BY dish_id`,
+      FROM dish_ratings WHERE 1 = 1${S} GROUP BY dish_id`,
+    prisma.$queryRaw<CommentRow[]>`SELECT dish_id AS dishKey, COUNT(*) AS comments FROM dish_comments WHERE 1 = 1${S} GROUP BY dish_id`,
   ]);
 
   const keys = [...new Set([...ratingRows.map((r) => r.dishKey), ...commentRows.map((r) => r.dishKey)])];
@@ -1639,7 +1702,9 @@ function iso(value: Date | string | null): string | null {
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
-router.get('/visitors', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+// Addresses and places of every visitor, guests included: the whole
+// installation's view only (analytics across every school).
+router.get('/visitors', requireAdmin, requirePermission('analytics.view', { global: true }), async (req: Request, res: Response): Promise<void> => {
   const period = await readPeriod(req, res);
   if (!period) return;
   const source = visitSourceOf(req.query['source']);
@@ -1763,7 +1828,7 @@ router.get('/visitors', requireAdmin, async (req: Request, res: Response): Promi
 // which pages or apps, on which devices — website and apps together. Within
 // the period's address window only.
 
-router.get('/visitors/ip', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.get('/visitors/ip', requireAdmin, requirePermission('analytics.view', { global: true }), async (req: Request, res: Response): Promise<void> => {
   const ip = normaliseIp(typeof req.query['ip'] === 'string' ? req.query['ip'] : null);
   if (!ip) {
     res.status(400).json({ error: 'Invalid address' });
@@ -1886,7 +1951,7 @@ router.get('/visitors/ip', requireAdmin, async (req: Request, res: Response): Pr
 // 404, the same answer as an unknown one. Visits name their account for
 // USAGE_ANALYTICS_RETENTION_DAYS, addresses exist for REQUEST_LOG_RETENTION_DAYS.
 
-router.get('/person', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.get('/person', requireAdmin, requirePermission('analytics.view'), async (req: Request, res: Response): Promise<void> => {
   const uid = typeof req.query['uid'] === 'string' ? req.query['uid'].trim() : '';
   if (!uid || uid.length > 64) {
     res.status(400).json({ error: 'Invalid account' });
@@ -1896,9 +1961,9 @@ router.get('/person', requireAdmin, async (req: Request, res: Response): Promise
   if (!period) return;
   const [consent, user] = await Promise.all([
     prisma.privacyConsent.findUnique({ where: { stableUid: uid }, select: { usageStats: true } }),
-    prisma.user.findUnique({ where: { stableUid: uid }, select: { stableUid: true, username: true, webuntisKlasseName: true, role: true, createdAt: true } }),
+    prisma.user.findUnique({ where: { stableUid: uid }, select: { stableUid: true, username: true, webuntisKlasseName: true, role: true, createdAt: true, schoolId: true } }),
   ]);
-  if (!user || !consent?.usageStats) {
+  if (!user || !consent?.usageStats || !inScope(req, user.schoolId)) {
     res.status(404).json({ error: 'Account not shown without consent' });
     return;
   }
@@ -1908,6 +1973,9 @@ router.get('/person', requireAdmin, async (req: Request, res: Response): Promise
   const usageFrom = period.fromKey > identityFrom ? period.fromKey : identityFrom;
   const usageWindow = { fromKey: usageFrom, toKey: period.toKey, clamped: usageFrom !== period.fromKey };
   const ipWindow = ipWindowOf(period);
+  // Addresses are for the whole installation's view: a school's admins see
+  // when and how, not from where.
+  const showAddresses = scopeSchool(req) === null && can(req.adminAccess!, 'analytics.view', null);
   const inUsage = Prisma.sql`stable_uid = ${uid} AND day_key >= ${usageWindow.fromKey} AND day_key <= ${usageWindow.toKey}`;
   const inWeb = Prisma.sql`stable_uid = ${uid} AND day_key >= ${ipWindow.fromKey} AND day_key <= ${ipWindow.toKey}`;
 
@@ -1923,7 +1991,7 @@ router.get('/person', requireAdmin, async (req: Request, res: Response): Promise
       FROM usage_sessions WHERE ${inUsage}`,
     prisma.$queryRaw<MixRow[]>`SELECT DISTINCT device, client FROM usage_sessions WHERE ${inUsage}`,
     prisma.$queryRaw<DayRow[]>`SELECT day_key AS dayKey, SUM(active_seconds) AS seconds FROM usage_sessions WHERE ${inUsage} GROUP BY day_key`,
-    ipWindow.fromKey > ipWindow.toKey ? Promise.resolve([] as IpRow[]) : prisma.$queryRaw<IpRow[]>`
+    ipWindow.fromKey > ipWindow.toKey || !showAddresses ? Promise.resolve([] as IpRow[]) : prisma.$queryRaw<IpRow[]>`
       SELECT ip,
              SUBSTRING_INDEX(GROUP_CONCAT(country ORDER BY created_at DESC SEPARATOR '\n'), '\n', 1) AS country,
              SUBSTRING_INDEX(GROUP_CONCAT(region ORDER BY created_at DESC SEPARATOR '\n'), '\n', 1) AS region,

@@ -268,6 +268,41 @@ export const config = {
     privacyNoticeVersion: learnPrivacyNoticeVersion,
   },
   webuntisSchool: process.env.WEBUNTIS_SCHOOL ?? '',
+  // ── Schools ────────────────────────────────────────────────────────────────
+  // The school created for WEBUNTIS_SCHOOL on first start (every account and
+  // menu that existed before schools were introduced belongs to it). Only the
+  // initial display name — WEBUNTIS_SCHOOL when unset — edited in the panel
+  // afterwards.
+  defaultSchoolName: strEnv('DEFAULT_SCHOOL_NAME', ''),
+  // Any school on WebUntis can use Pokyh: it is added the first time one of
+  // its accounts signs in through the trusted login (X-Server-Key). Off: only
+  // schools that already exist can sign in.
+  schoolsAutoCreate: boolEnv('SCHOOLS_AUTO_CREATE', true),
+  // A safety net on how many schools may be added that way.
+  schoolsMax: boundedIntEnv('SCHOOLS_MAX', 1000, 1, 100_000),
+  // The panel's search (/api/admin/search): requests per admin and minute,
+  // results per kind, and per kind when only one kind is searched.
+  adminSearchPerMinute: boundedIntEnv('ADMIN_SEARCH_PER_MINUTE', 120, 10, 2000),
+  adminSearchLimit: boundedIntEnv('ADMIN_SEARCH_LIMIT', 6, 1, 20),
+  adminSearchDetailLimit: boundedIntEnv('ADMIN_SEARCH_DETAIL_LIMIT', 30, 5, 100),
+  // The WebUntis servers a school's login may name (host suffixes, comma
+  // separated); any other host is not stored.
+  webuntisHostSuffixes: strEnv('WEBUNTIS_HOST_SUFFIXES', 'webuntis.com')
+    .split(',')
+    .map((suffix) => suffix.trim().toLowerCase().replace(/^\.+/, ''))
+    .filter(Boolean),
+  // The admin audit trail (admin_audit_events). The Garante's measures on
+  // system administrators ask for at least six months of access records.
+  auditRetentionDays: boundedIntEnv('AUDIT_RETENTION_DAYS', 365, 180, 3650),
+  // Error reports of the web app and the apps (POST /client-errors).
+  clientErrors: {
+    enabled: (process.env['CLIENT_ERRORS_ENABLED'] ?? 'true') !== 'false',
+    retentionDays: boundedIntEnv('CLIENT_ERROR_RETENTION_DAYS', 30, 1, 180),
+    // Per address and minute; a broken page loops, a person does not.
+    perMinute: boundedIntEnv('CLIENT_ERRORS_PER_MINUTE', 20, 1, 600),
+    // The same error at most this often a minute, however often it is sent.
+    perErrorPerMinute: boundedIntEnv('CLIENT_ERRORS_PER_ERROR_PER_MINUTE', 20, 1, 600),
+  },
   isDev: nodeEnv === 'development',
   isProd,
 

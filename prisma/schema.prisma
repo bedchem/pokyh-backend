@@ -22,6 +22,10 @@ model User {
   // Account role: "student" (default) or "parent". Parents have their own todos,
   // no class identity/membership and no reminders.
   role               String   @default("student") @db.VarChar(20)
+  // The school the account belongs to (schools.id). Set at sign-in from the
+  // WebUntis school the account signed in with; every account that existed
+  // before schools were introduced belongs to the default school.
+  schoolId           String?  @map("school_id") @db.VarChar(36)
   createdAt          DateTime @default(now()) @map("created_at")
   updatedAt          DateTime @updatedAt @map("updated_at")
 
@@ -53,6 +57,8 @@ model User {
   privacyConsent          PrivacyConsent?
   popupTargets            PopupTargetUser[]
 
+  @@index([schoolId, createdAt])
+  @@index([schoolId, role])
   @@map("users")
 }
 
@@ -74,9 +80,9 @@ model PushSubscription {
 }
 
 model Admin {
-  stableUid      String   @id @map("stable_uid")
-  canCreateClass Boolean  @default(true) @map("can_create_class")
-  passwordHash   String?  @map("password_hash") @db.VarChar(100)
+  stableUid          String    @id @map("stable_uid")
+  canCreateClass     Boolean   @default(true) @map("can_create_class")
+  passwordHash       String?   @map("password_hash") @db.VarChar(100)
   // A WebUntis account made admin in the panel has no password of its own:
   // the granting admin sets a one-time password (passwordHash), the new admin
   // must replace it at the first login. Without that login before
@@ -89,7 +95,7 @@ model Admin {
   // while the grant is pending. Cleared once the new admin has their own.
   oneTimePasswordEnc String?   @map("one_time_password_enc") @db.VarChar(255)
   grantedBy          String?   @map("granted_by") @db.VarChar(191)
-  createdAt      DateTime @default(now()) @map("created_at")
+  createdAt          DateTime  @default(now()) @map("created_at")
 
   @@map("admins")
 }
@@ -141,11 +147,14 @@ model Class {
   webuntisKlasseId Int      @map("webuntis_klasse_id")
   createdBy        String   @map("created_by")
   createdByName    String   @map("created_by_name")
+  // WebUntis class ids are per school; so are classes.
+  schoolId         String?  @map("school_id") @db.VarChar(36)
   createdAt        DateTime @default(now()) @map("created_at")
 
   members   ClassMember[]
   reminders Reminder[]
 
+  @@index([schoolId, webuntisKlasseId])
   @@map("classes")
 }
 
@@ -236,10 +245,16 @@ model DishComment {
   stableUid String   @map("stable_uid")
   username  String
   body      String   @db.VarChar(2000)
+  // The menu the dish belongs to (comments are shown per menu) and the
+  // author's school (moderation is per school).
+  menuId    String?  @map("menu_id") @db.VarChar(36)
+  schoolId  String?  @map("school_id") @db.VarChar(36)
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
   @@index([dishId])
+  @@index([menuId, dishId])
+  @@index([schoolId, createdAt])
   @@map("dish_comments")
 }
 
@@ -275,9 +290,13 @@ model Dish {
   // anchor/rotate. The UI labels weeks by this ordinal, so Woche 1's content
   // keeps being Woche 1 even after rotation puts it later in the calendar.
   weekOrdinal  Int      @default(0) @map("week_ordinal")
+  // The menu (mensa_menus) this dish is part of. A school sees the dishes of
+  // the one menu assigned to it, and nothing when none is.
+  menuId       String?  @map("menu_id") @db.VarChar(36)
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
+  @@index([menuId, plan, date])
   @@index([plan, date])
   @@index([plan, sourceId])
   @@index([stableKey])
@@ -302,11 +321,16 @@ model DishRating {
   // vote be reclaimed so nobody can rate the same dish twice.
   username  String?  @db.VarChar(100)
   stars     Int
+  // As on dish_comments: the menu the vote counts in, the voter's school.
+  menuId    String?  @map("menu_id") @db.VarChar(36)
+  schoolId  String?  @map("school_id") @db.VarChar(36)
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
   @@id([dishId, stableUid])
   @@index([username])
+  @@index([menuId, dishId])
+  @@index([schoolId])
   @@map("dish_ratings")
 }
 
@@ -385,6 +409,9 @@ model RequestLog {
   // Identifier for an administrator-issued integration key. The plaintext key
   // and its hash are never written to request logs.
   apiKeyId  String?  @map("api_key_id") @db.VarChar(64)
+  // The signed-in account's school; for an admin panel request the school
+  // the panel was looking at. Null for guests and system traffic.
+  schoolId  String?  @map("school_id") @db.VarChar(36)
   createdAt DateTime @default(now()) @map("created_at")
 
   @@index([stableUid])
@@ -392,6 +419,10 @@ model RequestLog {
   @@index([createdAt])
   @@index([requestId])
   @@index([apiKeyId])
+  // The dashboard's and the Anfragen page's per-hour and per-status figures
+  // read only these columns, in time order.
+  @@index([createdAt, scope, status, duration])
+  @@index([schoolId, createdAt])
   @@map("request_logs")
 }
 
@@ -448,6 +479,7 @@ model ArchivedUser {
   classId            String?  @map("class_id")
   classCode          String?  @map("class_code")
   className          String?  @map("class_name")
+  schoolId           String?  @map("school_id") @db.VarChar(36)
   createdAt          DateTime @map("created_at")
 
   schoolYear SchoolYear @relation(fields: [schoolYearId], references: [id], onDelete: Cascade)
@@ -471,6 +503,7 @@ model ArchivedClass {
   // write supplies an explicit JSON array, so the schema remains compatible
   // with `prisma db push` and avoids a silent database-specific fallback.
   membersJson      String   @map("members_json") @db.Text
+  schoolId         String?  @map("school_id") @db.VarChar(36)
   createdAt        DateTime @map("created_at")
 
   schoolYear SchoolYear @relation(fields: [schoolYearId], references: [id], onDelete: Cascade)
@@ -531,12 +564,16 @@ model FrontendActivityLog {
   username  String?  @db.VarChar(100)
   ip        String?  @db.VarChar(45)
   userAgent String?  @map("user_agent") @db.VarChar(500)
+  // The signed-in account's school, also when the event is anonymous.
+  schoolId  String?  @map("school_id") @db.VarChar(36)
   createdAt DateTime @default(now()) @map("created_at")
 
   @@index([stableUid])
   @@index([username])
   @@index([createdAt])
   @@index([event])
+  @@index([createdAt, event])
+  @@index([schoolId, createdAt])
   @@map("frontend_activity_logs")
 }
 
@@ -575,9 +612,14 @@ model UsageSession {
   screens       Int      @default(0)
   startedAt     DateTime @default(now()) @map("started_at")
   lastSeenAt    DateTime @default(now()) @map("last_seen_at")
+  // The signed-in account's school, kept also when the visit is anonymous —
+  // a coarse group, so school administrators see their school's figures
+  // only. Null for guests.
+  schoolId      String?  @map("school_id") @db.VarChar(36)
 
   user User? @relation(fields: [stableUid], references: [stableUid], onDelete: SetNull)
 
+  @@index([schoolId, dayKey])
   @@index([dayKey])
   @@index([stableUid, dayKey])
   @@index([lastSeenAt])
@@ -649,10 +691,13 @@ model WebVisit {
   page       String   @default("") @db.VarChar(200)
   dayKey     String   @map("day_key") @db.VarChar(10)
   hour       Int
+  // The signed-in account's school, like usage_sessions.school_id.
+  schoolId   String?  @map("school_id") @db.VarChar(36)
   createdAt  DateTime @default(now()) @map("created_at")
 
   user User? @relation(fields: [stableUid], references: [stableUid], onDelete: SetNull)
 
+  @@index([schoolId, dayKey])
   @@index([dayKey])
   @@index([ip])
   @@index([createdAt])
@@ -680,6 +725,181 @@ model PrivacyConsent {
 
   @@index([usageStats])
   @@map("privacy_consents")
+}
+
+// ─── Schools and administration ──────────────────────────────────────────────
+// One installation serves several schools. School-specific rows carry a
+// school_id (users, classes, comments, ratings, popups, logs, visits); the
+// admin panel's permissions are granted per school or globally
+// (src/security/permissions.ts). See docs/multi-school.md.
+
+model School {
+  // Deterministic for the default school (src/services/schools.ts), so every
+  // node of a cluster creates the same row.
+  id             String   @id @db.VarChar(36)
+  slug           String   @unique @db.VarChar(64)
+  name           String   @db.VarChar(160)
+  shortName      String   @default("") @map("short_name") @db.VarChar(60)
+  // The WebUntis school name accounts of this school sign in with
+  // ("lbs-brixen"); the trusted login names it.
+  webuntisSchool String?  @unique @map("webuntis_school") @db.VarChar(100)
+  webuntisBase   String   @default("") @map("webuntis_base") @db.VarChar(300)
+  // An inactive school's accounts cannot sign in; its data stays.
+  active         Boolean  @default(true)
+  createdBy      String?  @map("created_by") @db.VarChar(191)
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@map("schools")
+}
+
+// A menu (Mensaplan): summer and winter plan, rotation and dishes. A menu can
+// be assigned to several schools; a school has at most one, and without one
+// it shows no menu at all.
+model MensaMenu {
+  id        String   @id @db.VarChar(36)
+  name      String   @db.VarChar(120)
+  createdBy String?  @map("created_by") @db.VarChar(191)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  schools MensaMenuSchool[]
+
+  @@map("mensa_menus")
+}
+
+model MensaMenuSchool {
+  menuId     String   @map("menu_id") @db.VarChar(36)
+  // Unique: one menu per school.
+  schoolId   String   @unique @map("school_id") @db.VarChar(36)
+  assignedBy String?  @map("assigned_by") @db.VarChar(191)
+  assignedAt DateTime @default(now()) @map("assigned_at")
+
+  menu MensaMenu @relation(fields: [menuId], references: [id], onDelete: Cascade)
+
+  @@id([menuId, schoolId])
+  @@map("mensa_menu_schools")
+}
+
+// What an administrator may do in one scope: "global" or a school id. Keyed
+// by the admin login name, like the second factors, so it works for every
+// kind of admin account. The id is derived from (username, scope), so two
+// nodes granting at once produce the same row.
+model AdminGrant {
+  id          String   @id @db.VarChar(64)
+  username    String   @db.VarChar(191)
+  scope       String   @db.VarChar(36)
+  // The preset the grant was made from — display only.
+  preset      String   @default("custom") @db.VarChar(40)
+  // JSON array of permission keys (src/security/permissions.ts).
+  permissions String   @db.Text
+  grantedBy   String?  @map("granted_by") @db.VarChar(191)
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@unique([username, scope])
+  @@index([scope])
+  @@map("admin_grants")
+}
+
+// The admin audit trail: who changed what, in which school, when. Holds no
+// passwords, tokens or request bodies — only what was done to which record.
+// Kept AUDIT_RETENTION_DAYS (at least 180: the Garante's measures on system
+// administrators, 27 Nov 2008, ask for six months of access records).
+model AdminAuditEvent {
+  id         String   @id @default(uuid()) @db.VarChar(36)
+  actor      String   @db.VarChar(191)
+  action     String   @db.VarChar(60)
+  targetType String   @default("") @map("target_type") @db.VarChar(40)
+  targetId   String   @default("") @map("target_id") @db.VarChar(191)
+  schoolId   String?  @map("school_id") @db.VarChar(36)
+  // Small JSON object with what changed (never secrets). TEXT takes no
+  // default in MySQL; every write supplies one (services/audit.ts).
+  detail     String   @db.Text
+  requestId  String?  @map("request_id") @db.VarChar(64)
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([createdAt])
+  @@index([actor, createdAt])
+  @@index([schoolId, createdAt])
+  @@map("admin_audit_events")
+}
+
+// Errors the web app and the native apps report (POST /client-errors). Never
+// trusted: validated, truncated and stripped of addresses, tokens and query
+// strings before storing. No account, no IP address, no full user agent —
+// only what is needed to find and fix the error. Node-local like the request
+// logs, removed after CLIENT_ERROR_RETENTION_DAYS.
+model ClientErrorLog {
+  id          String   @id @default(uuid()) @db.VarChar(36)
+  // "web" | "android" | "ios" | "admin"
+  source      String   @db.VarChar(10)
+  // "error" | "warning"
+  level       String   @default("error") @db.VarChar(10)
+  name        String   @default("") @db.VarChar(100)
+  message     String   @db.VarChar(500)
+  stack       String?  @db.Text
+  page        String   @default("") @db.VarChar(200)
+  release     String   @default("") @db.VarChar(40)
+  // Coarse browser or app family, e.g. "Safari 18" — never the full string.
+  browser     String   @default("") @db.VarChar(40)
+  // Groups the same error: a hash of name, message and first stack frame.
+  fingerprint String   @db.Char(16)
+  schoolId    String?  @map("school_id") @db.VarChar(36)
+  // The X-Request-Id of a failed API call the error is about, if any.
+  requestId   String?  @map("request_id") @db.VarChar(64)
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@index([createdAt])
+  @@index([fingerprint, createdAt])
+  @@index([schoolId, createdAt])
+  @@map("client_error_logs")
+}
+
+// Which accounts used Pokyh on which local day, and on which kind of device
+// and client — the request logs' evidence for the Analytics page, kept small:
+// one row per account, day and device kind instead of every request. Written
+// by the request logger (middleware/requestLogger.ts) on an account's first
+// request of a day, and every few minutes after; removed with the request
+// logs (REQUEST_LOG_RETENTION_DAYS). Node-local like request_logs.
+model RequestAccountDay {
+  dayKey    String   @map("day_key") @db.VarChar(10)
+  stableUid String   @map("stable_uid") @db.VarChar(64)
+  // As usage_sessions: "ios" | "android" | "desktop" | "other" and
+  // "app" | "pwa" | "browser" (classifyUserAgent).
+  device    String   @db.VarChar(10)
+  client    String   @db.VarChar(10)
+  schoolId  String?  @map("school_id") @db.VarChar(36)
+  lastAt    DateTime @map("last_at")
+
+  @@id([dayKey, stableUid, device, client])
+  @@index([schoolId, dayKey])
+  @@index([stableUid, dayKey])
+  @@map("request_account_days")
+}
+
+// One-time data migrations already done (src/services/multiSchool.ts).
+model AppMigration {
+  id        String   @id @db.VarChar(80)
+  detail    String   @default("") @db.VarChar(500)
+  appliedAt DateTime @default(now()) @map("applied_at")
+
+  @@map("app_migrations")
+}
+
+// "Aktivste Klassen" per school: like usage_class_days, but class names are
+// only unique within a school.
+model UsageSchoolClassDay {
+  dayKey   String @map("day_key") @db.VarChar(10)
+  schoolId String @map("school_id") @db.VarChar(36)
+  klasse   String @db.VarChar(64)
+  seconds  Int    @default(0)
+  visits   Int    @default(0)
+  people   Int    @default(0)
+
+  @@id([dayKey, schoolId, klasse])
+  @@index([schoolId, dayKey])
+  @@map("usage_school_class_days")
 }
 
 // ─── Pokyh Learn ─────────────────────────────────────────────────────────────
@@ -1159,6 +1379,9 @@ model Popup {
   enabled     Boolean   @default(true)
   revision    Int       @default(1)
   createdBy   String?   @map("created_by") @db.VarChar(100)
+  // Null: every school (global administrators only). Otherwise only the
+  // accounts of this school see it.
+  schoolId    String?   @map("school_id") @db.VarChar(36)
   createdAt   DateTime  @default(now()) @map("created_at")
   updatedAt   DateTime  @updatedAt @map("updated_at")
 
@@ -1168,6 +1391,7 @@ model Popup {
   targetClasses PopupTargetClass[]
 
   @@index([enabled, platform])
+  @@index([schoolId])
   @@map("popups")
 }
 
