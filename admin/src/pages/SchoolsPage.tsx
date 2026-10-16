@@ -7,6 +7,7 @@ import { useToast } from '../components/Toast';
 import { Dialog, Empty, FieldLabel, Figures, IconButton, Notice, PageHeader, SearchField, Section, Spinner, Status, Tag, Toggle, useTableLabels } from '../components/kit';
 import { dateTime, num } from '../components/format';
 import type { AdminSchool, MensaMenu } from '../types';
+import { MenuDeleteDialog, MenuNameDialog, MenuSchoolsDialog } from '../components/MenuDialogs';
 
 // Every school using Pokyh, and the menus (Mensapläne) they show. Schools are
 // not created here: any school on WebUntis joins on the first sign-in of one
@@ -26,6 +27,7 @@ export function SchoolsPage() {
   const [filter, setFilter] = useState<'all' | 'nomenu' | 'inactive'>('all');
   const [menuDialog, setMenuDialog] = useState<MensaMenu | 'new' | null>(null);
   const [deletingMenu, setDeletingMenu] = useState<MensaMenu | null>(null);
+  const [assigning, setAssigning] = useState<MensaMenu | null>(null);
   const tableRef = useRef<HTMLDivElement>(null);
   useTableLabels(tableRef);
   const manage = can('schools.manage');
@@ -50,17 +52,6 @@ export function SchoolsPage() {
       await load();
     } catch (err) {
       showToast(err instanceof Error ? err.message : 'Zuweisen fehlgeschlagen', 'error');
-    }
-  }
-
-  async function removeMenu(menu: MensaMenu) {
-    try {
-      await adminApi.deleteMenu(menu.id);
-      showToast('Mensaplan gelöscht', 'success');
-      setDeletingMenu(null);
-      await load();
-    } catch (err) {
-      showToast(err instanceof Error ? err.message : 'Löschen fehlgeschlagen', 'error');
     }
   }
 
@@ -202,6 +193,7 @@ export function SchoolsPage() {
                 </div>
                 {manage && (
                   <div className="row-actions">
+                    <button type="button" className="btn btn-sm btn-line" onClick={() => setAssigning(m)}><School size={14} strokeWidth={1.8} /> Schulen zuweisen</button>
                     <IconButton icon={Pencil} label={`${m.name} umbenennen`} onClick={() => setMenuDialog(m)} />
                     <IconButton icon={Trash2} tone="rose" label={`${m.name} löschen`} disabled={m.schools.length > 0} onClick={() => setDeletingMenu(m)} />
                   </div>
@@ -213,16 +205,26 @@ export function SchoolsPage() {
       </Section>
 
       {editing && <SchoolDialog school={editing} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); void load(); void refresh(); }} />}
-      {menuDialog && <MenuDialog menu={menuDialog === 'new' ? null : menuDialog} onClose={() => setMenuDialog(null)} onSaved={() => { setMenuDialog(null); void load(); }} />}
-      {deletingMenu && (
-        <Dialog title="Mensaplan löschen" subtitle={deletingMenu.name} onClose={() => setDeletingMenu(null)}>
-          <p className="text-[14px] leading-relaxed text-ink-2">Löscht den Plan mit allen {num(deletingMenu.dishes)} Gerichten und ihren Bildern. Bewertungen und Kommentare bleiben gespeichert, sind aber keinem Plan mehr zugeordnet.</p>
-          <div className="mt-6 flex gap-3">
-            <button type="button" className="btn btn-quiet flex-1" onClick={() => setDeletingMenu(null)}>Abbrechen</button>
-            <button type="button" className="btn btn-danger flex-1" onClick={() => void removeMenu(deletingMenu)}>Löschen</button>
-          </div>
-        </Dialog>
+      {menuDialog && (
+        <MenuNameDialog
+          menu={menuDialog === 'new' ? null : menuDialog}
+          onClose={() => setMenuDialog(null)}
+          onSaved={(id) => {
+            const created = menuDialog === 'new';
+            setMenuDialog(null);
+            void (async () => {
+              await load();
+              // A new plan serves nobody yet: its schools come next.
+              if (created) {
+                const { menus: list } = await adminApi.menus();
+                setAssigning(list.find((m) => m.id === id) ?? null);
+              }
+            })();
+          }}
+        />
       )}
+      {assigning && <MenuSchoolsDialog menu={assigning} onClose={() => setAssigning(null)} onSaved={() => { setAssigning(null); void load(); void refresh(); }} />}
+      {deletingMenu && <MenuDeleteDialog menu={deletingMenu} onClose={() => setDeletingMenu(null)} onDeleted={() => { setDeletingMenu(null); void load(); }} />}
     </div>
   );
 }
@@ -285,41 +287,6 @@ function SchoolDialog({ school, onClose, onSaved }: { school: AdminSchool; onClo
         <div className="flex gap-3">
           <button type="button" onClick={onClose} className="btn btn-quiet flex-1">Abbrechen</button>
           <button type="submit" disabled={busy} className="btn btn-primary flex-1">{busy ? <Spinner /> : null}Speichern</button>
-        </div>
-      </form>
-    </Dialog>
-  );
-}
-
-function MenuDialog({ menu, onClose, onSaved }: { menu: MensaMenu | null; onClose: () => void; onSaved: () => void }) {
-  const { showToast } = useToast();
-  const [name, setName] = useState(menu?.name ?? '');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function submit(e: FormEvent) {
-    e.preventDefault();
-    setBusy(true);
-    try {
-      if (menu) await adminApi.renameMenu(menu.id, name.trim());
-      else await adminApi.createMenu(name.trim());
-      showToast(menu ? 'Mensaplan umbenannt' : 'Mensaplan angelegt — jetzt einer Schule zuweisen', 'success');
-      onSaved();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Speichern fehlgeschlagen');
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <Dialog title={menu ? 'Mensaplan umbenennen' : 'Mensaplan anlegen'} onClose={onClose}>
-      <form onSubmit={(e) => void submit(e)} className="flex flex-col gap-5">
-        <FieldLabel label="Name"><input className="field h-12 px-4 text-[14.5px]" value={name} onChange={(e) => setName(e.target.value)} required maxLength={120} /></FieldLabel>
-        {error && <Notice tone="rose">{error}</Notice>}
-        <div className="flex gap-3">
-          <button type="button" onClick={onClose} className="btn btn-quiet flex-1">Abbrechen</button>
-          <button type="submit" disabled={busy || !name.trim()} className="btn btn-primary flex-1">{busy ? <Spinner /> : null}Speichern</button>
         </div>
       </form>
     </Dialog>

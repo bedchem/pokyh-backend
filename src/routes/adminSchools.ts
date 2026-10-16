@@ -265,6 +265,49 @@ router.put('/schools/:id/menu', requireAdmin, requirePermission('schools.manage'
   res.json({ schoolId: school.id, menuId });
 });
 
+// The schools a menu serves, set in one step: listed schools show this menu
+// from now on (a school that showed another one switches), schools no longer
+// listed show none. One audit entry per school that changes.
+router.put('/menus/:id/schools', requireAdmin, requirePermission('schools.manage'), writeLimiter, async (req: Request, res: Response): Promise<void> => {
+  const id = String(req.params['id']).toLowerCase();
+  const menu = await prisma.mensaMenu.findUnique({ where: { id }, select: { id: true, name: true } });
+  if (!menu) throw new NotFoundError('Mensaplan nicht gefunden');
+  const { schoolIds } = z.object({
+    schoolIds: z.array(z.string().trim().toLowerCase().max(36)).max(config.schoolsMax),
+  }).strict().parse(req.body);
+  const wanted = [...new Set(schoolIds)];
+  const known = new Set((await listSchools()).map((s) => s.id));
+  const unknown = wanted.filter((sid) => !known.has(sid));
+  if (unknown.length > 0) throw new ValidationError('Unbekannte Schule');
+
+  const links = await prisma.mensaMenuSchool.findMany({ where: { schoolId: { in: wanted } }, select: { schoolId: true, menuId: true } });
+  const current = (await prisma.mensaMenuSchool.findMany({ where: { menuId: id }, select: { schoolId: true } })).map((l) => l.schoolId);
+  const previousOf = new Map(links.map((l) => [l.schoolId, l.menuId]));
+  const added = wanted.filter((sid) => previousOf.get(sid) !== id);
+  const removed = current.filter((sid) => !wanted.includes(sid));
+
+  if (added.length > 0 || removed.length > 0) {
+    await prisma.$transaction([
+      // A school shows one menu: leaving its old one is part of joining this one.
+      prisma.mensaMenuSchool.deleteMany({ where: { schoolId: { in: [...added, ...removed] } } }),
+      ...(added.length > 0 ? [prisma.mensaMenuSchool.createMany({ data: added.map((schoolId) => ({ menuId: id, schoolId, assignedBy: req.adminUser!.username })) })] : []),
+    ]);
+    invalidateMenus();
+    invalidateDishesCache();
+    for (const sid of added) audit(req, 'school.menu', { type: 'school', id: sid }, { menuId: id, previousMenuId: previousOf.get(sid) ?? null }, sid);
+    for (const sid of removed) audit(req, 'school.menu', { type: 'school', id: sid }, { menuId: null, previousMenuId: id }, sid);
+    announceChange(['schools', 'dishes']);
+  }
+  res.json({
+    menuId: id,
+    schoolIds: wanted,
+    added,
+    removed,
+    // Of the added ones, those that showed another menu before.
+    moved: added.filter((sid) => previousOf.has(sid)),
+  });
+});
+
 // ─── Administrators and their rights ─────────────────────────────────────────
 
 // Every admin account with its grants. A school's view lists the admins who

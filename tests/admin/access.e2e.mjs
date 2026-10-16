@@ -466,6 +466,52 @@ test('the search finds only what an admin may see, in every school they reach', 
   assert.ok(logged.every((row) => row.path === '/api/admin/search'));
 });
 
+test('a plan is given to its schools in one step; schools switch plans and can be left without one', async () => {
+  const { menus } = await ok(api('GET', '/api/admin/menus'));
+  const main = menus.find((m) => m.isDefault);
+  const created = (await ok(api('POST', '/api/admin/menus', { body: { name: 'Plan Zwei' } }), 201)).menu;
+  const schoolsNow = async () => Object.fromEntries((await ok(api('GET', '/api/admin/schools'))).schools.map((s) => [s.id, s.menu?.id ?? null]));
+
+  // A school without a plan gets it; one with another plan switches.
+  const first = await ok(api('PUT', `/api/admin/menus/${created.id}/schools`, { body: { schoolIds: [schoolB.id] } }));
+  assert.deepEqual(first.added, [schoolB.id]);
+  assert.deepEqual(first.removed, []);
+  const both = await ok(api('PUT', `/api/admin/menus/${created.id}/schools`, { body: { schoolIds: [schoolA.id, schoolB.id, schoolA.id] } }));
+  assert.deepEqual(both.added, [schoolA.id]);
+  assert.deepEqual(both.moved, [schoolA.id]);
+  let state = await schoolsNow();
+  assert.equal(state[schoolA.id], created.id);
+  assert.equal(state[schoolB.id], created.id);
+  // The apps follow at once: A now shows the new, still empty plan.
+  const anna = (await appLogin('anna.a')).json;
+  const shown = await cluster.request(node, 'GET', '/dishes', { token: anna.token, apiKey: false });
+  assert.equal(shown.json.available, true);
+  assert.deepEqual(shown.json.menu.dishes, []);
+
+  // An empty list leaves both without a plan — their apps show no Mensa.
+  const none = await ok(api('PUT', `/api/admin/menus/${created.id}/schools`, { body: { schoolIds: [] } }));
+  assert.deepEqual(none.removed.sort(), [schoolA.id, schoolB.id].sort());
+  state = await schoolsNow();
+  assert.equal(state[schoolA.id], null);
+  assert.equal((await cluster.request(node, 'GET', '/dishes', { token: anna.token, apiKey: false })).json.available, false);
+  // Each change is in the audit trail with the plan the school had before.
+  const events = (await ok(api('GET', '/api/admin/audit-events?limit=50'))).events.filter((e) => e.action === 'school.menu' && e.schoolId === schoolA.id);
+  assert.ok(events.some((e) => JSON.stringify(e.detail ?? '').includes(main.id)));
+
+  // Only who manages schools; only known schools; nothing else in the body.
+  const catalog = await ok(api('GET', '/api/admin/access/catalog'));
+  const planA = await makeAdmin('plan.a', schoolA.id, { scope: schoolA.id, permissions: catalog.presets.find((p) => p.key === 'school_admin').permissions });
+  await ok(api('PUT', `/api/admin/menus/${created.id}/schools`, { token: planA.token, school: schoolA.id, body: { schoolIds: [schoolA.id] } }), 403);
+  await ok(api('PUT', `/api/admin/menus/${created.id}/schools`, { body: { schoolIds: ['00000000-0000-0000-0000-000000000000'] } }), 422);
+  await ok(api('PUT', `/api/admin/menus/${created.id}/schools`, { body: { schoolIds: schoolA.id } }), 422);
+  await ok(api('PUT', `/api/admin/menus/${created.id}/schools`, { body: { schoolIds: [], menuId: 'x' } }), 422);
+  await ok(api('PUT', '/api/admin/menus/00000000-0000-0000-0000-000000000000/schools', { body: { schoolIds: [] } }), 404);
+
+  // Back as before for the tests that follow.
+  await ok(api('PUT', `/api/admin/menus/${main.id}/schools`, { body: { schoolIds: [schoolA.id] } }));
+  assert.equal((await schoolsNow())[schoolA.id], main.id);
+});
+
 test('every sensitive change is in the audit trail, scoped per school', async () => {
   const all = await ok(api('GET', '/api/admin/audit-events?limit=200'));
   const actions = new Set(all.events.map((e) => e.action));

@@ -302,6 +302,10 @@ export const adminApi = {
 
   deleteMenu: (id: string): Promise<void> => request<void>('DELETE', `/api/admin/menus/${encodeURIComponent(id)}`),
 
+  // The schools a menu serves, set in one step (others it served show none).
+  setMenuSchools: (id: string, schoolIds: string[]): Promise<{ menuId: string; schoolIds: string[]; added: string[]; removed: string[]; moved: string[] }> =>
+    request('PUT', `/api/admin/menus/${encodeURIComponent(id)}/schools`, { schoolIds }),
+
   admins: (): Promise<{ admins: AdminAccount[] }> => request('GET', '/api/admin/admins'),
 
   setGrant: (username: string, scope: string, permissions: string[], preset?: string): Promise<{ grant: AdminGrantView | null }> =>

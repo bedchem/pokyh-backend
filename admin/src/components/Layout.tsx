@@ -427,8 +427,9 @@ function Sidebar({ groups, username, onLogout }: SidebarProps) {
 }
 
 // ─── Quick access: the floating bar at the bottom centre ─────────────────────
-// The most used sections one tap away on every screen size; on small screens
-// also "Mehr" with everything else.
+// Touch screens below the sidebar width: the most used sections one tap away,
+// and "Mehr" with everything else. Animated with GSAP (none with reduced
+// motion).
 
 interface DockProps {
   entries: NavEntry[];
@@ -438,39 +439,188 @@ interface DockProps {
   // Tapping the tab of the page already shown takes that page back to its top.
   onReselect: () => void;
   moreRef: React.RefObject<HTMLButtonElement | null>;
+  // The page's scroll container: scrolling down tucks the bar away.
+  scrollRef: React.RefObject<HTMLElement | null>;
 }
 
-function Dock({ entries, allItems, moreOpen, onMore, onReselect, moreRef }: DockProps) {
+// The bar plays its entrance once per page load, not on every remount.
+let dockIntroPlayed = false;
+
+function Dock({ entries, allItems, moreOpen, onMore, onReselect, moreRef, scrollRef }: DockProps) {
   const { pathname } = useLocation();
   const active = activeNavPath(pathname, allItems);
   const tabIndex = entries.findIndex((tab) => tab.to === active);
+  // The highlighted slot: a tab, "Mehr" (its sheet open, or a page not in
+  // the bar), or none.
+  const moreIndex = entries.length;
+  const current = moreOpen || (tabIndex < 0 && active !== null) ? moreIndex : tabIndex;
+
+  const dockRef = useRef<HTMLElement>(null);
+  const rowRef = useRef<HTMLDivElement>(null);
+  const pillRef = useRef<HTMLSpanElement>(null);
+  const shownIndex = useRef<number | null>(null);
+  const hidden = useRef(false);
+
+  const slot = (index: number) => rowRef.current?.querySelector<HTMLElement>(`[data-slot="${index}"]`) ?? null;
+
+  // The pill under the highlighted tab: it stretches towards the new one,
+  // then settles there; the tab's icon pops in.
+  useLayoutEffect(() => {
+    const pill = pillRef.current;
+    const target = current >= 0 ? slot(current) : null;
+    if (!pill) return;
+    const reduced = prefersReducedMotion();
+    if (!target) {
+      gsap.to(pill, { opacity: 0, scale: 0.8, duration: reduced ? 0 : 0.25, ease: 'power2.out' });
+      shownIndex.current = null;
+      return;
+    }
+    const to = { x: target.offsetLeft, width: target.offsetWidth };
+    const from = shownIndex.current !== null ? slot(shownIndex.current) : null;
+    const first = shownIndex.current === null;
+    shownIndex.current = current;
+    gsap.killTweensOf(pill);
+    if (reduced || first || !from) {
+      gsap.set(pill, { x: to.x, width: to.width });
+      gsap.to(pill, { opacity: 1, scale: 1, scaleY: 1, duration: reduced ? 0 : 0.3, ease: 'back.out(2)' });
+      return;
+    }
+    const left = Math.min(from.offsetLeft, to.x);
+    const right = Math.max(from.offsetLeft + from.offsetWidth, to.x + to.width);
+    gsap.timeline()
+      .set(pill, { opacity: 1, scale: 1 })
+      .to(pill, { x: left, width: right - left, scaleY: 0.84, duration: 0.16, ease: 'power2.in' })
+      .to(pill, { x: to.x, width: to.width, scaleY: 1, duration: 0.5, ease: 'back.out(1.6)' });
+    const icon = target.querySelector('.qdock-icon');
+    if (icon) gsap.fromTo(icon, { scale: 0.7, rotate: -10 }, { scale: 1, rotate: 0, duration: 0.6, ease: 'back.out(3)', delay: 0.08 });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [current, entries.length]);
+
+  // Rotating the phone or a font change moves the tabs: the pill follows.
+  useEffect(() => {
+    const row = rowRef.current;
+    if (!row || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => {
+      const target = shownIndex.current !== null ? slot(shownIndex.current) : null;
+      if (target && pillRef.current) gsap.set(pillRef.current, { x: target.offsetLeft, width: target.offsetWidth });
+    });
+    observer.observe(row);
+    return () => observer.disconnect();
+  }, []);
+
+  // Coming in from below once per page load, the tabs a beat after.
+  useLayoutEffect(() => {
+    const dock = dockRef.current;
+    if (!dock || dockIntroPlayed || prefersReducedMotion()) { dockIntroPlayed = true; return; }
+    dockIntroPlayed = true;
+    const ctx = gsap.context(() => {
+      gsap.timeline()
+        .from(dock, { yPercent: 160, opacity: 0, scale: 0.94, duration: 0.7, ease: 'expo.out', clearProps: 'scale' })
+        .from('.qdock-slot', { y: 12, opacity: 0, duration: 0.45, ease: 'power3.out', stagger: 0.05, clearProps: 'transform,opacity' }, 0.12);
+    }, dock);
+    return () => ctx.revert();
+  }, []);
+
+  // Scrolling down tucks the bar away; up, the top or the very end of the
+  // page brings it back. Always there while "Mehr" is open.
+  useEffect(() => {
+    const scroller = scrollRef.current;
+    const dock = dockRef.current;
+    if (!scroller || !dock) return;
+    let lastY = scroller.scrollTop;
+    const show = (on: boolean) => {
+      if (hidden.current === !on) return;
+      hidden.current = !on;
+      if (prefersReducedMotion()) { gsap.set(dock, { yPercent: on ? 0 : 170 }); return; }
+      gsap.to(dock, on
+        ? { yPercent: 0, opacity: 1, duration: 0.5, ease: 'expo.out', overwrite: 'auto' }
+        : { yPercent: 170, opacity: 0.4, duration: 0.32, ease: 'power2.in', overwrite: 'auto' });
+    };
+    const onScroll = () => {
+      const y = scroller.scrollTop;
+      const atEnd = y + scroller.clientHeight >= scroller.scrollHeight - 24;
+      if (y < 60 || atEnd) show(true);
+      else if (y > lastY + 8) show(false);
+      else if (y < lastY - 8) show(true);
+      if (Math.abs(y - lastY) > 8) lastY = y;
+    };
+    scroller.addEventListener('scroll', onScroll, { passive: true });
+    return () => scroller.removeEventListener('scroll', onScroll);
+  }, [scrollRef]);
+
+  useEffect(() => {
+    if (!moreOpen || !dockRef.current || !hidden.current) return;
+    hidden.current = false;
+    gsap.to(dockRef.current, { yPercent: 0, opacity: 1, duration: 0.4, ease: 'expo.out', overwrite: 'auto' });
+  }, [moreOpen]);
+
+  // A new page starts with the bar in view.
+  useEffect(() => {
+    if (!dockRef.current || !hidden.current) return;
+    hidden.current = false;
+    gsap.to(dockRef.current, { yPercent: 0, opacity: 1, duration: 0.45, ease: 'expo.out', overwrite: 'auto' });
+  }, [pathname]);
+
+  // "Mehr" turns into a cross while its sheet is open.
+  useLayoutEffect(() => {
+    const row = rowRef.current;
+    if (!row) return;
+    const menuIcon = row.querySelector('.qdock-more-menu');
+    const closeIcon = row.querySelector('.qdock-more-close');
+    if (!menuIcon || !closeIcon) return;
+    const d = prefersReducedMotion() ? 0 : 0.35;
+    gsap.to(menuIcon, { rotate: moreOpen ? 90 : 0, scale: moreOpen ? 0.5 : 1, opacity: moreOpen ? 0 : 1, duration: d, ease: 'power3.out' });
+    gsap.to(closeIcon, { rotate: moreOpen ? 0 : -90, scale: moreOpen ? 1 : 0.5, opacity: moreOpen ? 1 : 0, duration: d, ease: 'back.out(2.2)' });
+  }, [moreOpen]);
+
+  // A finger on a tab presses it in; letting go springs it back.
+  const press = (on: boolean) => (e: React.PointerEvent<HTMLElement>) => {
+    if (prefersReducedMotion()) return;
+    gsap.to(e.currentTarget, on
+      ? { scale: 0.9, duration: 0.12, ease: 'power2.out', overwrite: 'auto' }
+      : { scale: 1, duration: 0.5, ease: 'back.out(3)', overwrite: 'auto' });
+  };
+  const pressHandlers = { onPointerDown: press(true), onPointerUp: press(false), onPointerLeave: press(false), onPointerCancel: press(false) };
 
   return (
-    <nav className="qdock" aria-label="Schnellzugriff">
-      <div className="qdock-row">
+    <nav ref={dockRef} className="qdock" aria-label="Schnellzugriff" data-raised={moreOpen}>
+      <div ref={rowRef} className="qdock-row">
+        <span ref={pillRef} className="qdock-pill" aria-hidden="true" />
         {entries.map(({ to, label, icon: Icon }, index) => (
           <Link
             key={to}
             to={to}
-            className="qdock-tab"
-            data-on={!moreOpen && tabIndex === index}
+            data-slot={index}
+            className="qdock-tab qdock-slot"
+            data-on={current === index}
             aria-current={active === to ? 'page' : undefined}
-            onClick={() => { if (active === to && !moreOpen) onReselect(); }}
+            {...pressHandlers}
+            onClick={() => {
+              if (active === to && !moreOpen) {
+                onReselect();
+                if (pillRef.current && !prefersReducedMotion()) gsap.fromTo(pillRef.current, { scale: 0.92 }, { scale: 1, duration: 0.5, ease: 'back.out(3)' });
+              }
+            }}
           >
-            <Icon size={20} strokeWidth={1.7} />
+            <span className="qdock-icon"><Icon size={20} strokeWidth={current === index ? 2 : 1.7} /></span>
             <span className="qdock-label">{label}</span>
           </Link>
         ))}
         <button
           ref={moreRef}
           type="button"
-          className="qdock-tab lg:hidden"
-          data-on={moreOpen || (tabIndex < 0 && active !== null)}
+          data-slot={moreIndex}
+          className="qdock-tab qdock-slot lg:hidden"
+          data-on={current === moreIndex}
           aria-haspopup="dialog"
           aria-expanded={moreOpen}
+          {...pressHandlers}
           onClick={onMore}
         >
-          <Menu size={20} strokeWidth={1.7} />
+          <span className="qdock-icon qdock-more-icon">
+            <Menu size={20} strokeWidth={1.7} className="qdock-more-menu" />
+            <X size={20} strokeWidth={2} className="qdock-more-close" />
+          </span>
           <span className="qdock-label">Mehr</span>
         </button>
       </div>
@@ -698,6 +848,7 @@ export function Layout({ children, bleed = false }: LayoutProps) {
           allItems={allItems}
           moreOpen={moreOpen}
           moreRef={moreRef}
+          scrollRef={mainRef}
           onMore={() => setMoreOpen((open) => !open)}
           onReselect={() => mainRef.current?.scrollTo({ top: 0, behavior: prefersReducedMotion() ? 'auto' : 'smooth' })}
         />

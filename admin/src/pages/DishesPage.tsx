@@ -3,14 +3,16 @@ import { createPortal } from 'react-dom';
 import { useHanded } from '../useHanded';
 import {
   UtensilsCrossed, Plus, Pencil, Trash2, Download, X, ChevronDown, ChevronUp, Leaf, Sprout, Star,
-  GripVertical, CalendarPlus, Sun, Snowflake, RotateCcw,
+  GripVertical, CalendarPlus, Sun, Snowflake, RotateCcw, School,
 } from 'lucide-react';
 import { adminApi, setMenuContext } from '../api';
 import { useAccess } from '../access';
+import { useSwitchView } from '../useSwitchView';
+import { MenuDeleteDialog, MenuNameDialog, MenuSchoolsDialog } from '../components/MenuDialogs';
 import type { AdminDishFull, AdminDish, AdminDishRatingEntry, DishPlan, MensaMenu } from '../types';
 import { useToast } from '../components/Toast';
 import { useLive } from '../live';
-import { Collapse, Delta, Figures, Notice, PageHeader, SearchField, Segmented, Spinner, Tag } from '../components/kit';
+import { Collapse, Delta, Figures, IconButton, Notice, PageHeader, SearchField, Segmented, Spinner, Tag } from '../components/kit';
 
 // What the signed-in admin may change here: the menu (mensa.manage) and the
 // votes on it (comments.moderate). Without them the plan is shown read-only;
@@ -905,7 +907,7 @@ function WeekDropzone({
 
 interface HandedDish { menuId: string; search: string; plan: DishPlan }
 
-function MenuPlan({ picker, note, handed }: { picker?: ReactNode; note?: ReactNode; handed: Partial<HandedDish> }) {
+function MenuPlan({ note, handed }: { note?: ReactNode; handed: Partial<HandedDish> }) {
   const { showToast } = useToast();
   const rights = useContext(MensaRights);
   // The search hands over a dish: its plan, filtered to it, its weeks open.
@@ -1277,7 +1279,6 @@ function MenuPlan({ picker, note, handed }: { picker?: ReactNode; note?: ReactNo
         title="Speiseplan"
         subtitle={`${dishes.length} ${dishes.length === 1 ? 'Gericht' : 'Gerichte'} im ${activePlan === 'summer' ? 'Sommer' : 'Winter'}plan.`}
       >
-        {picker}
         {rights.edit && <>
         <button type="button" onClick={() => setShowImport(true)} className="btn btn-quiet">
           <Download size={16} strokeWidth={1.7} />
@@ -1692,79 +1693,218 @@ function MenuPlan({ picker, note, handed }: { picker?: ReactNode; note?: ReactNo
 // none — the app then shows no menu either). The global view picks any menu;
 // a menu several schools share changes for all of them at once.
 
+// ─── Plans in the global view: which one, and which schools show it ─────────
+
+function MenuBar({ menus, selected, manage, unassigned, onPick, onCreate, onRename, onDelete, onAssign }: {
+  menus: MensaMenu[];
+  selected: MensaMenu;
+  manage: boolean;
+  // Active schools without any plan.
+  unassigned: Array<{ id: string; name: string }>;
+  onPick: (id: string) => void;
+  onCreate: () => void;
+  onRename: () => void;
+  onDelete: () => void;
+  onAssign: () => void;
+}) {
+  const count = (n: number) => (n === 0 ? 'keine Schule' : n === 1 ? '1 Schule' : `${n} Schulen`);
+  return (
+    <div className="menu-bar">
+      <div className="menu-cards" role="tablist" aria-label="Mensapläne">
+        {menus.map((m) => (
+          <button key={m.id} type="button" role="tab" aria-selected={m.id === selected.id} className="menu-card" onClick={() => onPick(m.id)}>
+            <span className="flex min-w-0 items-center gap-2">
+              <UtensilsCrossed size={15} strokeWidth={1.7} className="flex-shrink-0" />
+              <span className="truncate text-[14.5px] font-medium">{m.name}</span>
+            </span>
+            <span className="mt-1 block truncate text-[12.5px]" style={{ color: m.schools.length === 0 ? 'var(--amber-deep)' : 'var(--ink-3)' }}>
+              {m.dishes} {m.dishes === 1 ? 'Gericht' : 'Gerichte'} · {count(m.schools.length)}
+            </span>
+          </button>
+        ))}
+        {manage && (
+          <button type="button" className="menu-card menu-card-add" onClick={onCreate}>
+            <Plus size={16} strokeWidth={1.8} />
+            <span className="text-[14px] font-medium">Neuer Plan</span>
+          </button>
+        )}
+      </div>
+
+      <div className="menu-assign">
+        <div className="min-w-0 flex-1">
+          <div className="text-[11px] font-medium uppercase tracking-[0.1em] text-ink-4">„{selected.name}“ gilt für</div>
+          <div className="mt-2.5 flex flex-wrap gap-2">
+            {selected.schools.length === 0 ? (
+              <span className="text-[13.5px]" style={{ color: 'var(--amber-deep)' }}>Keine Schule — dieser Plan wird in keiner App angezeigt.</span>
+            ) : selected.schools.map((sc) => (
+              <span key={sc.id} className="school-chip"><School size={13} strokeWidth={1.8} /> {sc.name}</span>
+            ))}
+          </div>
+        </div>
+        {manage && (
+          <div className="flex flex-shrink-0 items-center gap-2">
+            <button type="button" className="btn btn-primary btn-sm" onClick={onAssign}>
+              <School size={15} strokeWidth={1.8} />
+              Schulen zuweisen
+            </button>
+            <IconButton icon={Pencil} label="Plan umbenennen" onClick={onRename} />
+            <IconButton icon={Trash2} tone="rose" label={selected.schools.length > 0 ? 'Löschen geht erst ohne zugewiesene Schulen' : 'Plan löschen'} disabled={selected.schools.length > 0} onClick={onDelete} />
+          </div>
+        )}
+      </div>
+
+      {manage && unassigned.length > 0 && (
+        <Notice tone="amber" icon={UtensilsCrossed}>
+          {unassigned.length === 1 ? `${unassigned[0]!.name} hat` : `${unassigned.length} aktive Schulen haben`} noch keinen Mensaplan — ihre App zeigt keine Mensa.{' '}
+          <button type="button" className="font-medium underline underline-offset-2" onClick={onAssign}>Diesem Plan zuweisen</button>
+        </Notice>
+      )}
+    </div>
+  );
+}
+
+// ─── DishesPage ───────────────────────────────────────────────────────────────
+// A school's view edits the menu assigned to it (and shows nothing when it has
+// none — the app then shows no menu either). The global view picks any menu
+// and assigns it to schools; a menu several schools share changes for all of
+// them at once.
+
+type MenuDialogState =
+  | { kind: 'create' }
+  | { kind: 'rename' | 'delete' | 'schools'; menu: MensaMenu }
+  | null;
+
 export function DishesPage() {
-  const { view, can, canGlobal } = useAccess();
+  const { view, me, can, canGlobal, refresh } = useAccess();
+  const { switchView } = useSwitchView();
   const isGlobal = view?.kind === 'global';
   const schoolMenu = view?.kind === 'school' ? view.school.menuId : null;
   const rights = useMemo(() => ({ edit: can('mensa.manage'), moderate: can('comments.moderate') }), [can]);
+  // Plans and their schools are the installation's: global schools.manage.
+  const manage = isGlobal && can('schools.manage');
   const [menus, setMenus] = useState<MensaMenu[] | null>(null);
   const [menuId, setMenuId] = useState<string | null>(null);
+  const [dialog, setDialog] = useState<MenuDialogState>(null);
   const handed = useHanded<HandedDish>();
   const handedMenu = handed.menuId;
+  const menuIdRef = useRef<string | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
-    setMenus(null);
-    if (!isGlobal && !schoolMenu) return;
-    adminApi.menus().then(({ menus: list }) => {
-      if (cancelled) return;
+  const pick = useCallback((id: string) => {
+    menuIdRef.current = id;
+    setMenuContext(id || null);
+    setMenuId(id);
+  }, []);
+
+  // The plans; the chosen one stays chosen while it exists. `prefer` selects
+  // another (a plan just created).
+  const loadMenus = useCallback(async (prefer?: string): Promise<MensaMenu[]> => {
+    if (!isGlobal && !schoolMenu) return [];
+    try {
+      const { menus: list } = await adminApi.menus();
       setMenus(list);
       if (isGlobal) {
-        const preferred = list.find((m) => m.id === handedMenu) ?? list.find((m) => m.isDefault) ?? list[0] ?? null;
-        setMenuContext(preferred?.id ?? null);
-        setMenuId(preferred?.id ?? '');
+        const next = list.find((m) => m.id === prefer)
+          ?? list.find((m) => m.id === menuIdRef.current)
+          ?? list.find((m) => m.id === handedMenu)
+          ?? list.find((m) => m.isDefault)
+          ?? list[0];
+        pick(next?.id ?? '');
       }
-    }).catch(() => { if (!cancelled) { setMenus([]); if (isGlobal) setMenuId(''); } });
-    return () => { cancelled = true; setMenuContext(null); };
-  }, [isGlobal, schoolMenu]);
+      return list;
+    } catch {
+      setMenus([]);
+      if (isGlobal && menuIdRef.current === null) pick('');
+      return [];
+    }
+  }, [isGlobal, schoolMenu, handedMenu, pick]);
+
+  useEffect(() => {
+    setMenus(null);
+    menuIdRef.current = null;
+    void loadMenus();
+    return () => setMenuContext(null);
+  }, [loadMenus]);
+  // Another admin assigning or editing plans shows up here.
+  useLive(['schools'], () => { void loadMenus(); }, 1500);
+
+  async function afterNameSaved(id: string, created: boolean) {
+    const list = await loadMenus(id);
+    const menu = list.find((m) => m.id === id);
+    // A new plan serves nobody yet: choosing its schools is the next step.
+    setDialog(created && menu ? { kind: 'schools', menu } : null);
+  }
+
+  const dialogs = (
+    <>
+      {dialog?.kind === 'create' && <MenuNameDialog menu={null} onClose={() => setDialog(null)} onSaved={(id) => void afterNameSaved(id, true)} />}
+      {dialog?.kind === 'rename' && <MenuNameDialog menu={dialog.menu} onClose={() => setDialog(null)} onSaved={(id) => void afterNameSaved(id, false)} />}
+      {dialog?.kind === 'schools' && <MenuSchoolsDialog menu={dialog.menu} onClose={() => setDialog(null)} onSaved={() => { setDialog(null); void loadMenus(); void refresh(); }} />}
+      {dialog?.kind === 'delete' && <MenuDeleteDialog menu={dialog.menu} onClose={() => setDialog(null)} onDeleted={() => { setDialog(null); menuIdRef.current = null; void loadMenus(); void refresh(); }} />}
+    </>
+  );
 
   if (view?.kind === 'school' && !schoolMenu) {
     return (
       <div>
         <PageHeader title="Speiseplan" subtitle={view.school.name} />
-        <div className="mt-10 max-w-[720px]">
+        <div className="mt-10 flex max-w-[720px] flex-col items-start gap-4">
           <Notice tone="amber" icon={UtensilsCrossed}>
             Dieser Schule ist kein Mensaplan zugewiesen — die App zeigt für ihre Konten deshalb keine Mensa an.
-            {canGlobal('schools.manage') ? ' Zuweisen kannst du ihn in der globalen Ansicht unter „Schulen“.' : ' Ein Global-Admin kann unter „Schulen“ einen Plan zuweisen.'}
+            {canGlobal('schools.manage') ? '' : ' Ein Global-Admin kann ihr in der globalen Ansicht einen Plan zuweisen.'}
           </Notice>
+          {canGlobal('schools.manage') && me?.globalView && (
+            <button type="button" className="btn btn-primary" onClick={() => switchView({ kind: 'global' }, { path: '/dishes' })}>
+              <School size={16} strokeWidth={1.8} />
+              In der globalen Ansicht zuweisen
+            </button>
+          )}
         </div>
       </div>
     );
   }
 
-  if (isGlobal && menuId === null) return <div className="mt-10"><Spinner /></div>;
+  if (isGlobal && (menus === null || menuId === null)) return <div className="mt-10"><Spinner /></div>;
 
   if (isGlobal && menus && menus.length === 0) {
     return (
       <div>
-        <PageHeader title="Speiseplan" />
-        <div className="mt-10 max-w-[720px]">
-          <Notice tone="amber" icon={UtensilsCrossed}>Es gibt noch keinen Mensaplan. Lege unter „Schulen“ einen an und weise ihn Schulen zu.</Notice>
+        <PageHeader title="Speiseplan" subtitle="Noch kein Mensaplan." />
+        <div className="mt-10 flex max-w-[720px] flex-col items-start gap-4">
+          <Notice tone="amber" icon={UtensilsCrossed}>Ohne Mensaplan zeigt keine App eine Mensa. Lege einen Plan an und wähle die Schulen, die ihn zeigen.</Notice>
+          {manage && (
+            <button type="button" className="btn btn-primary" onClick={() => setDialog({ kind: 'create' })}>
+              <Plus size={16} strokeWidth={1.8} />
+              Ersten Mensaplan anlegen
+            </button>
+          )}
         </div>
+        {dialogs}
       </div>
     );
   }
 
   const shown = isGlobal ? menus?.find((m) => m.id === menuId) : menus?.find((m) => m.id === schoolMenu);
-  const picker = isGlobal && menus && menus.length > 1 ? (
-    <select
-      className="field h-11 px-4 text-[14px]"
-      value={menuId ?? ''}
-      onChange={(e) => { setMenuContext(e.target.value); setMenuId(e.target.value); }}
-      aria-label="Mensaplan"
-    >
-      {menus.map((m) => <option key={m.id} value={m.id}>{m.name}{m.schools.length === 0 ? ' (keiner Schule zugewiesen)' : ''}</option>)}
-    </select>
-  ) : null;
 
   let note: ReactNode = null;
-  if (shown && shown.schools.length === 0) {
-    note = <Notice tone="amber" icon={UtensilsCrossed}>„{shown.name}“ ist keiner Schule zugewiesen und wird deshalb in keiner App angezeigt.</Notice>;
-  } else if (shown && (isGlobal ? shown.schools.length > 0 : shown.schools.length > 1)) {
+  if (isGlobal && menus && shown) {
+    const unassigned = (me?.schools ?? []).filter((sc) => sc.active && !sc.menuId).map((sc) => ({ id: sc.id, name: sc.name }));
+    note = (
+      <MenuBar
+        menus={menus}
+        selected={shown}
+        manage={manage}
+        unassigned={unassigned}
+        onPick={pick}
+        onCreate={() => setDialog({ kind: 'create' })}
+        onRename={() => setDialog({ kind: 'rename', menu: shown })}
+        onDelete={() => setDialog({ kind: 'delete', menu: shown })}
+        onAssign={() => setDialog({ kind: 'schools', menu: shown })}
+      />
+    );
+  } else if (shown && shown.schools.length > 1) {
     note = (
       <p className="text-[13.5px] text-ink-3">
-        {isGlobal ? `„${shown.name}“ gilt für: ` : 'Dieser Plan gilt auch für: '}
-        {shown.schools.filter((sc) => isGlobal || sc.id !== (view?.kind === 'school' ? view.school.id : '')).map((sc) => sc.name).join(', ')}
+        Dieser Plan gilt auch für: {shown.schools.filter((sc) => sc.id !== (view?.kind === 'school' ? view.school.id : '')).map((sc) => sc.name).join(', ')}
         {rights.edit ? ' — Änderungen wirken dort mit.' : '.'}
       </p>
     );
@@ -1772,7 +1912,8 @@ export function DishesPage() {
 
   return (
     <MensaRights.Provider value={rights}>
-      <MenuPlan key={menuId ?? schoolMenu ?? ''} picker={picker} note={note} handed={menuId === null || !handed.menuId || handed.menuId === (menuId ?? schoolMenu) ? handed : {}} />
+      <MenuPlan key={menuId ?? schoolMenu ?? ''} note={note} handed={menuId === null || !handed.menuId || handed.menuId === (menuId ?? schoolMenu) ? handed : {}} />
+      {dialogs}
     </MensaRights.Provider>
   );
 }
