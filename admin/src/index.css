@@ -257,15 +257,16 @@
    of making the whole page slide sideways; tables scroll inside their own box. */
 .app-main > * { overflow-x: clip; }
 
-/* ─── Quick access: the floating bar at the bottom centre ────── */
+/* ─── Quick access: the tab bar along the bottom edge ────────── */
 /* Touch screens below lg only (phones, tablets). From lg on the sidebar
-   navigates; a narrow window with a mouse gets the menu button on top. */
+   navigates; a narrow window with a mouse gets the menu button on top.
+   Plain like the bar on top: the sheet's own ground and one hairline. */
 
-:root { --dock-h: 60px; }
+:root { --dock-h: 64px; --dock-well-w: 56px; --dock-well-h: 32px; }
 
-/* The page always ends above the floating bar, so nothing hides behind it. */
+/* The page always ends above the bar, so nothing hides behind it. */
 @media (max-width: 1023.98px) and (pointer: coarse) {
-  .app-main { padding-bottom: calc(var(--dock-h) + 34px + env(safe-area-inset-bottom)); }
+  .app-main { padding-bottom: calc(var(--dock-h) + 20px + env(safe-area-inset-bottom)); }
 }
 @media (pointer: coarse) {
   .only-fine { display: none !important; }
@@ -273,74 +274,151 @@
 
 .qdock {
   position: fixed;
-  /* Centred without a transform: GSAP owns the transform (slide, hide). */
-  left: 12px;
-  right: 12px;
-  width: fit-content;
-  margin-inline: auto;
-  bottom: calc(14px + env(safe-area-inset-bottom));
+  left: 0;
+  right: 0;
+  bottom: 0;
   z-index: 45;
-  max-width: calc(100vw - 24px);
-  padding: 5px;
-  will-change: transform;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: rgb(var(--raise-rgb) / 0.94);
-  box-shadow: 0 18px 40px -22px rgb(0 0 0 / 0.38);
-  -webkit-backdrop-filter: saturate(1.4) blur(14px);
-  backdrop-filter: saturate(1.4) blur(14px);
+  padding-bottom: env(safe-area-inset-bottom);
+  border-top: 1px solid var(--line);
+  background: var(--sheet);
+  transform: translateY(0);
+  transition: transform 0.45s var(--glide);
+}
+.qdock[data-hidden="true"] {
+  transform: translateY(calc(100% + 1px));
+  transition: transform 0.3s cubic-bezier(0.4, 0, 1, 1);
 }
 @media (min-width: 1024px), (pointer: fine) {
   .qdock { display: none; }
 }
-.qdock-row { position: relative; display: flex; align-items: stretch; gap: 2px; }
-/* The highlight that travels between the tabs. */
-.qdock-pill {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 0;
-  height: 100%;
-  border-radius: 999px;
-  background: var(--ink);
-  box-shadow: 0 8px 18px -10px rgb(0 0 0 / 0.5);
-  opacity: 0;
-  pointer-events: none;
-  transform-origin: 50% 50%;
+.qdock-row {
+  position: relative;
+  display: flex;
+  max-width: 560px;
+  height: calc(var(--dock-h) - 1px);
+  margin: 0 auto;
+  padding: 0 4px;
 }
+
 .qdock-tab {
   position: relative;
   z-index: 1;
+  display: flex;
+  flex: 1 1 0;
+  min-width: 0;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink-3);
   -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
   touch-action: manipulation;
   user-select: none;
+}
+.qdock-tab:focus-visible { outline-offset: -3px; border-radius: 16px; }
+.qdock-face {
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
-  gap: 3px;
-  min-width: 62px;
-  height: 50px;
-  padding: 0 10px;
-  border-radius: 999px;
-  color: var(--ink-3);
-  font-size: 10.5px;
+  gap: 4px;
+  max-width: 100%;
+  transition: transform 0.45s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.qdock-well {
+  display: grid;
+  place-items: center;
+  width: var(--dock-well-w);
+  height: var(--dock-well-h);
+  flex-shrink: 0;
+}
+.qdock-well > svg,
+.qdock-ind-slot > span > svg { grid-area: 1 / 1; flex-shrink: 0; }
+.qdock-label {
+  display: grid;
+  max-width: 100%;
+  font-size: 11.5px;
+  font-weight: 500;
+  line-height: 14px;
   letter-spacing: 0.01em;
-  transition: color 0.25s var(--glide);
 }
-.qdock-tab svg { flex-shrink: 0; }
-.qdock-icon { display: grid; place-items: center; width: 22px; height: 22px; flex-shrink: 0; }
-.qdock-icon > svg { grid-area: 1 / 1; }
-.qdock-more-close { opacity: 0; }
-.qdock-label { max-width: 76px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.qdock-tab[data-on="true"] { color: var(--sheet); font-weight: 500; transition-delay: 0.08s; }
-.qdock-tab:focus-visible { outline-offset: 2px; border-radius: 999px; }
-@media (hover: hover) {
-  .qdock-tab:not([data-on="true"]):hover { color: var(--ink); }
+.qdock-label > span {
+  grid-area: 1 / 1;
+  overflow: hidden;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-@media (min-width: 640px) {
-  .qdock-tab { flex-direction: row; gap: 8px; height: 44px; padding: 0 16px; font-size: 13.5px; }
-  .qdock-label { max-width: 140px; }
+.qdock-label > [data-layer="off"] { color: var(--ink-3); }
+.qdock-label > [data-layer="on"] { color: var(--ink); opacity: 0; }
+.qdock-tab[data-on="true"] .qdock-label > [data-layer="on"] { opacity: 1; }
+.qdock-tab[data-on="true"] .qdock-label > [data-layer="off"] { opacity: 0; }
+
+/* A finger on a tab presses it in, the icon in the pill with it. */
+.qdock-tab[data-pressed="true"] .qdock-face,
+.qdock-ind-slot[data-pressed="true"] {
+  transform: scale(0.9);
+  transition: transform 0.12s ease-out;
+}
+
+/* The pill: a window onto a layer with the ink ground and every lit icon,
+   cut out by two clips (dockMotion.ts moves the three). Above the tabs, so
+   a lit icon covers the dimmed one beneath exactly where the pill is. */
+.qdock-ind {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 2;
+  width: 100%;
+  height: var(--dock-well-h);
+  opacity: 0;
+  pointer-events: none;
+}
+.qdock-ind-clip {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  will-change: transform;
+}
+.qdock-ind-clip[data-edge="left"] {
+  border-radius: calc(var(--dock-well-h) / 2) 0 0 calc(var(--dock-well-h) / 2);
+}
+.qdock-ind-clip[data-edge="right"] {
+  border-radius: 0 calc(var(--dock-well-h) / 2) calc(var(--dock-well-h) / 2) 0;
+}
+.qdock-ind-layer {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  padding: 0 4px;
+  background: var(--ink);
+  color: var(--sheet);
+  will-change: transform;
+}
+.qdock-ind-slot {
+  display: grid;
+  flex: 1 1 0;
+  min-width: 0;
+  place-items: center;
+  transition: transform 0.45s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.qdock-ind-slot > span { display: grid; place-items: center; }
+
+/* "Mehr" turns into a cross while its sheet is open. */
+.qdock-more-menu,
+.qdock-more-close { transition: transform 0.35s var(--glide), opacity 0.25s ease; }
+.qdock-more-close { opacity: 0; transform: rotate(-90deg) scale(0.5); }
+.qdock-tab[aria-expanded="true"] .qdock-more-menu,
+.qdock-ind-slot[data-open="true"] .qdock-more-menu { opacity: 0; transform: rotate(90deg) scale(0.5); }
+.qdock-tab[aria-expanded="true"] .qdock-more-close,
+.qdock-ind-slot[data-open="true"] .qdock-more-close { opacity: 1; transform: none; }
+
+/* Once per page load the bar comes up from the edge, the tabs a beat after. */
+@keyframes dock-in { from { transform: translateY(100%); } }
+@keyframes dock-tab-in { from { opacity: 0; transform: translateY(6px); } }
+.qdock[data-intro="true"] { animation: dock-in 0.55s var(--glide) backwards; }
+.qdock[data-intro="true"] .qdock-face,
+.qdock[data-intro="true"] .qdock-ind {
+  animation: dock-tab-in 0.45s var(--glide) backwards;
+  animation-delay: calc(0.1s + var(--i, 0) * 0.04s);
 }
 
 /* ─── Small screens: logo and view switcher on top ───────────── */
@@ -734,11 +812,11 @@ tr[data-focus="true"] > td { background: var(--sky-wash); }
   padding: 2px 16px calc(18px + env(safe-area-inset-bottom));
 }
 .more-body::-webkit-scrollbar { display: none; }
-/* With the bar on screen it floats above the open sheet (its "Mehr" is the
+/* With the bar on screen it stays above the open sheet (its "Mehr" is the
    way out): the sheet's last row stays clear of it. */
 .qdock[data-raised="true"] { z-index: 62; }
 @media (max-width: 1023.98px) and (pointer: coarse) {
-  .more-body { padding-bottom: calc(var(--dock-h) + 30px + env(safe-area-inset-bottom)); }
+  .more-body { padding-bottom: calc(var(--dock-h) + 16px + env(safe-area-inset-bottom)); }
 }
 .more-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
 @media (min-width: 520px) {
@@ -786,7 +864,7 @@ tr[data-focus="true"] > td { background: var(--sky-wash); }
 
 /* Toasts sit above the bar where they rise from the bottom edge. */
 @media (max-width: 1023.98px) and (pointer: coarse) {
-  body:has(.qdock) .toast-stack { bottom: calc(var(--dock-h) + env(safe-area-inset-bottom) + 30px); }
+  body:has(.qdock) .toast-stack { bottom: calc(var(--dock-h) + env(safe-area-inset-bottom) + 12px); }
 }
 
 /* Sidebar navigation: plain rows, no pills. The active row is carried by

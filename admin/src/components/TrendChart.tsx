@@ -1,7 +1,7 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ChevronLeft, ChevronRight, RotateCcw } from 'lucide-react';
 import gsap from 'gsap';
-import { prefersReducedMotion } from '../motion';
+import { present, prefersReducedMotion } from '../motion';
 import { activeLabelFits, labelsClear } from './charts';
 import { useChartPointer, type PageDirection } from './chartPointer';
 
@@ -161,15 +161,24 @@ export function TrendChart({ labels, titles, series, tickEvery = 1, restIndex, d
   useLayoutEffect(() => {
     const svg = svgRef.current;
     if (!ready || !svg || prefersReducedMotion()) return;
+    // Only what this chart shows: lines without an area, no tooltip yet.
+    const lines = present(svg, '[data-line]');
+    const areas = present(svg, '[data-area]');
+    const probes = present(svg, '[data-probe]');
+    const tip = tipRef.current;
     const ctx = gsap.context(() => {
-      gsap.fromTo('[data-line]',
-        { strokeDasharray: 1, strokeDashoffset: 1 },
-        { strokeDashoffset: 0, duration: 1.05, ease: 'power2.inOut', stagger: 0.1, clearProps: 'strokeDasharray,strokeDashoffset' });
-      gsap.fromTo('[data-area]', { opacity: 0 }, { opacity: 1, duration: 0.8, delay: 0.35, ease: 'power1.out' });
-      gsap.fromTo('[data-probe]', { opacity: 0 }, { opacity: 1, duration: 0.4, delay: 0.75, ease: 'power1.out' });
-      gsap.fromTo(tipRef.current,
-        { opacity: 0, scale: 0.97 },
-        { opacity: 1, scale: 1, duration: 0.4, delay: 0.75, ease: 'power2.out', transformOrigin: '0% 50%', clearProps: 'transform' });
+      if (lines.length > 0) {
+        gsap.fromTo(lines,
+          { strokeDasharray: 1, strokeDashoffset: 1 },
+          { strokeDashoffset: 0, duration: 1.05, ease: 'power2.inOut', stagger: 0.1, clearProps: 'strokeDasharray,strokeDashoffset' });
+      }
+      if (areas.length > 0) gsap.fromTo(areas, { opacity: 0 }, { opacity: 1, duration: 0.8, delay: 0.35, ease: 'power1.out' });
+      if (probes.length > 0) gsap.fromTo(probes, { opacity: 0 }, { opacity: 1, duration: 0.4, delay: 0.75, ease: 'power1.out' });
+      if (tip) {
+        gsap.fromTo(tip,
+          { opacity: 0, scale: 0.97 },
+          { opacity: 1, scale: 1, duration: 0.4, delay: 0.75, ease: 'power2.out', transformOrigin: '0% 50%', clearProps: 'transform' });
+      }
     }, rootRef);
     return () => ctx.revert();
     // The draw-in belongs to the range, not to each refresh of its numbers.

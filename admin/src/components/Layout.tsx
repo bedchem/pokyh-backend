@@ -15,6 +15,7 @@ import { useTableLabels } from './kit';
 import { Highlight } from './Highlight';
 import { CommandPalette, SearchTrigger } from './CommandPalette';
 import { useSlashToSearch } from '../useSlashToSearch';
+import { moveIndicator, nudgeIndicator, placeIndicator, type IndicatorParts, type Span } from './dockMotion';
 
 export function Mark({ size = 26 }: { size?: number }) {
   return (
@@ -426,10 +427,11 @@ function Sidebar({ groups, username, onLogout }: SidebarProps) {
   );
 }
 
-// ─── Quick access: the floating bar at the bottom centre ─────────────────────
+// ─── Quick access: the tab bar along the bottom edge ─────────────────────────
 // Touch screens below the sidebar width: the most used sections one tap away,
-// and "Mehr" with everything else. Animated with GSAP (none with reduced
-// motion).
+// and "Mehr" with everything else. A tapped tab lights up at once and the
+// page follows a frame later, so the pill is already moving (on the
+// compositor, see dockMotion.ts) while the new page renders.
 
 interface DockProps {
   entries: NavEntry[];
@@ -446,183 +448,281 @@ interface DockProps {
 // The bar plays its entrance once per page load, not on every remount.
 let dockIntroPlayed = false;
 
+// A tab: its dimmed icon (the lit one lives in the pill) and its label, once
+// dimmed and once lit; the two labels cross-fade, so a tab never changes size.
+function TabFace({ label, glyph }: { label: string; glyph: ReactNode }) {
+  return (
+    <span className="qdock-face">
+      <span className="qdock-well">{glyph}</span>
+      <span className="qdock-label">
+        <span data-layer="off">{label}</span>
+        <span data-layer="on" aria-hidden="true">{label}</span>
+      </span>
+    </span>
+  );
+}
+
+const moreGlyph = (strokeWidth: number) => (
+  <>
+    <Menu size={20} strokeWidth={strokeWidth} className="qdock-more-menu" />
+    <X size={20} strokeWidth={strokeWidth} className="qdock-more-close" />
+  </>
+);
+
 function Dock({ entries, allItems, moreOpen, onMore, onReselect, moreRef, scrollRef }: DockProps) {
   const { pathname } = useLocation();
+  const navigate = useNavigate();
   const active = activeNavPath(pathname, allItems);
-  const tabIndex = entries.findIndex((tab) => tab.to === active);
+  // The tab tapped last, until the route has caught up with it.
+  const [pending, setPending] = useState<string | null>(null);
+  const shown = pending ?? active;
+  const tabIndex = entries.findIndex((tab) => tab.to === shown);
   // The highlighted slot: a tab, "Mehr" (its sheet open, or a page not in
   // the bar), or none.
   const moreIndex = entries.length;
-  const current = moreOpen || (tabIndex < 0 && active !== null) ? moreIndex : tabIndex;
+  const current = moreOpen || (tabIndex < 0 && shown !== null) ? moreIndex : tabIndex;
 
   const dockRef = useRef<HTMLElement>(null);
   const rowRef = useRef<HTMLDivElement>(null);
-  const pillRef = useRef<HTMLSpanElement>(null);
+  const indRef = useRef<HTMLSpanElement>(null);
   const shownIndex = useRef<number | null>(null);
+  const placed = useRef(false);
   const hidden = useRef(false);
+  const navTimer = useRef<{ frame: number; timer: number } | null>(null);
+  const [intro] = useState(() => !dockIntroPlayed && !prefersReducedMotion());
 
   const slot = (index: number) => rowRef.current?.querySelector<HTMLElement>(`[data-slot="${index}"]`) ?? null;
+  const litSlot = (index: number) => indRef.current?.querySelector<HTMLElement>(`[data-lit="${index}"]`) ?? null;
+  const rowWidth = () => rowRef.current?.getBoundingClientRect().width ?? 0;
 
-  // The pill under the highlighted tab: it stretches towards the new one,
-  // then settles there; the tab's icon pops in.
+  const indicator = (): IndicatorParts | null => {
+    const root = indRef.current;
+    const clipL = root?.firstElementChild as HTMLElement | null;
+    const clipR = clipL?.firstElementChild as HTMLElement | null;
+    const layer = clipR?.firstElementChild as HTMLElement | null;
+    return root && clipL && clipR && layer ? { root, clipL, clipR, layer } : null;
+  };
+
+  // Where the pill sits behind a tab's icon, in the row's coordinates. From
+  // the tab's own box (exact, unlike the rounded offsets): the face is scaled
+  // while pressed or coming in, so its own box cannot be used.
+  const spanOf = (index: number): { span: Span; top: number } | null => {
+    const row = rowRef.current;
+    const tab = index >= 0 ? slot(index) : null;
+    const face = tab?.querySelector<HTMLElement>('.qdock-face');
+    const well = face?.querySelector<HTMLElement>('.qdock-well');
+    if (!row || !tab || !face || !well || well.offsetWidth === 0) return null;
+    const box = tab.getBoundingClientRect();
+    const origin = row.getBoundingClientRect();
+    const left = box.left - origin.left + (box.width - well.offsetWidth) / 2;
+    const top = box.top - origin.top + (box.height - face.offsetHeight) / 2;
+    return { span: { left, right: left + well.offsetWidth }, top };
+  };
+
+  // The lit label fades in as the pill gets there and out as it leaves; the
+  // icon in the pill pops in with it.
+  const switchLabel = (index: number | null, on: boolean, at: number) => {
+    const tab = index !== null ? slot(index) : null;
+    if (!tab || index === null) return;
+    const delay = Math.max(0, at - 0.05) * 1000;
+    tab.querySelectorAll<HTMLElement>('.qdock-label > [data-layer]').forEach((layer) => {
+      const to = (layer.dataset.layer === 'on') === on ? 1 : 0;
+      // The style already shows the new state; the fade starts from what is
+      // on screen: mid-fade where one runs, else the old state.
+      const running = layer.getAnimations();
+      const from = running.length > 0 ? Number(getComputedStyle(layer).opacity) : 1 - to;
+      running.forEach((a) => a.cancel());
+      if (from === to) return;
+      layer.animate([{ opacity: from }, { opacity: to }], { duration: 180, delay, easing: 'ease-out', fill: 'backwards' });
+    });
+    const lit = litSlot(index)?.firstElementChild as HTMLElement | null;
+    if (!lit) return;
+    lit.getAnimations().forEach((a) => a.cancel());
+    if (on) lit.animate([{ transform: 'scale(0.78)' }, { transform: 'scale(1)' }], { duration: 480, delay, easing: 'cubic-bezier(0.34, 1.7, 0.5, 1)', fill: 'backwards' });
+  };
+
   useLayoutEffect(() => {
-    const pill = pillRef.current;
-    const target = current >= 0 ? slot(current) : null;
-    if (!pill) return;
-    const reduced = prefersReducedMotion();
-    if (!target) {
-      gsap.to(pill, { opacity: 0, scale: 0.8, duration: reduced ? 0 : 0.25, ease: 'power2.out' });
-      shownIndex.current = null;
+    const parts = indicator();
+    if (!parts) return;
+    const target = current >= 0 ? spanOf(current) : null;
+    const previous = shownIndex.current;
+    shownIndex.current = target ? current : null;
+    if (target) parts.root.style.top = `${target.top}px`;
+    if (!placed.current || prefersReducedMotion()) {
+      placed.current = true;
+      placeIndicator(parts, target?.span ?? null, rowWidth());
       return;
     }
-    const to = { x: target.offsetLeft, width: target.offsetWidth };
-    const from = shownIndex.current !== null ? slot(shownIndex.current) : null;
-    const first = shownIndex.current === null;
-    shownIndex.current = current;
-    gsap.killTweensOf(pill);
-    if (reduced || first || !from) {
-      gsap.set(pill, { x: to.x, width: to.width });
-      gsap.to(pill, { opacity: 1, scale: 1, scaleY: 1, duration: reduced ? 0 : 0.3, ease: 'back.out(2)' });
-      return;
-    }
-    const left = Math.min(from.offsetLeft, to.x);
-    const right = Math.max(from.offsetLeft + from.offsetWidth, to.x + to.width);
-    gsap.timeline()
-      .set(pill, { opacity: 1, scale: 1 })
-      .to(pill, { x: left, width: right - left, scaleY: 0.84, duration: 0.16, ease: 'power2.in' })
-      .to(pill, { x: to.x, width: to.width, scaleY: 1, duration: 0.5, ease: 'back.out(1.6)' });
-    const icon = target.querySelector('.qdock-icon');
-    if (icon) gsap.fromTo(icon, { scale: 0.7, rotate: -10 }, { scale: 1, rotate: 0, duration: 0.6, ease: 'back.out(3)', delay: 0.08 });
+    if (previous === current) return;
+    const move = moveIndicator(parts, target?.span ?? null, rowWidth());
+    switchLabel(previous, false, move.leave);
+    switchLabel(target ? current : null, true, move.arrive);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [current, entries.length]);
 
-  // Rotating the phone or a font change moves the tabs: the pill follows.
+  // Rotating the phone moves the tabs: the pill goes along at once.
   useEffect(() => {
     const row = rowRef.current;
     if (!row || typeof ResizeObserver === 'undefined') return;
+    let width = rowWidth();
     const observer = new ResizeObserver(() => {
-      const target = shownIndex.current !== null ? slot(shownIndex.current) : null;
-      if (target && pillRef.current) gsap.set(pillRef.current, { x: target.offsetLeft, width: target.offsetWidth });
+      if (rowWidth() === width) return;
+      width = rowWidth();
+      const parts = indicator();
+      const target = shownIndex.current !== null ? spanOf(shownIndex.current) : null;
+      if (!parts || !target) return;
+      parts.root.style.top = `${target.top}px`;
+      placeIndicator(parts, target.span, width);
     });
     observer.observe(row);
     return () => observer.disconnect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Coming in from below once per page load, the tabs a beat after.
-  useLayoutEffect(() => {
-    const dock = dockRef.current;
-    if (!dock || dockIntroPlayed || prefersReducedMotion()) { dockIntroPlayed = true; return; }
+  useEffect(() => {
+    if (!intro) return;
     dockIntroPlayed = true;
-    const ctx = gsap.context(() => {
-      gsap.timeline()
-        .from(dock, { yPercent: 160, opacity: 0, scale: 0.94, duration: 0.7, ease: 'expo.out', clearProps: 'scale' })
-        .from('.qdock-slot', { y: 12, opacity: 0, duration: 0.45, ease: 'power3.out', stagger: 0.05, clearProps: 'transform,opacity' }, 0.12);
-    }, dock);
-    return () => ctx.revert();
+    const timer = window.setTimeout(() => dockRef.current?.removeAttribute('data-intro'), 1200);
+    return () => window.clearTimeout(timer);
+  }, [intro]);
+
+  // The route caught up with the tapped tab (or went elsewhere meanwhile).
+  useEffect(() => {
+    if (!navTimer.current) setPending(null);
+  }, [pathname]);
+
+  const cancelNavigation = () => {
+    if (!navTimer.current) return;
+    cancelAnimationFrame(navTimer.current.frame);
+    window.clearTimeout(navTimer.current.timer);
+    navTimer.current = null;
+  };
+  useEffect(() => cancelNavigation, []);
+
+  const setHidden = useCallback((on: boolean) => {
+    if (hidden.current === on || !dockRef.current) return;
+    hidden.current = on;
+    dockRef.current.dataset.hidden = String(on);
   }, []);
 
   // Scrolling down tucks the bar away; up, the top or the very end of the
   // page brings it back. Always there while "Mehr" is open.
   useEffect(() => {
     const scroller = scrollRef.current;
-    const dock = dockRef.current;
-    if (!scroller || !dock) return;
+    if (!scroller) return;
     let lastY = scroller.scrollTop;
-    const show = (on: boolean) => {
-      if (hidden.current === !on) return;
-      hidden.current = !on;
-      if (prefersReducedMotion()) { gsap.set(dock, { yPercent: on ? 0 : 170 }); return; }
-      gsap.to(dock, on
-        ? { yPercent: 0, opacity: 1, duration: 0.5, ease: 'expo.out', overwrite: 'auto' }
-        : { yPercent: 170, opacity: 0.4, duration: 0.32, ease: 'power2.in', overwrite: 'auto' });
-    };
     const onScroll = () => {
       const y = scroller.scrollTop;
       const atEnd = y + scroller.clientHeight >= scroller.scrollHeight - 24;
-      if (y < 60 || atEnd) show(true);
-      else if (y > lastY + 8) show(false);
-      else if (y < lastY - 8) show(true);
+      if (y < 60 || atEnd) setHidden(false);
+      else if (y > lastY + 8) setHidden(true);
+      else if (y < lastY - 8) setHidden(false);
       if (Math.abs(y - lastY) > 8) lastY = y;
     };
     scroller.addEventListener('scroll', onScroll, { passive: true });
     return () => scroller.removeEventListener('scroll', onScroll);
-  }, [scrollRef]);
+  }, [scrollRef, setHidden]);
 
-  useEffect(() => {
-    if (!moreOpen || !dockRef.current || !hidden.current) return;
-    hidden.current = false;
-    gsap.to(dockRef.current, { yPercent: 0, opacity: 1, duration: 0.4, ease: 'expo.out', overwrite: 'auto' });
-  }, [moreOpen]);
+  // A new page, or the sheet opening, starts with the bar in view.
+  useEffect(() => { if (moreOpen) setHidden(false); }, [moreOpen, setHidden]);
+  useEffect(() => { setHidden(false); }, [pathname, setHidden]);
 
-  // A new page starts with the bar in view.
-  useEffect(() => {
-    if (!dockRef.current || !hidden.current) return;
-    hidden.current = false;
-    gsap.to(dockRef.current, { yPercent: 0, opacity: 1, duration: 0.45, ease: 'expo.out', overwrite: 'auto' });
-  }, [pathname]);
+  // The page follows after the frame that starts the pill's motion: by then
+  // the browser plays the motion by itself, and rendering the new page cannot
+  // hold it up.
+  const go = (to: string) => {
+    cancelNavigation();
+    const handle = { frame: 0, timer: 0 };
+    handle.frame = requestAnimationFrame(() => {
+      handle.timer = window.setTimeout(() => {
+        navTimer.current = null;
+        navigate(to);
+      }, 0);
+    });
+    navTimer.current = handle;
+  };
 
-  // "Mehr" turns into a cross while its sheet is open.
-  useLayoutEffect(() => {
-    const row = rowRef.current;
-    if (!row) return;
-    const menuIcon = row.querySelector('.qdock-more-menu');
-    const closeIcon = row.querySelector('.qdock-more-close');
-    if (!menuIcon || !closeIcon) return;
-    const d = prefersReducedMotion() ? 0 : 0.35;
-    gsap.to(menuIcon, { rotate: moreOpen ? 90 : 0, scale: moreOpen ? 0.5 : 1, opacity: moreOpen ? 0 : 1, duration: d, ease: 'power3.out' });
-    gsap.to(closeIcon, { rotate: moreOpen ? 0 : -90, scale: moreOpen ? 1 : 0.5, opacity: moreOpen ? 1 : 0, duration: d, ease: 'back.out(2.2)' });
-  }, [moreOpen]);
+  const onTab = (e: React.MouseEvent<HTMLAnchorElement>, to: string) => {
+    // A new tab or window stays the browser's.
+    if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    e.preventDefault();
+    if (!moreOpen && to === shown) {
+      if (pending) return;
+      onReselect();
+      const parts = indicator();
+      const at = spanOf(current);
+      if (parts && at && !prefersReducedMotion()) nudgeIndicator(parts, at.span);
+      return;
+    }
+    if (moreOpen) onMore();
+    if (to === active) {
+      // Back to the page already shown: just the sheet closes.
+      cancelNavigation();
+      setPending(null);
+      return;
+    }
+    setPending(to);
+    go(to);
+  };
 
-  // A finger on a tab presses it in; letting go springs it back.
+  // A finger on a tab presses it in, its icon in the pill along with it;
+  // letting go springs both back (CSS).
   const press = (on: boolean) => (e: React.PointerEvent<HTMLElement>) => {
-    if (prefersReducedMotion()) return;
-    gsap.to(e.currentTarget, on
-      ? { scale: 0.9, duration: 0.12, ease: 'power2.out', overwrite: 'auto' }
-      : { scale: 1, duration: 0.5, ease: 'back.out(3)', overwrite: 'auto' });
+    if (on && e.button !== 0) return;
+    const targets = [e.currentTarget, litSlot(Number(e.currentTarget.dataset.slot))];
+    for (const el of targets) {
+      if (!el) continue;
+      if (on) el.dataset.pressed = 'true';
+      else delete el.dataset.pressed;
+    }
   };
   const pressHandlers = { onPointerDown: press(true), onPointerUp: press(false), onPointerLeave: press(false), onPointerCancel: press(false) };
 
   return (
-    <nav ref={dockRef} className="qdock" aria-label="Schnellzugriff" data-raised={moreOpen}>
+    <nav ref={dockRef} className="qdock" aria-label="Schnellzugriff" data-raised={moreOpen} data-intro={intro || undefined}>
       <div ref={rowRef} className="qdock-row">
-        <span ref={pillRef} className="qdock-pill" aria-hidden="true" />
         {entries.map(({ to, label, icon: Icon }, index) => (
           <Link
             key={to}
             to={to}
             data-slot={index}
-            className="qdock-tab qdock-slot"
+            className="qdock-tab"
             data-on={current === index}
             aria-current={active === to ? 'page' : undefined}
+            style={{ '--i': index } as React.CSSProperties}
             {...pressHandlers}
-            onClick={() => {
-              if (active === to && !moreOpen) {
-                onReselect();
-                if (pillRef.current && !prefersReducedMotion()) gsap.fromTo(pillRef.current, { scale: 0.92 }, { scale: 1, duration: 0.5, ease: 'back.out(3)' });
-              }
-            }}
+            onClick={(e) => onTab(e, to)}
           >
-            <span className="qdock-icon"><Icon size={20} strokeWidth={current === index ? 2 : 1.7} /></span>
-            <span className="qdock-label">{label}</span>
+            <TabFace label={label} glyph={<Icon size={20} strokeWidth={1.7} />} />
           </Link>
         ))}
         <button
           ref={moreRef}
           type="button"
           data-slot={moreIndex}
-          className="qdock-tab qdock-slot lg:hidden"
+          className="qdock-tab"
           data-on={current === moreIndex}
           aria-haspopup="dialog"
           aria-expanded={moreOpen}
+          style={{ '--i': moreIndex } as React.CSSProperties}
           {...pressHandlers}
           onClick={onMore}
         >
-          <span className="qdock-icon qdock-more-icon">
-            <Menu size={20} strokeWidth={1.7} className="qdock-more-menu" />
-            <X size={20} strokeWidth={2} className="qdock-more-close" />
-          </span>
-          <span className="qdock-label">Mehr</span>
+          <TabFace label="Mehr" glyph={moreGlyph(1.7)} />
         </button>
+        {/* The pill: a window onto the lit icons, see dockMotion.ts. */}
+        <span ref={indRef} className="qdock-ind" aria-hidden="true" style={{ '--i': Math.max(0, current) } as React.CSSProperties}>
+          <span className="qdock-ind-clip" data-edge="left">
+            <span className="qdock-ind-clip" data-edge="right">
+              <span className="qdock-ind-layer">
+                {entries.map(({ to, icon: Icon }, index) => (
+                  <span key={to} className="qdock-ind-slot" data-lit={index}><span><Icon size={20} strokeWidth={2} /></span></span>
+                ))}
+                <span className="qdock-ind-slot" data-lit={moreIndex} data-open={moreOpen}><span>{moreGlyph(2)}</span></span>
+              </span>
+            </span>
+          </span>
+        </span>
       </div>
     </nav>
   );

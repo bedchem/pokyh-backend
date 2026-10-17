@@ -28,7 +28,7 @@ import { useAccess } from '../access';
 import { useAuth } from '../hooks/useAuth';
 import { useAutoRefresh } from '../hooks/useAutoRefresh';
 import { useLive } from '../live';
-import { prefersReducedMotion } from '../motion';
+import { present, prefersReducedMotion } from '../motion';
 import { TrendChart, type TrendSeries } from '../components/TrendChart';
 import { RankBars, Ring, SplitBar } from '../components/charts';
 import { Avatar, Count, Delta, Figures, Notice, Section, Segmented, Tag, TONES, toneFor } from '../components/kit';
@@ -172,11 +172,16 @@ export function DashboardPage() {
     if (loading || !stats || prefersReducedMotion()) return;
     const ctx = gsap.context(() => {
       const settle = { autoAlpha: 0, duration: 0.5, ease: 'power2.out', clearProps: 'transform,opacity,visibility' };
-      gsap.timeline()
-        .from('[data-rise]', { ...settle, y: 8, stagger: 0.045 })
-        .from('[data-rule]', { scaleX: 0, transformOrigin: '0% 50%', duration: 0.7, ease: 'power2.out', stagger: 0.08, clearProps: 'transform' }, 0.05)
-        .from('[data-cell]', { ...settle, y: 8, stagger: 0.045 }, 0.1)
-        .from('[data-rail]', { ...settle, y: 8, stagger: 0.06 }, 0.12);
+      const timeline = gsap.timeline();
+      // Only the parts on the page now (GSAP warns about missing ones).
+      const from = (selector: string, vars: gsap.TweenVars, at: number) => {
+        const targets = present(rootRef.current, selector);
+        if (targets.length > 0) timeline.from(targets, vars, at);
+      };
+      from('[data-rise]', { ...settle, y: 8, stagger: 0.045 }, 0);
+      from('[data-rule]', { scaleX: 0, transformOrigin: '0% 50%', duration: 0.7, ease: 'power2.out', stagger: 0.08, clearProps: 'transform' }, 0.05);
+      from('[data-cell]', { ...settle, y: 8, stagger: 0.045 }, 0.1);
+      from('[data-rail]', { ...settle, y: 8, stagger: 0.06 }, 0.12);
     }, rootRef);
     return () => ctx.revert();
     // eslint-disable-next-line react-hooks/exhaustive-deps
