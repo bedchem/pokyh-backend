@@ -8,6 +8,7 @@ import { useToast } from '../components/Toast';
 import { Avatar, Dialog, Empty, IconButton, Notice, PageHeader, Section, Spinner, Tag, useTableLabels } from '../components/kit';
 import { PermissionEditor } from '../components/PermissionEditor';
 import { AppointAdminDialog } from '../components/AppointAdminDialog';
+import { LastLogin, RequirementSwitch, SecondFactorBadge } from '../components/LoginSecurity';
 import { dateTime } from '../components/format';
 import type { AccessCatalog, AdminAccount, AdminGrantView, AdminUser, Permission } from '../types';
 
@@ -93,6 +94,7 @@ export function AdminsPage() {
                   <th>Konto</th>
                   <th>Art</th>
                   <th className="hidden lg:table-cell">Rechte</th>
+                  <th>Anmeldung</th>
                   <th><span className="sr-only">Aktionen</span></th>
                 </tr>
               </thead>
@@ -121,6 +123,22 @@ export function AdminsPage() {
                             </Tag>
                           ))}
                         </div>
+                      </td>
+                      <td>
+                        {a.security ? (
+                          <div className="flex flex-col items-start gap-1.5">
+                            <SecondFactorBadge security={a.security} />
+                            <RequirementSwitch
+                              username={a.username}
+                              security={a.security}
+                              self={self}
+                              owner={a.owner}
+                              mayManage={mayManage}
+                              onChanged={() => { void load(); }}
+                            />
+                            <span className="text-[12.5px] text-ink-3">Zuletzt: <LastLogin iso={a.security.lastLoginAt} method={a.security.lastLoginMethod} /></span>
+                          </div>
+                        ) : <span className="text-ink-4">–</span>}
                       </td>
                       <td>
                         <div className="row-actions">

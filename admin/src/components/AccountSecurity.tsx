@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, FormEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, FormEvent } from 'react';
 import { AlertTriangle, Check, Copy, KeyRound, Lock, Pencil, ShieldCheck, Smartphone, Trash2 } from 'lucide-react';
 import { browserSupportsWebAuthn, startRegistration } from '@simplewebauthn/browser';
 import { adminApi } from '../api';
@@ -444,7 +444,10 @@ function Passkeys({ status, reload }: { status: AdminSecurityStatus; reload: () 
   );
 }
 
-export function AccountSecurity() {
+// `onChange` runs after a factor was added or removed (the required set-up
+// screen then checks whether the panel may open); `factorsOnly` leaves out the
+// password change there.
+export function AccountSecurity({ onChange, factorsOnly = false }: { onChange?: () => void; factorsOnly?: boolean } = {}) {
   const [status, setStatus] = useState<AdminSecurityStatus | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -457,6 +460,15 @@ export function AccountSecurity() {
     }
   }, []);
 
+  // After a factor changed: reload, then tell the caller (kept in a ref, so a
+  // new callback on every render of the caller does not reload in a loop).
+  const onChangeRef = useRef(onChange);
+  useEffect(() => { onChangeRef.current = onChange; }, [onChange]);
+  const changed = useCallback(async () => {
+    await reload();
+    onChangeRef.current?.();
+  }, [reload]);
+
   useEffect(() => { void reload(); }, [reload]);
 
   return (
@@ -467,6 +479,7 @@ export function AccountSecurity() {
         <>
           Gilt für dein Admin-Konto{status ? <> <span className="font-medium text-ink-2">{status.username}</span></> : null}.
           Sobald ein zweiter Faktor eingerichtet ist, reicht das Passwort allein nicht mehr.
+          {status?.secondFactor?.required ? <> Für dieses Konto ist ein zweiter Faktor Pflicht; der letzte lässt sich daher nicht entfernen.</> : null}
         </>
       }
     >
@@ -474,9 +487,9 @@ export function AccountSecurity() {
       {!status && !loadError && <Spinner />}
       {status && (
         <>
-          <PasswordChange status={status} />
-          <AuthenticatorApp status={status} reload={reload} />
-          <Passkeys status={status} reload={reload} />
+          {!factorsOnly && <PasswordChange status={status} />}
+          <AuthenticatorApp status={status} reload={changed} />
+          <Passkeys status={status} reload={changed} />
         </>
       )}
     </FormSection>

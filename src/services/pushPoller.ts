@@ -2,13 +2,13 @@ import webpush from 'web-push';
 import { prisma } from '../db';
 import { logger } from '../utils/logger';
 import { config } from '../config';
+import { schoolById, schoolOfUser } from './schools';
 
 const POLL_INTERVAL_MS = config.pushPollIntervalMs;
 const DUE_CHECK_INTERVAL_MS = config.pushDueCheckIntervalMs;
-const SCHOOL_COOKIE = '_' + Buffer.from(config.webuntisSchool || 'lbs-brixen').toString('base64');
-
 interface PushSub {
   id: string;
+  stableUid: string;
   endpoint: string;
   p256dh: string;
   auth: string;
@@ -33,15 +33,26 @@ async function sendPush(sub: PushSub, payload: { title: string; body: string; ur
   }
 }
 
+// The WebUntis server and login name of the subscriber's school: the school
+// the account signed in with (schools.webuntis_base / webuntis_school), the
+// installation's default for accounts from before schools existed.
+async function webuntisOf(stableUid: string): Promise<{ base: string; schoolCookie: string }> {
+  const school = await schoolById(await schoolOfUser(stableUid));
+  const base = (school?.webuntisBase || config.webuntisBase).replace(/\/$/, '');
+  const loginName = school?.webuntisSchool || config.webuntisSchool || 'lbs-brixen';
+  return { base, schoolCookie: '_' + Buffer.from(loginName).toString('base64') };
+}
+
 async function pollSubscription(sub: PushSub) {
   if (!sub.jsessionid) return;
 
   try {
+    const { base, schoolCookie } = await webuntisOf(sub.stableUid);
     const res = await fetch(
-      `${config.webuntisBase}/api/rest/view/v1/messages?pageSize=100&start=0`,
+      `${base}/api/rest/view/v1/messages?pageSize=100&start=0`,
       {
         headers: {
-          Cookie: `JSESSIONID=${sub.jsessionid}; schoolname="${SCHOOL_COOKIE}"`,
+          Cookie: `JSESSIONID=${sub.jsessionid}; schoolname="${schoolCookie}"`,
           Accept: 'application/json',
           ...(sub.bearerToken ? { Authorization: `Bearer ${sub.bearerToken}` } : {}),
         },

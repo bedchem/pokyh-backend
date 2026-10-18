@@ -207,6 +207,9 @@ child.on('exit', (code) => process.exit(code === null ? 1 : code));
       ADMIN_USERNAME,
       ADMIN_USERNAMES: ADMIN_USERNAME,
       ADMIN_PASSWORD_HASH,
+      // The suites act with signed admin tokens; the second-factor
+      // requirement is tested per account where it is switched on.
+      ADMIN_REQUIRE_SECOND_FACTOR: 'false',
       DB_AUTO_PUSH: 'true',
       BACKUP_ENABLED: 'false',
       BACKUP_DIR: path.join(node.dir, 'backups'),

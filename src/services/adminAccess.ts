@@ -74,7 +74,7 @@ export async function grantsOf(username: string): Promise<GrantView[]> {
 
 // The admin account a grant is for: an Admin row behind a users row. Owners
 // (ADMIN_USERNAMES) are managed in the .env, never here.
-async function adminTarget(username: string): Promise<{ username: string; stableUid: string; schoolId: string | null }> {
+export async function adminTarget(username: string): Promise<{ username: string; stableUid: string; schoolId: string | null }> {
   if (isOwner(username)) throw new ForbiddenError('Server-Admins (ADMIN_USERNAMES) werden in der .env verwaltet, nicht im Panel');
   const user = await prisma.user.findUnique({ where: { username }, select: { username: true, stableUid: true, schoolId: true } });
   const admin = user ? await prisma.admin.findUnique({ where: { stableUid: user.stableUid }, select: { stableUid: true } }) : null;
@@ -87,7 +87,7 @@ async function checkScope(scope: string): Promise<void> {
   if (!(await schoolById(scope))) throw new ValidationError('Unbekannte Schule');
 }
 
-function sameName(a: string, b: string): boolean {
+export function sameName(a: string, b: string): boolean {
   return a.trim().toLowerCase() === b.trim().toLowerCase();
 }
 
@@ -219,8 +219,17 @@ export async function clearGrants(username: string): Promise<number> {
  * account's school.
  */
 export async function assertMayRemoveAdmin(req: Request, targetUsername: string, targetSchool: string | null): Promise<void> {
+  if (sameName(actorOf(req).username, targetUsername)) throw new ForbiddenError('Die eigene Admin-Berechtigung kann nur ein anderer Admin entziehen');
+  await assertMayManageAdmin(req, targetUsername, targetSchool);
+}
+
+/**
+ * May the request's admin manage `targetUsername` as a whole (remove them,
+ * change their login security)? Only with every one of the target's rights,
+ * in every scope they hold them, and never a server owner.
+ */
+export async function assertMayManageAdmin(req: Request, targetUsername: string, targetSchool: string | null): Promise<void> {
   const actor = actorOf(req);
-  if (sameName(actor.username, targetUsername)) throw new ForbiddenError('Die eigene Admin-Berechtigung kann nur ein anderer Admin entziehen');
   if (isOwner(targetUsername)) throw new ForbiddenError('Server-Admins (ADMIN_USERNAMES) werden in der .env verwaltet, nicht im Panel');
   const target = await loadAccess(targetUsername);
   const scopes = [...(target.global.size > 0 ? [GLOBAL_SCOPE] : []), ...target.schools.keys()];

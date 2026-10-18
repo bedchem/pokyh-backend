@@ -311,6 +311,10 @@ export const adminApi = {
   setGrant: (username: string, scope: string, permissions: string[], preset?: string): Promise<{ grant: AdminGrantView | null }> =>
     request('PUT', `/api/admin/admins/${encodeURIComponent(username)}/grants/${encodeURIComponent(scope)}`, { permissions, preset }),
 
+  // Whether an admin needs a second factor; null: back to ADMIN_REQUIRE_SECOND_FACTOR.
+  setSecondFactorRequired: (username: string, required: boolean | null): Promise<{ required: boolean; source: 'account' | 'default'; setupPending: boolean }> =>
+    request('PUT', `/api/admin/admins/${encodeURIComponent(username)}/second-factor`, { required }),
+
   removeGrant: (username: string, scope: string): Promise<void> =>
     request<void>('DELETE', `/api/admin/admins/${encodeURIComponent(username)}/grants/${encodeURIComponent(scope)}`),
 

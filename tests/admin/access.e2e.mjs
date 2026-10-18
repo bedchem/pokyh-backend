@@ -546,6 +546,58 @@ test('existing admins become global admins once, and never again after a change'
   assert.equal(me.hasAnyPermission, false);
 });
 
+test('a second factor can be required per admin: until one is set up, only that step opens', async () => {
+  const totp = require(path.join(REPO, 'dist', 'security', 'totp.js'));
+  const catalog = await ok(api('GET', '/api/admin/access/catalog'));
+  const viewer = catalog.presets.find((p) => p.key === 'viewer').permissions;
+  const anna = await makeAdmin('twofa.anna', schoolA.id, { scope: schoolA.id, permissions: viewer, preset: 'viewer' });
+  const asAnna = (method, pathname, opts = {}) => api(method, pathname, { token: anna.token, school: schoolA.id, ...opts });
+  await ok(asAnna('GET', '/api/admin/users'));
+
+  // Switched on by the owner: everything but the set-up is closed.
+  const on = await ok(api('PUT', '/api/admin/admins/twofa.anna/second-factor', { body: { required: true } }));
+  assert.deepEqual(on, { required: true, source: 'account', setupPending: true });
+  const blocked = await asAnna('GET', '/api/admin/users');
+  assert.equal(blocked.status, 403, blocked.text);
+  assert.equal(blocked.json.code, 'second_factor_setup_required');
+  assert.equal((await ok(asAnna('GET', '/api/admin/me'))).secondFactorSetupRequired, true);
+  assert.equal((await ok(asAnna('GET', '/api/admin/account/security'))).secondFactor.setupPending, true);
+
+  // The password login says so right away.
+  const login = await cluster.request(node, 'POST', '/api/admin/auth/login', { body: { username: 'twofa.anna', password: 'Very-long-pass-1' }, apiKey: false });
+  assert.equal(login.status, 200, login.text);
+  assert.equal(login.json.secondFactorSetupRequired, true);
+
+  // Setting up the authenticator app opens the panel.
+  const setup = await ok(asAnna('POST', '/api/admin/account/totp/setup'));
+  const { recoveryCodes } = await ok(asAnna('POST', '/api/admin/account/totp/enable', { body: { code: totp.totpCode(setup.secret, totp.totpStep(Date.now())) } }));
+  await ok(asAnna('GET', '/api/admin/users'));
+  assert.equal((await ok(asAnna('GET', '/api/admin/me'))).secondFactorSetupRequired, false);
+
+  // Required: the last factor stays, and only another admin lowers the requirement.
+  await ok(asAnna('POST', '/api/admin/account/totp/disable', { body: { code: recoveryCodes[0] } }), 422);
+  await ok(asAnna('PUT', '/api/admin/admins/twofa.anna/second-factor', { body: { required: false } }), 403);
+  await ok(asAnna('PUT', '/api/admin/admins/twofa.anna/second-factor', { body: { required: true } }));
+  await ok(api('PUT', `/api/admin/admins/${'clusteradmin'}/second-factor`, { body: { required: false } }), 403);
+  const off = await ok(api('PUT', '/api/admin/admins/twofa.anna/second-factor', { body: { required: false } }));
+  assert.deepEqual(off, { required: false, source: 'account', setupPending: false });
+  await ok(asAnna('POST', '/api/admin/account/totp/disable', { body: { code: recoveryCodes[0] } }), 204);
+
+  // The lists show it all, with the last panel login.
+  await ok(cluster.request(node, 'POST', '/api/admin/auth/login', { body: { username: 'twofa.anna', password: 'Very-long-pass-1' }, apiKey: false }));
+  const row = (await ok(api('GET', '/api/admin/admins'))).admins.find((a) => a.username === 'twofa.anna');
+  assert.equal(row.security.required, false);
+  assert.equal(row.security.totp, false);
+  assert.equal(row.security.passkeys, 0);
+  assert.ok(row.security.lastLoginAt, 'last panel login is shown');
+  assert.equal(row.security.lastLoginMethod, 'password');
+  const user = (await ok(api('GET', '/api/admin/users?role=admin&limit=100'))).users.find((u) => u.username === 'twofa.anna');
+  assert.equal(user.adminSecurity.required, false);
+  assert.ok('lastSignInAt' in user);
+  const audit = await ok(api('GET', '/api/admin/audit-events?action=admin.second_factor.requirement'));
+  assert.ok(audit.events.some((e) => e.targetId === 'twofa.anna'), 'the change is in the audit trail');
+});
+
 test('the server log has no unexpected errors', () => {
   const log = cluster.logText(node);
   const errors = log.split('\n').filter((line) => line.includes('"level":"error"') && !line.includes('HTTP 5xx'));

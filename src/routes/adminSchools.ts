@@ -4,7 +4,7 @@ import { Prisma } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import { prisma } from '../db';
 import { config } from '../config';
-import { requireAdmin, requirePermission, scopeSchool } from '../middleware/requireAdmin';
+import { allowDuringSecondFactorSetup, requireAdmin, requirePermission, scopeSchool } from '../middleware/requireAdmin';
 import { writeLimiter } from '../middleware/rateLimiter';
 import {
   GLOBAL_SCOPE,
@@ -17,6 +17,7 @@ import {
   permissionsIn,
 } from '../security/permissions';
 import { grantsOf, isOwner, parsePermissionList, setGrant } from '../services/adminAccess';
+import { adminSecuritySummaries, changeSecondFactorRequirement } from '../services/adminSecurity';
 import { audit } from '../services/audit';
 import { announceChange } from '../services/adminLive';
 import {
@@ -44,7 +45,7 @@ const router = Router();
 // its school selector from this. Hiding what is not allowed is convenience —
 // every endpoint checks again.
 
-router.get('/me', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.get('/me', allowDuringSecondFactorSetup, requireAdmin, async (req: Request, res: Response): Promise<void> => {
   const access = req.adminAccess!;
   const username = req.adminUser!.username;
   const reachable = accessibleSchools(access);
@@ -56,6 +57,9 @@ router.get('/me', requireAdmin, async (req: Request, res: Response): Promise<voi
   res.json({
     username,
     owner: access.owner,
+    // A second factor is required and none is set up yet: the panel shows
+    // only that step until one is (requireAdmin refuses everything else).
+    secondFactorSetupRequired: req.adminSecondFactorSetupPending === true,
     // The installation's local time zone (ANALYTICS_TIMEZONE): days and hours
     // in the panel are counted in it.
     timezone: config.usageAnalytics.timezone,
@@ -364,7 +368,9 @@ router.get('/admins', requireAdmin, requirePermission('admins.view'), async (req
     }
   }
   rows.sort((a, b) => Number(b.owner) - Number(a.owner) || a.username.localeCompare(b.username));
-  res.json({ admins: rows });
+  // Second factor required / set up and the last panel login of each admin.
+  const security = await adminSecuritySummaries(rows.map((r) => r.username));
+  res.json({ admins: rows.map((r) => ({ ...r, security: security.get(r.username) ?? null })) });
 });
 
 const grantSchema = z.object({
@@ -387,6 +393,16 @@ router.delete('/admins/:username/grants/:scope', requireAdmin, writeLimiter, asy
   const scope = String(req.params['scope']).trim().toLowerCase();
   await setGrant(req, username, scope, []);
   res.status(204).send();
+});
+
+// Whether an admin needs a second factor: true / false, or null for the
+// installation default (ADMIN_REQUIRE_SECOND_FACTOR). Rules in
+// changeSecondFactorRequirement().
+router.put('/admins/:username/second-factor', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+  const { required } = z.object({ required: z.boolean().nullable() }).parse(req.body);
+  const username = String(req.params['username']).trim().slice(0, 191);
+  const state = await changeSecondFactorRequirement(req, username, required);
+  res.json({ required: state.required, source: state.source, setupPending: state.setupPending });
 });
 
 // ─── GET /api/admin/audit-events ─────────────────────────────────────────────

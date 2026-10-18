@@ -15,7 +15,7 @@ import sharp from 'sharp';
 import { createHash, randomBytes } from 'crypto';
 import { config } from '../config';
 import { prisma } from '../db';
-import { inScope, requireAdmin, requirePermission, schoolWhere, scopeSchool } from '../middleware/requireAdmin';
+import { inScope, requireAdmin, requirePermission, schoolWhere, scopeSchool, allowDuringSecondFactorSetup } from '../middleware/requireAdmin';
 import { generateClassCode, generateClassId } from '../utils/uid';
 import { revokeUserTokens } from '../utils/revokedTokens';
 import { logger } from '../utils/logger';
@@ -70,6 +70,8 @@ import {
 } from '../services/adminLogin';
 import { adminCanSignIn, grantNeedsOneTimePassword, mayViewOneTimePassword, validOneTimePassword } from '../security/adminLogin';
 import { clearSecondFactors, issueSecondFactorTicket, secondFactorMethods } from '../services/adminSecondFactor';
+import { adminSecuritySummaries, clearAdminSecurity, lastAppSignIns, recordAdminLogin, secondFactorSetupNeeded } from '../services/adminSecurity';
+import { SIGN_IN_PATHS } from '../services/accountActivity';
 import { hasClassIdentity, parseAccountRole } from '../utils/accountClass';
 import { audit } from '../services/audit';
 import { assertMayAppointAdmin, assertMayRemoveAdmin, checkGrantRequest, clearGrants, grantsOf, isOwner, parseGrantRequest, setGrant } from '../services/adminAccess';
@@ -386,10 +388,14 @@ async function answerPasswordAccepted(req: Request, res: Response, username: str
   }
 
   const token = issueAdminToken(username);
-  logger.info('Admin login successful', { action: 'admin_login', method, username, ip: loginIp, userAgent: req.headers['user-agent'] });
+  // Required but not set up yet: this session can only set up a second factor
+  // (requireAdmin); the panel shows that step right away.
+  const secondFactorSetupRequired = await secondFactorSetupNeeded(username);
+  logger.info('Admin login successful', { action: 'admin_login', method, username, ip: loginIp, userAgent: req.headers['user-agent'], secondFactorSetupRequired });
   // The access record of system administrators (Garante, 27 Nov 2008).
-  audit(req, 'admin.login', { type: 'admin', id: username }, { method }, null, username);
-  res.json({ token });
+  audit(req, 'admin.login', { type: 'admin', id: username }, { method, ...(secondFactorSetupRequired ? { secondFactorSetupRequired } : {}) }, null, username);
+  await recordAdminLogin(username, method);
+  res.json(secondFactorSetupRequired ? { token, secondFactorSetupRequired } : { token });
 }
 
 // ─── POST /api/admin/auth/password-setup ──────────────────────────────────────
@@ -760,6 +766,12 @@ router.get('/users', requireAdmin, requirePermission('users.view'), async (req: 
   const schools = new Map((await listSchools()).map((sc) => [sc.id, sc]));
   const viewer = req.adminUser!.username;
   const now = new Date();
+  // Last app sign-in of every listed account; for admins also the panel's
+  // login security (second factor required / set up, last panel login).
+  const [signIns, panelSecurity] = await Promise.all([
+    lastAppSignIns(users.map((u) => u.stableUid), SIGN_IN_PATHS),
+    adminSecuritySummaries(users.filter((u) => adminByUid.has(u.stableUid) || isOwner(u.username)).map((u) => u.username)),
+  ]);
 
   const result = users.map((u) => {
     const withClass = hasClassIdentity(u.role);
@@ -791,6 +803,8 @@ router.get('/users', requireAdmin, requirePermission('users.view'), async (req: 
       schoolId: u.schoolId,
       schoolName: school?.name ?? null,
       todoCount: u._count.todos,
+      lastSignInAt: signIns.get(u.stableUid) ?? null,
+      adminSecurity: panelSecurity.get(u.username) ?? null,
       createdAt: u.createdAt.toISOString(),
       updatedAt: u.updatedAt.toISOString(),
     };
@@ -851,6 +865,8 @@ router.get('/users/:stableUid', requireAdmin, requirePermission('users.view'), a
     schoolId: user.schoolId,
     schoolName: school?.name ?? null,
     isOwner: isOwner(user.username),
+    lastSignInAt: (await lastAppSignIns([user.stableUid], SIGN_IN_PATHS)).get(user.stableUid) ?? null,
+    adminSecurity: isAdmin || isOwner(user.username) ? (await adminSecuritySummaries([user.username])).get(user.username) ?? null : null,
     adminGrants: grants,
     createdAt: user.createdAt.toISOString(),
     updatedAt: user.updatedAt.toISOString(),
@@ -1113,12 +1129,15 @@ router.delete('/users/:stableUid/revoke-admin', requireAdmin, requirePermission(
   res.status(204).send();
 });
 
-// Passkeys and the authenticator app of someone who is no longer an admin
-// must not come back to life when the name is later made admin again. An
-// env-configured admin keeps them: their access did not end.
+// Passkeys, the authenticator app and the login security settings of someone
+// who is no longer an admin must not come back to life when the name is later
+// made admin again. An env-configured admin keeps them: their access did not end.
 async function clearStaleSecondFactors(username: string): Promise<void> {
   const still = await findAdminAccount(username);
-  if (!still.ok) await clearSecondFactors(username);
+  if (!still.ok) {
+    await clearSecondFactors(username);
+    await clearAdminSecurity(username);
+  }
 }
 
 // ─── GET /api/admin/classes ───────────────────────────────────────────────────
@@ -1584,7 +1603,9 @@ router.get('/stats/requests-chart', requireAdmin, requirePermission('dashboard.v
 // area of the panel — never the data itself. The panel answers by refetching
 // through its normal, authorised endpoints (see services/adminLive.ts).
 
-router.get('/live', requireAdmin, (_req: Request, res: Response): void => {
+// Allowed while a second factor is still to be set up: it only names areas that
+// changed, and the set-up screen learns from it when the requirement is lifted.
+router.get('/live', allowDuringSecondFactorSetup, requireAdmin, (_req: Request, res: Response): void => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');

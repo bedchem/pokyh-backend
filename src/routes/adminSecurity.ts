@@ -3,7 +3,8 @@ import { rateLimit } from 'express-rate-limit';
 import { z } from 'zod';
 import type { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simplewebauthn/server';
 import { config } from '../config';
-import { requireAdmin } from '../middleware/requireAdmin';
+import { prisma } from '../db';
+import { allowDuringSecondFactorSetup, requireAdmin } from '../middleware/requireAdmin';
 import { clientIp } from '../middleware/requestLogger';
 import { logger } from '../utils/logger';
 import { audit } from '../services/audit';
@@ -32,6 +33,8 @@ import {
   useSecondFactorCode,
   type RelyingParty,
 } from '../services/adminSecondFactor';
+import { recordAdminLogin, secondFactorState } from '../services/adminSecurity';
+import { mayRemoveFactor } from '../security/adminSecondFactorPolicy';
 
 // ─── Admin panel: second factor and passkeys ──────────────────────────────────
 //
@@ -41,7 +44,7 @@ import {
 //   POST /api/admin/auth/passkey/options        passwordless: WebAuthn challenge
 //   POST /api/admin/auth/passkey                passwordless: passkey assertion
 //
-//   GET    /api/admin/account/security          the signed-in admin's factors and password kind
+//   GET    /api/admin/account/security          the signed-in admin's factors, password kind and whether a second factor is required
 //   POST   /api/admin/account/password          current + new password
 //   POST   /api/admin/account/totp/setup        new secret + QR code
 //   POST   /api/admin/account/totp/enable       first code → recovery codes
@@ -54,6 +57,9 @@ import {
 //
 // Every response that completes a login is the same { token } the password
 // login returns, so the panel stores it the same way.
+//
+// While a session still has to set up its required second factor, only the
+// routes marked allowDuringSecondFactorSetup answer (requireAdmin.ts).
 
 const router = Router();
 
@@ -92,6 +98,7 @@ async function completeLogin(req: Request, res: Response, username: string, meth
   logger.info('Admin login successful', { action: 'admin_login', method, username: still.account.username, ip: clientIp(req), userAgent: req.headers['user-agent'] });
   // The access record of system administrators (Garante, 27 Nov 2008).
   audit(req, 'admin.login', { type: 'admin', id: still.account.username }, { method }, null, still.account.username);
+  await recordAdminLogin(still.account.username, method);
   res.json({ token });
 }
 
@@ -155,12 +162,24 @@ router.post('/auth/passkey', passkeyLoginLimiter, async (req: Request, res: Resp
 
 // ── The signed-in admin's own factors ───────────────────────────────────────
 
-router.get('/account/security', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.get('/account/security', allowDuringSecondFactorSetup, requireAdmin, async (req: Request, res: Response): Promise<void> => {
   const username = sessionUsername(req);
-  const [status, lookup] = await Promise.all([securityStatus(username), findAdminAccount(username)]);
-  // Which password signs this admin in — and so whether it can be changed here.
-  res.json({ ...status, password: lookup.ok ? adminPasswordKindOf(lookup.account) : 'config' });
+  const [status, lookup, state] = await Promise.all([securityStatus(username), findAdminAccount(username), secondFactorState(username)]);
+  res.json({
+    ...status,
+    // Which password signs this admin in — and so whether it can be changed here.
+    password: lookup.ok ? adminPasswordKindOf(lookup.account) : 'config',
+    secondFactor: { required: state.required, source: state.source, setupPending: state.setupPending },
+  });
 });
+
+// Required second factor: the last one cannot go.
+async function assertMayRemove(username: string, remaining: { totp?: boolean; passkey?: boolean }): Promise<void> {
+  const state = await secondFactorState(username);
+  if (!mayRemoveFactor(state.required, { ...state.factors, ...remaining })) {
+    throw new ValidationError('Für dein Admin-Konto ist ein zweiter Faktor Pflicht. Richte zuerst einen anderen ein (App oder Passkey).');
+  }
+}
 
 // Changing the password asks for the current one, so a stolen session token
 // alone cannot lock the owner out. For a WebUntis admin this is the panel
@@ -189,13 +208,13 @@ router.post('/account/password', passwordChangeLimiter, requireAdmin, async (req
   res.status(204).send();
 });
 
-router.post('/account/totp/setup', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.post('/account/totp/setup', allowDuringSecondFactorSetup, requireAdmin, async (req: Request, res: Response): Promise<void> => {
   res.json(await startTotpSetup(sessionUsername(req)));
 });
 
 const accountCodeBody = z.object({ code: z.string().trim().min(1).max(40) });
 
-router.post('/account/totp/enable', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.post('/account/totp/enable', allowDuringSecondFactorSetup, requireAdmin, async (req: Request, res: Response): Promise<void> => {
   const { code } = accountCodeBody.parse(req.body);
   const username = sessionUsername(req);
   const recoveryCodes = await enableTotp(username, code);
@@ -206,6 +225,7 @@ router.post('/account/totp/enable', requireAdmin, async (req: Request, res: Resp
 router.post('/account/totp/disable', requireAdmin, async (req: Request, res: Response): Promise<void> => {
   const { code } = accountCodeBody.parse(req.body);
   const username = sessionUsername(req);
+  await assertMayRemove(username, { totp: false });
   await disableTotp(username, code);
   logger.info('Admin security: authenticator app disabled', { action: 'admin_totp_disabled', username, ip: clientIp(req) });
   res.status(204).send();
@@ -221,7 +241,7 @@ router.post('/account/recovery-codes', requireAdmin, async (req: Request, res: R
 
 // A new passkey is a new way in without the password, so a stolen session
 // token alone must not be enough to add one: the password is asked again.
-router.post('/account/passkeys/options', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.post('/account/passkeys/options', allowDuringSecondFactorSetup, requireAdmin, async (req: Request, res: Response): Promise<void> => {
   const { password } = z.object({ password: z.string().min(1).max(200) }).parse(req.body);
   const username = sessionUsername(req);
   const lookup = await findAdminAccount(username);
@@ -233,7 +253,7 @@ router.post('/account/passkeys/options', requireAdmin, async (req: Request, res:
   res.json(await passkeyRegistrationOptions(username, relyingParty(req, true)));
 });
 
-router.post('/account/passkeys', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+router.post('/account/passkeys', allowDuringSecondFactorSetup, requireAdmin, async (req: Request, res: Response): Promise<void> => {
   const body = z.object({
     challengeToken: z.string().min(1).max(4000),
     response: z.record(z.unknown()),
@@ -253,6 +273,8 @@ router.patch('/account/passkeys/:id', requireAdmin, async (req: Request, res: Re
 
 router.delete('/account/passkeys/:id', requireAdmin, async (req: Request, res: Response): Promise<void> => {
   const username = sessionUsername(req);
+  const others = await prisma.adminPasskey.count({ where: { username, id: { not: String(req.params['id']) } } });
+  await assertMayRemove(username, { passkey: others > 0 });
   await deletePasskey(username, String(req.params['id']));
   logger.info('Admin security: passkey removed', { action: 'admin_passkey_removed', username, ip: clientIp(req) });
   res.status(204).send();

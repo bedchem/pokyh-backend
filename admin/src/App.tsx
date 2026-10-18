@@ -6,6 +6,7 @@ import { allowed, entryFor } from './nav';
 import { ToastProvider } from './components/Toast';
 import { Layout } from './components/Layout';
 import { MarkLoader } from './components/kit';
+import { SecondFactorGate } from './components/SecondFactorGate';
 import { LoginPage } from './pages/LoginPage';
 import { SetupPage } from './pages/SetupPage';
 import { DashboardPage } from './pages/DashboardPage';
@@ -64,6 +65,7 @@ const BLEED = new Set(['/dashboard']);
 function Guarded() {
   const { view, can, me } = useAccess();
   const { pathname } = useLocation();
+  if (me?.secondFactorSetupRequired) return <SecondFactorGate />;
   if (!view) {
     return (
       <NoAccess

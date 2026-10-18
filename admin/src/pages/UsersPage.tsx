@@ -16,6 +16,7 @@ import { useAccess } from '../access';
 import { PasswordInput } from '../components/PasswordInput';
 import { ROLE_OPTIONS, roleLabel, roleTone } from '../roles';
 import type { AccountRole, AdminUser } from '../types';
+import { LastLogin, SecondFactorBadge } from '../components/LoginSecurity';
 
 function relativeDate(dateStr: string): string {
   const diff = Date.now() - new Date(dateStr).getTime();
@@ -112,6 +113,7 @@ function SkeletonRow() {
       <td className="hidden lg:table-cell"><div className="shimmer h-3.5 w-8 rounded-full" /></td>
       <td><div className="shimmer h-3.5 w-24 rounded-full" /></td>
       <td className="hidden sm:table-cell"><div className="shimmer h-3.5 w-20 rounded-full" /></td>
+      <td className="hidden md:table-cell"><div className="shimmer h-3.5 w-20 rounded-full" /></td>
       <td><div className="shimmer ml-auto h-9 w-36 rounded-full" /></td>
     </tr>
   );
@@ -584,6 +586,7 @@ export function UsersPage() {
                 <th className="hidden lg:table-cell">Todos</th>
                 <th>Rolle</th>
                 <th className="hidden sm:table-cell">Beitritt</th>
+                <th className="hidden md:table-cell">Letzte Anmeldung</th>
                 <th><span className="sr-only">Aktionen</span></th>
               </tr>
             </thead>
@@ -593,7 +596,7 @@ export function UsersPage() {
                 : filteredUsers.length === 0
                 ? (
                   <tr>
-                    <td colSpan={6}>
+                    <td colSpan={7}>
                       <Empty icon={Users}>{search ? `Kein Benutzer mit „${search}“.` : 'Keine Benutzer.'}</Empty>
                     </td>
                   </tr>
@@ -649,10 +652,18 @@ export function UsersPage() {
                             ))}
                           </div>
                         )}
+                        {user.adminSecurity && <SecondFactorBadge security={user.adminSecurity} />}
                       </div>
                     </td>
 
                     <td className="hidden whitespace-nowrap text-ink-3 sm:table-cell">{relativeDate(user.createdAt)}</td>
+
+                    <td className="hidden whitespace-nowrap text-ink-3 md:table-cell">
+                      <div><LastLogin iso={user.lastSignInAt} never="–" /></div>
+                      {user.adminSecurity && (
+                        <div className="text-[12px] text-ink-4">Panel: <LastLogin iso={user.adminSecurity.lastLoginAt} method={user.adminSecurity.lastLoginMethod} /></div>
+                      )}
+                    </td>
 
                     <td onClick={(e) => e.stopPropagation()}>
                       <div className="row-actions">

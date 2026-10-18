@@ -4,6 +4,7 @@ import { config } from '../config';
 import { prisma } from '../db';
 import { can, isGlobalOnly, type Access, type Permission } from '../security/permissions';
 import { loadAccess } from '../services/adminAccess';
+import { secondFactorSetupNeeded } from '../services/adminSecurity';
 import { SCHOOL_ID_PATTERN, schoolById } from '../services/schools';
 
 export interface AdminJwtPayload {
@@ -29,6 +30,11 @@ declare global {
       adminAccess?: Access;
       // Set by requirePermission().
       adminScope?: AdminScope;
+      // Set by allowDuringSecondFactorSetup() on the routes a session may use
+      // before its required second factor is set up.
+      allowSecondFactorSetup?: boolean;
+      // This session still has to set up its required second factor.
+      adminSecondFactorSetupPending?: boolean;
     }
   }
 }
@@ -104,8 +110,29 @@ export async function requireAdmin(
     return;
   }
 
+  // A second factor is required but none is set up yet: the password opened
+  // the panel only far enough to set one up (security/adminSecondFactorPolicy.ts).
+  const setupPending = await secondFactorSetupNeeded(payload.username);
+  if (setupPending && !req.allowSecondFactorSetup) {
+    res.status(403).json({
+      error: 'Für dein Admin-Konto ist ein zweiter Faktor Pflicht. Richte zuerst eine Authenticator-App oder einen Passkey ein.',
+      code: 'second_factor_setup_required',
+    });
+    return;
+  }
+
   req.adminUser = payload;
+  req.adminSecondFactorSetupPending = setupPending;
   req.adminAccess = await loadAccess(payload.username);
+  next();
+}
+
+/**
+ * Put before requireAdmin on the routes a session may use while it still has
+ * to set up its required second factor: who am I, and setting one up.
+ */
+export function allowDuringSecondFactorSetup(req: Request, _res: Response, next: NextFunction): void {
+  req.allowSecondFactorSetup = true;
   next();
 }
 

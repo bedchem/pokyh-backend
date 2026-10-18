@@ -23,6 +23,22 @@ export interface AdminUser {
   isUntisUser?: boolean;
   adminKind?: 'owner' | 'global' | 'school' | 'none' | null;
   adminGrants?: Array<{ scope: string; preset: string; schoolName: string | null }>;
+  // Last sign-in to the apps (from the request logs; older ones are gone).
+  lastSignInAt?: string | null;
+  // Admins only: second factor and last panel login.
+  adminSecurity?: AdminLoginSecurity | null;
+}
+
+// An admin panel account's login security.
+export interface AdminLoginSecurity {
+  // A second factor is required: the account's own setting or, with source
+  // "default", ADMIN_REQUIRE_SECOND_FACTOR.
+  required: boolean;
+  source: 'account' | 'default';
+  totp: boolean;
+  passkeys: number;
+  lastLoginAt: string | null;
+  lastLoginMethod: string | null;
 }
 
 // "none": neither student nor parent, e.g. an admin outside any class.
@@ -56,6 +72,8 @@ export interface AdminUserDetail extends AdminUser {
   // False for an admin that has no password the panel accepts (an older
   // WebUntis admin) — "Einmal-Passwort vergeben" fixes that.
   adminCanSignIn: boolean;
+  // A server owner (ADMIN_USERNAMES): managed in the .env, not in the panel.
+  isOwner?: boolean;
   serverTime: string;
   todos: AdminTodo[];
   classes: AdminUserClass[];
@@ -1399,7 +1417,9 @@ export interface PasswordSetupChallenge {
   ticket: string;
 }
 
-export type LoginResult = { token: string } | SecondFactorChallenge | PasswordSetupChallenge;
+// secondFactorSetupRequired: signed in, but a second factor has to be set up
+// before anything else opens.
+export type LoginResult = { token: string; secondFactorSetupRequired?: boolean } | SecondFactorChallenge | PasswordSetupChallenge;
 
 export interface PasskeyChallenge<O> {
   options: O;
@@ -1423,6 +1443,8 @@ export interface AdminSecurityStatus {
   // Which password signs this admin in: "admin" (panel only), "account" (also
   // the app login) or "config" (server configuration, not changeable here).
   password: 'admin' | 'account' | 'config';
+  // Whether this account needs a second factor, and whether it still has to set one up.
+  secondFactor?: { required: boolean; source: 'account' | 'default'; setupPending: boolean };
 }
 
 export interface TotpSetup {
@@ -1477,6 +1499,8 @@ export interface AdminMe {
   global: Permission[];
   globalView: boolean;
   schools: MeSchool[];
+  // A second factor is required and none is set up yet: only that step opens.
+  secondFactorSetupRequired?: boolean;
 }
 
 export interface AdminSchool {
@@ -1524,6 +1548,7 @@ export interface AdminAccount {
   pending: boolean;
   setupExpiresAt: string | null;
   grants: AdminGrantView[];
+  security: AdminLoginSecurity | null;
 }
 
 export interface GrantInput {

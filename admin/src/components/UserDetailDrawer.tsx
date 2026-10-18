@@ -25,6 +25,8 @@ import { GrantAdminDialog, OneTimePasswordDialog } from './GrantAdminDialog';
 import { AppointAdminDialog } from './AppointAdminDialog';
 import { PasswordInput } from './PasswordInput';
 import { roleLabel } from '../roles';
+import { useAccess } from '../access';
+import { FactorList, LastLogin, RequirementSwitch, SecondFactorBadge } from './LoginSecurity';
 import type { AdminUserDetail, AdminTodo, AdminUserClass } from '../types';
 
 const AVATAR_COLORS = ['#2a78cc', '#8a3fc4', '#0f7f96', '#16845f', '#b3610d', '#d93a40'];
@@ -436,6 +438,7 @@ interface UserDetailDrawerProps {
 
 export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminToggled }: UserDetailDrawerProps) {
   const { showToast } = useToast();
+  const { me, can } = useAccess();
   const [user, setUser] = useState<AdminUserDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [deletingUser, setDeletingUser] = useState(false);
@@ -473,6 +476,13 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
       .catch((e) => showToast(e instanceof Error ? e.message : 'Laden fehlgeschlagen', 'error'))
       .finally(() => setLoading(false));
   }, [stableUid, showToast]);
+
+  // After the second-factor requirement changed: the admin's login security again.
+  function reloadSecurity() {
+    adminApi.userDetail(stableUid)
+      .then((fresh) => setUser((prev) => prev ? { ...prev, adminSecurity: fresh.adminSecurity } : fresh))
+      .catch(() => { /* the toast of the change already told */ });
+  }
 
   function handleTodoCreated(todo: AdminTodo) { setUser((prev) => prev ? { ...prev, todos: [todo, ...prev.todos] } : prev); setShowCreateTodo(false); }
   function handleTodoUpdated(updated: AdminTodo) { setUser((prev) => prev ? { ...prev, todos: prev.todos.map((t) => t.id === updated.id ? updated : t) } : prev); }
@@ -771,6 +781,7 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
                       {(user.role !== 'none' || !user.isAdmin) && <span>{roleLabel(user.role)}</span>}
                       {user.webuntisKlasseName && <span>{user.webuntisKlasseName}</span>}
                       <span>Beigetreten {relativeDate(user.createdAt)}</span>
+                      <span>App-Anmeldung <LastLogin iso={user.lastSignInAt} never="keine in den Logs" /></span>
                     </div>
                   </div>
                 </div>
@@ -804,6 +815,26 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
                     Passwort setzen
                   </button>
                 </div>
+                {user.adminSecurity && (
+                  <div className="mt-4 flex flex-col gap-2.5 rounded-2xl p-4" style={{ background: 'rgb(var(--ink-rgb) / calc(0.035 * var(--veil)))' }}>
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="text-[12.5px] font-medium text-ink-2">Admin-Panel</span>
+                      <SecondFactorBadge security={user.adminSecurity} />
+                    </div>
+                    <FactorList security={user.adminSecurity} />
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-[12.5px] text-ink-3">
+                      <RequirementSwitch
+                        username={user.username}
+                        security={user.adminSecurity}
+                        self={user.username.toLowerCase() === me?.username.toLowerCase()}
+                        owner={user.isOwner === true}
+                        mayManage={can('admins.manage')}
+                        onChanged={reloadSecurity}
+                      />
+                      <span>Zuletzt im Panel: <LastLogin iso={user.adminSecurity.lastLoginAt} method={user.adminSecurity.lastLoginMethod} /></span>
+                    </div>
+                  </div>
+                )}
                 {user.isAdmin && user.adminSetupExpiresAt ? (
                   <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2">
                     <p className="min-w-0 flex-1 text-[12px] leading-relaxed" style={{ color: 'var(--amber-deep)' }}>

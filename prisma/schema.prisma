@@ -120,6 +120,25 @@ model AdminTotp {
   @@map("admin_totp")
 }
 
+// Login security of an admin panel account, keyed by the login name like the
+// second factors (a server owner has no users row). requireSecondFactor null:
+// the installation default (ADMIN_REQUIRE_SECOND_FACTOR). The last panel
+// login is kept here, so the admin list can show it without reading the audit
+// trail (which is only the fallback for logins before this table existed).
+model AdminSecurity {
+  username            String    @id @db.VarChar(191)
+  requireSecondFactor Boolean?  @map("require_second_factor")
+  // Login name of the admin who last set requireSecondFactor.
+  changedBy           String?   @map("changed_by") @db.VarChar(191)
+  lastLoginAt         DateTime? @map("last_login_at")
+  // How: "password", "password+totp", "password+passkey", "passkey", …
+  lastLoginMethod     String?   @map("last_login_method") @db.VarChar(40)
+  createdAt           DateTime  @default(now()) @map("created_at")
+  updatedAt           DateTime  @updatedAt @map("updated_at")
+
+  @@map("admin_security")
+}
+
 model AdminPasskey {
   id           String    @id @default(uuid())
   username     String    @db.VarChar(191)
