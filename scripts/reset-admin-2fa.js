@@ -2,9 +2,10 @@
 // Usage: npm run reset-admin-2fa <username>
 // Removes the authenticator app, the recovery codes and every passkey of an
 // admin panel login — for a lost phone or a changed JWT_SECRET. Afterwards the
-// password opens the panel again; where a second factor is required
-// (ADMIN_REQUIRE_SECOND_FACTOR or the account's setting), only far enough to
-// set up a new one.
+// password opens the panel again, but only far enough to set up the
+// authenticator app anew (required for admins, ADMIN_REQUIRE_SECOND_FACTOR)
+// and, where one is required, a passkey. A phone that still works moves to a
+// new one in the panel instead (Sicherheit → Auf neues Gerät umziehen).
 require('dotenv').config({ quiet: true });
 const { PrismaClient } = require('@prisma/client');
 

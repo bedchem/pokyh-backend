@@ -105,36 +105,41 @@ model Admin {
 // users row can use them as well. Once an admin has any of them, the password
 // alone no longer opens the panel.
 model AdminTotp {
-  username      String    @id @db.VarChar(191)
+  username         String    @id @db.VarChar(191)
   // The base32 secret, sealed with a key derived from JWT_SECRET.
-  secretEnc     String    @map("secret_enc") @db.VarChar(255)
+  secretEnc        String    @map("secret_enc") @db.VarChar(255)
+  // Moving to a new device: the new secret, sealed the same way, until a code
+  // from the new device confirms it. The old one keeps working meanwhile.
+  pendingSecretEnc String?   @map("pending_secret_enc") @db.VarChar(255)
   // Null while the set-up waits for its first correct code.
-  enabledAt     DateTime? @map("enabled_at")
+  enabledAt        DateTime? @map("enabled_at")
   // The last accepted 30-second step: a code is never accepted twice.
-  lastUsedStep  Int       @default(0) @map("last_used_step")
+  lastUsedStep     Int       @default(0) @map("last_used_step")
   // JSON array of SHA-256 hashes of the unused one-time recovery codes.
-  recoveryCodes String    @map("recovery_codes") @db.Text
-  createdAt     DateTime  @default(now()) @map("created_at")
-  updatedAt     DateTime  @updatedAt @map("updated_at")
+  recoveryCodes    String    @map("recovery_codes") @db.Text
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
 
   @@map("admin_totp")
 }
 
 // Login security of an admin panel account, keyed by the login name like the
-// second factors (a server owner has no users row). requireSecondFactor null:
-// the installation default (ADMIN_REQUIRE_SECOND_FACTOR). The last panel
-// login is kept here, so the admin list can show it without reading the audit
-// trail (which is only the fallback for logins before this table existed).
+// second factors (a server owner has no users row). The authenticator app is
+// required for everyone (ADMIN_REQUIRE_SECOND_FACTOR); requirePasskey says
+// whether this account also needs a passkey, null: the server default
+// (ADMIN_REQUIRE_PASSKEY). The last panel login is kept here, so the admin
+// list can show it without reading the audit trail (which is only the
+// fallback for logins before this table existed).
 model AdminSecurity {
-  username            String    @id @db.VarChar(191)
-  requireSecondFactor Boolean?  @map("require_second_factor")
-  // Login name of the admin who last set requireSecondFactor.
-  changedBy           String?   @map("changed_by") @db.VarChar(191)
-  lastLoginAt         DateTime? @map("last_login_at")
+  username        String    @id @db.VarChar(191)
+  requirePasskey  Boolean?  @map("require_passkey")
+  // Login name of the admin who last set requirePasskey.
+  changedBy       String?   @map("changed_by") @db.VarChar(191)
+  lastLoginAt     DateTime? @map("last_login_at")
   // How: "password", "password+totp", "password+passkey", "passkey", …
-  lastLoginMethod     String?   @map("last_login_method") @db.VarChar(40)
-  createdAt           DateTime  @default(now()) @map("created_at")
-  updatedAt           DateTime  @updatedAt @map("updated_at")
+  lastLoginMethod String?   @map("last_login_method") @db.VarChar(40)
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
 
   @@map("admin_security")
 }
@@ -819,6 +824,26 @@ model AdminGrant {
   @@unique([username, scope])
   @@index([scope])
   @@map("admin_grants")
+}
+
+// Presets ("Vorlagen") for admin rights that admins made themselves, next to
+// the built-in ones in security/permissions.ts. A grant keeps the preset key
+// for display only; its own permission list is what counts, so changing or
+// removing a preset never changes anyone's rights.
+model AdminPreset {
+  key         String   @id @db.VarChar(40)
+  label       String   @db.VarChar(60)
+  description String   @default("") @db.VarChar(300)
+  // "school" or "global".
+  scope       String   @db.VarChar(10)
+  // JSON array of permission keys.
+  permissions String   @db.Text
+  createdBy   String   @map("created_by") @db.VarChar(191)
+  updatedBy   String   @map("updated_by") @db.VarChar(191)
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@map("admin_presets")
 }
 
 // The admin audit trail: who changed what, in which school, when. Holds no

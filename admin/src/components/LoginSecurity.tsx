@@ -23,19 +23,20 @@ export function loginMethodLabel(method: string | null): string | null {
   return method ? METHOD_LABEL[method] ?? method : null;
 }
 
-/** "2FA aktiv" (with what), "2FA fehlt" (required but not set up) or "ohne 2FA". */
+/** "2FA aktiv" or "2FA fehlt" (the app is required), and the passkey state when one is required. */
 export function SecondFactorBadge({ security }: { security: AdminLoginSecurity }) {
-  const parts = [security.totp ? 'App' : null, security.passkeys > 0 ? `${security.passkeys} Passkey${security.passkeys === 1 ? '' : 's'}` : null].filter(Boolean);
-  if (parts.length > 0) {
-    return (
-      <Tag tone="mint">
-        <ShieldCheck size={12} strokeWidth={2} /> 2FA aktiv · {parts.join(' + ')}
-      </Tag>
-    );
-  }
-  return security.required
-    ? <Tag tone="rose"><ShieldAlert size={12} strokeWidth={2} /> 2FA fehlt</Tag>
-    : <Tag tone="ink"><ShieldOff size={12} strokeWidth={2} /> ohne 2FA</Tag>;
+  return (
+    <span className="inline-flex flex-wrap gap-1.5">
+      {security.totp
+        ? <Tag tone="mint"><ShieldCheck size={12} strokeWidth={2} /> 2FA aktiv</Tag>
+        : security.totpRequired
+          ? <Tag tone="rose"><ShieldAlert size={12} strokeWidth={2} /> 2FA fehlt</Tag>
+          : <Tag tone="ink"><ShieldOff size={12} strokeWidth={2} /> ohne 2FA</Tag>}
+      {security.passkeys > 0
+        ? <Tag tone="mint"><KeyRound size={12} strokeWidth={2} /> {security.passkeys} Passkey{security.passkeys === 1 ? '' : 's'}</Tag>
+        : security.passkeyRequired && <Tag tone="rose"><KeyRound size={12} strokeWidth={2} /> Passkey fehlt</Tag>}
+    </span>
+  );
 }
 
 /** The factors as icons with their names, for the drawer. */
@@ -56,11 +57,12 @@ export function LastLogin({ iso, method, never = 'noch nie' }: { iso: string | n
 }
 
 /**
- * The switch "2FA Pflicht" for one admin. Another admin who may manage the
- * account sets it either way; for the own account it can only be switched on
- * (the server checks the same). Owners follow the .env and get no switch.
+ * The switch "Passkey Pflicht" for one admin (the authenticator app is always
+ * required and has no switch). Another admin who may manage the account sets
+ * it either way; for the own account it can only be switched on (the server
+ * checks the same). Owners follow the .env and get no switch.
  */
-export function RequirementSwitch({
+export function PasskeySwitch({
   username,
   security,
   self,
@@ -77,13 +79,13 @@ export function RequirementSwitch({
 }) {
   const { showToast } = useToast();
   const [busy, setBusy] = useState(false);
-  const locked = owner || (!self && !mayManage) || (self && security.required) || busy;
+  const locked = owner || (!self && !mayManage) || (self && security.passkeyRequired) || busy;
 
   async function change(required: boolean) {
     setBusy(true);
     try {
-      await adminApi.setSecondFactorRequired(username, required);
-      showToast(required ? `2FA ist für ${username} jetzt Pflicht` : `2FA ist für ${username} keine Pflicht mehr`, 'success');
+      await adminApi.setPasskeyRequired(username, required);
+      showToast(required ? `Passkey ist für ${username} jetzt Pflicht` : `Passkey ist für ${username} wieder freiwillig`, 'success');
       onChanged();
     } catch (err) {
       showToast(err instanceof Error ? err.message : 'Ändern fehlgeschlagen', 'error');
@@ -92,11 +94,14 @@ export function RequirementSwitch({
     }
   }
 
-  const hint = owner ? 'aus der .env' : security.source === 'default' ? 'Standard' : null;
+  const hint = owner ? 'aus der .env' : security.passkeySource === 'default' ? 'Standard' : null;
+  const title = owner
+    ? 'Server-Admins folgen ADMIN_REQUIRE_PASSKEY'
+    : self && security.passkeyRequired ? 'Die eigene Passkey-Pflicht kann nur ein anderer Admin aufheben' : undefined;
   return (
-    <span className="inline-flex items-center gap-2 text-[13px] text-ink-3" title={owner ? 'Server-Admins folgen ADMIN_REQUIRE_SECOND_FACTOR' : self && security.required ? 'Die eigene Pflicht kann nur ein anderer Admin aufheben' : undefined}>
-      <Toggle checked={security.required} onChange={(next) => void change(next)} label={`2FA Pflicht für ${username}`} disabled={locked} />
-      <span>Pflicht{hint ? <span className="text-ink-4"> · {hint}</span> : null}</span>
+    <span className="inline-flex items-center gap-2 text-[13px] text-ink-3" title={title}>
+      <Toggle checked={security.passkeyRequired} onChange={(next) => void change(next)} label={`Passkey Pflicht für ${username}`} disabled={locked} />
+      <span>Passkey Pflicht{hint ? <span className="text-ink-4"> · {hint}</span> : null}</span>
     </span>
   );
 }

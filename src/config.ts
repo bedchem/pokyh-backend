@@ -309,10 +309,12 @@ export const config = {
   // ── Auth / tokens (all env-overridable) ────────────────────────────────────
   jwtExpiresIn: strEnv('JWT_EXPIRES_IN', '1h'),
   adminJwtExpiresIn: strEnv('ADMIN_JWT_EXPIRES_IN', '7d'),
-  // Admin panel accounts need a second factor (authenticator app or passkey)
-  // unless an admin switches it off for an account. Server owners always
-  // follow this value (security/adminSecondFactorPolicy.ts).
+  // Every admin panel account needs the authenticator app (2FA); only the
+  // server can switch that off. A passkey is optional unless required per
+  // account in the panel; accounts without their own setting (and server
+  // owners) follow ADMIN_REQUIRE_PASSKEY (security/adminSecondFactorPolicy.ts).
   adminRequireSecondFactor: boolEnv('ADMIN_REQUIRE_SECOND_FACTOR', true),
+  adminRequirePasskey: boolEnv('ADMIN_REQUIRE_PASSKEY', false),
   refreshTokenExpiresInHours: intEnv('REFRESH_TOKEN_EXPIRES_HOURS', 1),
   bcryptRounds: intEnv('BCRYPT_ROUNDS', 12),
 

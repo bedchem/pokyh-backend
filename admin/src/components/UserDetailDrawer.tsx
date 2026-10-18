@@ -26,7 +26,7 @@ import { AppointAdminDialog } from './AppointAdminDialog';
 import { PasswordInput } from './PasswordInput';
 import { roleLabel } from '../roles';
 import { useAccess } from '../access';
-import { FactorList, LastLogin, RequirementSwitch, SecondFactorBadge } from './LoginSecurity';
+import { FactorList, LastLogin, PasskeySwitch, SecondFactorBadge } from './LoginSecurity';
 import type { AdminUserDetail, AdminTodo, AdminUserClass } from '../types';
 
 const AVATAR_COLORS = ['#2a78cc', '#8a3fc4', '#0f7f96', '#16845f', '#b3610d', '#d93a40'];
@@ -477,7 +477,7 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
       .finally(() => setLoading(false));
   }, [stableUid, showToast]);
 
-  // After the second-factor requirement changed: the admin's login security again.
+  // After the passkey requirement changed: the admin's login security again.
   function reloadSecurity() {
     adminApi.userDetail(stableUid)
       .then((fresh) => setUser((prev) => prev ? { ...prev, adminSecurity: fresh.adminSecurity } : fresh))
@@ -823,7 +823,7 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
                     </div>
                     <FactorList security={user.adminSecurity} />
                     <div className="flex flex-wrap items-center justify-between gap-2 text-[12.5px] text-ink-3">
-                      <RequirementSwitch
+                      <PasskeySwitch
                         username={user.username}
                         security={user.adminSecurity}
                         self={user.username.toLowerCase() === me?.username.toLowerCase()}

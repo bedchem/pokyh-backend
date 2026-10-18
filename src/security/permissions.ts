@@ -119,7 +119,9 @@ export function isGlobalOnly(permission: Permission): boolean {
 
 // ─── Presets ─────────────────────────────────────────────────────────────────
 // Starting points in the grant editor. A stored grant keeps the preset it was
-// made from for display only; the permission list is what counts.
+// made from for display only; the permission list is what counts. Besides the
+// built-in ones, admins make their own (services/adminPresets.ts); the
+// functions below take the full list, the built-in one by default.
 
 export const GLOBAL_SCOPE = 'global';
 
@@ -129,6 +131,10 @@ export interface Preset {
   description: string;
   scope: PermissionScope;
   permissions: readonly Permission[];
+  // Made in the panel (can be changed and removed there), not built in.
+  custom?: boolean;
+  createdBy?: string | null;
+  updatedAt?: string | null;
 }
 
 export const PRESETS: readonly Preset[] = [
@@ -169,8 +175,62 @@ export const PRESETS: readonly Preset[] = [
   },
 ];
 
-export function presetByKey(key: string): Preset | undefined {
-  return PRESETS.find((p) => p.key === key);
+export function presetByKey(key: string, presets: readonly Preset[] = PRESETS): Preset | undefined {
+  return presets.find((p) => p.key === key);
+}
+
+// ─── Own presets ─────────────────────────────────────────────────────────────
+
+export const PRESET_LABEL_MAX = 60;
+export const PRESET_DESCRIPTION_MAX = 300;
+// Grants store the preset key in 40 characters.
+export const PRESET_KEY_MAX = 40;
+const CUSTOM_PREFIX = 'custom_';
+
+export type PresetInput = { label: unknown; description?: unknown; scope: unknown; permissions: readonly unknown[] };
+export type PresetCheck =
+  | { ok: true; label: string; description: string; scope: PermissionScope; permissions: Permission[] }
+  | { ok: false; status: 400 | 403; error: string };
+
+/**
+ * Validates an own preset: a name, a scope ("school" or "global"), known
+ * rights that exist in that scope, at least one, and only rights the author
+ * holds there (`own`) — a preset never offers more than its author has.
+ */
+export function normalizePreset(input: PresetInput, own: ReadonlySet<Permission>): PresetCheck {
+  const label = typeof input.label === 'string' ? input.label.replace(/\s+/g, ' ').trim() : '';
+  if (!label) return { ok: false, status: 400, error: 'Die Vorlage braucht einen Namen' };
+  if (label.length > PRESET_LABEL_MAX) return { ok: false, status: 400, error: `Der Name darf höchstens ${PRESET_LABEL_MAX} Zeichen haben` };
+  const description = typeof input.description === 'string' ? input.description.replace(/\s+/g, ' ').trim() : '';
+  if (description.length > PRESET_DESCRIPTION_MAX) return { ok: false, status: 400, error: `Die Beschreibung darf höchstens ${PRESET_DESCRIPTION_MAX} Zeichen haben` };
+  if (input.scope !== 'school' && input.scope !== 'global') return { ok: false, status: 400, error: 'Eine Vorlage gilt für eine Schule oder global' };
+  const normalized = normalizeGrant(input.scope === 'global' ? GLOBAL_SCOPE : 'school', input.permissions);
+  if (!normalized.ok) return normalized;
+  if (normalized.permissions.length === 0) return { ok: false, status: 400, error: 'Die Vorlage braucht mindestens ein Recht' };
+  const beyond = normalized.permissions.filter((p) => !own.has(p));
+  if (beyond.length > 0) {
+    return { ok: false, status: 403, error: `Eine Vorlage kann nur Rechte enthalten, die du selbst hast: ${beyond.map((p) => BY_KEY.get(p)!.label).join(', ')}` };
+  }
+  return { ok: true, label, description, scope: input.scope, permissions: normalized.permissions };
+}
+
+/** A key for a new own preset from its name: never a built-in one, never one in `taken`. */
+export function customPresetKey(label: string, taken: ReadonlySet<string>): string {
+  const slug = label
+    .normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '')
+    .slice(0, PRESET_KEY_MAX - CUSTOM_PREFIX.length - 4) || 'vorlage';
+  const base = `${CUSTOM_PREFIX}${slug}`;
+  const builtIn = new Set(PRESETS.map((p) => p.key));
+  for (let n = 1; n < 1000; n++) {
+    const key = n === 1 ? base : `${base}_${n}`;
+    if (!taken.has(key) && !builtIn.has(key)) return key;
+  }
+  return `${CUSTOM_PREFIX}${Date.now().toString(36)}`.slice(0, PRESET_KEY_MAX);
+}
+
+export function isBuiltInPreset(key: string): boolean {
+  return PRESETS.some((p) => p.key === key);
 }
 
 // ─── Access ──────────────────────────────────────────────────────────────────
@@ -306,9 +366,9 @@ export function mayRemoveAdmin(actor: Access, target: Access, targetScopes: read
   return { ok: true };
 }
 
-export function presetFor(scope: string, permissions: readonly Permission[]): string {
+export function presetFor(scope: string, permissions: readonly Permission[], presets: readonly Preset[] = PRESETS): string {
   const set = new Set(permissions);
-  for (const preset of PRESETS) {
+  for (const preset of presets) {
     if ((preset.scope === 'global') !== (scope === GLOBAL_SCOPE)) continue;
     if (preset.permissions.length === set.size && preset.permissions.every((p) => set.has(p))) return preset.key;
   }

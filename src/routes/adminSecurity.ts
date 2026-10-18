@@ -22,6 +22,7 @@ import {
   disableTotp,
   enableTotp,
   finishPasskeyLogin,
+  finishTotpMove,
   finishPasskeyRegistration,
   passkeyLoginOptions,
   passkeyRegistrationOptions,
@@ -29,12 +30,13 @@ import {
   regenerateRecoveryCodes,
   renamePasskey,
   securityStatus,
+  startTotpMove,
   startTotpSetup,
   useSecondFactorCode,
   type RelyingParty,
 } from '../services/adminSecondFactor';
-import { recordAdminLogin, secondFactorState } from '../services/adminSecurity';
-import { mayRemoveFactor } from '../security/adminSecondFactorPolicy';
+import { loginStepsFor, recordAdminLogin, secondFactorState } from '../services/adminSecurity';
+import { mayRemoveFactor, type FactorKind } from '../security/adminSecondFactorPolicy';
 
 // ─── Admin panel: second factor and passkeys ──────────────────────────────────
 //
@@ -48,7 +50,9 @@ import { mayRemoveFactor } from '../security/adminSecondFactorPolicy';
 //   POST   /api/admin/account/password          current + new password
 //   POST   /api/admin/account/totp/setup        new secret + QR code
 //   POST   /api/admin/account/totp/enable       first code → recovery codes
-//   POST   /api/admin/account/totp/disable      a code
+//   POST   /api/admin/account/totp/disable      a code (not while the app is required)
+//   POST   /api/admin/account/totp/move/start   a code → new secret + QR code for a new device
+//   POST   /api/admin/account/totp/move/finish  a code from the new device
 //   POST   /api/admin/account/recovery-codes    a code → new recovery codes
 //   POST   /api/admin/account/passkeys/options  password → WebAuthn challenge
 //   POST   /api/admin/account/passkeys          the new passkey
@@ -113,7 +117,10 @@ const codeBody = z.object({ ticket: z.string().min(1).max(2000), code: z.string(
 router.post('/auth/2fa', secondFactorLimiter, async (req: Request, res: Response): Promise<void> => {
   const { ticket, code } = codeBody.parse(req.body);
   const { username } = readSecondFactorTicket(ticket);
-  const used = await useSecondFactorCode(username, code);
+  // A login that has to be confirmed with a passkey takes no app code; a
+  // recovery code still works, for a lost device.
+  const steps = await loginStepsFor(username);
+  const used = await useSecondFactorCode(username, code, steps.totp);
   if (!used) {
     logger.warn('Admin login failed: wrong second-factor code', { action: 'admin_login_failed', reason: 'wrong-code', username, ip: clientIp(req) });
     throw new UnauthorizedError('Code stimmt nicht');
@@ -169,15 +176,23 @@ router.get('/account/security', allowDuringSecondFactorSetup, requireAdmin, asyn
     ...status,
     // Which password signs this admin in — and so whether it can be changed here.
     password: lookup.ok ? adminPasswordKindOf(lookup.account) : 'config',
-    secondFactor: { required: state.required, source: state.source, setupPending: state.setupPending },
+    secondFactor: {
+      totpRequired: state.required.totp,
+      passkeyRequired: state.required.passkey,
+      passkeySource: state.passkeySource,
+      missing: state.missing,
+      setupPending: state.setupPending,
+    },
   });
 });
 
-// Required second factor: the last one cannot go.
-async function assertMayRemove(username: string, remaining: { totp?: boolean; passkey?: boolean }): Promise<void> {
+// What is required cannot go while it is the last of its kind.
+async function assertMayRemove(username: string, kind: FactorKind, remainingOfKind: boolean): Promise<void> {
   const state = await secondFactorState(username);
-  if (!mayRemoveFactor(state.required, { ...state.factors, ...remaining })) {
-    throw new ValidationError('Für dein Admin-Konto ist ein zweiter Faktor Pflicht. Richte zuerst einen anderen ein (App oder Passkey).');
+  if (!mayRemoveFactor(kind, state.required, { ...state.factors, [kind]: remainingOfKind })) {
+    throw new ValidationError(kind === 'totp'
+      ? 'Die Authenticator-App ist für Admin-Konten Pflicht und lässt sich nicht entfernen. Neu einrichten geht über „npm run reset-admin-2fa“ auf dem Server.'
+      : 'Für dein Admin-Konto ist ein Passkey Pflicht. Füge zuerst einen weiteren hinzu.');
   }
 }
 
@@ -225,9 +240,27 @@ router.post('/account/totp/enable', allowDuringSecondFactorSetup, requireAdmin, 
 router.post('/account/totp/disable', requireAdmin, async (req: Request, res: Response): Promise<void> => {
   const { code } = accountCodeBody.parse(req.body);
   const username = sessionUsername(req);
-  await assertMayRemove(username, { totp: false });
+  await assertMayRemove(username, 'totp', false);
   await disableTotp(username, code);
   logger.info('Admin security: authenticator app disabled', { action: 'admin_totp_disabled', username, ip: clientIp(req) });
+  res.status(204).send();
+});
+
+// Moving the authenticator app to a new device: a current code starts it, a
+// code from the new device finishes it (the old app works until then).
+router.post('/account/totp/move/start', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const { code } = accountCodeBody.parse(req.body);
+  const username = sessionUsername(req);
+  const setup = await startTotpMove(username, code);
+  logger.info('Admin security: authenticator app move started', { action: 'admin_totp_move_started', username, ip: clientIp(req) });
+  res.json(setup);
+});
+
+router.post('/account/totp/move/finish', requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const { code } = accountCodeBody.parse(req.body);
+  const username = sessionUsername(req);
+  await finishTotpMove(username, code);
+  logger.info('Admin security: authenticator app moved to a new device', { action: 'admin_totp_moved', username, ip: clientIp(req) });
   res.status(204).send();
 });
 
@@ -274,7 +307,7 @@ router.patch('/account/passkeys/:id', requireAdmin, async (req: Request, res: Re
 router.delete('/account/passkeys/:id', requireAdmin, async (req: Request, res: Response): Promise<void> => {
   const username = sessionUsername(req);
   const others = await prisma.adminPasskey.count({ where: { username, id: { not: String(req.params['id']) } } });
-  await assertMayRemove(username, { passkey: others > 0 });
+  await assertMayRemove(username, 'passkey', others > 0);
   await deletePasskey(username, String(req.params['id']));
   logger.info('Admin security: passkey removed', { action: 'admin_passkey_removed', username, ip: clientIp(req) });
   res.status(204).send();

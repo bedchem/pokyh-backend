@@ -546,56 +546,126 @@ test('existing admins become global admins once, and never again after a change'
   assert.equal(me.hasAnyPermission, false);
 });
 
-test('a second factor can be required per admin: until one is set up, only that step opens', async () => {
+test('the authenticator app is required for every admin; a passkey per switch; until set up, only that opens', async () => {
   const totp = require(path.join(REPO, 'dist', 'security', 'totp.js'));
-  const catalog = await ok(api('GET', '/api/admin/access/catalog'));
-  const viewer = catalog.presets.find((p) => p.key === 'viewer').permissions;
-  const anna = await makeAdmin('twofa.anna', schoolA.id, { scope: schoolA.id, permissions: viewer, preset: 'viewer' });
-  const asAnna = (method, pathname, opts = {}) => api(method, pathname, { token: anna.token, school: schoolA.id, ...opts });
-  await ok(asAnna('GET', '/api/admin/users'));
+  const code = (secret) => totp.totpCode(secret, totp.totpStep(Date.now()));
+  // A node of its own with the app required, as on a real installation.
+  const secure = await cluster.addNode('twofa', { WEBUNTIS_SCHOOL: 'lbs-brixen', ADMIN_REQUIRE_SECOND_FACTOR: 'true' });
+  await cluster.start(secure, { waitForCluster: false });
+  const call = (method, pathname, { token = ownerToken, body } = {}) => cluster.request(secure, method, pathname, { body, token, apiKey: false });
+  const must = async (promise, status = 200) => {
+    const res = await promise;
+    assert.equal(res.status, status, `${res.status} ${res.text}`);
+    return res.json;
+  };
 
-  // Switched on by the owner: everything but the set-up is closed.
-  const on = await ok(api('PUT', '/api/admin/admins/twofa.anna/second-factor', { body: { required: true } }));
-  assert.deepEqual(on, { required: true, source: 'account', setupPending: true });
-  const blocked = await asAnna('GET', '/api/admin/users');
+  // Even the owner reaches nothing but the set-up before the app is set up.
+  const blocked = await call('GET', '/api/admin/users');
   assert.equal(blocked.status, 403, blocked.text);
   assert.equal(blocked.json.code, 'second_factor_setup_required');
-  assert.equal((await ok(asAnna('GET', '/api/admin/me'))).secondFactorSetupRequired, true);
-  assert.equal((await ok(asAnna('GET', '/api/admin/account/security'))).secondFactor.setupPending, true);
+  const ownerMe = await must(call('GET', '/api/admin/me'));
+  assert.equal(ownerMe.secondFactorSetupRequired, true);
+  assert.deepEqual(ownerMe.secondFactorMissing, ['totp']);
+  const ownerSetup = await must(call('POST', '/api/admin/account/totp/setup'));
+  await must(call('POST', '/api/admin/account/totp/enable', { body: { code: code(ownerSetup.secret) } }));
+  await must(call('GET', '/api/admin/users'));
 
-  // The password login says so right away.
-  const login = await cluster.request(node, 'POST', '/api/admin/auth/login', { body: { username: 'twofa.anna', password: 'Very-long-pass-1' }, apiKey: false });
+  // A new admin: the same, and the app can neither be switched off nor removed.
+  const school = (await must(call('GET', '/api/admin/me'))).schools[0];
+  const catalog = await must(call('GET', '/api/admin/access/catalog'));
+  const viewer = catalog.presets.find((p) => p.key === 'viewer').permissions;
+  await must(call('POST', '/api/admin/users', {
+    body: { username: 'twofa.anna', password: 'Very-long-pass-1', role: 'none', isAdmin: true, schoolId: school.id, grant: { scope: school.id, permissions: viewer, preset: 'viewer' } },
+  }), 201);
+  const anna = tokenFor('twofa.anna');
+  const asAnna = (method, pathname, body) => cluster.request(secure, method, pathname, { body, token: anna, apiKey: false, headers: { 'x-pokyh-school': school.id } });
+  assert.equal((await asAnna('GET', '/api/admin/users')).status, 403);
+  const annaSetup = await must(asAnna('POST', '/api/admin/account/totp/setup'));
+  const { recoveryCodes } = await must(asAnna('POST', '/api/admin/account/totp/enable', { code: code(annaSetup.secret) }));
+  await must(asAnna('GET', '/api/admin/users'));
+  await must(asAnna('POST', '/api/admin/account/totp/disable', { code: recoveryCodes[0] }), 422);
+  const security = await must(asAnna('GET', '/api/admin/account/security'));
+  assert.deepEqual(security.secondFactor, { totpRequired: true, passkeyRequired: false, passkeySource: 'default', missing: [], setupPending: false });
+
+  // The password login asks for the app (or a recovery code).
+  const login = await cluster.request(secure, 'POST', '/api/admin/auth/login', { body: { username: 'twofa.anna', password: 'Very-long-pass-1' }, apiKey: false });
   assert.equal(login.status, 200, login.text);
-  assert.equal(login.json.secondFactorSetupRequired, true);
+  assert.deepEqual(login.json.methods, { totp: true, passkey: false, recovery: true });
 
-  // Setting up the authenticator app opens the panel.
-  const setup = await ok(asAnna('POST', '/api/admin/account/totp/setup'));
-  const { recoveryCodes } = await ok(asAnna('POST', '/api/admin/account/totp/enable', { body: { code: totp.totpCode(setup.secret, totp.totpStep(Date.now())) } }));
-  await ok(asAnna('GET', '/api/admin/users'));
-  assert.equal((await ok(asAnna('GET', '/api/admin/me'))).secondFactorSetupRequired, false);
+  // Moving the app to a new device: the old one confirms, the new one finishes.
+  const moving = await must(asAnna('POST', '/api/admin/account/totp/move/start', { code: recoveryCodes[1] }));
+  assert.notEqual(moving.secret, annaSetup.secret);
+  await must(asAnna('POST', '/api/admin/account/totp/move/finish', { code: '000000' }), 422);
+  await must(asAnna('POST', '/api/admin/account/totp/move/finish', { code: code(moving.secret) }), 204);
 
-  // Required: the last factor stays, and only another admin lowers the requirement.
-  await ok(asAnna('POST', '/api/admin/account/totp/disable', { body: { code: recoveryCodes[0] } }), 422);
-  await ok(asAnna('PUT', '/api/admin/admins/twofa.anna/second-factor', { body: { required: false } }), 403);
-  await ok(asAnna('PUT', '/api/admin/admins/twofa.anna/second-factor', { body: { required: true } }));
-  await ok(api('PUT', `/api/admin/admins/${'clusteradmin'}/second-factor`, { body: { required: false } }), 403);
-  const off = await ok(api('PUT', '/api/admin/admins/twofa.anna/second-factor', { body: { required: false } }));
-  assert.deepEqual(off, { required: false, source: 'account', setupPending: false });
-  await ok(asAnna('POST', '/api/admin/account/totp/disable', { body: { code: recoveryCodes[0] } }), 204);
+  // A passkey: optional, until another admin (or anna herself) switches it on.
+  const on = await must(call('PUT', '/api/admin/admins/twofa.anna/passkey-requirement', { body: { required: true } }));
+  assert.deepEqual(on, { passkeyRequired: true, passkeySource: 'account', missing: ['passkey'], setupPending: true });
+  const annaMe = await must(asAnna('GET', '/api/admin/me'));
+  assert.equal(annaMe.secondFactorSetupRequired, true);
+  assert.deepEqual(annaMe.secondFactorMissing, ['passkey']);
+  assert.equal((await asAnna('GET', '/api/admin/users')).status, 403);
+  await must(call('PUT', '/api/admin/admins/twofa.anna/passkey-requirement', { body: { required: false } }));
+  await must(asAnna('GET', '/api/admin/users'));
+  await must(asAnna('PUT', '/api/admin/admins/twofa.anna/passkey-requirement', { required: true }));
+  await must(asAnna('PUT', '/api/admin/admins/twofa.anna/passkey-requirement', { required: false }), 403);
+  await must(call('PUT', '/api/admin/admins/twofa.anna/passkey-requirement', { body: { required: null } }));
+  await must(call('PUT', '/api/admin/admins/clusteradmin/passkey-requirement', { body: { required: true } }), 403);
 
   // The lists show it all, with the last panel login.
-  await ok(cluster.request(node, 'POST', '/api/admin/auth/login', { body: { username: 'twofa.anna', password: 'Very-long-pass-1' }, apiKey: false }));
-  const row = (await ok(api('GET', '/api/admin/admins'))).admins.find((a) => a.username === 'twofa.anna');
-  assert.equal(row.security.required, false);
-  assert.equal(row.security.totp, false);
-  assert.equal(row.security.passkeys, 0);
-  assert.ok(row.security.lastLoginAt, 'last panel login is shown');
-  assert.equal(row.security.lastLoginMethod, 'password');
-  const user = (await ok(api('GET', '/api/admin/users?role=admin&limit=100'))).users.find((u) => u.username === 'twofa.anna');
-  assert.equal(user.adminSecurity.required, false);
+  const row = (await must(call('GET', '/api/admin/admins'))).admins.find((a) => a.username === 'twofa.anna');
+  assert.equal(row.security.totp, true);
+  assert.equal(row.security.totpRequired, true);
+  assert.equal(row.security.passkeyRequired, false);
+  assert.equal(row.security.passkeySource, 'default');
+  assert.deepEqual(row.security.missing, []);
+  const user = (await must(call('GET', '/api/admin/users?role=admin&limit=100'))).users.find((u) => u.username === 'twofa.anna');
+  assert.equal(user.adminSecurity.totp, true);
   assert.ok('lastSignInAt' in user);
-  const audit = await ok(api('GET', '/api/admin/audit-events?action=admin.second_factor.requirement'));
-  assert.ok(audit.events.some((e) => e.targetId === 'twofa.anna'), 'the change is in the audit trail');
+  const audit = await must(call('GET', '/api/admin/audit-events?action=admin.passkey.requirement'));
+  assert.ok(audit.events.some((e) => e.targetId === 'twofa.anna'), 'the switch is in the audit trail');
+});
+
+test('own presets: made by those who manage global admins, never beyond their rights, never changing anyone’s rights', async () => {
+  const catalog = await ok(api('GET', '/api/admin/access/catalog'));
+  const builtIn = catalog.presets.length;
+
+  // A school admin may use presets, not make them.
+  const schoolAdmin = await makeAdmin('preset.school', schoolA.id, { scope: schoolA.id, permissions: catalog.presets.find((p) => p.key === 'school_admin').permissions, preset: 'school_admin' });
+  await ok(api('POST', '/api/admin/access/presets', { token: schoolAdmin.token, school: schoolA.id, body: { label: 'Nope', scope: 'school', permissions: ['users.view'] } }), 403);
+  // A school preset holds no global-only right; a preset needs at least one right.
+  await ok(api('POST', '/api/admin/access/presets', { body: { label: 'Bad', scope: 'school', permissions: ['users.view', 'backups.manage'] } }), 422);
+  await ok(api('POST', '/api/admin/access/presets', { body: { label: 'Empty', scope: 'school', permissions: [] } }), 422);
+
+  const { preset } = await ok(api('POST', '/api/admin/access/presets', {
+    body: { label: 'Mensa-Team', description: 'Plan pflegen', scope: 'school', permissions: ['mensa.manage', 'mensa.view', 'dashboard.view'] },
+  }), 201);
+  assert.equal(preset.key, 'custom_mensa_team');
+  assert.equal(preset.custom, true);
+  assert.deepEqual(preset.permissions, ['dashboard.view', 'mensa.view', 'mensa.manage']);
+  await ok(api('POST', '/api/admin/access/presets', { body: { label: 'mensa-team', scope: 'school', permissions: ['mensa.view'] } }), 409);
+  const listed = await ok(api('GET', '/api/admin/access/catalog'));
+  assert.equal(listed.presets.length, builtIn + 1);
+  assert.ok(listed.presets.some((p) => p.key === preset.key && p.custom));
+
+  // A grant made from it carries its name; built-in presets stay untouchable.
+  const mensa = await makeAdmin('preset.mensa', schoolA.id, { scope: schoolA.id, permissions: preset.permissions, preset: preset.key });
+  const grantOf = async () => (await ok(api('GET', '/api/admin/admins'))).admins.find((a) => a.username === 'preset.mensa').grants[0];
+  assert.equal((await grantOf()).preset, preset.key);
+  await ok(api('PUT', '/api/admin/access/presets/viewer', { body: { label: 'Viewer', scope: 'school', permissions: ['users.view'] } }), 403);
+  await ok(api('DELETE', '/api/admin/access/presets/viewer'), 403);
+
+  // Changing the preset changes nobody's rights: the grant only loses the name.
+  await ok(api('PUT', `/api/admin/access/presets/${preset.key}`, { body: { label: 'Mensa-Team', scope: 'school', permissions: ['mensa.manage', 'mensa.view'] } }));
+  const changed = await grantOf();
+  assert.equal(changed.preset, 'custom');
+  assert.deepEqual(changed.permissions, ['dashboard.view', 'mensa.view', 'mensa.manage']);
+  await ok(api('GET', '/api/admin/stats', { token: mensa.token, school: schoolA.id }));
+
+  await ok(api('DELETE', `/api/admin/access/presets/${preset.key}`), 204);
+  assert.equal((await ok(api('GET', '/api/admin/access/catalog'))).presets.length, builtIn);
+  const events = await ok(api('GET', '/api/admin/audit-events?action=admin.preset'));
+  assert.deepEqual(new Set(events.events.filter((e) => e.targetId === preset.key).map((e) => e.action)), new Set(['admin.preset.create', 'admin.preset.update', 'admin.preset.delete']));
 });
 
 test('the server log has no unexpected errors', () => {

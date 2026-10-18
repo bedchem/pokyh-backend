@@ -4,21 +4,25 @@ import { useAccess } from '../access';
 import { AccountSecurity } from './AccountSecurity';
 import { Notice } from './kit';
 
-// Signed in, but a second factor is required and none is set up yet: the
-// panel shows only this until an authenticator app or a passkey is set up
-// (the server refuses everything else meanwhile). Setting one up reloads the
-// own access, which then opens the panel.
+// Signed in, but something required is not set up yet (the authenticator app,
+// always; a passkey where it is required): the panel shows only this until it
+// is (the server refuses everything else meanwhile). Each step reloads the own
+// access, which opens the panel once nothing is missing.
 export function SecondFactorGate() {
   const { me, refresh } = useAccess();
   const { logout } = useAuth();
+  const missing = me?.secondFactorMissing ?? ['totp'];
+  const what = missing.length === 2
+    ? 'die Authenticator-App und einen Passkey'
+    : missing[0] === 'passkey' ? 'einen Passkey' : 'die Authenticator-App';
   return (
     <div className="min-h-screen bg-canvas px-5 py-12 md:py-20">
       <div className="mx-auto max-w-[720px]">
-        <h1 className="text-[26px] font-semibold tracking-[-0.02em]">Zweiten Faktor einrichten</h1>
+        <h1 className="text-[26px] font-semibold tracking-[-0.02em]">Anmeldung absichern</h1>
         <div className="mt-5">
           <Notice tone="amber" icon={ShieldAlert}>
-            Für das Admin-Konto <span className="font-medium">{me?.username}</span> ist eine Zwei-Faktor-Anmeldung Pflicht.
-            Richte eine Authenticator-App oder einen Passkey ein; danach öffnet sich das Panel.
+            Für Admin-Konten ist die Zwei-Faktor-Anmeldung Pflicht. Richte für <span className="font-medium">{me?.username}</span> jetzt {what} ein;
+            danach öffnet sich das Panel.
           </Notice>
         </div>
         <div className="mt-8">

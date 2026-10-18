@@ -139,7 +139,7 @@ function PasswordChange({ status }: { status: AdminSecurityStatus }) {
   );
 }
 
-type CodeAction = 'disable' | 'renew';
+type CodeAction = 'disable' | 'renew' | 'move';
 
 function AuthenticatorApp({ status, reload }: { status: AdminSecurityStatus; reload: () => Promise<void> }) {
   const [setup, setSetup] = useState<TotpSetup | null>(null);
@@ -148,6 +148,10 @@ function AuthenticatorApp({ status, reload }: { status: AdminSecurityStatus; rel
   const [error, setError] = useState<string | null>(null);
   const [recoveryCodes, setRecoveryCodes] = useState<string[] | null>(null);
   const [action, setAction] = useState<CodeAction | null>(null);
+  // Moving to a new device: the new secret, waiting for a code from that device.
+  const [moving, setMoving] = useState<TotpSetup | null>(null);
+  const [moved, setMoved] = useState(false);
+  const required = status.secondFactor?.totpRequired ?? false;
 
   async function begin() {
     setBusy(true);
@@ -187,11 +191,31 @@ function AuthenticatorApp({ status, reload }: { status: AdminSecurityStatus; rel
     try {
       if (action === 'disable') {
         await adminApi.disableTotp(code);
+      } else if (action === 'move') {
+        setMoving(await adminApi.startTotpMove(code));
+        setMoved(false);
       } else {
         setRecoveryCodes((await adminApi.renewRecoveryCodes(code)).recoveryCodes);
       }
       setAction(null);
       setCode('');
+      await reload();
+    } catch (err) {
+      setError(errorText(err, 'Code stimmt nicht'));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function finishMove(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      await adminApi.finishTotpMove(code);
+      setMoving(null);
+      setCode('');
+      setMoved(true);
       await reload();
     } catch (err) {
       setError(errorText(err, 'Code stimmt nicht'));
@@ -231,6 +255,38 @@ function AuthenticatorApp({ status, reload }: { status: AdminSecurityStatus; rel
 
       {recoveryCodes && <RecoveryCodes codes={recoveryCodes} onDone={() => setRecoveryCodes(null)} />}
 
+      {moved && (
+        <div className="mt-4 max-w-[60ch]">
+          <Notice tone="mint" icon={Check}>Umgezogen: ab jetzt gelten die Codes des neuen Geräts. Deine Recovery-Codes bleiben gültig.</Notice>
+        </div>
+      )}
+
+      {moving && (
+        <form onSubmit={(e) => void finishMove(e)} className="mt-5 flex max-w-[60ch] flex-col gap-5">
+          <div className="flex flex-wrap items-start gap-6">
+            {/* The QR code keeps its own white ground so it scans in dark mode too. */}
+            <img
+              src={`data:image/svg+xml;utf8,${encodeURIComponent(moving.qrSvg)}`}
+              alt="QR-Code für das neue Gerät"
+              width={176}
+              height={176}
+              className="rounded-[12px] bg-white p-2"
+            />
+            <div className="min-w-0 flex-1 text-[13.5px] leading-relaxed text-ink-2">
+              <p>1. Scanne den QR-Code mit der Authenticator-App auf dem neuen Gerät.</p>
+              <p className="mt-2">Oder gib den Schlüssel von Hand ein:</p>
+              <p className="mt-1 break-all font-mono text-[13px] text-ink">{moving.secret.replace(/(.{4})/g, '$1 ').trim()}</p>
+              <p className="mt-3">2. Gib den Code ein, den das neue Gerät zeigt. Bis dahin gilt das alte weiter.</p>
+            </div>
+          </div>
+          <FieldLabel label="Code vom neuen Gerät">{codeInput}</FieldLabel>
+          <div className="flex flex-wrap gap-2.5">
+            <button type="submit" disabled={busy} className="btn btn-primary">{busy ? <Spinner /> : null}Umziehen</button>
+            <button type="button" onClick={() => { setMoving(null); setError(null); setCode(''); }} className="btn btn-quiet">Abbrechen</button>
+          </div>
+        </form>
+      )}
+
       {!status.totpEnabled && !setup && (
         <button type="button" onClick={() => void begin()} disabled={busy} className="btn btn-primary mt-5">
           {busy ? <Spinner /> : <ShieldCheck size={16} strokeWidth={1.7} />}
@@ -264,17 +320,21 @@ function AuthenticatorApp({ status, reload }: { status: AdminSecurityStatus; rel
         </form>
       )}
 
-      {status.totpEnabled && !action && !recoveryCodes && (
+      {status.totpEnabled && !action && !recoveryCodes && !moving && (
         <div className="mt-5 flex flex-wrap gap-2.5">
+          <button type="button" onClick={() => { setAction('move'); setCode(''); setError(null); setMoved(false); }} className="btn btn-quiet">Auf neues Gerät umziehen</button>
           <button type="button" onClick={() => { setAction('renew'); setCode(''); setError(null); }} className="btn btn-quiet">Neue Recovery-Codes</button>
-          <button type="button" onClick={() => { setAction('disable'); setCode(''); setError(null); }} className="btn btn-danger">Deaktivieren</button>
+          {/* Required for admins: the app can move to a new device, not go away. */}
+          {!required && (
+            <button type="button" onClick={() => { setAction('disable'); setCode(''); setError(null); }} className="btn btn-danger">Deaktivieren</button>
+          )}
         </div>
       )}
 
       {action && (
         <form onSubmit={(e) => void confirmAction(e)} className="mt-5 flex max-w-[60ch] flex-col gap-4">
           <FieldLabel
-            label={action === 'disable' ? 'Code zum Deaktivieren' : 'Code für neue Recovery-Codes'}
+            label={action === 'disable' ? 'Code zum Deaktivieren' : action === 'move' ? 'Code vom bisherigen Gerät' : 'Code für neue Recovery-Codes'}
             hint="Ein Code aus der App oder ein Recovery-Code."
           >
             {codeInput}
@@ -282,7 +342,7 @@ function AuthenticatorApp({ status, reload }: { status: AdminSecurityStatus; rel
           <div className="flex flex-wrap gap-2.5">
             <button type="submit" disabled={busy} className={action === 'disable' ? 'btn btn-danger' : 'btn btn-primary'}>
               {busy ? <Spinner /> : null}
-              {action === 'disable' ? 'Deaktivieren' : 'Neue Codes erzeugen'}
+              {action === 'disable' ? 'Deaktivieren' : action === 'move' ? 'Weiter' : 'Neue Codes erzeugen'}
             </button>
             <button type="button" onClick={() => { setAction(null); setError(null); }} className="btn btn-quiet">Abbrechen</button>
           </div>
@@ -478,8 +538,9 @@ export function AccountSecurity({ onChange, factorsOnly = false }: { onChange?: 
       hint={
         <>
           Gilt für dein Admin-Konto{status ? <> <span className="font-medium text-ink-2">{status.username}</span></> : null}.
-          Sobald ein zweiter Faktor eingerichtet ist, reicht das Passwort allein nicht mehr.
-          {status?.secondFactor?.required ? <> Für dieses Konto ist ein zweiter Faktor Pflicht; der letzte lässt sich daher nicht entfernen.</> : null}
+          {status?.secondFactor?.totpRequired
+            ? <> Die Authenticator-App ist für Admin-Konten Pflicht{status.secondFactor.passkeyRequired ? ', für dieses Konto auch ein Passkey' : '; ein Passkey ist freiwillig'}.</>
+            : <> Sobald ein zweiter Faktor eingerichtet ist, reicht das Passwort allein nicht mehr.</>}
         </>
       }
     >

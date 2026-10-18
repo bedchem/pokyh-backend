@@ -7,57 +7,73 @@ import { secondFactorMethods } from './adminSecondFactor';
 import { audit } from './audit';
 import { announceChange } from './adminLive';
 import {
-  hasSecondFactor,
+  loginSteps,
+  missingFactors,
   requirementChange,
-  secondFactorRequired,
-  secondFactorSetupPending,
+  requirementsFor,
+  setupPending,
+  type FactorKind,
   type FactorState,
+  type Requirements,
 } from '../security/adminSecondFactorPolicy';
 
 /**
- * Login security of admin panel accounts: whether a second factor is
- * required (security/adminSecondFactorPolicy.ts has the rules), what is set
- * up, and the last panel login. Keyed by the admin login name.
+ * Login security of admin panel accounts: what is required (the
+ * authenticator app always, a passkey per account; the rules are in
+ * security/adminSecondFactorPolicy.ts), what is set up, and the last panel
+ * login. Keyed by the admin login name.
  */
 
 export type SecondFactorState = {
-  required: boolean;
-  // "account": set for this admin; "default": ADMIN_REQUIRE_SECOND_FACTOR.
-  source: 'account' | 'default';
+  required: Requirements;
+  // Where the passkey requirement comes from: "account" (set in the panel) or
+  // "default" (ADMIN_REQUIRE_PASSKEY).
+  passkeySource: 'account' | 'default';
   factors: FactorState;
-  // Signed in, but a second factor has to be set up before anything else.
+  // Required but not set up yet; while any is, only setting up opens.
+  missing: FactorKind[];
   setupPending: boolean;
 };
 
-async function settingOf(username: string): Promise<boolean | null> {
-  const row = await prisma.adminSecurity.findUnique({ where: { username }, select: { requireSecondFactor: true } });
-  return row?.requireSecondFactor ?? null;
+const serverRequirements = () => ({ totp: config.adminRequireSecondFactor, passkey: config.adminRequirePasskey });
+
+async function passkeySettingOf(username: string): Promise<boolean | null> {
+  const row = await prisma.adminSecurity.findUnique({ where: { username }, select: { requirePasskey: true } });
+  return row?.requirePasskey ?? null;
 }
 
-function stateFrom(username: string, setting: boolean | null, factors: FactorState): SecondFactorState {
+function stateFrom(username: string, passkeySetting: boolean | null, factors: FactorState): SecondFactorState {
   const owner = isOwner(username);
-  const required = secondFactorRequired(setting, owner, config.adminRequireSecondFactor);
+  const required = requirementsFor(passkeySetting, owner, serverRequirements());
+  const missing = missingFactors(required, factors);
   return {
     required,
-    source: owner || setting === null ? 'default' : 'account',
+    passkeySource: owner || passkeySetting === null ? 'default' : 'account',
     factors,
-    setupPending: secondFactorSetupPending(required, factors),
+    missing,
+    setupPending: setupPending(required, factors),
   };
 }
 
 export async function secondFactorState(username: string): Promise<SecondFactorState> {
-  const [setting, factors] = await Promise.all([settingOf(username), secondFactorMethods(username)]);
+  const [setting, factors] = await Promise.all([passkeySettingOf(username), secondFactorMethods(username)]);
   return stateFrom(username, setting, factors);
 }
 
 /**
- * Only whether the session must set up a second factor first. Runs on every
- * admin request, so the factors are only read when one is required.
+ * Only whether the session must set something up first. Runs on every admin
+ * request, so the factors are only read when something is required.
  */
 export async function secondFactorSetupNeeded(username: string): Promise<boolean> {
-  const setting = await settingOf(username);
-  if (!secondFactorRequired(setting, isOwner(username), config.adminRequireSecondFactor)) return false;
-  return !hasSecondFactor(await secondFactorMethods(username));
+  const required = requirementsFor(await passkeySettingOf(username), isOwner(username), serverRequirements());
+  if (!required.totp && !required.passkey) return false;
+  return setupPending(required, await secondFactorMethods(username));
+}
+
+/** The ways the login of `username` is confirmed after a correct password. */
+export async function loginStepsFor(username: string): Promise<FactorState> {
+  const state = await secondFactorState(username);
+  return loginSteps(state.required, state.factors);
 }
 
 export async function recordAdminLogin(username: string, method: string): Promise<void> {
@@ -70,36 +86,37 @@ export async function recordAdminLogin(username: string, method: string): Promis
   });
 }
 
-/** Sets (or with null resets to the default) whether `username` needs a second factor. */
-export async function setSecondFactorRequirement(username: string, required: boolean | null, changedBy: string): Promise<void> {
+/** Sets (or with null resets to ADMIN_REQUIRE_PASSKEY) whether `username` needs a passkey. */
+export async function setPasskeyRequirement(username: string, required: boolean | null, changedBy: string): Promise<void> {
   await prisma.adminSecurity.upsert({
     where: { username },
-    create: { username, requireSecondFactor: required, changedBy },
-    update: { requireSecondFactor: required, changedBy },
+    create: { username, requirePasskey: required, changedBy },
+    update: { requirePasskey: required, changedBy },
   });
 }
 
 /**
- * The panel's switch "Zweiter Faktor Pflicht" for one admin (null: back to
- * ADMIN_REQUIRE_SECOND_FACTOR). Another admin who may manage the target as a
- * whole (assertMayManageAdmin) may set it either way; an admin may only raise
- * their own; server owners follow the .env.
+ * The panel's switch "Passkey Pflicht" for one admin (null: back to
+ * ADMIN_REQUIRE_PASSKEY). Another admin who may manage the target as a whole
+ * (assertMayManageAdmin) may set it either way; an admin may only raise their
+ * own; server owners follow the .env. The authenticator app has no switch: it
+ * is always required.
  */
-export async function changeSecondFactorRequirement(req: Request, targetUsername: string, required: boolean | null): Promise<SecondFactorState> {
+export async function changePasskeyRequirement(req: Request, targetUsername: string, required: boolean | null): Promise<SecondFactorState> {
   const actor = actorOf(req);
   const self = sameName(actor.username, targetUsername);
-  const check = requirementChange({ self, targetOwner: isOwner(targetUsername), required, installationDefault: config.adminRequireSecondFactor });
-  if (check === 'owner') throw new ForbiddenError('Server-Admins (ADMIN_USERNAMES) folgen ADMIN_REQUIRE_SECOND_FACTOR in der .env');
-  if (check === 'self-lower') throw new ForbiddenError('Die eigene Pflicht zum zweiten Faktor kann nur ein anderer Admin aufheben');
+  const check = requirementChange({ self, targetOwner: isOwner(targetUsername), required, serverDefault: config.adminRequirePasskey });
+  if (check === 'owner') throw new ForbiddenError('Server-Admins (ADMIN_USERNAMES) folgen ADMIN_REQUIRE_PASSKEY in der .env');
+  if (check === 'self-lower') throw new ForbiddenError('Die eigene Passkey-Pflicht kann nur ein anderer Admin aufheben');
   const target = self ? { username: actor.username, schoolId: null } : await adminTarget(targetUsername);
   if (!self) await assertMayManageAdmin(req, target.username, target.schoolId);
 
   const before = await secondFactorState(target.username);
-  await setSecondFactorRequirement(target.username, required, actor.username);
+  await setPasskeyRequirement(target.username, required, actor.username);
   const after = await secondFactorState(target.username);
-  if (before.required !== after.required || before.source !== after.source) {
-    audit(req, 'admin.second_factor.requirement', { type: 'admin', id: target.username },
-      { required: after.required, source: after.source, before: before.required }, null);
+  if (before.required.passkey !== after.required.passkey || before.passkeySource !== after.passkeySource) {
+    audit(req, 'admin.passkey.requirement', { type: 'admin', id: target.username },
+      { required: after.required.passkey, source: after.passkeySource, before: before.required.passkey }, null);
     announceChange(['users', 'access']);
   }
   return after;
@@ -111,8 +128,11 @@ export async function clearAdminSecurity(username: string): Promise<void> {
 }
 
 export type AdminSecuritySummary = {
-  required: boolean;
-  source: 'account' | 'default';
+  totpRequired: boolean;
+  passkeyRequired: boolean;
+  passkeySource: 'account' | 'default';
+  // Required but not set up.
+  missing: FactorKind[];
   totp: boolean;
   passkeys: number;
   lastLoginAt: string | null;
@@ -152,11 +172,13 @@ export async function adminSecuritySummaries(usernames: readonly string[]): Prom
     const row = rowOf.get(key(username));
     const passkeyCount = passkeysOf.get(key(username)) ?? 0;
     const factors = { totp: withTotp.has(key(username)), passkey: passkeyCount > 0 };
-    const state = stateFrom(username, row?.requireSecondFactor ?? null, factors);
+    const state = stateFrom(username, row?.requirePasskey ?? null, factors);
     const lastLoginAt = row?.lastLoginAt ?? auditedLogin.get(key(username)) ?? null;
     out.set(username, {
-      required: state.required,
-      source: state.source,
+      totpRequired: state.required.totp,
+      passkeyRequired: state.required.passkey,
+      passkeySource: state.passkeySource,
+      missing: state.missing,
       totp: factors.totp,
       passkeys: passkeyCount,
       lastLoginAt: lastLoginAt?.toISOString() ?? null,

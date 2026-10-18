@@ -81,6 +81,8 @@ export function LoginPage() {
   const [challenge, setChallenge] = useState<SecondFactorChallenge | null>(null);
   const [code, setCode] = useState('');
   const [useRecovery, setUseRecovery] = useState(false);
+  // A passkey confirms this login; the recovery code form opens on request.
+  const [recoveryOpen, setRecoveryOpen] = useState(false);
   const [setupTicket, setSetupTicket] = useState<string | null>(null);
   const sheetRef = useRef<HTMLDivElement>(null);
   const passkeysSupported = browserSupportsWebAuthn();
@@ -114,6 +116,7 @@ export function LoginPage() {
     } else {
       setCode('');
       setUseRecovery(!result.methods.totp);
+      setRecoveryOpen(false);
       setChallenge(result);
     }
   }
@@ -212,7 +215,17 @@ export function LoginPage() {
               </button>
             )}
 
-            {challenge.methods.totp && (
+            {!challenge.methods.totp && challenge.methods.recovery && !recoveryOpen && (
+              <button
+                type="button"
+                onClick={() => { setRecoveryOpen(true); setUseRecovery(true); setCode(''); }}
+                className="self-start text-[13px] text-ink-3 transition-colors hover:text-ink"
+              >
+                Passkey nicht da? Recovery-Code verwenden
+              </button>
+            )}
+
+            {(challenge.methods.totp || recoveryOpen) && (
               <form onSubmit={(e) => void handleCode(e)} className="flex flex-col gap-5">
                 <div className="flex flex-col gap-2">
                   <label htmlFor="login-code" className="text-[13px] text-ink-2">
@@ -232,13 +245,16 @@ export function LoginPage() {
                     required
                     className="field h-[52px] w-full px-[18px] font-mono text-[17px] tracking-[0.2em]"
                   />
-                  <button
-                    type="button"
-                    onClick={() => { setUseRecovery(!useRecovery); setCode(''); }}
-                    className="self-start text-[13px] text-ink-3 transition-colors hover:text-ink"
-                  >
-                    {useRecovery ? 'Code aus der App verwenden' : 'Handy nicht da? Recovery-Code verwenden'}
-                  </button>
+                  {/* Where a passkey is required, an app code does not count. */}
+                  {challenge.methods.totp && (
+                    <button
+                      type="button"
+                      onClick={() => { setUseRecovery(!useRecovery); setCode(''); }}
+                      className="self-start text-[13px] text-ink-3 transition-colors hover:text-ink"
+                    >
+                      {useRecovery ? 'Code aus der App verwenden' : 'Handy nicht da? Recovery-Code verwenden'}
+                    </button>
+                  )}
                 </div>
 
                 {errorBox}
@@ -253,7 +269,7 @@ export function LoginPage() {
               </form>
             )}
 
-            {!challenge.methods.totp && errorBox}
+            {!challenge.methods.totp && !recoveryOpen && errorBox}
 
             <button
               type="button"

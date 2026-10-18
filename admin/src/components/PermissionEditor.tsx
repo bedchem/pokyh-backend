@@ -32,11 +32,13 @@ interface Props {
   onChange: (next: Permission[], preset?: string) => void;
   // What the editing admin holds in a scope.
   own: (scope: string) => Set<Permission>;
+  // Without scopes to choose from (editing a preset): whether the rights are global.
+  kind?: 'global' | 'school';
 }
 
-export function PermissionEditor({ catalog, scopes, scope, onScopeChange, value, onChange, own }: Props) {
+export function PermissionEditor({ catalog, scopes, scope, onScopeChange, value, onChange, own, kind }: Props) {
   const option = scopes.find((s) => s.value === scope);
-  const isGlobal = option?.kind === 'global';
+  const isGlobal = (kind ?? option?.kind) === 'global';
   const mine = own(scope);
   const chosen = useMemo(() => new Set(value), [value]);
   const available = catalog.permissions.filter((p) => isGlobal || p.scope === 'school');
@@ -142,7 +144,9 @@ export function PermissionEditor({ catalog, scopes, scope, onScopeChange, value,
       <div className="perm-summary" aria-live="polite">
         <div className="flex flex-wrap items-center gap-2 text-[14px] font-medium">
           {isGlobal ? <Globe2 size={16} strokeWidth={1.8} /> : <School size={16} strokeWidth={1.8} />}
-          {chosen.size === 0 ? 'Keine Rechte — Speichern entzieht alle Rechte in diesem Bereich.' : `${chosen.size} ${chosen.size === 1 ? 'Recht' : 'Rechte'} für ${option?.label ?? ''}`}
+          {chosen.size === 0
+            ? (kind ? 'Noch keine Rechte gewählt.' : 'Keine Rechte — Speichern entzieht alle Rechte in diesem Bereich.')
+            : `${chosen.size} ${chosen.size === 1 ? 'Recht' : 'Rechte'} für ${option?.label ?? (isGlobal ? 'alle Schulen' : 'eine Schule')}`}
         </div>
         {chosen.size > 0 && (
           <div className="mt-3 flex flex-wrap gap-1.5">

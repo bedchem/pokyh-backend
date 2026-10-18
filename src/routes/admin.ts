@@ -70,7 +70,7 @@ import {
 } from '../services/adminLogin';
 import { adminCanSignIn, grantNeedsOneTimePassword, mayViewOneTimePassword, validOneTimePassword } from '../security/adminLogin';
 import { clearSecondFactors, issueSecondFactorTicket, secondFactorMethods } from '../services/adminSecondFactor';
-import { adminSecuritySummaries, clearAdminSecurity, lastAppSignIns, recordAdminLogin, secondFactorSetupNeeded } from '../services/adminSecurity';
+import { adminSecuritySummaries, clearAdminSecurity, lastAppSignIns, loginStepsFor, recordAdminLogin, secondFactorSetupNeeded } from '../services/adminSecurity';
 import { SIGN_IN_PATHS } from '../services/accountActivity';
 import { hasClassIdentity, parseAccountRole } from '../utils/accountClass';
 import { audit } from '../services/audit';
@@ -380,10 +380,13 @@ router.post('/auth/login', loginLimiter, async (req: Request, res: Response): Pr
 // After a correct password: the second factor if one is set up, else the session.
 async function answerPasswordAccepted(req: Request, res: Response, username: string, method: string): Promise<void> {
   const loginIp = clientIp(req);
-  const methods = await secondFactorMethods(username);
+  // The authenticator app, a passkey, or (where a passkey is required) only
+  // the passkey; a recovery code is always offered where the app is set up.
+  const methods = await loginStepsFor(username);
+  const factors = await secondFactorMethods(username);
   if (methods.totp || methods.passkey) {
     logger.info('Admin login: password ok, second factor required', { action: 'admin_login_password_ok', username, ip: loginIp });
-    res.json({ secondFactorRequired: true, ticket: issueSecondFactorTicket(username), methods });
+    res.json({ secondFactorRequired: true, ticket: issueSecondFactorTicket(username), methods: { ...methods, recovery: factors.totp } });
     return;
   }
 

@@ -10,14 +10,14 @@ import {
   GLOBAL_SCOPE,
   PERMISSIONS,
   PERMISSION_GROUPS,
-  PRESETS,
   accessibleSchools,
   can,
   hasAnyPermission,
   permissionsIn,
 } from '../security/permissions';
 import { grantsOf, isOwner, parsePermissionList, setGrant } from '../services/adminAccess';
-import { adminSecuritySummaries, changeSecondFactorRequirement } from '../services/adminSecurity';
+import { adminSecuritySummaries, changePasskeyRequirement, secondFactorState } from '../services/adminSecurity';
+import { createPreset, deletePreset, listPresets, updatePreset } from '../services/adminPresets';
 import { audit } from '../services/audit';
 import { announceChange } from '../services/adminLive';
 import {
@@ -60,6 +60,8 @@ router.get('/me', allowDuringSecondFactorSetup, requireAdmin, async (req: Reques
     // A second factor is required and none is set up yet: the panel shows
     // only that step until one is (requireAdmin refuses everything else).
     secondFactorSetupRequired: req.adminSecondFactorSetupPending === true,
+    // What is still to be set up then: "totp" and/or "passkey".
+    secondFactorMissing: req.adminSecondFactorSetupPending ? (await secondFactorState(username)).missing : [],
     // The installation's local time zone (ANALYTICS_TIMEZONE): days and hours
     // in the panel are counted in it.
     timezone: config.usageAnalytics.timezone,
@@ -83,8 +85,34 @@ router.get('/me', allowDuringSecondFactorSetup, requireAdmin, async (req: Reques
 
 // ─── GET /api/admin/access/catalog ───────────────────────────────────────────
 
-router.get('/access/catalog', requireAdmin, (_req: Request, res: Response): void => {
-  res.json({ groups: PERMISSION_GROUPS, permissions: PERMISSIONS, presets: PRESETS });
+router.get('/access/catalog', requireAdmin, async (_req: Request, res: Response): Promise<void> => {
+  // Built-in presets and the ones admins made (services/adminPresets.ts).
+  res.json({ groups: PERMISSION_GROUPS, permissions: PERMISSIONS, presets: await listPresets() });
+});
+
+// ─── Own presets ("Vorlagen") ────────────────────────────────────────────────
+// Made, changed and removed by admins who manage global admins; a preset
+// holds only rights its author has. Rules in services/adminPresets.ts.
+
+const presetSchema = z.object({
+  label: z.string().max(200),
+  description: z.string().max(1000).optional().default(''),
+  scope: z.enum(['school', 'global']),
+  permissions: z.array(z.string().max(60)).max(100),
+});
+
+router.post('/access/presets', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+  res.status(201).json({ preset: await createPreset(req, presetSchema.parse(req.body)) });
+});
+
+router.put('/access/presets/:key', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+  const key = String(req.params['key']).trim().slice(0, 60);
+  res.json({ preset: await updatePreset(req, key, presetSchema.parse(req.body)) });
+});
+
+router.delete('/access/presets/:key', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+  await deletePreset(req, String(req.params['key']).trim().slice(0, 60));
+  res.status(204).send();
 });
 
 // ─── Schools ─────────────────────────────────────────────────────────────────
@@ -395,14 +423,14 @@ router.delete('/admins/:username/grants/:scope', requireAdmin, writeLimiter, asy
   res.status(204).send();
 });
 
-// Whether an admin needs a second factor: true / false, or null for the
-// installation default (ADMIN_REQUIRE_SECOND_FACTOR). Rules in
-// changeSecondFactorRequirement().
-router.put('/admins/:username/second-factor', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+// Whether an admin needs a passkey (besides the authenticator app, which is
+// always required): true / false, or null for ADMIN_REQUIRE_PASSKEY. Rules in
+// changePasskeyRequirement().
+router.put('/admins/:username/passkey-requirement', requireAdmin, writeLimiter, async (req: Request, res: Response): Promise<void> => {
   const { required } = z.object({ required: z.boolean().nullable() }).parse(req.body);
   const username = String(req.params['username']).trim().slice(0, 191);
-  const state = await changeSecondFactorRequirement(req, username, required);
-  res.json({ required: state.required, source: state.source, setupPending: state.setupPending });
+  const state = await changePasskeyRequirement(req, username, required);
+  res.json({ passkeyRequired: state.required.passkey, passkeySource: state.passkeySource, missing: state.missing, setupPending: state.setupPending });
 });
 
 // ─── GET /api/admin/audit-events ─────────────────────────────────────────────

@@ -216,12 +216,13 @@ export async function enableTotp(username: string, code: string): Promise<string
 
 /**
  * Checks a code from the authenticator app or one of the recovery codes and
- * uses it up. Returns which kind it was, or null.
+ * uses it up. Returns which kind it was, or null. With `allowTotp` false only
+ * a recovery code counts (a login that has to be confirmed with a passkey).
  */
-export async function useSecondFactorCode(username: string, code: string): Promise<'totp' | 'recovery' | null> {
+export async function useSecondFactorCode(username: string, code: string, allowTotp = true): Promise<'totp' | 'recovery' | null> {
   const row = await prisma.adminTotp.findUnique({ where: { username } });
   if (!row?.enabledAt) return null;
-  const step = verifyTotp(readSecret(row.secretEnc), code, Date.now(), row.lastUsedStep);
+  const step = allowTotp ? verifyTotp(readSecret(row.secretEnc), code, Date.now(), row.lastUsedStep) : null;
   if (step !== null) return (await acceptTotpStep(username, step)) ? 'totp' : null;
   const remaining = consumeRecoveryCode(parseHashes(row.recoveryCodes), code);
   if (!remaining) return null;
@@ -231,6 +232,34 @@ export async function useSecondFactorCode(username: string, code: string): Promi
     data: { recoveryCodes: JSON.stringify(remaining) },
   });
   return updated.count === 1 ? 'recovery' : null;
+}
+
+/**
+ * Moving the authenticator app to a new device without a gap: a current code
+ * (or a recovery code) starts it, the new secret waits beside the old one,
+ * and a code from the new device swaps them. Recovery codes stay valid.
+ */
+export async function startTotpMove(username: string, code: string): Promise<{ secret: string; otpauthUrl: string; qrSvg: string }> {
+  const row = await prisma.adminTotp.findUnique({ where: { username } });
+  if (!row?.enabledAt) throw new ValidationError('Die Authenticator-App ist noch nicht eingerichtet');
+  if (!(await useSecondFactorCode(username, code))) throw new ValidationError('Code stimmt nicht');
+  const secret = generateTotpSecret();
+  await prisma.adminTotp.update({ where: { username }, data: { pendingSecretEnc: sealSecret(secret, config.jwtSecret) } });
+  const url = otpauthUrl(secret, username, ISSUER);
+  const qrSvg = await QRCode.toString(url, { type: 'svg', margin: 1, errorCorrectionLevel: 'M' });
+  return { secret, otpauthUrl: url, qrSvg };
+}
+
+export async function finishTotpMove(username: string, code: string): Promise<void> {
+  const row = await prisma.adminTotp.findUnique({ where: { username } });
+  if (!row?.enabledAt || !row.pendingSecretEnc) throw new ValidationError('Starte den Umzug zuerst');
+  const step = verifyTotp(readSecret(row.pendingSecretEnc), code, Date.now(), 0);
+  if (step === null) throw new ValidationError('Code stimmt nicht — prüfe die Uhrzeit des neuen Geräts');
+  const updated = await prisma.adminTotp.updateMany({
+    where: { username, pendingSecretEnc: row.pendingSecretEnc },
+    data: { secretEnc: row.pendingSecretEnc, pendingSecretEnc: null, lastUsedStep: step },
+  });
+  if (updated.count === 0) throw new ValidationError('Der Umzug wurde inzwischen neu gestartet');
 }
 
 export async function disableTotp(username: string, code: string): Promise<void> {

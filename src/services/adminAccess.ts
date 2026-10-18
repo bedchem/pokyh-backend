@@ -19,6 +19,7 @@ import { ForbiddenError, NotFoundError, ValidationError } from '../utils/errors'
 import { audit } from './audit';
 import { announceChange } from './adminLive';
 import { schoolById } from './schools';
+import { listPresets } from './adminPresets';
 
 // Loading and changing what administrators may do. The rules themselves are
 // in security/permissions.ts; this module adds the database and the checks
@@ -175,7 +176,14 @@ export async function setGrant(
   if (permissions.length === 0) {
     await prisma.adminGrant.deleteMany({ where: { id } });
   } else {
-    const preset = presetKey && presetByKey(presetKey) && presetFor(scope, permissions) === presetKey ? presetKey : presetFor(scope, permissions);
+    // The preset the grant was made from, when it still matches it exactly
+    // (built-in and own presets alike); otherwise whichever one it matches.
+    const presets = await listPresets();
+    const matched = presetFor(scope, permissions, presets);
+    const chosen = presetKey ? presetByKey(presetKey, presets) : undefined;
+    const fits = chosen !== undefined && (chosen.scope === 'global') === (scope === GLOBAL_SCOPE)
+      && chosen.permissions.length === permissions.length && chosen.permissions.every((p) => permissions.includes(p));
+    const preset = fits ? chosen.key : matched;
     const row = await prisma.adminGrant.upsert({
       where: { id },
       create: { id, username: target.username, scope, preset, permissions: JSON.stringify(permissions), grantedBy: actor.username },

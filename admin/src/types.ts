@@ -29,12 +29,17 @@ export interface AdminUser {
   adminSecurity?: AdminLoginSecurity | null;
 }
 
-// An admin panel account's login security.
+export type FactorKind = 'totp' | 'passkey';
+
+// An admin panel account's login security: the authenticator app is always
+// required (ADMIN_REQUIRE_SECOND_FACTOR), a passkey when switched on for the
+// account or, with passkeySource "default", by ADMIN_REQUIRE_PASSKEY.
 export interface AdminLoginSecurity {
-  // A second factor is required: the account's own setting or, with source
-  // "default", ADMIN_REQUIRE_SECOND_FACTOR.
-  required: boolean;
-  source: 'account' | 'default';
+  totpRequired: boolean;
+  passkeyRequired: boolean;
+  passkeySource: 'account' | 'default';
+  // Required but not set up yet.
+  missing: FactorKind[];
   totp: boolean;
   passkeys: number;
   lastLoginAt: string | null;
@@ -1408,7 +1413,8 @@ export interface AnalyticsVisitorIp {
 export interface SecondFactorChallenge {
   secondFactorRequired: true;
   ticket: string;
-  methods: { totp: boolean; passkey: boolean };
+  // recovery: a recovery code works too (also where a passkey is required).
+  methods: { totp: boolean; passkey: boolean; recovery?: boolean };
 }
 
 // After a one-time password: the new admin must choose their own password.
@@ -1443,8 +1449,8 @@ export interface AdminSecurityStatus {
   // Which password signs this admin in: "admin" (panel only), "account" (also
   // the app login) or "config" (server configuration, not changeable here).
   password: 'admin' | 'account' | 'config';
-  // Whether this account needs a second factor, and whether it still has to set one up.
-  secondFactor?: { required: boolean; source: 'account' | 'default'; setupPending: boolean };
+  // What this account needs, and what it still has to set up.
+  secondFactor?: { totpRequired: boolean; passkeyRequired: boolean; passkeySource: 'account' | 'default'; missing: FactorKind[]; setupPending: boolean };
 }
 
 export interface TotpSetup {
@@ -1468,6 +1474,18 @@ export interface PermissionDef {
 
 export interface PermissionPreset {
   key: string;
+  label: string;
+  description: string;
+  scope: 'school' | 'global';
+  permissions: Permission[];
+  // Made in the panel (can be changed and removed), not built in.
+  custom?: boolean;
+  createdBy?: string | null;
+  updatedAt?: string | null;
+}
+
+// A new or changed own preset.
+export interface PresetDraft {
   label: string;
   description: string;
   scope: 'school' | 'global';
@@ -1499,8 +1517,9 @@ export interface AdminMe {
   global: Permission[];
   globalView: boolean;
   schools: MeSchool[];
-  // A second factor is required and none is set up yet: only that step opens.
+  // Something required is not set up yet: only setting it up opens.
   secondFactorSetupRequired?: boolean;
+  secondFactorMissing?: FactorKind[];
 }
 
 export interface AdminSchool {

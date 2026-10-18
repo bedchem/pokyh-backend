@@ -232,7 +232,10 @@ child.on('exit', (code) => process.exit(code === null ? 1 : code));
     return env;
   }
 
-  async start(node) {
+  // waitForCluster false: only until the node answers. Its cluster status is
+  // read through the admin API, which a node that requires the authenticator
+  // app keeps closed until the owner has set one up.
+  async start(node, { waitForCluster = true } = {}) {
     if (node.process) return;
     const logFile = path.join(node.dir, 'node.log');
     const child = spawn(process.execPath, [node.entry], {
@@ -249,6 +252,7 @@ child.on('exit', (code) => process.exit(code === null ? 1 : code));
       const res = await fetch(`${node.url}/readyz`).catch(() => null);
       return res?.ok === true;
     }, { timeoutMs: 180_000, intervalMs: 500, label: `node ${node.name} to become ready` });
+    if (!waitForCluster) return;
     // The database being ready comes first; the cluster layer starts right
     // after it.
     await waitFor(async () => (await this.status(node)).running === true, {

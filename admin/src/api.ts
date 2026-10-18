@@ -1,4 +1,4 @@
-import type { AdminStats, AdminClass, AdminSession, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish, AdminDishFull, AdminDishImportResult, AdminDishShiftResult, AdminDishRotateResult, AdminDishResetResult, AdminDishAnchorResult, DishPlan, AdminCommentsResponse, FileLogFile, FileLogResponse, FileLogEntry, FrontendActivityLogsResponse, FrontendActivityStats, AllTodosResponse, AllRemindersResponse, SchoolYearsResponse, ArchivedUsersResponse, ArchivedClass, ArchivedTodosResponse, ArchivedRemindersResponse, RolloverResult, RollbackResult, AdminApiKey, CreatedApiKey, LearnConfigValues, LearnAiConfigValues, LearnAiGrant, LearnAiTeamGrant, AdminLearnTeam, LearnTeamAssignableRole, AdminLearnCoursesResponse, AdminLearnCourseAccessResponse, AdminLearnCourse, AdminLearnCourseAccess, LearnCoursePermission, LearnCourseStatus, LearnCourseVisibility, AdminLearnCourseVocabularyResponse, AdminLearnVocabularyImportResponse, BackupsResponse, AdminPopup, PopupInput, ClusterStatus, ClusterInstall, CreatedClusterInstall, ClusterReach, ReachEntry, AdminAnalytics, AnalyticsRange, AnalyticsPeople, PeopleFilters, AnalyticsBreakdown, BreakdownKind, AnalyticsDishes, AnalyticsVisitors, AnalyticsVisitorIp, AnalyticsPersonDetail, VisitSource, ClusterUpdates, ClusterUpdateSettings, PopupTargetUser, PopupTargetClass, ClusterScope, WayTestResult, ReachKind, LoginResult, PasskeyChallenge, AdminSecurityStatus, TotpSetup, AdminPasskey, AccountRole } from './types';
+import type { AdminStats, AdminClass, AdminSession, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish, AdminDishFull, AdminDishImportResult, AdminDishShiftResult, AdminDishRotateResult, AdminDishResetResult, AdminDishAnchorResult, DishPlan, AdminCommentsResponse, FileLogFile, FileLogResponse, FileLogEntry, FrontendActivityLogsResponse, FrontendActivityStats, AllTodosResponse, AllRemindersResponse, SchoolYearsResponse, ArchivedUsersResponse, ArchivedClass, ArchivedTodosResponse, ArchivedRemindersResponse, RolloverResult, RollbackResult, AdminApiKey, CreatedApiKey, LearnConfigValues, LearnAiConfigValues, LearnAiGrant, LearnAiTeamGrant, AdminLearnTeam, LearnTeamAssignableRole, AdminLearnCoursesResponse, AdminLearnCourseAccessResponse, AdminLearnCourse, AdminLearnCourseAccess, LearnCoursePermission, LearnCourseStatus, LearnCourseVisibility, AdminLearnCourseVocabularyResponse, AdminLearnVocabularyImportResponse, BackupsResponse, AdminPopup, PopupInput, ClusterStatus, ClusterInstall, CreatedClusterInstall, ClusterReach, ReachEntry, AdminAnalytics, AnalyticsRange, AnalyticsPeople, PeopleFilters, AnalyticsBreakdown, BreakdownKind, AnalyticsDishes, AnalyticsVisitors, AnalyticsVisitorIp, AnalyticsPersonDetail, VisitSource, ClusterUpdates, ClusterUpdateSettings, PopupTargetUser, PopupTargetClass, ClusterScope, WayTestResult, ReachKind, LoginResult, PasskeyChallenge, AdminSecurityStatus, TotpSetup, AdminPasskey, AccountRole, FactorKind, PermissionPreset, PresetDraft } from './types';
 import type { SearchKind, SearchResponse } from './types';
 import type { AdminMe, AccessCatalog, AdminSchool, MensaMenu, AdminAccount, AdminGrantView, GrantInput, AuditEventsResponse, RequestScopeChoice, RequestsSummary, PerformanceReport, SystemHealth, SystemLogsResponse, ClientErrorGroup, ClientErrorOccurrence, PrivacyOverview, DishCommentGroupsResponse, DishCommentsResponse, ReminderCommentGroup, ReminderCommentItem } from './types';
 import type { AuthenticationResponseJSON, PublicKeyCredentialCreationOptionsJSON, PublicKeyCredentialRequestOptionsJSON, RegistrationResponseJSON } from '@simplewebauthn/browser';
@@ -187,6 +187,14 @@ export const adminApi = {
   renewRecoveryCodes: (code: string): Promise<{ recoveryCodes: string[] }> =>
     request('POST', '/api/admin/account/recovery-codes', { code }),
 
+  // Moving the authenticator app to a new device: a current code starts it,
+  // a code from the new device finishes it.
+  startTotpMove: (code: string): Promise<TotpSetup> =>
+    request<TotpSetup>('POST', '/api/admin/account/totp/move/start', { code }),
+
+  finishTotpMove: (code: string): Promise<void> =>
+    request<void>('POST', '/api/admin/account/totp/move/finish', { code }),
+
   passkeyRegistrationOptions: (password: string): Promise<PasskeyChallenge<PublicKeyCredentialCreationOptionsJSON>> =>
     request('POST', '/api/admin/account/passkeys/options', { password }),
 
@@ -312,8 +320,20 @@ export const adminApi = {
     request('PUT', `/api/admin/admins/${encodeURIComponent(username)}/grants/${encodeURIComponent(scope)}`, { permissions, preset }),
 
   // Whether an admin needs a second factor; null: back to ADMIN_REQUIRE_SECOND_FACTOR.
-  setSecondFactorRequired: (username: string, required: boolean | null): Promise<{ required: boolean; source: 'account' | 'default'; setupPending: boolean }> =>
-    request('PUT', `/api/admin/admins/${encodeURIComponent(username)}/second-factor`, { required }),
+  // Whether an admin needs a passkey (the authenticator app is always required);
+  // null: back to ADMIN_REQUIRE_PASSKEY.
+  setPasskeyRequired: (username: string, required: boolean | null): Promise<{ passkeyRequired: boolean; passkeySource: 'account' | 'default'; missing: FactorKind[]; setupPending: boolean }> =>
+    request('PUT', `/api/admin/admins/${encodeURIComponent(username)}/passkey-requirement`, { required }),
+
+  // Own presets ("Vorlagen") for admin rights.
+  createPreset: (input: PresetDraft): Promise<{ preset: PermissionPreset }> =>
+    request('POST', '/api/admin/access/presets', input),
+
+  updatePreset: (key: string, input: PresetDraft): Promise<{ preset: PermissionPreset }> =>
+    request('PUT', `/api/admin/access/presets/${encodeURIComponent(key)}`, input),
+
+  deletePreset: (key: string): Promise<void> =>
+    request<void>('DELETE', `/api/admin/access/presets/${encodeURIComponent(key)}`),
 
   removeGrant: (username: string, scope: string): Promise<void> =>
     request<void>('DELETE', `/api/admin/admins/${encodeURIComponent(username)}/grants/${encodeURIComponent(scope)}`),

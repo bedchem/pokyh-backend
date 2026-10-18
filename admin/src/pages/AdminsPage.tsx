@@ -8,7 +8,8 @@ import { useToast } from '../components/Toast';
 import { Avatar, Dialog, Empty, IconButton, Notice, PageHeader, Section, Spinner, Tag, useTableLabels } from '../components/kit';
 import { PermissionEditor } from '../components/PermissionEditor';
 import { AppointAdminDialog } from '../components/AppointAdminDialog';
-import { LastLogin, RequirementSwitch, SecondFactorBadge } from '../components/LoginSecurity';
+import { LastLogin, PasskeySwitch, SecondFactorBadge } from '../components/LoginSecurity';
+import { PresetManager } from '../components/PresetManager';
 import { dateTime } from '../components/format';
 import type { AccessCatalog, AdminAccount, AdminGrantView, AdminUser, Permission } from '../types';
 
@@ -37,13 +38,14 @@ export function AdminsPage() {
 
   const load = useCallback(async () => {
     try {
-      const [list, cat] = await Promise.all([adminApi.admins(), catalog ? Promise.resolve(catalog) : adminApi.accessCatalog()]);
+      // The catalog too: own presets change while the page is open.
+      const [list, cat] = await Promise.all([adminApi.admins(), adminApi.accessCatalog()]);
       setAdmins(list.admins);
       setCatalog(cat);
     } catch (err) {
       showToast(err instanceof Error ? err.message : 'Admins konnten nicht geladen werden', 'error');
     }
-  }, [catalog, showToast]);
+  }, [showToast]);
 
   useEffect(() => { void load(); }, [load]);
   useLive(['access', 'users'], () => { void load(); });
@@ -128,7 +130,7 @@ export function AdminsPage() {
                         {a.security ? (
                           <div className="flex flex-col items-start gap-1.5">
                             <SecondFactorBadge security={a.security} />
-                            <RequirementSwitch
+                            <PasskeySwitch
                               username={a.username}
                               security={a.security}
                               self={self}
@@ -159,7 +161,7 @@ export function AdminsPage() {
         )}
       </Section>
 
-      {catalog && <PresetGuide catalog={catalog} />}
+      {catalog && <PresetManager catalog={catalog} onChanged={() => { void load(); }} />}
 
       {editing && catalog && (
         <EditGrantsDialog account={editing} catalog={catalog} onClose={() => setEditing(null)} onSaved={() => { void load(); }} />
@@ -178,26 +180,6 @@ export function AdminsPage() {
         </Dialog>
       )}
     </div>
-  );
-}
-
-// The presets at a glance, so "Moderator" means the same to everyone.
-function PresetGuide({ catalog }: { catalog: AccessCatalog }) {
-  return (
-    <Section className="mt-[52px]" title="Vorlagen">
-      <div className="mt-6 grid gap-x-10 gap-y-6 sm:grid-cols-2">
-        {catalog.presets.map((p) => (
-          <div key={p.key} className="min-w-0">
-            <div className="flex items-center gap-2 text-[15px] font-medium">
-              {p.scope === 'global' ? <Globe2 size={15} strokeWidth={1.8} /> : <School size={15} strokeWidth={1.8} />}
-              {p.label}
-            </div>
-            <p className="mt-1 text-[13.5px] text-ink-3">{p.description}</p>
-            <p className="mt-1 text-[12.5px] text-ink-4">{p.permissions.length} Rechte</p>
-          </div>
-        ))}
-      </div>
-    </Section>
   );
 }
 

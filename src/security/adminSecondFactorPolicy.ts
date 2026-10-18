@@ -1,52 +1,75 @@
-// When an admin panel login needs a second factor (authenticator app or
-// passkey). The rules only, without the database, so they can be tested on
-// their own; services/adminSecurity.ts applies them.
+// Which second factors an admin panel login needs. The rules only, without
+// the database, so they can be tested on their own; services/adminSecurity.ts
+// applies them.
 //
-//   - Every admin account follows the installation default
-//     (ADMIN_REQUIRE_SECOND_FACTOR, on unless set to false) until another
-//     admin sets it for that account. Server owners (ADMIN_USERNAMES) are
-//     managed in the .env and always follow the default.
-//   - Required and nothing set up yet: the password still opens the panel,
-//     but only far enough to set up a second factor.
-//   - Required: the last factor cannot be removed.
-//   - Lowering the requirement takes another admin; an admin may only raise
-//     their own.
+//   - The authenticator app (2FA) is required for every admin account. Only
+//     the server can switch that off (ADMIN_REQUIRE_SECOND_FACTOR=false).
+//   - A passkey is optional. Per account another admin can make it required;
+//     accounts without their own setting follow ADMIN_REQUIRE_PASSKEY (off by
+//     default). Server owners (ADMIN_USERNAMES) are managed in the .env and
+//     always follow the server settings.
+//   - Something required is missing: the password (or a passkey) still opens
+//     the panel, but only far enough to set it up.
+//   - A passkey required and set up: the login is confirmed with it; a code
+//     from the app no longer does (a recovery code still does, for emergencies).
+//   - What is required cannot be removed while it is the last of its kind.
+//   - Lowering the passkey requirement takes another admin; an admin may only
+//     raise their own.
 
-export type FactorState = { totp: boolean; passkey: boolean };
+export type FactorKind = 'totp' | 'passkey';
+export type FactorState = Record<FactorKind, boolean>;
+export type Requirements = Record<FactorKind, boolean>;
 
-export function secondFactorRequired(setting: boolean | null | undefined, owner: boolean, installationDefault: boolean): boolean {
-  if (owner || setting === null || setting === undefined) return installationDefault;
-  return setting;
+export type ServerRequirements = {
+  // ADMIN_REQUIRE_SECOND_FACTOR: the authenticator app for every admin.
+  totp: boolean;
+  // ADMIN_REQUIRE_PASSKEY: a passkey for accounts without their own setting.
+  passkey: boolean;
+};
+
+export function requirementsFor(passkeySetting: boolean | null | undefined, owner: boolean, server: ServerRequirements): Requirements {
+  const passkey = owner || passkeySetting === null || passkeySetting === undefined ? server.passkey : passkeySetting;
+  return { totp: server.totp, passkey };
 }
 
-export function hasSecondFactor(factors: FactorState): boolean {
-  return factors.totp || factors.passkey;
+export function missingFactors(required: Requirements, factors: FactorState): FactorKind[] {
+  return (['totp', 'passkey'] as const).filter((kind) => required[kind] && !factors[kind]);
 }
 
-/** Signed in although a second factor is required and none is set up yet. */
-export function secondFactorSetupPending(required: boolean, factors: FactorState): boolean {
-  return required && !hasSecondFactor(factors);
+/** Signed in, but something required is not set up yet. */
+export function setupPending(required: Requirements, factors: FactorState): boolean {
+  return missingFactors(required, factors).length > 0;
 }
 
-/** May a factor go when `remaining` is what is left afterwards? */
-export function mayRemoveFactor(required: boolean, remaining: FactorState): boolean {
-  return !required || hasSecondFactor(remaining);
+/** May a factor of `kind` go when `remaining` is what is left afterwards? */
+export function mayRemoveFactor(kind: FactorKind, required: Requirements, remaining: FactorState): boolean {
+  return !required[kind] || remaining[kind];
+}
+
+/**
+ * The ways a login is confirmed after the password: with a passkey only
+ * when one is required and set up, otherwise whatever is set up. Nothing set
+ * up: no second step (the session then sets up what is required).
+ */
+export function loginSteps(required: Requirements, factors: FactorState): FactorState {
+  if (required.passkey && factors.passkey) return { totp: false, passkey: true };
+  return { ...factors };
 }
 
 export type RequirementChange = 'ok' | 'owner' | 'self-lower';
 
 /**
- * May the requirement of `target` be set to `required` (null: back to the
- * installation default, which counts as lowering when that default is off)?
+ * May the passkey requirement of `target` be set to `required` (null: back to
+ * the server default, which counts as lowering when that default is off)?
  */
 export function requirementChange(opts: {
   self: boolean;
   targetOwner: boolean;
   required: boolean | null;
-  installationDefault: boolean;
+  serverDefault: boolean;
 }): RequirementChange {
   if (opts.targetOwner) return 'owner';
-  const effective = opts.required ?? opts.installationDefault;
+  const effective = opts.required ?? opts.serverDefault;
   if (opts.self && !effective) return 'self-lower';
   return 'ok';
 }
