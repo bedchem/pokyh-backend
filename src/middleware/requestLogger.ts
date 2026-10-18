@@ -54,7 +54,11 @@ export function requestLogger(req: Request, res: Response, next: NextFunction): 
     // column width so an unusual value can never make the insert fail.
     const ip = clientIp(req);
 
-    const username = req.user?.username ?? req.adminUser?.username ?? req.adminUser?.role ?? null;
+    // A sign-in has no session yet, so its route names the account it signed
+    // in (res.locals.signedIn); the account can then see its own sign-ins
+    // (services/accountActivity.ts).
+    const signedIn = res.locals.signedIn as { stableUid: string; username: string } | undefined;
+    const username = req.user?.username ?? signedIn?.username ?? req.adminUser?.username ?? req.adminUser?.role ?? null;
     const logMeta = {
       method: req.method,
       path,
@@ -81,8 +85,9 @@ export function requestLogger(req: Request, res: Response, next: NextFunction): 
 
     // The account's school (cached), or the school an admin was looking at.
     const account = req.user?.stableUid;
-    const school: Promise<string | null> = account
-      ? schoolOfUser(account).catch(() => null)
+    const logAccount = account ?? signedIn?.stableUid;
+    const school: Promise<string | null> = logAccount
+      ? schoolOfUser(logAccount).catch(() => null)
       : Promise.resolve(req.adminScope?.schoolId ?? null);
     // An account's first request of the day (on this device kind) is the
     // Analytics page's evidence that it was active (services/accountDays.ts).
@@ -98,7 +103,7 @@ export function requestLogger(req: Request, res: Response, next: NextFunction): 
         status: res.statusCode,
         duration,
         ip,
-        stableUid: req.user?.stableUid ?? null,
+        stableUid: logAccount ?? null,
         username: username ? username.slice(0, 100) : null,
         userAgent: (req.headers['user-agent'] ?? '').slice(0, 500) || null,
         requestId: req.id,

@@ -386,6 +386,10 @@ const loginSchema = z.object({
   school: z.string().trim().toLowerCase().min(1).max(100).optional(),
   schoolName: z.string().trim().max(200).optional(),
   schoolServer: z.string().trim().max(253).optional(),
+  // An automatic renewal of an expired session (the website signs in again
+  // with the credentials it holds), not a sign-in by the person. It is not
+  // counted among the account's sign-ins.
+  renewal: z.boolean().optional().default(false),
 });
 
 const localLoginSchema = z.object({
@@ -485,6 +489,7 @@ router.post('/login', authLimiter, async (req: Request, res: Response) => {
       isUntisUser: false,
     });
     const refreshToken = await generateRefreshToken(user.stableUid);
+    res.locals.signedIn = { stableUid: user.stableUid, username: user.username };
 
     return res.json({
       token,
@@ -523,9 +528,11 @@ router.post('/login', authLimiter, async (req: Request, res: Response) => {
   }
 
   const body = loginSchema.parse(req.body);
-  const { username, klasseId, klasseName, role } = body;
+  const { username, klasseId, klasseName, role, renewal } = body;
 
-  res.json(await completeWebUntisLogin({ username, klasseId, klasseName, role, schoolId: await loginSchool(req, body) }));
+  const result = await completeWebUntisLogin({ username, klasseId, klasseName, role, schoolId: await loginSchool(req, body) });
+  if (!renewal) res.locals.signedIn = { stableUid: result.user.stableUid, username: result.user.username };
+  res.json(result);
 });
 
 // ─── POST /auth/register ─────────────────────────────────────────────────────
@@ -574,6 +581,7 @@ router.post('/register', authLimiter, async (req: Request, res: Response) => {
     isUntisUser: false,
   });
   const refreshToken = await generateRefreshToken(user.stableUid);
+  res.locals.signedIn = { stableUid: user.stableUid, username: user.username };
 
   res.status(201).json({
     token,
