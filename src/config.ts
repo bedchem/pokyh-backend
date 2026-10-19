@@ -382,6 +382,16 @@ export const config = {
     retentionDays: boundedIntEnv('USAGE_ANALYTICS_RETENTION_DAYS', 90, 30, 365),
   },
 
+  // ── An account's own activity (its profile, GET /users/me/activity) ───────
+  // With this on (the default), an account's active days, device kinds and
+  // sign-ins per day (request_account_days: no address, no path) and — only
+  // with its consent — the link of its visits to it (usage_sessions) are kept
+  // for the running school year instead of the request logs' 30 days and
+  // USAGE_ANALYTICS_RETENTION_DAYS. At the rollover (1 August) the year is
+  // archived per account (archived_activity) and the rows go. Off: the
+  // previous periods apply.
+  accountActivitySchoolYear: (process.env['ACCOUNT_ACTIVITY_SCHOOL_YEAR'] ?? 'true') !== 'false',
+
   // ── Archiving of expired todos/reminders ───────────────────────────────────
   archiveAfterHours: intEnv('ARCHIVE_AFTER_HOURS', 24),
   archiveCheckIntervalMs: intEnv('ARCHIVE_CHECK_INTERVAL_MS', 60 * 60 * 1000),

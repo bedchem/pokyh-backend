@@ -3278,7 +3278,19 @@ router.get('/school-years/:id/users', requireAdmin, requirePermission('schoolyea
     prisma.archivedUser.findMany({ where: where as never, orderBy: { username: 'asc' }, skip, take: limit }),
     prisma.archivedUser.count({ where: where as never }),
   ]);
-  res.json({ users, total, page, limit });
+  // Each account's year in figures (archived_activity), when it was active.
+  const activity = await prisma.archivedActivity.findMany({
+    where: { schoolYearId: id, stableUid: { in: users.map((u) => u.stableUid) } },
+    select: { stableUid: true, activeDays: true, logins: true, activeSeconds: true },
+  });
+  const activityByUid = new Map(activity.map((a) => [a.stableUid, a]));
+  res.json({
+    users: users.map((u) => {
+      const a = activityByUid.get(u.stableUid);
+      return { ...u, activity: a ? { activeDays: a.activeDays, logins: a.logins, activeSeconds: a.activeSeconds } : null };
+    }),
+    total, page, limit,
+  });
 });
 
 // ─── GET /api/admin/school-years/:id/classes ──────────────────────────────────

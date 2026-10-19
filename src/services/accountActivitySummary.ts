@@ -122,6 +122,41 @@ export function summarizeActivity(input: ActivityInput): ActivitySummary {
   };
 }
 
+/**
+ * The day ("YYYY-MM-DD") on which the school year that `todayKey` lies in
+ * began: the rollover day, by default 1 August (SCHOOL_YEAR_ROLLOVER_*).
+ */
+export function schoolYearStartKey(todayKey: string, month: number, day: number): string {
+  const [y, m, d] = todayKey.split('-').map(Number);
+  const started = (m ?? 1) > month || ((m ?? 1) === month && (d ?? 1) >= day);
+  const startYear = started ? (y ?? 1970) : (y ?? 1970) - 1;
+  return `${startYear}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+
+/** One day key per sign-in, from request_account_days rows that count them. */
+export function signInDays(rows: Array<{ dayKey: string; signIns?: number | null }>): string[] {
+  const out: string[] = [];
+  for (const row of rows) {
+    const n = Math.min(500, Math.max(0, Math.round(row.signIns ?? 0)));
+    for (let i = 0; i < n; i += 1) out.push(row.dayKey);
+  }
+  return out;
+}
+
+/** What the school-year archive keeps of an account's year: the figures and its active days, nothing else. */
+export function archiveSummary(summary: ActivitySummary, from: string, to: string) {
+  return {
+    from,
+    to,
+    totals: summary.totals,
+    weekdays: summary.weekdays,
+    hours: summary.hours,
+    platforms: summary.platforms,
+    // [day, sign-ins, foreground seconds] for each active day.
+    days: summary.days.filter((d) => d.active).map((d) => [d.date, d.logins, d.activeSeconds] as const),
+  };
+}
+
 /** The website's most opened screens, from "/de/grades/" style paths, locale left out. */
 export function topPages(paths: Array<string | null>, limit = 5): Array<{ page: string; views: number }> {
   const counts = new Map<string, number>();

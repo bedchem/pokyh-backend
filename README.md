@@ -151,6 +151,7 @@ npx web-push generate-vapid-keys   # VAPID key pair for Web Push
 | `VAPID_*` | Web Push key pair and contact address. |
 | `LEARN_*` | Pokyh Learn: allowed origins, legal activation gate, dictionary adapter, AI trainer, imports, review, analytics cache — see [Pokyh Learn](#pokyh-learn). |
 | `ANALYTICS_TIMEZONE` · `USAGE_ANALYTICS_RETENTION_DAYS` | Day/hour grouping of the usage statistics behind the admin Analytics page, and how long a visit stays linked to an account that opted in (30–365 days, default 90). Without consent, and afterwards, visits are anonymous aggregates. |
+| `ACCOUNT_ACTIVITY_SCHOOL_YEAR` | `true` (default): an account's active days, device kinds and sign-ins per day (`request_account_days`) and, with consent, the link of its visits to it are kept for the running school year instead of 30 days / `USAGE_ANALYTICS_RETENTION_DAYS`; the school-year rollover archives each account's year (`archived_activity`, shown under Schuljahre) and the rows are deleted. `false`: the shorter periods apply. |
 | `REQUEST_LOG_RETENTION_DAYS` · `LOG_FILE_RETENTION_DAYS` | Finite retention of request logs and log files. |
 | `CLUSTER_*` · `POKYH_*` | The cluster — see [Cluster settings](#cluster-settings). |
 

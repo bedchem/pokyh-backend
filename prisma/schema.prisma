@@ -488,6 +488,7 @@ model SchoolYear {
   archivedClasses   ArchivedClass[]
   archivedTodos     ArchivedTodo[]
   archivedReminders ArchivedReminder[]
+  archivedActivity  ArchivedActivity[]
 
   @@map("school_years")
 }
@@ -555,6 +556,28 @@ model ArchivedTodo {
   @@index([schoolYearId])
   @@index([schoolYearId, stableUid])
   @@map("archived_todos")
+}
+
+// An account's year in figures, taken at the rollover from request_account_days
+// and (with consent) usage_sessions — see services/accountActivitySummary.ts:
+// totals, weekdays, hours, platforms and the active days, as JSON. Archived
+// with the other data of the year and deleted with it.
+model ArchivedActivity {
+  id           String   @id @default(uuid())
+  schoolYearId String   @map("school_year_id")
+  stableUid    String   @map("stable_uid")
+  username     String   @default("")
+  activeDays   Int      @default(0) @map("active_days")
+  logins       Int      @default(0)
+  activeSeconds Int     @default(0) @map("active_seconds")
+  summaryJson  String   @map("summary_json") @db.Text
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  schoolYear SchoolYear @relation(fields: [schoolYearId], references: [id], onDelete: Cascade)
+
+  @@index([schoolYearId])
+  @@index([schoolYearId, stableUid])
+  @@map("archived_activity")
 }
 
 model ArchivedReminder {
@@ -915,6 +938,10 @@ model RequestAccountDay {
   client    String   @db.VarChar(10)
   schoolId  String?  @map("school_id") @db.VarChar(36)
   lastAt    DateTime @map("last_at")
+  // Successful sign-ins on this day and device kind (POST /auth/login|register,
+  // not the website's automatic renewals): the account's own sign-in count
+  // outlives the 30 days of the request logs for the school year.
+  signIns   Int      @default(0) @map("sign_ins")
 
   @@id([dayKey, stableUid, device, client])
   @@index([schoolId, dayKey])

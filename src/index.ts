@@ -44,6 +44,7 @@ import { SETUP_PATH, createSetupRouter } from './cluster/provision';
 import { startCluster, stopCluster } from './cluster';
 import { migrateLegacyAdmins, migrateToSchools } from './services/multiSchool';
 import { backfillAccountDays } from './services/accountDays';
+import { activityCutoffDay } from './services/accountActivity';
 
 const app = express();
 
@@ -312,8 +313,11 @@ async function cleanupExpiredSessions() {
 async function cleanupExpiredRequestLogs() {
   const cutoff = new Date(Date.now() - config.requestLogRetentionDays * 24 * 60 * 60 * 1000);
   const { count } = await prisma.requestLog.deleteMany({ where: { createdAt: { lt: cutoff } } });
-  // Their per-day summary goes with them (node-local as well).
-  const cutoffDay = localDayAndHour(cutoff, config.usageAnalytics.timezone).dayKey;
+  // Their per-day summary (node-local as well) stays for the school year when
+  // ACCOUNT_ACTIVITY_SCHOOL_YEAR is on, otherwise it goes with them.
+  const cutoffDay = config.accountActivitySchoolYear
+    ? await activityCutoffDay()
+    : localDayAndHour(cutoff, config.usageAnalytics.timezone).dayKey;
   await prisma.requestAccountDay.deleteMany({ where: { dayKey: { lt: cutoffDay } } });
   if (count > 0) logger.info('Request log retention cleanup', {
     action: 'request_log_retention_cleanup',
@@ -344,12 +348,16 @@ async function cleanupExpiredUsageSessions() {
   if (!ownsClusterWork('job:usage-analytics-cleanup')) return;
   const { timezone, retentionDays } = config.usageAnalytics;
   const now = Date.now();
-  const cutoffDayKey = localDayAndHour(new Date(now - retentionDays * 24 * 60 * 60 * 1000), timezone).dayKey;
+  // Linked to the account for the school year (ACCOUNT_ACTIVITY_SCHOOL_YEAR),
+  // otherwise for USAGE_ANALYTICS_RETENTION_DAYS.
+  const cutoffDayKey = config.accountActivitySchoolYear
+    ? await activityCutoffDay()
+    : localDayAndHour(new Date(now - retentionDays * 24 * 60 * 60 * 1000), timezone).dayKey;
   // Nothing is deleted: a visit only loses its account, after which it is one
   // of the anonymous counts the page is built from.
   // 0. Visits without a visitor key get one first, so they keep counting.
   const keyed = await keyUnkeyedVisits();
-  // 1. Named only for USAGE_ANALYTICS_RETENTION_DAYS.
+  // 1. Named only for the school year or USAGE_ANALYTICS_RETENTION_DAYS.
   const expired = await prisma.usageSession.updateMany({
     where: { stableUid: { not: null }, dayKey: { lt: cutoffDayKey } },
     data: { stableUid: null },

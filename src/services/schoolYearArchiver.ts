@@ -1,6 +1,8 @@
 import { prisma } from '../db';
 import { logger } from '../utils/logger';
 import { config } from '../config';
+import { yearSummaries } from './accountActivity';
+import { addDays } from './usageAnalytics';
 
 // Compute the school year label for a given date.
 // School year runs from Aug 1 → Jul 31 of the following year.
@@ -16,6 +18,7 @@ export function computeSchoolYear(date: Date): { startYear: number; label: strin
 export interface RolloverResult {
   label: string;
   usersArchived: number;
+  activityArchived: number;
   classesArchived: number;
   todosArchived: number;
   remindersArchived: number;
@@ -82,6 +85,14 @@ export async function performRollover(
 
   const usernameByUid = new Map(users.map((u) => [u.stableUid, u.username]));
 
+  // Each archived account's year in figures (active days, sign-ins and, with
+  // consent, foreground time), from the first day of the closed school year
+  // to the day before the next one.
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const yearFrom = `${startYear}-${pad(config.schoolYearRolloverMonth)}-${pad(config.schoolYearRolloverDay)}`;
+  const yearTo = addDays(`${startYear + 1}-${pad(config.schoolYearRolloverMonth)}-${pad(config.schoolYearRolloverDay)}`, -1);
+  const activity = await yearSummaries(usersToArchive.map((u) => u.stableUid), yearFrom, yearTo);
+
   // ── Atomic snapshot + delete ──────────────────────────────────────────────
   await prisma.$transaction(async (tx) => {
     const sy = await tx.schoolYear.create({ data: { label, startYear, rolledAt: now, note } });
@@ -107,6 +118,21 @@ export async function performRollover(
             createdAt:          u.createdAt,
           };
         }),
+      });
+    }
+
+    // 1b. Their activity of the year (services/accountActivity.ts).
+    if (activity.size > 0) {
+      await tx.archivedActivity.createMany({
+        data: [...activity.entries()].map(([stableUid, a]) => ({
+          schoolYearId:  sy.id,
+          stableUid,
+          username:      usernameByUid.get(stableUid) ?? '',
+          activeDays:    a.activeDays,
+          logins:        a.logins,
+          activeSeconds: a.activeSeconds,
+          summaryJson:   a.summaryJson,
+        })),
       });
     }
 
@@ -200,6 +226,7 @@ export async function performRollover(
   const result: RolloverResult = {
     label,
     usersArchived:     usersToArchive.length,
+    activityArchived:  activity.size,
     classesArchived:   classes.length,
     todosArchived:     todosToArchive.length,
     remindersArchived: reminders.length,

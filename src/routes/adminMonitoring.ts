@@ -427,7 +427,14 @@ router.get('/privacy/overview', requireAdmin, requirePermission('privacy.view'),
     retention: [
       { key: 'requestLogs', label: 'API-Anfragen (Pfad, Status, IP, User-Agent)', days: config.requestLogRetentionDays, note: 'REQUEST_LOG_RETENTION_DAYS; danach gelöscht' },
       { key: 'webVisits', label: 'Website- und App-Besuche: IP-Adresse und Ort', days: config.requestLogRetentionDays, note: 'danach anonyme Zählung ohne Adresse' },
-      { key: 'usageNamed', label: 'Nutzungsstatistik mit Konto (nur mit Einwilligung)', days: config.usageAnalytics.retentionDays, note: 'USAGE_ANALYTICS_RETENTION_DAYS; danach anonym' },
+      ...(config.accountActivitySchoolYear
+        ? [
+            { key: 'accountDays', label: 'Aktive Tage, Gerätetyp und Anmeldungen je Konto (ohne IP und Pfad)', days: null, note: 'laufendes Schuljahr (ACCOUNT_ACTIVITY_SCHOOL_YEAR); am Schuljahreswechsel je Konto archiviert, dann gelöscht' },
+            { key: 'usageNamed', label: 'Nutzungsstatistik mit Konto (nur mit Einwilligung)', days: null, note: 'laufendes Schuljahr; danach anonym, die Summen je Konto im Schuljahresarchiv' },
+          ]
+        : [
+            { key: 'usageNamed', label: 'Nutzungsstatistik mit Konto (nur mit Einwilligung)', days: config.usageAnalytics.retentionDays, note: 'USAGE_ANALYTICS_RETENTION_DAYS; danach anonym' },
+          ]),
       { key: 'clientErrors', label: 'Fehlerberichte der Apps (ohne IP und Konto)', days: config.clientErrors.retentionDays, note: 'CLIENT_ERROR_RETENTION_DAYS' },
       { key: 'audit', label: 'Admin-Protokoll', days: config.auditRetentionDays, note: 'AUDIT_RETENTION_DAYS, mindestens 180 Tage' },
       { key: 'logFiles', label: 'Server-Logdateien', days: Number.parseInt(process.env['LOG_FILE_RETENTION_DAYS'] ?? '30', 10) || 30, note: 'LOG_FILE_RETENTION_DAYS; Geheimnisse werden beim Schreiben entfernt' },
@@ -438,7 +445,7 @@ router.get('/privacy/overview', requireAdmin, requirePermission('privacy.view'),
       { key: 'account', label: 'Konto', purpose: 'Anmeldung, Klasse, Rolle, Schule', basis: 'Nutzung des Dienstes (Art. 6 Abs. 1 lit. b DSGVO) bzw. öffentliche Aufgabe der Schule (lit. e) — vom Verantwortlichen festzulegen', retention: 'bis zur Löschung / Schuljahreswechsel', access: 'Admins der Schule mit „Nutzer ansehen“' },
       { key: 'content', label: 'Todos, Erinnerungen, Kommentare, Bewertungen', purpose: 'Funktionen der App', basis: 'Nutzung des Dienstes (lit. b)', retention: 'bis zur Löschung durch Nutzer, Admin oder Kontolöschung', access: 'Admins der Schule mit den jeweiligen Rechten' },
       { key: 'requestLogs', label: 'API-Anfragen', purpose: 'Betrieb, Fehlersuche, Missbrauchsabwehr', basis: 'berechtigtes Interesse (lit. f)', retention: days(config.requestLogRetentionDays), access: 'Schul-Admins ohne IP und User-Agent; System-Admins vollständig' },
-      { key: 'usage', label: 'Nutzungsstatistik', purpose: 'Analytics (Zeit, Gerät, Bildschirme)', basis: 'mit Konto: Einwilligung (lit. a, widerrufbar); sonst anonyme Zählung (berechtigtes Interesse, Garante-Leitlinien 2021)', retention: `${days(config.usageAnalytics.retentionDays)} mit Konto, danach anonym`, access: 'Admins mit „Analytics ansehen“, Namen nur bei Einwilligung' },
+      { key: 'usage', label: 'Nutzungsstatistik', purpose: 'Analytics (Zeit, Gerät, Bildschirme)', basis: 'mit Konto: Einwilligung (lit. a, widerrufbar); sonst anonyme Zählung (berechtigtes Interesse, Garante-Leitlinien 2021)', retention: config.accountActivitySchoolYear ? 'mit Konto bis Schuljahresende (Summen im Schuljahresarchiv), danach anonym' : `${days(config.usageAnalytics.retentionDays)} mit Konto, danach anonym`, access: 'Admins mit „Analytics ansehen“, Namen nur bei Einwilligung' },
       { key: 'clientErrors', label: 'Fehlerberichte', purpose: 'Fehler in Website und Apps finden', basis: 'berechtigtes Interesse (lit. f); keine IP, kein Konto', retention: days(config.clientErrors.retentionDays), access: 'Admins mit „Frontend-Logs ansehen“ (eigene Schule)' },
       { key: 'audit', label: 'Admin-Protokoll', purpose: 'Nachvollziehbarkeit von Admin-Zugriffen und -Änderungen', basis: 'berechtigtes Interesse / Vorgaben des Garante zu Systemadministratoren (27.11.2008)', retention: days(config.auditRetentionDays), access: 'Admins mit „Admin-Protokoll ansehen“ (eigene Schule)' },
     ],

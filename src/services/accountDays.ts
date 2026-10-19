@@ -32,6 +32,23 @@ export function noteAccountDay(stableUid: string, userAgent: string | undefined,
   });
 }
 
+// A successful sign-in (POST /auth/login|register, not the website's automatic
+// renewals: requestLogger only passes res.locals.signedIn). Counted on the
+// account's row of the day, so the profile's sign-ins last as long as its
+// active days — the running school year — instead of the request logs' 30 days.
+export function noteSignIn(stableUid: string, userAgent: string | undefined, schoolId: string | null, now = new Date()): void {
+  const kind = classifyUserAgent(userAgent) ?? { device: 'other', client: 'web' };
+  const { dayKey } = localDayAndHour(now, config.usageAnalytics.timezone);
+  const id = { dayKey, stableUid: stableUid.slice(0, 64), device: kind.device, client: kind.client };
+  // The day row exists now; noteAccountDay need not write it again soon.
+  written.set(`${dayKey}|${stableUid}|${kind.device}|${kind.client}`, now.getTime());
+  prisma.requestAccountDay.upsert({
+    where: { dayKey_stableUid_device_client: id },
+    create: { ...id, schoolId, lastAt: now, signIns: 1 },
+    update: { lastAt: now, schoolId, signIns: { increment: 1 } },
+  }).catch(() => {});
+}
+
 // Fills the table from the request logs once (the first start with it, or a
 // node whose table is empty): day by day, so no single query has to group a
 // month of logs.

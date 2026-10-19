@@ -52,6 +52,13 @@ function TableHead({ children }: { children: React.ReactNode }) {
 }
 
 const th = 'px-4 py-2.5 text-left text-[13px]';
+
+/** Foreground time, e.g. "12 h 05 min". */
+function duration(seconds: number): string {
+  const m = Math.round(seconds / 60);
+  if (m < 60) return `${m} min`;
+  return `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, '0')} min`;
+}
 const td = 'px-4 py-3 text-[13px]';
 
 // ─── sub-views ────────────────────────────────────────────────────────────────
@@ -101,11 +108,14 @@ function UsersTab({ yearId }: { yearId: string }) {
             <th className={th}>Rolle</th>
             <th className={th}>Klasse</th>
             <th className={th}>WebUntis-ID</th>
+            <th className={th} title="Tage mit Nutzung im Schuljahr">Aktive Tage</th>
+            <th className={th}>Anmeldungen</th>
+            <th className={th} title="Nur mit Einwilligung in die Nutzungsstatistik">Nutzungszeit</th>
             <th className={th}>Erstellt</th>
           </TableHead></thead>
           <tbody>
             {!loading && users.length === 0 && (
-              <tr><td colSpan={5} className="px-4 py-8 text-center text-[13px]" style={dimText}>Keine Nutzer</td></tr>
+              <tr><td colSpan={8} className="px-4 py-8 text-center text-[13px]" style={dimText}>Keine Nutzer</td></tr>
             )}
             {users.map((u) => (
               <tr key={u.id} style={{ borderBottom: '1px solid rgb(var(--ink-rgb) / calc(0.054 * var(--veil)))' }} className="hover:bg-ink/[0.05]">
@@ -117,6 +127,9 @@ function UsersTab({ yearId }: { yearId: string }) {
                 </td>
                 <td className={td} style={dimText}>{u.className ?? '—'}{u.classCode ? ` (${u.classCode})` : ''}</td>
                 <td className={td} style={dimText}>{u.webuntisKlasseId || '—'}</td>
+                <td className={`${td} tabular-nums`}>{u.activity ? u.activity.activeDays : '—'}</td>
+                <td className={`${td} tabular-nums`} style={dimText}>{u.activity ? u.activity.logins : '—'}</td>
+                <td className={`${td} tabular-nums`} style={dimText}>{u.activity && u.activity.activeSeconds > 0 ? duration(u.activity.activeSeconds) : '—'}</td>
                 <td className={`${td} text-[12px]`} style={dimText}>{new Date(u.createdAt).toLocaleDateString('de-AT', { day: '2-digit', month: '2-digit', year: '2-digit' })}</td>
               </tr>
             ))}
@@ -375,7 +388,7 @@ export function SchoolYearsPage() {
     setRolling(true); setRolloverError(null); setRolloverSuccess(null);
     try {
       const r = await adminApi.rolloverSchoolYear();
-      setRolloverSuccess(`Schuljahr ${r.label} archiviert: ${r.usersArchived} Nutzer, ${r.classesArchived} Klassen, ${r.todosArchived} Todos, ${r.remindersArchived} Erinnerungen`);
+      setRolloverSuccess(`Schuljahr ${r.label} archiviert: ${r.usersArchived} Nutzer${r.activityArchived ? ` (${r.activityArchived} mit Aktivität)` : ''}, ${r.classesArchived} Klassen, ${r.todosArchived} Todos, ${r.remindersArchived} Erinnerungen`);
       await load();
     } catch (err) {
       setRolloverError(err instanceof Error ? err.message : 'Fehler beim Schuljahreswechsel');

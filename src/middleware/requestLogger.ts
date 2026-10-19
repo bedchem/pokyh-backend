@@ -3,7 +3,7 @@ import { prisma } from '../db';
 import { config } from '../config';
 import { logger } from '../utils/logger';
 import { schoolOfUser } from '../services/schools';
-import { noteAccountDay } from '../services/accountDays';
+import { noteAccountDay, noteSignIn } from '../services/accountDays';
 
 // Paths to skip logging (health checks, static assets, admin panel HTML). The
 // usage heartbeat arrives once a minute from every open app; logging each one
@@ -93,6 +93,10 @@ export function requestLogger(req: Request, res: Response, next: NextFunction): 
     // Analytics page's evidence that it was active (services/accountDays.ts).
     if (account && res.statusCode < 400) {
       void school.then((schoolId) => noteAccountDay(account, req.headers['user-agent'], schoolId));
+    }
+    // A successful sign-in counts on that day too (the account's own figure).
+    if (signedIn && res.statusCode < 300) {
+      void school.then((schoolId) => noteSignIn(signedIn.stableUid, req.headers['user-agent'], schoolId));
     }
 
     // Non-blocking DB write — never fails silently

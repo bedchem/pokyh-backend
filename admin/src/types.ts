@@ -400,6 +400,8 @@ export interface ArchivedUser {
   classCode: string | null;
   className: string | null;
   createdAt: string;
+  /** The account's school year in figures, when it was active (archived_activity). */
+  activity: { activeDays: number; logins: number; activeSeconds: number } | null;
 }
 
 export interface ArchivedUsersResponse {
@@ -485,6 +487,7 @@ export interface RolloverResult {
   ok: boolean;
   label: string;
   usersArchived: number;
+  activityArchived?: number;
   classesArchived: number;
   todosArchived: number;
   remindersArchived: number;

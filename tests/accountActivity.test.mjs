@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { loadTs } from './helpers/loadTs.mjs';
 
-const { summarizeActivity, topPages } = await loadTs('src/services/accountActivitySummary.ts');
+const { summarizeActivity, topPages, schoolYearStartKey, signInDays, archiveSummary } = await loadTs('src/services/accountActivitySummary.ts');
 
 const days = ['2026-10-12', '2026-10-13', '2026-10-14', '2026-10-15', '2026-10-16', '2026-10-17', '2026-10-18'];
 
@@ -79,4 +79,23 @@ test('top pages drop the language prefix and query', () => {
     { page: '/', views: 1 },
     { page: '/home', views: 1 },
   ]);
+});
+
+test('the school year starts on the rollover day', () => {
+  assert.equal(schoolYearStartKey('2026-10-18', 8, 1), '2026-08-01');
+  assert.equal(schoolYearStartKey('2026-08-01', 8, 1), '2026-08-01');
+  assert.equal(schoolYearStartKey('2026-07-31', 8, 1), '2025-08-01');
+  assert.equal(schoolYearStartKey('2027-01-05', 9, 15), '2026-09-15');
+});
+
+test('counted sign-ins become one day per sign-in', () => {
+  assert.deepEqual(signInDays([{ dayKey: '2026-10-14', signIns: 2 }, { dayKey: '2026-10-15', signIns: 0 }, { dayKey: '2026-10-16' }]), ['2026-10-14', '2026-10-14']);
+});
+
+test('the archive keeps the figures and only the active days', () => {
+  const s = summarizeActivity({ days, accountDays: [{ dayKey: '2026-10-13', device: 'ios', client: 'app' }], sessions: [], signIns: ['2026-10-13'] });
+  const a = archiveSummary(s, '2026-08-01', '2027-07-31');
+  assert.equal(a.from, '2026-08-01');
+  assert.equal(a.totals.activeDays, 1);
+  assert.deepEqual(a.days, [['2026-10-13', 1, 0]]);
 });
