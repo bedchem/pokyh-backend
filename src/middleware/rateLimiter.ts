@@ -145,10 +145,16 @@ export const learnAiLimiter = rateLimit({
   keyGenerator: (req) => `learn-ai:${req.user?.stableUid ?? 'unauthenticated'}`,
 });
 
+// Live streams (EventSource). The website opens them straight from the browser,
+// a few per page, and a whole school reaches the API through one address: an
+// address-wide budget turned away every pupil after the first few. Mount only
+// after requireAuth and count per account; globalLimiter still bounds each
+// address.
 export const sseLimiter = rateLimit({
   windowMs: config.rateLimit.sseWindowMs,
   max: config.rateLimit.sseMax,
   standardHeaders: true,
   legacyHeaders: false,
-  message: { error: 'Too many SSE connections from this IP.' },
+  message: { error: 'Too many live connections, please try again later.' },
+  keyGenerator: (req) => `sse:${req.user?.stableUid ?? 'unauthenticated'}`,
 });

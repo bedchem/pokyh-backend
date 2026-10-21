@@ -400,7 +400,8 @@ export const config = {
     writeWindowMs: intEnv('RATE_LIMIT_WRITE_WINDOW_MS', 60 * 1000),
     readMax: intEnv('RATE_LIMIT_READ_MAX', 300),
     readWindowMs: intEnv('RATE_LIMIT_READ_WINDOW_MS', 60 * 1000),
-    sseMax: intEnv('RATE_LIMIT_SSE_MAX', 10),
+    // New live streams per account (website tabs and the app together).
+    sseMax: intEnv('RATE_LIMIT_SSE_MAX', 30),
     sseWindowMs: intEnv('RATE_LIMIT_SSE_WINDOW_MS', 60 * 1000),
     adminLoginMax: intEnv('RATE_LIMIT_ADMIN_LOGIN_MAX', 10),
     adminLoginWindowMs: intEnv('RATE_LIMIT_ADMIN_LOGIN_WINDOW_MS', 15 * 60 * 1000),

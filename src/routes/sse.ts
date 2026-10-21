@@ -20,7 +20,7 @@ function setupSseConnection(res: Response): void {
 }
 
 // GET /sse/todos — stream todo changes for authenticated user
-router.get('/todos', sseLimiter, requireAuth, async (req: Request, res: Response) => {
+router.get('/todos', requireAuth, sseLimiter, async (req: Request, res: Response) => {
   const { stableUid } = req.user!;
 
   setupSseConnection(res);
@@ -43,7 +43,7 @@ router.get('/todos', sseLimiter, requireAuth, async (req: Request, res: Response
 });
 
 // GET /sse/reminders/:classId — stream reminder changes for a class
-router.get('/reminders/:classId', sseLimiter, requireAuth, async (req: Request, res: Response) => {
+router.get('/reminders/:classId', requireAuth, sseLimiter, async (req: Request, res: Response) => {
   const classId = req.params['classId'] as string;
   const { stableUid, role } = req.user!;
 
@@ -83,7 +83,7 @@ router.get('/reminders/:classId', sseLimiter, requireAuth, async (req: Request, 
 // overviews (web and Android) update the moment anyone rates anywhere.
 // Events: `dishRating` with { dishId, ratings, myRating }. No initial snapshot —
 // clients load that via POST /dish-ratings/batch.
-router.get('/dish-ratings', sseLimiter, requireAuth, async (req: Request, res: Response) => {
+router.get('/dish-ratings', requireAuth, sseLimiter, async (req: Request, res: Response) => {
   // The account's own school's menu.
   const { menuId } = await menuContext(req);
   setupSseConnection(res);
@@ -91,7 +91,7 @@ router.get('/dish-ratings', sseLimiter, requireAuth, async (req: Request, res: R
 });
 
 // GET /sse/dish-ratings/:dishId — stream dish rating changes
-router.get('/dish-ratings/:dishId', sseLimiter, requireAuth, async (req: Request, res: Response) => {
+router.get('/dish-ratings/:dishId', requireAuth, sseLimiter, async (req: Request, res: Response) => {
   const { stableUid } = req.user!;
   const dishId = await resolveDishKey(req.params['dishId'] as string);
   const { menuId } = await menuContext(req);
@@ -113,7 +113,7 @@ router.get('/dish-ratings/:dishId', sseLimiter, requireAuth, async (req: Request
 });
 
 // GET /sse/reminder-comments/:reminderId — stream comment changes for a reminder
-router.get('/reminder-comments/:reminderId', sseLimiter, requireAuth, async (req: Request, res: Response) => {
+router.get('/reminder-comments/:reminderId', requireAuth, sseLimiter, async (req: Request, res: Response) => {
   const reminderId = req.params['reminderId'] as string;
   const { stableUid, role } = req.user!;
 
@@ -153,7 +153,7 @@ router.get('/reminder-comments/:reminderId', sseLimiter, requireAuth, async (req
 });
 
 // GET /sse/dish-comments/:dishId — stream comment changes for a dish
-router.get('/dish-comments/:dishId', sseLimiter, requireAuth, async (req: Request, res: Response) => {
+router.get('/dish-comments/:dishId', requireAuth, sseLimiter, async (req: Request, res: Response) => {
   const dishId = await resolveDishKey(req.params['dishId'] as string);
   const { menuId } = await menuContext(req);
 
