@@ -6,6 +6,7 @@ import { readLimiter, writeLimiter } from '../middleware/rateLimiter';
 import { resolveDishKey, resolveDishKeys, slugifyDishName } from '../utils/dishKey';
 import { ForbiddenError } from '../utils/errors';
 import { publishDishRatings, ratingsPayload, reclaimDishRatings, type DishRatingsPayload } from '../services/dishRatings';
+import { publishDishComments } from '../services/dishComments';
 import { menuContext } from '../services/schools';
 import { cached } from '../services/cache';
 
@@ -108,8 +109,10 @@ router.post('/:dishId', writeLimiter, requireAuth, async (req: Request, res: Res
     update: { stars, username, menuId, schoolId },
   });
 
-  // Every open app and browser — Android and web — gets the new numbers live.
+  // Every open app and browser — Android and web — gets the new numbers live,
+  // and the dish's comments the voter's new stars beside their name.
   await publishDishRatings(menuId, dishKey);
+  await publishDishComments(menuId, dishKey);
 
   res.json(await getDishRatingsData(menuId, dishKey, stableUid));
 });

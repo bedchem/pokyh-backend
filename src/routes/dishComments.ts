@@ -18,10 +18,11 @@ const router = Router();
 // school's menu (services/schools.ts menuContext).
 
 // Kept in the shared cache per menu and dish; a new, edited or removed
-// comment drops it (services/cache.ts).
+// comment drops it, and so does a vote, as each comment carries its author's
+// stars (services/cache.ts).
 async function getCommentsForDish(menuId: string | null, dishKey: string) {
   if (!menuId) return [];
-  return cached(`dish-comments:${menuId}:${dishKey}`, ['DishComment'], 120, () => commentsForDish(menuId, dishKey));
+  return cached(`dish-comments:${menuId}:${dishKey}`, ['DishComment', 'DishRating'], 120, () => commentsForDish(menuId, dishKey));
 }
 
 // The account behind an app session may moderate the comments of a school
@@ -55,7 +56,7 @@ function decoyText(seed: string, length: number): string {
 }
 
 // GET /dish-comments/:dishId — public read. Guests only get placeholders with
-// the real count and timestamps; author and text stay behind the login.
+// the real count and timestamps; author, text and stars stay behind the login.
 router.get('/:dishId', readLimiter, optionalAuth, async (req: Request, res: Response) => {
   const raw = req.params['dishId'] as string;
   const key = await resolveDishKey(raw);

@@ -120,6 +120,8 @@ async function run(): Promise<void> {
   for (const value of take(pending.ratedDishes)) {
     const [menuId, dishKey] = splitDish(value);
     await publishDishRatings(menuId, dishKey);
+    // The comments carry each author's stars, so they go out again too.
+    pending.commentedDishes.add(value);
   }
   for (const value of take(pending.commentedDishes)) {
     const [menuId, dishKey] = splitDish(value);
