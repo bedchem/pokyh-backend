@@ -294,11 +294,6 @@ export const config = {
       messageDrafts: strEnv('WEBUNTIS_API_PATH_MSG_DRAFTS', '/api/rest/view/v1/messages/drafts'),
       messageRecipients: strEnv('WEBUNTIS_API_PATH_MSG_RECIPIENTS', '/api/rest/view/v1/messages/recipients/static/persons'),
     },
-    // Permission resources that let an account report or excuse absences.
-    absenceRights: strEnv('WEBUNTIS_ABSENCE_RIGHT', 'STUDABS_REPORT,SELF_ABSENCEREASON,WRITE_OWN_ABSENCE,WRITE_STUD_ABSENCE,STUDENT_ABSENCE,SELF_ABSENCE')
-      .split(',')
-      .map((s) => s.trim().toUpperCase())
-      .filter(Boolean),
     // Instance-specific guardian markers, in addition to the built-in ones.
     parentRoles: strEnv('WEBUNTIS_PARENT_ROLE', '')
       .split(',')

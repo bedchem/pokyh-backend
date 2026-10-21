@@ -1,3 +1,5 @@
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { Router, type NextFunction, type Request, type Response } from 'express';
 import rateLimit from 'express-rate-limit';
 import { prisma } from '../db';
@@ -11,7 +13,10 @@ import {
   cookieHeader,
   firstWorkingGet,
   readPageConfig,
+  readFetch,
   rpc,
+  schoolYearId,
+  sessionHeaders,
   untis,
   untisBase,
   untisClassicWrite,
@@ -22,7 +27,6 @@ import {
 } from '../webuntis/client';
 import {
   canReportAbsence,
-  detectAbsenceRight,
   detectParent,
   extractAbsenceSubjectName,
   extractChildStudentId,
@@ -41,7 +45,7 @@ import {
 import { absenceWriteOutcome, conflictTexts, hmNumber, ymdNumber } from '../webuntis/absences';
 import { fetchMessagePermissions, htmlToText, plainTextToHtml } from '../webuntis/messages';
 import { defaultSchool, parseSchool, schoolBase, schoolCookieValue, schoolLoginName, searchSchools, type UntisSchool } from '../webuntis/schools';
-import { openRenewal, requireUntisSession, sealRenewal, setRefreshCookie, setSessionCookie } from '../webuntis/session';
+import { openRenewal, readSession, requireUntisSession, sealRenewal, setRefreshCookie, setSessionCookie } from '../webuntis/session';
 
 // WebUntis for the website. The website is a static page: it signs in here,
 // and this router talks to the person's school with their own WebUntis
@@ -166,8 +170,9 @@ function classNameFromTimetable(json: unknown): string | null {
 
 // A student's class id from their timetable. `getStudents` has no class for
 // guardian logins, and at block-teaching schools whole weeks are free, so the
-// current week and mid-month points across the school year are sampled until
-// a week with lessons shows the CLASS element. Best effort → 0.
+// current week and mid-month points across the school year are sampled; the
+// first of them, in that order, whose lessons show the CLASS element wins.
+// Best effort → 0.
 async function klasseIdFromTimetable(base: string, headers: Record<string, string>, studentId: number, klassen: Klasse[]): Promise<number> {
   if (studentId <= 0 || klassen.length === 0) return 0;
   const now = new Date();
@@ -178,25 +183,148 @@ async function klasseIdFromTimetable(base: string, headers: Record<string, strin
   for (const m of [9, 10, 11, 12]) samples.push(new Date(startYear, m - 1, 15));
   for (const m of [1, 2, 3, 4, 5, 6]) samples.push(new Date(startYear + 1, m - 1, 15));
 
-  for (const day of samples) {
+  const classOf = async (day: Date): Promise<number> => {
     const start = isoDay(day);
     const end = isoDay(new Date(day.getFullYear(), day.getMonth(), day.getDate() + 5));
     const url = `${base}/api/rest/view/v1/timetable/entries?start=${start}&end=${end}&format=1&resourceType=STUDENT&resources=${studentId}&periodTypes=&timetableType=MY_TIMETABLE&layout=START_TIME`;
     try {
-      const r = await fetch(url, { headers, signal: AbortSignal.timeout(8_000) });
-      if (!r.ok) continue;
+      const r = await readFetch(url, { headers, signal: AbortSignal.timeout(8_000) });
+      if (!r.ok) return 0;
       const text = await r.text();
-      if (text.startsWith('<')) continue;
+      if (text.startsWith('<')) return 0;
       const name = classNameFromTimetable(JSON.parse(text));
-      if (name) {
-        const matchId = positiveId(klassen.find((k) => k.name?.toLowerCase() === name.toLowerCase())?.id);
-        if (matchId > 0) return matchId;
-      }
+      return name ? positiveId(klassen.find((k) => k.name?.toLowerCase() === name.toLowerCase())?.id) : 0;
     } catch {
-      /* try the next sample */
+      return 0;
     }
+  };
+
+  // The current week alone first; the weeks across the year then all at once.
+  const current = await classOf(samples[0]);
+  if (current > 0) return current;
+  for (const pending of samples.slice(1).map(classOf)) {
+    const id = await pending;
+    if (id > 0) return id;
   }
   return 0;
+}
+
+interface ResolvedAccount {
+  studentId: number;
+  klasseId: number;
+  klasseName: string;
+  isParent: boolean;
+  imageUrl?: string;
+}
+
+interface FreshSignIn {
+  base: string;
+  school: UntisSchool;
+  sessionId: string;
+  cookie: string;
+  username: string;
+  /** What `authenticate` answered. */
+  studentId: number;
+  klasseId: number;
+  personType?: number;
+  /** The bearer token being minted for the session ('' when it failed). */
+  bearer: Promise<string>;
+}
+
+// Whom a new sign-in acts for: for a student login the person itself; guardian
+// and other logins need the app-data to find the child. With the class and the
+// profile picture.
+async function resolveAccount(signIn: FreshSignIn): Promise<ResolvedAccount> {
+  const { base, school, sessionId, cookie, username, studentId, klasseId, personType } = signIn;
+  const rpcUrl = `${base}/jsonrpc.do?school=${encodeURIComponent(school.loginName)}`;
+
+  // Classes, the accessible students and the app-data, in parallel (the
+  // app-data as soon as the bearer token is there). The app-data is read here
+  // where the WebUntis session is freshest (also the most reliable moment for
+  // the profile-picture URL); capped at 5 seconds so a slow answer never
+  // stalls the sign-in.
+  const [bearer, klassen, students, appData] = await Promise.all([
+    signIn.bearer,
+    readFetch(rpcUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: cookie },
+      body: JSON.stringify({ id: 'pokyh-klassen', method: 'getKlassen', params: {}, jsonrpc: '2.0' }),
+      signal: AbortSignal.timeout(10_000),
+    })
+      .then((r) => r.json() as Promise<{ result?: unknown }>)
+      .then((kj) => (Array.isArray(kj.result) ? (kj.result as Klasse[]) : []))
+      .catch(() => [] as Klasse[]),
+    readFetch(rpcUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: cookie },
+      body: JSON.stringify({ id: 'pokyh-students', method: 'getStudents', params: {}, jsonrpc: '2.0' }),
+      signal: AbortSignal.timeout(10_000),
+    })
+      .then((r) => r.json() as Promise<{ result?: unknown }>)
+      .then((sj) => (Array.isArray(sj.result) ? (sj.result as WebUntisStudentClass[]) : []))
+      .catch(() => [] as WebUntisStudentClass[]),
+    signIn.bearer.then((bearerToken) => Promise.race([
+      fetchAppData({ sessionId, school, bearerToken, studentId, klasseId, klasseName: '', username }),
+      new Promise<{ ok: false; status: number }>((resolve) => setTimeout(() => resolve({ ok: false, status: 0 }), 5_000)),
+    ])),
+  ]);
+
+  let klasseName = klassen.find((k) => positiveId(k.id) === klasseId)?.name ?? '';
+  let resolvedStudentId = studentId;
+  let resolvedKlasseId = resolveOwnStudentClassId(klasseId, studentId, students);
+  let isParent = false;
+  const isStudentSelf = students.some((student) => positiveId(student.id) === studentId);
+  const appJson = appData.ok ? appData.json : null;
+
+  // Parent detection must not depend on getStudents: some WebUntis answers
+  // contain an id collision that makes a guardian look like the student.
+  if (appJson) isParent = detectParent(appJson);
+
+  if (isParent) {
+    const childId = appJson ? extractChildStudentId(appJson, studentId) : null;
+    const child = students.find((entry) => positiveId(entry.id) === childId)
+      ?? students.find((entry) => positiveId(entry.id) !== studentId)
+      ?? students[0];
+    if (childId) resolvedStudentId = childId;
+    else if (child) resolvedStudentId = positiveId(child.id);
+    const childKlasseId = studentClassId(child);
+    if (childKlasseId > 0) resolvedKlasseId = childKlasseId;
+  } else if (!isStudentSelf && students.length) {
+    const accessible = students[0];
+    resolvedStudentId = positiveId(accessible.id);
+    const accessibleKlasseId = studentClassId(accessible);
+    if (accessibleKlasseId > 0) resolvedKlasseId = accessibleKlasseId;
+  }
+
+  if (resolvedKlasseId <= 0 && appJson) {
+    const fromAppData = findStudentClassIdInData(appJson, resolvedStudentId);
+    if (fromAppData > 0) resolvedKlasseId = fromAppData;
+  }
+
+  // Guardians (and students whose `authenticate` returned klasseId 0): the
+  // class comes from the (child's) timetable.
+  if (resolvedKlasseId <= 0 && resolvedStudentId > 0) {
+    const headers: Record<string, string> = { Cookie: cookie, Accept: 'application/json', ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}) };
+    const derived = await klasseIdFromTimetable(base, headers, resolvedStudentId, klassen);
+    if (derived > 0) resolvedKlasseId = derived;
+  }
+
+  klasseName = klassen.find((k) => positiveId(k.id) === resolvedKlasseId)?.name ?? klasseName;
+
+  // Diagnostic without personal data: how the class was resolved.
+  logger.info('[webuntis login] resolved', {
+    school: school.loginName, personType, isStudentSelf, studentsLen: students.length, isParent,
+    hasStudent: resolvedStudentId > 0, hasClass: resolvedKlasseId > 0,
+  });
+
+  return {
+    studentId: resolvedStudentId,
+    klasseId: resolvedKlasseId,
+    klasseName,
+    isParent,
+    // '' when the app-data shows no picture: the avatar then needs no lookup.
+    imageUrl: appJson ? (extractImageUrl(appJson, isParent) ?? '') : undefined,
+  };
 }
 
 interface LoginBody {
@@ -279,127 +407,66 @@ router.post('/login', loginByAddress, loginByAccount, async (req: Request, res: 
     }
 
     const { personId: rawStudentId, klasseId: rawKlasseId, personType } = rpcJson.result;
-    const studentId = positiveId(rawStudentId);
-    const klasseId = positiveId(rawKlasseId);
-
-    // 2. Bearer token, classes and the accessible students, in parallel.
+    // The school's POKYH record, looked up while WebUntis answers (awaited,
+    // and a failure reported, with the POKYH session below).
+    const schoolIdRequest = loginSchool(req, { school: school.loginName.toLowerCase(), schoolName: school.name, schoolServer: school.server });
+    schoolIdRequest.catch(() => {});
     const cookie = `JSESSIONID=${sessionId}; schoolname="${schoolCookieValue(school)}"`;
-    const [bearer, klassen, students] = await Promise.all([
-      fetch(`${BASE}/api/token/new`, { headers: { Cookie: cookie }, signal: AbortSignal.timeout(10_000) })
-        .then((r) => r.text())
-        .then((tok) => ((tok.match(/\./g) ?? []).length === 2 ? tok.trim() : ''))
-        .catch(() => ''),
-      fetch(`${BASE}/jsonrpc.do?school=${SCHOOL}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Cookie: cookie },
-        body: JSON.stringify({ id: 'pokyh-klassen', method: 'getKlassen', params: {}, jsonrpc: '2.0' }),
-        signal: AbortSignal.timeout(10_000),
-      })
-        .then((r) => r.json() as Promise<{ result?: unknown }>)
-        .then((kj) => (Array.isArray(kj.result) ? (kj.result as Klasse[]) : []))
-        .catch(() => [] as Klasse[]),
-      fetch(`${BASE}/jsonrpc.do?school=${SCHOOL}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Cookie: cookie },
-        body: JSON.stringify({ id: 'pokyh-students', method: 'getStudents', params: {}, jsonrpc: '2.0' }),
-        signal: AbortSignal.timeout(10_000),
-      })
-        .then((r) => r.json() as Promise<{ result?: unknown }>)
-        .then((sj) => (Array.isArray(sj.result) ? (sj.result as WebUntisStudentClass[]) : []))
-        .catch(() => [] as WebUntisStudentClass[]),
-    ]);
+    const bearerRequest = readFetch(`${BASE}/api/token/new`, { headers: { Cookie: cookie }, signal: AbortSignal.timeout(10_000) })
+      .then((r) => r.text())
+      .then((tok) => ((tok.match(/\./g) ?? []).length === 2 ? tok.trim() : ''))
+      .catch(() => '');
 
-    let klasseName = klassen.find((k) => positiveId(k.id) === klasseId)?.name ?? '';
-
-    // The effective student: for a student login the person itself; guardian
-    // and other logins need the app-data to find the child.
-    let resolvedStudentId = studentId;
-    let resolvedKlasseId = resolveOwnStudentClassId(klasseId, studentId, students);
-    let isParent = false;
-    let imageUrl: string | undefined;
-    const isStudentSelf = students.some((student) => positiveId(student.id) === studentId);
-
-    // The app-data, read once here where the WebUntis session is freshest
-    // (also the most reliable moment for the profile-picture URL); capped at
-    // 5 seconds so a slow answer never stalls the sign-in.
-    const draft: UntisSession = { sessionId, school, bearerToken: bearer, studentId, klasseId, klasseName, username };
-    const appData = await Promise.race([
-      fetchAppData(draft),
-      new Promise<{ ok: false; status: number }>((resolve) => setTimeout(() => resolve({ ok: false, status: 0 }), 5_000)),
-    ]);
-    const appJson = appData.ok ? appData.json : null;
-
-    // Parent detection must not depend on getStudents: some WebUntis answers
-    // contain an id collision that makes a guardian look like the student.
-    if (appJson) isParent = detectParent(appJson);
-
-    if (isParent) {
-      const childId = appJson ? extractChildStudentId(appJson, studentId) : null;
-      const child = students.find((entry) => positiveId(entry.id) === childId)
-        ?? students.find((entry) => positiveId(entry.id) !== studentId)
-        ?? students[0];
-      if (childId) resolvedStudentId = childId;
-      else if (child) resolvedStudentId = positiveId(child.id);
-      const childKlasseId = studentClassId(child);
-      if (childKlasseId > 0) resolvedKlasseId = childKlasseId;
-    } else if (!isStudentSelf && students.length) {
-      const accessible = students[0];
-      resolvedStudentId = positiveId(accessible.id);
-      const accessibleKlasseId = studentClassId(accessible);
-      if (accessibleKlasseId > 0) resolvedKlasseId = accessibleKlasseId;
-    }
-
-    if (resolvedKlasseId <= 0 && appJson) {
-      const fromAppData = findStudentClassIdInData(appJson, resolvedStudentId);
-      if (fromAppData > 0) resolvedKlasseId = fromAppData;
-    }
-
-    // Guardians (and students whose `authenticate` returned klasseId 0): the
-    // class comes from the (child's) timetable.
-    if (resolvedKlasseId <= 0 && resolvedStudentId > 0) {
-      const headers: Record<string, string> = { Cookie: cookie, Accept: 'application/json', ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}) };
-      const derived = await klasseIdFromTimetable(BASE, headers, resolvedStudentId, klassen);
-      if (derived > 0) resolvedKlasseId = derived;
-    }
-
-    klasseName = klassen.find((k) => positiveId(k.id) === resolvedKlasseId)?.name ?? klasseName;
+    // 2. Whom the sign-in acts for. A renewal keeps what was worked out for
+    // the session it renews (same account and school, at most 4 hours old:
+    // openRenewal), so WebUntis only has to sign in again; a new sign-in
+    // looks it all up.
+    const previous = saved ? readSession(req) : null;
+    const account: ResolvedAccount = previous && previous.studentId > 0 && previous.klasseId > 0
+      ? {
+        studentId: previous.studentId,
+        klasseId: previous.klasseId,
+        klasseName: previous.klasseName ?? '',
+        isParent: previous.isParent === true,
+        imageUrl: previous.imageUrl,
+      }
+      : await resolveAccount({
+        base: BASE, school, sessionId, cookie, username,
+        studentId: positiveId(rawStudentId), klasseId: positiveId(rawKlasseId), personType, bearer: bearerRequest,
+      });
     // The sealed WebUntis session keeps a child's class (its endpoints need
     // it); the guardian's account itself has and stores no class.
-    const { klasseId: accountKlasseId, klasseName: accountKlasseName } = accountClassForRole(isParent, resolvedKlasseId, klasseName);
+    const { klasseId: accountKlasseId, klasseName: accountKlasseName } = accountClassForRole(account.isParent, account.klasseId, account.klasseName);
 
-    // Diagnostic without personal data: how the class was resolved.
-    logger.info('[webuntis login] resolved', {
-      school: school.loginName, personType, isStudentSelf, studentsLen: students.length, isParent,
-      hasStudent: resolvedStudentId > 0, hasClass: resolvedKlasseId > 0,
-    });
-
-    if (appJson) imageUrl = extractImageUrl(appJson, isParent);
+    // 3. The POKYH session, alongside the bearer token. Without it the WebUntis
+    // data still works; pokyhSynced tells the website whether the POKYH layer
+    // was renewed too (it must not re-run its POKYH sign-in against a stale
+    // token otherwise).
+    const pokyhSession = (async () => {
+      try {
+        // Guardians are never assigned to their child's class; completeWebUntisLogin
+        // repeats this normalisation as the authoritative safeguard.
+        const schoolId = await schoolIdRequest;
+        return await completeWebUntisLogin({
+          username, klasseId: accountKlasseId, klasseName: accountKlasseName, role: account.isParent ? 'parent' : 'student', schoolId,
+        });
+      } catch (err) {
+        logger.error('[webuntis login] POKYH session not created', { message: errorText(err, 'unknown').split('\n')[0] });
+        return null;
+      }
+    })();
+    const [bearer, pokyh] = await Promise.all([bearerRequest, pokyhSession]);
 
     const loginAt = Date.now();
     const sessionData: UntisSession = {
-      sessionId, school, bearerToken: bearer, studentId: resolvedStudentId, klasseId: resolvedKlasseId, klasseName,
-      username, personType, isParent, imageUrl, loginAt,
+      sessionId, school, bearerToken: bearer, studentId: account.studentId, klasseId: account.klasseId, klasseName: account.klasseName,
+      username, personType, isParent: account.isParent, imageUrl: account.imageUrl, loginAt,
     };
     // What the website shows; no token, no password.
     const user = {
-      username, studentId: resolvedStudentId, klasseId: accountKlasseId, klasseName: accountKlasseName, personType, isParent,
+      username, studentId: account.studentId, klasseId: accountKlasseId, klasseName: accountKlasseName, personType, isParent: account.isParent,
       loginAt, isUntisUser: true, school: { loginName: school.loginName, name: school.name ?? school.loginName },
     };
-
-    // The POKYH session. Without it the WebUntis data still works; pokyhSynced
-    // tells the website whether the POKYH layer was renewed too (it must not
-    // re-run its POKYH sign-in against a stale token otherwise).
-    let pokyh: Awaited<ReturnType<typeof completeWebUntisLogin>> | null = null;
-    try {
-      // Guardians are never assigned to their child's class; completeWebUntisLogin
-      // repeats this normalisation as the authoritative safeguard.
-      const schoolId = await loginSchool(req, { school: school.loginName.toLowerCase(), schoolName: school.name, schoolServer: school.server });
-      pokyh = await completeWebUntisLogin({
-        username, klasseId: accountKlasseId, klasseName: accountKlasseName, role: isParent ? 'parent' : 'student', schoolId,
-      });
-    } catch (err) {
-      logger.error('[webuntis login] POKYH session not created', { message: errorText(err, 'unknown').split('\n')[0] });
-    }
 
     setSessionCookie(res, sessionData);
     sealRenewal(res, { username, password, school });
@@ -411,7 +478,7 @@ router.post('/login', loginByAddress, loginByAccount, async (req: Request, res: 
       ok: true,
       pokyhSynced: pokyh !== null,
       username,
-      studentId: resolvedStudentId,
+      studentId: account.studentId,
       klasseId: accountKlasseId,
       klasseName: accountKlasseName,
       user,
@@ -514,6 +581,14 @@ router.get('/schools', schoolSearchLimiter, async (req: Request, res: Response) 
 
 router.use(requireUntisSession);
 
+// A WebUntis JSON answer passed on as it came: an object or a list is not
+// parsed and serialised again on the way (time and memory for a large
+// timetable); anything else is checked as before.
+function sendJsonText(res: Response, text: string): void {
+  if (/^\s*[[{]/.test(text)) res.type('application/json').send(text);
+  else res.json(JSON.parse(text));
+}
+
 // The REST answer of one GET as JSON, or the usual session/availability errors.
 async function relayGet(req: Request, res: Response, path: string, failure: string, opts: { strict?: boolean } = {}): Promise<void> {
   try {
@@ -527,10 +602,52 @@ async function relayGet(req: Request, res: Response, path: string, failure: stri
       res.status(502).json({ error: failure });
       return;
     }
-    res.json(JSON.parse(r.text));
+    sendJsonText(res, r.text);
   } catch (e) {
     res.status(500).json({ error: errorText(e) });
   }
+}
+
+/**
+ * A file from WebUntis passed on as it arrives, never held whole in memory.
+ * `headers` sets the answer's headers once the first bytes are there; false,
+ * with nothing sent, when the file is empty.
+ */
+async function streamFile(file: globalThis.Response, res: Response, headers: () => void): Promise<boolean> {
+  const reader = file.body?.getReader();
+  if (!reader) return false;
+  let first = await reader.read();
+  while (!first.done && first.value.byteLength === 0) first = await reader.read();
+  if (first.done) {
+    await reader.cancel().catch(() => {});
+    return false;
+  }
+  const firstChunk = first.value;
+  headers();
+  // The length only of a body fetch did not decompress on the way.
+  const length = file.headers.get('content-length');
+  if (length && /^\d+$/.test(length) && !file.headers.get('content-encoding')) res.setHeader('Content-Length', length);
+  async function* chunks() {
+    try {
+      yield firstChunk;
+      for (;;) {
+        const next = await reader!.read();
+        if (next.done) return;
+        yield next.value;
+      }
+    } finally {
+      // Stops the download from WebUntis when the browser went away.
+      await reader!.cancel().catch(() => {});
+    }
+  }
+  try {
+    await pipeline(Readable.from(chunks()), res);
+  } catch {
+    // Broken off on either side after the answer started: only the
+    // connection can still say so.
+    res.destroy();
+  }
+  return true;
 }
 
 const YMD = /^\d{8}$/;
@@ -591,7 +708,7 @@ router.get('/homework', async (req: Request, res: Response) => {
       sessionExpired(res);
       return;
     }
-    res.json(JSON.parse(r.text));
+    sendJsonText(res, r.text);
   } catch (e) {
     res.status(500).json({ error: errorText(e) });
   }
@@ -622,10 +739,11 @@ type SchoolYear = { id: number; startDate: number; endDate: number };
 
 // -1: the session is gone; null: no school year found.
 async function gradesSchoolYearId(s: UntisSession, targetYear?: number): Promise<number | null | -1> {
+  // The current one is the id REST requests already send (client.ts); an
+  // expired session shows in the school-year list below.
   if (targetYear == null) {
-    const current = await rpc<{ id?: number }>(s, 'getCurrentSchoolyear');
-    if (!current.ok && current.expired) return -1;
-    if (current.ok && current.result?.id) return current.result.id;
+    const current = await schoolYearId(s);
+    if (current) return current;
   }
   const years = await rpc<SchoolYear[]>(s, 'getSchoolyears');
   if (!years.ok) return years.expired ? -1 : null;
@@ -1039,7 +1157,7 @@ router.get('/absences/excuse-letter', async (req: Request, res: Response) => {
       res.status(202).json({ pending: true, error: 'WebUntis erstellt das Schreiben noch. Versuch es gleich noch einmal.' });
       return;
     }
-    const file = await fetch(`${untisBase(s)}/reports.do?msgId=${encodeURIComponent(String(data.messageId ?? ''))}&${String(data.reportParams ?? '')}`, {
+    const file = await readFetch(`${untisBase(s)}/reports.do?msgId=${encodeURIComponent(String(data.messageId ?? ''))}&${String(data.reportParams ?? '')}`, {
       headers: { Cookie: cookieHeader(s) },
       signal: AbortSignal.timeout(30_000),
     });
@@ -1048,13 +1166,14 @@ router.get('/absences/excuse-letter', async (req: Request, res: Response) => {
       res.status(502).json({ error: 'Das Entschuldigungsschreiben konnte nicht geladen werden.' });
       return;
     }
-    const buffer = Buffer.from(await file.arrayBuffer());
-    embeddable(res);
-    res.setHeader('Content-Type', type || 'application/pdf');
-    res.setHeader('Content-Disposition', `inline; filename="Entschuldigung-${start}.pdf"`);
-    res.send(buffer);
+    const sent = await streamFile(file, res, () => {
+      embeddable(res);
+      res.setHeader('Content-Type', type || 'application/pdf');
+      res.setHeader('Content-Disposition', `inline; filename="Entschuldigung-${start}.pdf"`);
+    });
+    if (!sent) res.status(502).json({ error: 'Das Entschuldigungsschreiben konnte nicht geladen werden.' });
   } catch {
-    res.status(502).json({ error: 'Das Entschuldigungsschreiben konnte nicht erstellt werden.' });
+    if (!res.headersSent) res.status(502).json({ error: 'Das Entschuldigungsschreiben konnte nicht erstellt werden.' });
   }
 });
 
@@ -1070,7 +1189,8 @@ router.get('/permissions', async (req: Request, res: Response) => {
       sessionExpired(res);
       return;
     }
-    const canReport = config.webuntis.forceAbsenceReport || (flag !== null ? flag : (data.ok ? detectAbsenceRight(data.json) : false));
+    // As on the WebUntis page: only its own flag opens reporting.
+    const canReport = config.webuntis.forceAbsenceReport || flag === true;
     const personName = data.ok ? (extractAbsenceSubjectName(data.json) ?? s.personName ?? null) : (s.personName ?? null);
     res.json({ canReportAbsence: canReport, personName });
   } catch (e) {
@@ -1088,9 +1208,10 @@ router.get('/profile-image', async (req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'private, max-age=600');
     res.status(204).end();
   };
-  // The URL captured at sign-in; a live lookup for sessions without it.
+  // The URL captured at sign-in ('' when the account has none); a live lookup
+  // for sessions from before that.
   let imageUrl = s.imageUrl;
-  if (!imageUrl) {
+  if (imageUrl === undefined) {
     const appData = await fetchAppData(s);
     imageUrl = appData.ok ? extractImageUrl(appData.json, s.isParent) : undefined;
   }
@@ -1117,26 +1238,20 @@ router.get('/profile-image', async (req: Request, res: Response) => {
   }
 
   try {
-    const r = await fetch(target, {
-      headers: { Cookie: cookieHeader(s), Accept: 'application/json', ...(s.bearerToken ? { Authorization: `Bearer ${s.bearerToken}` } : {}) },
-      signal: AbortSignal.timeout(15_000),
-    });
+    const r = await readFetch(target, { headers: await sessionHeaders(s), signal: AbortSignal.timeout(15_000) });
     const ct = r.headers.get('content-type') ?? '';
     if (!r.ok || ct.includes('text/html') || ct.includes('application/json')) {
       noPicture();
       return;
     }
-    const buffer = Buffer.from(await r.arrayBuffer());
-    if (buffer.byteLength === 0) {
-      noPicture();
-      return;
-    }
-    embeddable(res);
-    res.setHeader('Content-Type', ct || 'image/jpeg');
-    res.setHeader('Cache-Control', 'private, max-age=3600');
-    res.send(buffer);
+    const sent = await streamFile(r, res, () => {
+      embeddable(res);
+      res.setHeader('Content-Type', ct || 'image/jpeg');
+      res.setHeader('Cache-Control', 'private, max-age=3600');
+    });
+    if (!sent) noPicture();
   } catch {
-    res.status(502).json({ error: 'Profilbild nicht ladbar.' });
+    if (!res.headersSent) res.status(502).json({ error: 'Profilbild nicht ladbar.' });
   }
 });
 
@@ -1211,8 +1326,9 @@ router.get('/messages', async (req: Request, res: Response) => {
   const path = messageId
     ? folder === 'sent' ? `/api/rest/view/v1/messages/sent/${messageId}` : `/api/rest/view/v1/messages/${messageId}`
     : `${FOLDER_PATHS[folder] ?? FOLDER_PATHS.inbox}?pageSize=100&start=0`;
+  const attachmentsOnly = messageId !== null && req.query['attachments'] === '1';
   try {
-    const r = await untis(session(req), path);
+    const r = await untis(session(req), path, { textOnly: !attachmentsOnly });
     if (r.expired || r.status === 403) {
       sessionExpired(res);
       return;
@@ -1222,13 +1338,15 @@ router.get('/messages', async (req: Request, res: Response) => {
       return;
     }
     // Attachment lists ride along in the message detail.
-    if (messageId && req.query['attachments'] === '1') {
+    if (attachmentsOnly) {
       const j = (r.json ?? {}) as Record<string, unknown>;
       const d = (j.data as Record<string, unknown>) ?? j;
       res.json({ attachments: d.storageAttachments ?? d.attachments ?? [] });
       return;
     }
-    res.json(r.json);
+    // A list or a message as WebUntis sent it; anything else as before (null).
+    if (/^\s*[[{]/.test(r.text)) sendJsonText(res, r.text);
+    else res.json(null);
   } catch {
     res.status(502).json({ error: 'Die Nachrichten konnten gerade nicht geladen werden.' });
   }
@@ -1243,7 +1361,7 @@ router.post('/messages', async (req: Request, res: Response) => {
     return;
   }
   try {
-    const r = await untis(session(req), `/api/rest/view/v1/messages/${messageId}`);
+    const r = await untis(session(req), `/api/rest/view/v1/messages/${messageId}`, { textOnly: true });
     if (r.expired) {
       sessionExpired(res);
       return;
@@ -1305,7 +1423,10 @@ function parseRecipients(json: unknown): Recipient[] {
 router.get('/messages/recipients', async (req: Request, res: Response) => {
   const s = session(req);
   try {
-    const r = await untis(s, config.webuntis.paths.messageRecipients, { timeoutMs: 12_000 });
+    const [r, perms] = await Promise.all([
+      untis(s, config.webuntis.paths.messageRecipients, { timeoutMs: 12_000 }),
+      fetchMessagePermissions(s),
+    ]);
     if (r.expired) {
       sessionExpired(res);
       return;
@@ -1315,7 +1436,6 @@ router.get('/messages/recipients', async (req: Request, res: Response) => {
       return;
     }
     // With the TEACHER option WebUntis takes exactly one recipient per message.
-    const perms = await fetchMessagePermissions(s);
     const option = perms.recipientOptions[0] ?? 'TEACHER';
     res.json({
       recipients: parseRecipients(r.json),
@@ -1668,18 +1788,16 @@ router.get('/attachment', async (req: Request, res: Response) => {
     const ct = r.headers.get('content-type') ?? '';
     return !ct.includes('text/html') && !ct.includes('application/json');
   };
-  const send = async (r: globalThis.Response): Promise<boolean> => {
+  const send = (r: globalThis.Response): Promise<boolean> => {
     const contentType = r.headers.get('content-type') ?? 'application/octet-stream';
-    const buffer = Buffer.from(await r.arrayBuffer());
-    if (buffer.byteLength === 0) return false;
     const safeName = name.replace(/[^\w.\-_ ]/g, '_').replace(/\.\./g, '_').trim() || 'Anhang';
     const inline = contentType.startsWith('image/') || contentType === 'application/pdf';
-    embeddable(res);
-    res.setHeader('Content-Type', contentType);
-    res.setHeader('Content-Disposition', `${inline ? 'inline' : 'attachment'}; filename="${encodeURIComponent(safeName)}"`);
-    res.setHeader('Cache-Control', 'private, max-age=300');
-    res.send(buffer);
-    return true;
+    return streamFile(r, res, () => {
+      embeddable(res);
+      res.setHeader('Content-Type', contentType);
+      res.setHeader('Content-Disposition', `${inline ? 'inline' : 'attachment'}; filename="${encodeURIComponent(safeName)}"`);
+      res.setHeader('Cache-Control', 'private, max-age=300');
+    });
   };
 
   if (storageId) {
@@ -1700,7 +1818,7 @@ router.get('/attachment', async (req: Request, res: Response) => {
         }
         const amzDate = url.searchParams.get('X-Amz-Date');
         if (amzDate) headers['X-Amz-Date'] = amzDate;
-        const file = await fetch(url, { headers, signal: AbortSignal.timeout(30_000) });
+        const file = await readFetch(url, { headers, signal: AbortSignal.timeout(30_000) });
         if (file.ok && isFile(file) && (await send(file))) return;
       }
     } catch {
@@ -1711,7 +1829,7 @@ router.get('/attachment', async (req: Request, res: Response) => {
   if (attachmentId) {
     try {
       const token = await bearerToken(s);
-      const file = await fetch(`${untisBase(s)}/api/rest/view/v1/messages/${attachmentId}/attachment`, {
+      const file = await readFetch(`${untisBase(s)}/api/rest/view/v1/messages/${attachmentId}/attachment`, {
         headers: { Cookie: cookieHeader(s), ...(token ? { Authorization: `Bearer ${token}` } : {}) },
         signal: AbortSignal.timeout(30_000),
       });

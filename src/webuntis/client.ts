@@ -1,3 +1,4 @@
+import { createSessionMemo } from './memo';
 import { schoolBase, schoolCookieValue, schoolLoginName, type UntisSchool } from './schools';
 
 // Access to WebUntis with the signed-in person's own session.
@@ -7,9 +8,9 @@ import { schoolBase, schoolCookieValue, schoolLoginName, type UntisSchool } from
 // and some services want the tenant and school-year headers the official web
 // client sends. Classic endpoints that change data expect the session's CSRF
 // token. All of that is resolved here so route handlers stay small, and kept
-// per WebUntis session in this process's memory (never in Redis or MySQL:
-// session tokens live only in the person's sealed cookie) so a page load
-// doesn't mint a token per request.
+// per WebUntis session in this process's memory (./memo.ts; never in Redis or
+// MySQL: session tokens live only in the person's sealed cookie) so a page
+// load doesn't mint a token per request.
 
 export interface UntisSession {
   sessionId: string;
@@ -23,7 +24,7 @@ export interface UntisSession {
   personName?: string;
   personType?: number;
   isParent?: boolean;
-  /** WebUntis profile-image URL, captured at login (the session is freshest then). */
+  /** WebUntis profile-image URL, captured at login (the session is freshest then); '' when it has none. */
   imageUrl?: string;
   loginAt?: number;
 }
@@ -42,45 +43,28 @@ export function cookieHeader(session: Pick<UntisSession, 'sessionId' | 'school'>
   return `JSESSIONID=${session.sessionId}; schoolname="${schoolCookieValue(session.school)}"`;
 }
 
-/** Cookie + bearer headers of a session, for a plain request. */
-export function sessionHeaders(session: UntisSession): Record<string, string> {
+/**
+ * Cookie + bearer headers of a session, for a plain request. The bearer token
+ * is a current one: the sign-in's own expires after a few minutes, and a read
+ * sent with it would end in a 401 and a whole new sign-in.
+ */
+export async function sessionHeaders(session: UntisSession): Promise<Record<string, string>> {
+  const token = await bearerToken(session);
   return {
     Cookie: cookieHeader(session),
     Accept: 'application/json',
-    ...(session.bearerToken ? { Authorization: `Bearer ${session.bearerToken}` } : {}),
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
   };
 }
 
 // ── Small per-session memory ────────────────────────────────────────────────
 
-interface SessionMemo {
-  token?: string;
-  tokenExp?: number; // epoch ms
-  schoolYearId?: number;
-  csrf?: string;
-  tenant?: string;
-  touched: number;
-}
-
-const memo = new Map<string, SessionMemo>();
-const MEMO_TTL_MS = 30 * 60 * 1000;
-
-function entry(sessionId: string): SessionMemo {
-  const now = Date.now();
-  if (memo.size > 2_000) {
-    for (const [key, value] of memo) if (now - value.touched > MEMO_TTL_MS) memo.delete(key);
-  }
-  let e = memo.get(sessionId);
-  if (!e) {
-    e = { touched: now };
-    memo.set(sessionId, e);
-  }
-  e.touched = now;
-  return e;
-}
+const memo = createSessionMemo({ maxSessions: 2_000, idleMs: 30 * 60 * 1000 });
+/** What does not change during a WebUntis session (school year, CSRF token, tenant). */
+const SESSION_LONG_MS = 4 * 60 * 60 * 1000;
 
 export function forgetSession(sessionId: string): void {
-  memo.delete(sessionId);
+  memo.forget(sessionId);
 }
 
 function decodeJwt(token?: string): Record<string, unknown> | null {
@@ -103,6 +87,28 @@ export function tenantIdOf(token?: string): string | undefined {
   return claim != null && String(claim).trim() ? String(claim) : undefined;
 }
 
+// A connection WebUntis closed while it was being reused: the request never
+// reached WebUntis.
+function connectionDropped(e: unknown): boolean {
+  const code = (e as { cause?: { code?: unknown } } | null)?.cause?.code;
+  return e instanceof TypeError && typeof code === 'string' && ['UND_ERR_SOCKET', 'UND_ERR_CLOSED', 'ECONNRESET', 'EPIPE'].includes(code);
+}
+
+/**
+ * fetch for reads. WebUntis closes idle connections after about 4 seconds and
+ * Node keeps them about as long, so now and then a read goes out on one that
+ * is just being closed and fails without reaching WebUntis; it is sent once
+ * more on a new connection instead of failing the page. Never for writes.
+ */
+export async function readFetch(url: string | URL, init: RequestInit = {}): Promise<Response> {
+  try {
+    return await fetch(url, init);
+  } catch (e) {
+    if (!connectionDropped(e)) throw e;
+    return fetch(url, init);
+  }
+}
+
 /** True when WebUntis answered with its login page or an auth status. */
 export function looksExpired(status: number, body: string): boolean {
   return status === 401 || body.trimStart().startsWith('<');
@@ -112,7 +118,7 @@ export function looksExpired(status: number, body: string): boolean {
 
 async function mintToken(session: UntisSession): Promise<string | undefined> {
   try {
-    const res = await fetch(`${untisBase(session)}/api/token/new`, {
+    const res = await readFetch(`${untisBase(session)}/api/token/new`, {
       headers: { Cookie: cookieHeader(session), Accept: 'application/json' },
       signal: AbortSignal.timeout(10_000),
     });
@@ -132,24 +138,18 @@ async function mintToken(session: UntisSession): Promise<string | undefined> {
 
 /** A bearer token valid for at least another minute (minted fresh if needed). */
 export async function bearerToken(session: UntisSession): Promise<string | undefined> {
-  const e = entry(session.sessionId);
-  const now = Date.now();
-  if (e.token && e.tokenExp && e.tokenExp - now > 60_000) return e.token;
-
-  const loginExp = jwtExpiry(session.bearerToken);
-  if (!e.token && session.bearerToken && loginExp && loginExp - now > 60_000) {
-    e.token = session.bearerToken;
-    e.tokenExp = loginExp;
-    return e.token;
+  const kept = memo.peek<string>(session.sessionId, 'token');
+  if (kept) return kept;
+  // The sign-in's own token while it lasts.
+  const loginLeft = (jwtExpiry(session.bearerToken) ?? 0) - Date.now() - 60_000;
+  if (session.bearerToken && loginLeft > 0) {
+    memo.keep(session.sessionId, 'token', session.bearerToken, loginLeft);
+    return session.bearerToken;
   }
-
-  const fresh = await mintToken(session);
-  if (fresh) {
-    e.token = fresh;
-    e.tokenExp = jwtExpiry(fresh) ?? now + 5 * 60_000;
-    return fresh;
-  }
-  return e.token ?? session.bearerToken ?? undefined;
+  const fresh = await memo.get(session.sessionId, 'token', () => mintToken(session), (token) => (
+    token ? (jwtExpiry(token) ?? Date.now() + 5 * 60_000) - Date.now() - 60_000 : 0
+  ));
+  return fresh || session.bearerToken || undefined;
 }
 
 // ── JSON-RPC ────────────────────────────────────────────────────────────────
@@ -160,7 +160,7 @@ const RPC_AUTH_ERRORS = new Set([-8500, -8501, -8502, -8520]);
 
 export async function rpc<T>(session: UntisSession, method: string, params: Record<string, unknown> = {}): Promise<RpcResult<T>> {
   try {
-    const res = await fetch(`${untisBase(session)}/jsonrpc.do?school=${encodeURIComponent(untisSchool(session))}`, {
+    const res = await readFetch(`${untisBase(session)}/jsonrpc.do?school=${encodeURIComponent(untisSchool(session))}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Cookie: cookieHeader(session) },
       body: JSON.stringify({ id: `pokyh-${method}`, method, params, jsonrpc: '2.0' }),
@@ -179,15 +179,11 @@ export async function rpc<T>(session: UntisSession, method: string, params: Reco
 }
 
 /** Current school-year id (the `X-Webuntis-Api-School-Year-Id` header). */
-export async function schoolYearId(session: UntisSession): Promise<number | undefined> {
-  const e = entry(session.sessionId);
-  if (e.schoolYearId) return e.schoolYearId;
-  const r = await rpc<{ id?: number }>(session, 'getCurrentSchoolyear');
-  if (r.ok && typeof r.result?.id === 'number') {
-    e.schoolYearId = r.result.id;
-    return e.schoolYearId;
-  }
-  return undefined;
+export function schoolYearId(session: UntisSession): Promise<number | undefined> {
+  return memo.get(session.sessionId, 'schoolYear', async () => {
+    const r = await rpc<{ id?: number }>(session, 'getCurrentSchoolyear');
+    return r.ok && typeof r.result?.id === 'number' ? r.result.id : undefined;
+  }, (id) => (id ? SESSION_LONG_MS : 0));
 }
 
 /**
@@ -195,24 +191,21 @@ export async function schoolYearId(session: UntisSession): Promise<number | unde
  * page it renders for the session; the official client sends it as
  * `X-CSRF-TOKEN` on every classic (non-REST) request that changes data.
  */
-export async function csrfToken(session: UntisSession, force = false): Promise<string | undefined> {
-  const e = entry(session.sessionId);
-  if (e.csrf && !force) return e.csrf;
-  try {
-    const res = await fetch(`${untisBase(session)}/?school=${encodeURIComponent(untisSchool(session))}`, {
-      headers: { Cookie: cookieHeader(session), Accept: 'text/html' },
-      signal: AbortSignal.timeout(12_000),
-    });
-    const page = readPageConfig(await res.text());
-    if (page.tenant) e.tenant = page.tenant;
-    if (page.csrf) {
-      e.csrf = page.csrf;
-      return e.csrf;
+export function csrfToken(session: UntisSession, force = false): Promise<string | undefined> {
+  if (force) memo.forget(session.sessionId, 'csrf');
+  return memo.get(session.sessionId, 'csrf', async () => {
+    try {
+      const res = await readFetch(`${untisBase(session)}/?school=${encodeURIComponent(untisSchool(session))}`, {
+        headers: { Cookie: cookieHeader(session), Accept: 'text/html' },
+        signal: AbortSignal.timeout(12_000),
+      });
+      const page = readPageConfig(await res.text());
+      if (page.tenant) memo.keep(session.sessionId, 'tenant', page.tenant, SESSION_LONG_MS);
+      return page.csrf;
+    } catch {
+      return undefined;
     }
-  } catch {
-    /* handled below */
-  }
-  return undefined;
+  }, (token) => (token ? SESSION_LONG_MS : 0));
 }
 
 /** CSRF token and tenant id from the configuration WebUntis embeds in its pages. */
@@ -224,12 +217,16 @@ export function readPageConfig(html: string): { csrf?: string; tenant?: string }
 }
 
 async function sessionTenant(session: UntisSession): Promise<string | undefined> {
-  const e = entry(session.sessionId);
-  if (e.tenant) return e.tenant;
+  const kept = memo.peek<string>(session.sessionId, 'tenant');
+  if (kept) return kept;
   const fromToken = tenantIdOf(session.bearerToken);
-  if (fromToken) return (e.tenant = fromToken);
+  if (fromToken) {
+    memo.keep(session.sessionId, 'tenant', fromToken, SESSION_LONG_MS);
+    return fromToken;
+  }
+  // Shares the page lookup with the CSRF token the same request asks for.
   await csrfToken(session);
-  return e.tenant;
+  return memo.peek<string>(session.sessionId, 'tenant');
 }
 
 // ── Requests ────────────────────────────────────────────────────────────────
@@ -260,6 +257,8 @@ interface RequestOptions {
   classic?: boolean;
   timeoutMs?: number;
   accept?: string;
+  /** Only the text is needed (passed on as it is): `json` stays null. */
+  textOnly?: boolean;
 }
 
 export async function untis(session: UntisSession, path: string, opts: RequestOptions = {}): Promise<UntisResponse> {
@@ -292,7 +291,7 @@ export async function untis(session: UntisSession, path: string, opts: RequestOp
     body = JSON.stringify(opts.json);
   }
 
-  const res = await fetch(`${untisBase(session)}${path}`, {
+  const res = await (method === 'GET' ? readFetch : fetch)(`${untisBase(session)}${path}`, {
     method,
     headers,
     body,
@@ -301,7 +300,7 @@ export async function untis(session: UntisSession, path: string, opts: RequestOp
   const text = await res.text();
   const expired = looksExpired(res.status, text);
   let json: unknown = null;
-  if (!expired && text) {
+  if (!expired && text && !opts.textOnly) {
     try { json = JSON.parse(text); } catch { json = null; }
   }
   return { status: res.status, ok: res.ok && !expired, expired, text, json };
@@ -324,7 +323,7 @@ export async function untisClassicWrite(
 
 /** A plain GET with the session's cookie and bearer headers: status and body text. */
 export async function untisGetText(session: UntisSession, path: string, timeoutMs = 15_000): Promise<{ status: number; ok: boolean; text: string }> {
-  const res = await fetch(`${untisBase(session)}${path}`, { headers: sessionHeaders(session), signal: AbortSignal.timeout(timeoutMs) });
+  const res = await readFetch(`${untisBase(session)}${path}`, { headers: await sessionHeaders(session), signal: AbortSignal.timeout(timeoutMs) });
   return { status: res.status, ok: res.ok, text: await res.text() };
 }
 

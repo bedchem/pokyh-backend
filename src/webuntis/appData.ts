@@ -21,37 +21,6 @@ type AppDataResult =
   | { ok: true; json: unknown }
   | { ok: false; expired?: boolean; status: number };
 
-// Every string value (upper-cased) in the app-data, wherever WebUntis nests it.
-function collectStrings(node: unknown, out: Set<string>, depth = 0): void {
-  if (depth > 8 || node == null) return;
-  if (typeof node === 'string') {
-    out.add(node.toUpperCase());
-    return;
-  }
-  if (Array.isArray(node)) {
-    for (const v of node) collectStrings(v, out, depth + 1);
-    return;
-  }
-  if (typeof node === 'object') {
-    for (const v of Object.values(node as Record<string, unknown>)) collectStrings(v, out, depth + 1);
-  }
-}
-
-// The WebUntis permission resources that grant reporting/excusing an absence
-// arrive as `RESOURCE:RIGHTS:scope:assignment` (e.g. `STUDABS_REPORT:DCWR:0:ASSIGNED`)
-// where RIGHTS contains C(reate)/W(rite) for accounts allowed to act; older
-// instances send the bare resource.
-export function detectAbsenceRight(json: unknown): boolean {
-  const strs = new Set<string>();
-  collectStrings(json, strs);
-  for (const s of strs) {
-    const [resource, rights] = s.split(':');
-    if (!config.webuntis.absenceRights.includes(resource)) continue;
-    if (rights === undefined || /[WC]/.test(rights)) return true;
-  }
-  return false;
-}
-
 // ── Guardians ───────────────────────────────────────────────────────────────
 
 export function detectParent(json: unknown): boolean {
@@ -168,8 +137,10 @@ export async function fetchAppData(session: UntisSession): Promise<AppDataResult
 const ymd = (d: Date) => `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
 
 // WebUntis' own age-aware flag for "may create an absence" (`data.showCreateAbsence`
-// in the absences envelope): true for guardians and students of legal age,
-// false for minors, unlike the raw permission tokens. Null when unreadable.
+// in the absences envelope), the one the WebUntis page shows its button by:
+// true for guardians and students of legal age, false for minors. The
+// permission tokens in the app-data are no stand-in: minors hold them too.
+// Null when unreadable.
 export async function fetchAbsenceCreateFlag(session: UntisSession): Promise<boolean | null> {
   const d = ymd(new Date());
   const path = `${config.webuntis.paths.absences}?studentId=${session.studentId}&startDate=${d}&endDate=${d}&excuseStatusId=-1`;
@@ -183,11 +154,8 @@ export async function fetchAbsenceCreateFlag(session: UntisSession): Promise<boo
   }
 }
 
-/** The gate before any absence write: WebUntis' flag, else the permission scan. */
+/** The gate before any absence write: only WebUntis' own flag, closed when unreadable. */
 export async function canReportAbsence(session: UntisSession): Promise<boolean> {
   if (config.webuntis.forceAbsenceReport) return true;
-  const flag = await fetchAbsenceCreateFlag(session);
-  if (flag !== null) return flag;
-  const data = await fetchAppData(session);
-  return data.ok ? detectAbsenceRight(data.json) : false;
+  return (await fetchAbsenceCreateFlag(session)) === true;
 }
