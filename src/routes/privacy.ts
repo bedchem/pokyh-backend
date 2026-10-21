@@ -48,8 +48,13 @@ router.post('/acknowledge', requireAuth, writeLimiter, async (req: Request, res:
   const { stableUid } = req.user!;
   const { usageStats } = parsed.data;
   const now = new Date();
-  const before = await prisma.privacyConsent.findUnique({ where: { stableUid }, select: { usageStats: true } });
+  const before = await prisma.privacyConsent.findUnique({ where: { stableUid }, select: { usageStats: true, noticeVersion: true } });
   const changed = usageStats !== undefined && before?.usageStats !== usageStats;
+  // Versions sort as text (date, then tag). A client that reads an older
+  // deployment of the website (an app next to beta) acknowledges an older
+  // version than the one stored: the newer one stays, with its time,
+  // otherwise each side would ask again after the other.
+  const older = !!before?.noticeVersion && parsed.data.version < before.noticeVersion;
   await prisma.privacyConsent.upsert({
     where: { stableUid },
     create: {
@@ -60,8 +65,7 @@ router.post('/acknowledge', requireAuth, writeLimiter, async (req: Request, res:
       usageStatsAt: usageStats === undefined ? null : now,
     },
     update: {
-      noticeVersion: parsed.data.version,
-      acknowledgedAt: now,
+      ...(older ? {} : { noticeVersion: parsed.data.version, acknowledgedAt: now }),
       ...(usageStats !== undefined ? { usageStats } : {}),
       ...(changed ? { usageStatsAt: now } : {}),
     },
@@ -74,6 +78,7 @@ router.post('/acknowledge', requireAuth, writeLimiter, async (req: Request, res:
     action: 'privacy_acknowledged',
     stableUid,
     version: parsed.data.version,
+    ...(older ? { keptVersion: before!.noticeVersion } : {}),
     ...(usageStats !== undefined ? { usageStats } : {}),
   });
   res.status(204).send();
