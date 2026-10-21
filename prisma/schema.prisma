@@ -56,6 +56,7 @@ model User {
   webVisits               WebVisit[]
   privacyConsent          PrivacyConsent?
   popupTargets            PopupTargetUser[]
+  bellMarks               BellMark[]
 
   @@index([schoolId, createdAt])
   @@index([schoolId, role])
@@ -77,6 +78,26 @@ model PushSubscription {
   user User @relation(fields: [stableUid], references: [stableUid], onDelete: Cascade)
 
   @@map("push_subscriptions")
+}
+
+// The bell in the website's top bar: which of its notifications an account
+// has seen or cleared away, so every device shows the same. Only the
+// notification's identifier is kept ("grade:4711", "msg:12",
+// "todo:<id>:<due>") — never a grade, a subject or a text. Deleted after
+// BELL_MARK_RETENTION_DAYS (services/bellMarks.ts; the bell reaches back 14
+// days) and with the account.
+model BellMark {
+  stableUid String   @map("stable_uid")
+  key       String   @db.VarChar(120)
+  // Cleared away (and so also seen); otherwise only seen.
+  cleared   Boolean  @default(false)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [stableUid], references: [stableUid], onDelete: Cascade)
+
+  @@id([stableUid, key])
+  @@index([createdAt])
+  @@map("bell_marks")
 }
 
 model Admin {

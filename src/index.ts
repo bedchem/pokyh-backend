@@ -48,6 +48,7 @@ import { startCluster, stopCluster } from './cluster';
 import { migrateLegacyAdmins, migrateToSchools } from './services/multiSchool';
 import { backfillAccountDays } from './services/accountDays';
 import { activityCutoffDay } from './services/accountActivity';
+import { BELL_MARK_RETENTION_DAYS, deleteExpiredBellMarks } from './services/bellMarks';
 
 const app = express();
 
@@ -435,6 +436,14 @@ async function cleanupClientErrors() {
   if (count > 0) logger.info('Client error retention cleanup', { action: 'client_error_cleanup', deletedCount: count, retentionDays: config.clientErrors.retentionDays });
 }
 
+// The bell's seen and cleared marks (services/bellMarks.ts): kept 30 days, as
+// the privacy notice says. Replicated data: one node is enough.
+async function cleanupBellMarks() {
+  if (!ownsClusterWork('job:bell-marks-cleanup')) return;
+  const count = await deleteExpiredBellMarks();
+  if (count > 0) logger.info('Bell mark retention cleanup', { action: 'bell_mark_cleanup', deletedCount: count, retentionDays: BELL_MARK_RETENTION_DAYS });
+}
+
 // Website and app visitors (web_visits): the address, the place derived from
 // it, an app visit's link to its usage visit and a consenting account's name
 // are personal data and kept as long as the request logs. After that a row is
@@ -511,6 +520,8 @@ function startBackgroundJobs() {
   setInterval(() => void cleanupAuditEvents().catch(() => {}), 24 * 60 * 60 * 1000);
   setTimeout(() => void cleanupClientErrors().catch(() => {}), 40_000);
   setInterval(() => void cleanupClientErrors().catch(() => {}), config.requestLogCleanupIntervalMs);
+  setTimeout(() => void cleanupBellMarks().catch(() => {}), 45_000);
+  setInterval(() => void cleanupBellMarks().catch(() => {}), 24 * 60 * 60 * 1000);
 
   // Once per installation: admin accounts from before permissions existed
   // become global admins (services/multiSchool.ts). On one node only; until
