@@ -5,6 +5,7 @@ import { requireAuth } from '../middleware/auth';
 import { readLimiter, writeLimiter } from '../middleware/rateLimiter';
 import { ForbiddenError, NotFoundError } from '../utils/errors';
 import { sseManager } from '../services/sse';
+import { cached } from '../services/cache';
 
 const router = Router({ mergeParams: true });
 
@@ -48,7 +49,7 @@ router.get('/', readLimiter, requireAuth, async (req: Request, res: Response) =>
   const reminder = await prisma.reminder.findUnique({ where: { id: reminderId } });
   if (!reminder || reminder.classId !== classId) throw new NotFoundError('Reminder not found');
 
-  res.json(await getCommentsForReminder(reminderId));
+  res.json(await cached(`reminder-comments:${reminderId}`, ['Comment'], 120, () => getCommentsForReminder(reminderId)));
 });
 
 const bodySchema = z.object({ body: z.string().min(1).max(2000) });

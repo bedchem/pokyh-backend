@@ -7,6 +7,7 @@ import { resolveDishKey, resolveDishKeys, slugifyDishName } from '../utils/dishK
 import { ForbiddenError } from '../utils/errors';
 import { publishDishRatings, ratingsPayload, reclaimDishRatings, type DishRatingsPayload } from '../services/dishRatings';
 import { menuContext } from '../services/schools';
+import { cached } from '../services/cache';
 
 const router = Router();
 
@@ -17,7 +18,11 @@ const router = Router();
 // and reads that menu's votes (services/schools.ts menuContext).
 
 async function getDishRatingsData(menuId: string | null, dishKey: string, myStableUid: string | undefined): Promise<DishRatingsPayload> {
-  const rows = menuId ? await prisma.dishRating.findMany({ where: { dishId: dishKey, menuId } }) : [];
+  // The votes of a dish are kept in the shared cache per menu; each request
+  // picks its own vote out of them. Any vote drops the entry.
+  const rows = menuId
+    ? await cached(`dish-ratings:${menuId}:${dishKey}`, ['DishRating'], 120, () => prisma.dishRating.findMany({ where: { dishId: dishKey, menuId } }))
+    : [];
   return ratingsPayload(rows, myStableUid);
 }
 

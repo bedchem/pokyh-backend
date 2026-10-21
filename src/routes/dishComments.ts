@@ -9,6 +9,7 @@ import { commentsForDish, publishDishComments } from '../services/dishComments';
 import { menuContext } from '../services/schools';
 import { loadAccess } from '../services/adminAccess';
 import { can } from '../security/permissions';
+import { cached } from '../services/cache';
 
 const router = Router();
 
@@ -16,8 +17,11 @@ const router = Router();
 // shown per menu: a signed-in account reads and writes the threads of its own
 // school's menu (services/schools.ts menuContext).
 
+// Kept in the shared cache per menu and dish; a new, edited or removed
+// comment drops it (services/cache.ts).
 async function getCommentsForDish(menuId: string | null, dishKey: string) {
-  return menuId ? commentsForDish(menuId, dishKey) : [];
+  if (!menuId) return [];
+  return cached(`dish-comments:${menuId}:${dishKey}`, ['DishComment'], 120, () => commentsForDish(menuId, dishKey));
 }
 
 // The account behind an app session may moderate the comments of a school

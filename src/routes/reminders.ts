@@ -5,6 +5,7 @@ import { requireAuth } from '../middleware/auth';
 import { readLimiter, writeLimiter } from '../middleware/rateLimiter';
 import { ForbiddenError, NotFoundError } from '../utils/errors';
 import { sseManager } from '../services/sse';
+import { cached } from '../services/cache';
 
 const router = Router({ mergeParams: true });
 
@@ -45,7 +46,7 @@ router.get('/', readLimiter, requireAuth, async (req: Request, res: Response) =>
     throw new ForbiddenError('You are not a member of this class');
   }
 
-  const reminders = await getRemindersForClass(classId);
+  const reminders = await cached(`reminders:${classId}`, ['Reminder'], 120, () => getRemindersForClass(classId));
   res.json(reminders);
 });
 

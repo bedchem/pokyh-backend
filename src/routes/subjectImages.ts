@@ -4,6 +4,7 @@ import sharp from 'sharp';
 import { prisma } from '../db';
 import { requireAuth } from '../middleware/auth';
 import { readLimiter, writeLimiter } from '../middleware/rateLimiter';
+import { cached } from '../services/cache';
 
 const router = Router();
 
@@ -40,8 +41,11 @@ router.post('/report', writeLimiter, requireAuth, async (req: Request, res: Resp
 
 // GET /subject-images — list all subjects that have an image (for frontend cache)
 router.get('/', readLimiter, async (_req: Request, res: Response): Promise<void> => {
-  const images = await prisma.subjectImage.findMany({ select: { subject: true } });
-  res.json(images.map(i => ({ subject: i.subject })));
+  const list = await cached('subject-images', ['SubjectImage'], 600, async () => {
+    const images = await prisma.subjectImage.findMany({ select: { subject: true } });
+    return images.map(i => ({ subject: i.subject }));
+  });
+  res.json(list);
 });
 
 // GET /subject-images/:subject — serve binary image (API key only, for <img src>)

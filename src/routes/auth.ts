@@ -17,6 +17,14 @@ import { AccountRole, hasClassIdentity, normalizeAccountClass, parseAccountRole 
 import { defaultSchoolId, forgetUserSchool, SchoolLimitError, schoolForLogin } from '../services/schools';
 import { audit } from '../services/audit';
 import { announceChange } from '../services/adminLive';
+import { forgetSession as forgetUntisSession } from '../webuntis/client';
+import {
+  clearRefreshCookie,
+  clearSignInCookies,
+  readRefreshCookie,
+  readSession as readUntisSession,
+  setRefreshCookie,
+} from '../webuntis/session';
 import {
   AppError,
   UnauthorizedError,
@@ -26,7 +34,7 @@ import {
 
 const router = Router();
 
-type AuthenticatedUserResponse = {
+export type AuthenticatedUserResponse = {
   token: string;
   refreshToken: string;
   user: {
@@ -231,7 +239,7 @@ async function syncUserClass(
  * Both the established server-to-server login and the Learn-only BFF route use
  * this one path, which prevents their user/profile semantics from diverging.
  */
-async function completeWebUntisLogin({
+export async function completeWebUntisLogin({
   username,
   klasseId,
   klasseName,
@@ -347,7 +355,7 @@ async function completeWebUntisLogin({
 // every caller did before schools existed. A school signing in for the first
 // time is added (services/schools.ts); a deactivated one is refused rather
 // than mapped to another school.
-async function loginSchool(req: Request, ref: { school?: string; schoolName?: string; schoolServer?: string }): Promise<string> {
+export async function loginSchool(req: Request, ref: { school?: string; schoolName?: string; schoolServer?: string }): Promise<string> {
   if (!ref.school) return defaultSchoolId();
   let found: Awaited<ReturnType<typeof schoolForLogin>>;
   try {
@@ -451,61 +459,65 @@ router.post('/learn-login', learnLoginLimiter, async (req: Request, res: Respons
   res.json(result);
 });
 
+// A POKYH-only account (user name and password, no school account).
+async function localPasswordLogin(username: string, password: string): Promise<AuthenticatedUserResponse> {
+  const user = await prisma.user.findUnique({ where: { username } });
+  if (!user || !user.passwordHash) {
+    throw new UnauthorizedError('Ungültige Zugangsdaten');
+  }
+
+  const valid = await bcrypt.compare(password, user.passwordHash);
+  if (!valid) {
+    throw new UnauthorizedError('Ungültige Zugangsdaten');
+  }
+
+  const admin = await prisma.admin.findUnique({ where: { stableUid: user.stableUid } });
+  const role = parseAccountRole(user.role);
+  const classId = await syncUserClass(
+    user.stableUid,
+    user.username,
+    user.webuntisKlasseId,
+    user.webuntisKlasseName,
+    role,
+    user.schoolId ?? defaultSchoolId(),
+  );
+  const accountClass = normalizeAccountClass(role, user.webuntisKlasseId, user.webuntisKlasseName);
+  const token = signJwt({
+    stableUid: user.stableUid,
+    username: user.username,
+    klasseId: accountClass.klasseId,
+    klasseName: accountClass.klasseName,
+    role: user.role,
+    isUntisUser: false,
+  });
+  const refreshToken = await generateRefreshToken(user.stableUid);
+
+  return {
+    token,
+    refreshToken,
+    user: {
+      stableUid: user.stableUid,
+      username: user.username,
+      webuntisKlasseId: accountClass.klasseId,
+      webuntisKlasseName: accountClass.klasseName,
+      classId,
+      isAdmin: admin !== null,
+      isUntisUser: false,
+      role: user.role,
+      schoolId: user.schoolId,
+    },
+  };
+}
+
 router.post('/login', authLimiter, async (req: Request, res: Response) => {
   const serverKey = req.headers['x-server-key'];
 
   // ── Local password login (no server key) ──────────────────────────────────
   if (!serverKey) {
-    const body = localLoginSchema.parse(req.body);
-    const { username, password } = body;
-
-    const user = await prisma.user.findUnique({ where: { username } });
-    if (!user || !user.passwordHash) {
-      throw new UnauthorizedError('Ungültige Zugangsdaten');
-    }
-
-    const valid = await bcrypt.compare(password, user.passwordHash);
-    if (!valid) {
-      throw new UnauthorizedError('Ungültige Zugangsdaten');
-    }
-
-    const admin = await prisma.admin.findUnique({ where: { stableUid: user.stableUid } });
-    const role = parseAccountRole(user.role);
-    const classId = await syncUserClass(
-      user.stableUid,
-      user.username,
-      user.webuntisKlasseId,
-      user.webuntisKlasseName,
-      role,
-      user.schoolId ?? defaultSchoolId(),
-    );
-    const accountClass = normalizeAccountClass(role, user.webuntisKlasseId, user.webuntisKlasseName);
-    const token = signJwt({
-      stableUid: user.stableUid,
-      username: user.username,
-      klasseId: accountClass.klasseId,
-      klasseName: accountClass.klasseName,
-      role: user.role,
-      isUntisUser: false,
-    });
-    const refreshToken = await generateRefreshToken(user.stableUid);
-    res.locals.signedIn = { stableUid: user.stableUid, username: user.username };
-
-    return res.json({
-      token,
-      refreshToken,
-      user: {
-        stableUid: user.stableUid,
-        username: user.username,
-        webuntisKlasseId: accountClass.klasseId,
-        webuntisKlasseName: accountClass.klasseName,
-        classId,
-        isAdmin: admin !== null,
-        isUntisUser: false,
-        role: user.role,
-        schoolId: user.schoolId,
-      },
-    });
+    const { username, password } = localLoginSchema.parse(req.body);
+    const result = await localPasswordLogin(username, password);
+    res.locals.signedIn = { stableUid: result.user.stableUid, username: result.user.username };
+    return res.json(result);
   }
 
   // ── Server-to-server Untis login ──────────────────────────────────────────
@@ -547,14 +559,10 @@ const registerSchema = z.object({
   password: z.string().min(8, 'Passwort muss mindestens 8 Zeichen lang sein').max(200),
 });
 
-router.post('/register', authLimiter, async (req: Request, res: Response) => {
-  const body = registerSchema.parse(req.body);
-  const { username, password } = body;
-
+// A new POKYH-only account; null when the name is taken.
+async function registerLocalAccount(username: string, password: string): Promise<{ token: string; refreshToken: string; user: Omit<AuthenticatedUserResponse['user'], 'schoolId'> } | null> {
   const existing = await prisma.user.findUnique({ where: { username } });
-  if (existing) {
-    return res.status(409).json({ error: 'Benutzername bereits vergeben' });
-  }
+  if (existing) return null;
 
   const passwordHash = await bcrypt.hash(password, config.bcryptRounds);
   const stableUid = generateStableUid();
@@ -581,9 +589,8 @@ router.post('/register', authLimiter, async (req: Request, res: Response) => {
     isUntisUser: false,
   });
   const refreshToken = await generateRefreshToken(user.stableUid);
-  res.locals.signedIn = { stableUid: user.stableUid, username: user.username };
 
-  res.status(201).json({
+  return {
     token,
     refreshToken,
     user: {
@@ -596,7 +603,17 @@ router.post('/register', authLimiter, async (req: Request, res: Response) => {
       isUntisUser: false,
       role: user.role,
     },
-  });
+  };
+}
+
+router.post('/register', authLimiter, async (req: Request, res: Response) => {
+  const { username, password } = registerSchema.parse(req.body);
+  const result = await registerLocalAccount(username, password);
+  if (!result) {
+    return res.status(409).json({ error: 'Benutzername bereits vergeben' });
+  }
+  res.locals.signedIn = { stableUid: result.user.stableUid, username: result.user.username };
+  res.status(201).json(result);
 });
 
 // ─── POST /auth/refresh ──────────────────────────────────────────────────────
@@ -605,8 +622,8 @@ const refreshSchema = z.object({
   refreshToken: z.string().min(1),
 });
 
-router.post('/refresh', refreshLimiter, async (req: Request, res: Response) => {
-  const { refreshToken: rawToken } = refreshSchema.parse(req.body);
+// A new access token for a refresh token, which is rotated on the way.
+async function refreshSession(rawToken: string): Promise<{ token: string; refreshToken: string }> {
   const tokenHash = hashToken(rawToken);
 
   const stored = await prisma.refreshToken.findUnique({
@@ -639,7 +656,77 @@ router.post('/refresh', refreshLimiter, async (req: Request, res: Response) => {
   // the user before issuing the new one.
   const refreshToken = await generateRefreshToken(user.stableUid);
 
-  res.json({ token, refreshToken });
+  return { token, refreshToken };
+}
+
+router.post('/refresh', refreshLimiter, async (req: Request, res: Response) => {
+  const { refreshToken: rawToken } = refreshSchema.parse(req.body);
+  res.json(await refreshSession(rawToken));
+});
+
+// ─── The website's cookie sign-in (/auth/web/*) ───────────────────────────────
+//
+// The website is a static page and talks to this API directly. Its refresh
+// token lives in an httpOnly cookie on the API's address (webuntis/session.ts);
+// the website only ever sees the short-lived access token, which it keeps in
+// its own pokyh_api_token cookie, and the display data for pokyh_user.
+
+// What the website shows for a POKYH-only account; no token, no password.
+const localUserCookie = (username: string) => ({
+  username, studentId: 0, klasseId: 0, klasseName: '', isUntisUser: false, loginAt: Date.now(),
+});
+
+router.post('/web/local-login', authLimiter, async (req: Request, res: Response) => {
+  const { username, password } = localLoginSchema.parse(req.body);
+  const result = await localPasswordLogin(username, password);
+  res.locals.signedIn = { stableUid: result.user.stableUid, username: result.user.username };
+  setRefreshCookie(res, result.refreshToken);
+  res.json({ ok: true, username: result.user.username, token: result.token, user: localUserCookie(result.user.username) });
+});
+
+router.post('/web/register', authLimiter, async (req: Request, res: Response) => {
+  const { username, password } = registerSchema.parse(req.body);
+  const result = await registerLocalAccount(username, password);
+  if (!result) {
+    return res.status(409).json({ error: 'Benutzername bereits vergeben' });
+  }
+  res.locals.signedIn = { stableUid: result.user.stableUid, username: result.user.username };
+  setRefreshCookie(res, result.refreshToken);
+  res.status(201).json({ ok: true, username: result.user.username, token: result.token, user: localUserCookie(result.user.username) });
+});
+
+router.post('/web/refresh', refreshLimiter, async (req: Request, res: Response) => {
+  const rawToken = readRefreshCookie(req);
+  if (!rawToken) {
+    return res.status(401).json({ error: 'no_refresh_token' });
+  }
+  let renewed: { token: string; refreshToken: string };
+  try {
+    renewed = await refreshSession(rawToken);
+  } catch (err) {
+    if (!(err instanceof UnauthorizedError)) throw err;
+    // Invalid, expired or revoked: gone from the browser, so it stops trying.
+    clearRefreshCookie(res);
+    return res.status(401).json({ error: 'refresh_failed' });
+  }
+  setRefreshCookie(res, renewed.refreshToken);
+  res.json({ ok: true, token: renewed.token });
+});
+
+// Signing out ends the sign-in everywhere it lives: the refresh token is
+// revoked and every sign-in cookie of this address goes. Needs no valid
+// access token: an expired one must still be able to sign out.
+router.post('/web/logout', async (req: Request, res: Response) => {
+  const rawToken = readRefreshCookie(req);
+  if (rawToken) {
+    await prisma.refreshToken
+      .updateMany({ where: { tokenHash: hashToken(rawToken), revokedAt: null }, data: { revokedAt: new Date() } })
+      .catch(() => {});
+  }
+  const untis = readUntisSession(req);
+  if (untis) forgetUntisSession(untis.sessionId);
+  clearSignInCookies(res);
+  res.json({ ok: true });
 });
 
 // ─── POST /auth/logout ───────────────────────────────────────────────────────

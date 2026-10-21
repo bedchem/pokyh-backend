@@ -256,6 +256,57 @@ export const config = {
     keyPrefix: strEnv('LEARN_REDIS_KEY_PREFIX', 'pokyh:learn'),
     analyticsTtlSeconds: boundedIntEnv('LEARN_ANALYTICS_CACHE_TTL_SECONDS', 60, 1, 900),
   },
+  // The shared read cache (services/cache.ts): answers that are read often
+  // and change rarely. Redis is a copy only; MySQL stays authoritative and
+  // the API works the same without it (entries then live in process memory).
+  cache: {
+    enabled: boolEnv('CACHE_ENABLED', true),
+    redisUrl: strEnv('REDIS_URL', strEnv('LEARN_REDIS_URL', '')),
+    keyPrefix: strEnv('REDIS_KEY_PREFIX', 'pokyh:cache'),
+    // Entries kept in process memory while Redis is unavailable (0 = none).
+    memoryEntries: boundedIntEnv('CACHE_MEMORY_ENTRIES', 2_000, 0, 100_000),
+  },
+  // WebUntis for the website (routes/webuntis.ts): the website is a static
+  // page and signs in here; the WebUntis session lives sealed in httpOnly
+  // cookies on the API's own address, never on the server.
+  webuntis: {
+    // Seals the session and renewal cookies (AES-256-GCM). Empty: derived
+    // from JWT_SECRET, which every node of a cluster shares anyway.
+    sessionSecret: strEnv('WEBUNTIS_SESSION_SECRET', ''),
+    // Secure cookies (HTTPS only). Off only for a plain-http development setup.
+    cookieSecure: boolEnv('WEBUNTIS_COOKIE_SECURE', isProd),
+    // How long a WebUntis sign-in lasts on the website (cookies and session).
+    sessionMaxAgeMs: 4 * 60 * 60 * 1000,
+    // The public WebUntis school search behind the sign-in page.
+    schoolSearchUrl: strEnv('WEBUNTIS_SCHOOL_SEARCH_URL', 'https://mobile.webuntis.com/ms/schoolquery2'),
+    // Optional: only these schools (WebUntis login names) may sign in.
+    schoolAllowlist: strEnv('WEBUNTIS_SCHOOL_ALLOWLIST', '')
+      .split(',')
+      .map((name) => name.trim().toLowerCase())
+      .filter(Boolean),
+    // Internal WebUntis paths differ between instances; each can be overridden.
+    paths: {
+      absences: strEnv('WEBUNTIS_API_PATH_ABSENCES', '/api/classreg/absences/students'),
+      absenceReasons: strEnv('WEBUNTIS_API_PATH_ABSENCE_REASONS', ''),
+      appData: strEnv('WEBUNTIS_API_PATH_APPDATA', ''),
+      messageList: strEnv('WEBUNTIS_API_PATH_MSG_LIST', '/api/rest/view/v1/messages'),
+      messageSent: strEnv('WEBUNTIS_API_PATH_MSG_SENT', '/api/rest/view/v1/messages/sent'),
+      messageDrafts: strEnv('WEBUNTIS_API_PATH_MSG_DRAFTS', '/api/rest/view/v1/messages/drafts'),
+      messageRecipients: strEnv('WEBUNTIS_API_PATH_MSG_RECIPIENTS', '/api/rest/view/v1/messages/recipients/static/persons'),
+    },
+    // Permission resources that let an account report or excuse absences.
+    absenceRights: strEnv('WEBUNTIS_ABSENCE_RIGHT', 'STUDABS_REPORT,SELF_ABSENCEREASON,WRITE_OWN_ABSENCE,WRITE_STUD_ABSENCE,STUDENT_ABSENCE,SELF_ABSENCE')
+      .split(',')
+      .map((s) => s.trim().toUpperCase())
+      .filter(Boolean),
+    // Instance-specific guardian markers, in addition to the built-in ones.
+    parentRoles: strEnv('WEBUNTIS_PARENT_ROLE', '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
+    // Development only: offer absence reporting regardless of WebUntis' flag.
+    forceAbsenceReport: boolEnv('WEBUNTIS_FORCE_ABSENCE_REPORT', false),
+  },
   // A school/controller must authorise this independent integration before a
   // production Learn login can process WebUntis credentials. This check does
   // not claim to create a legal basis; it prevents accidental activation when
@@ -334,6 +385,11 @@ export const config = {
     globalWindowMs: intEnv('RATE_LIMIT_GLOBAL_WINDOW_MS', 60 * 1000),
     authMax: intEnv('RATE_LIMIT_AUTH_MAX', 10),
     authWindowMs: intEnv('RATE_LIMIT_AUTH_WINDOW_MS', 15 * 60 * 1000),
+    // Website WebUntis sign-ins (POST /webuntis/login): per address and five
+    // minutes (a school signs in through one address), and per account and
+    // fifteen minutes (what stops guessing a password).
+    webLoginMax: intEnv('RATE_LIMIT_WEB_LOGIN_MAX', 60),
+    webLoginPerAccountMax: intEnv('RATE_LIMIT_WEB_LOGIN_PER_ACCOUNT_MAX', 10),
     // Token refresh is authenticated by an unguessable refresh token (not a
     // brute-forceable password), so it gets a far more generous per-IP budget.
     // Whole schools share one public IP via NAT, so a strict auth limit here
@@ -407,6 +463,40 @@ export const config = {
   backupScheduleHour: boundedIntEnv('BACKUP_SCHEDULE_HOUR', 3, 0, 23),
   backupRetentionDays: boundedIntEnv('BACKUP_RETENTION_DAYS', 7, 1, 365),
   backupCheckIntervalMs: intEnv('BACKUP_CHECK_INTERVAL_MS', 60 * 60 * 1000),
+  // Hours between two backups: 24 (default) is one a day at BACKUP_SCHEDULE_HOUR,
+  // fewer hours back up more often (e.g. 1 = every hour, at most an hour of
+  // changes can be lost when only the backups are left).
+  backupIntervalHours: boundedIntEnv('BACKUP_INTERVAL_HOURS', 24, 1, 24 * 7),
+  // What the server does when it starts with an empty database although this
+  // node has backups (or knew data before): the database volume was lost.
+  //   local    restore the newest local backup (default)
+  //   offsite  as local; a server with neither local backups nor any trace of
+  //            earlier data also restores the newest off-site copy (a server
+  //            rebuilt after losing its disk)
+  //   off      never restore by itself
+  dbAutoRestore: ((): 'off' | 'local' | 'offsite' => {
+    const mode = strEnv('DB_AUTO_RESTORE', 'local').toLowerCase();
+    return mode === 'off' || mode === 'offsite' ? mode : 'local';
+  })(),
+  // Encrypted copies of every backup in an S3-compatible bucket
+  // (services/offsite.ts). Off until bucket, credentials and key are set.
+  offsite: {
+    endpoint: strEnv('BACKUP_S3_ENDPOINT', ''),
+    region: strEnv('BACKUP_S3_REGION', 'us-east-1'),
+    bucket: strEnv('BACKUP_S3_BUCKET', ''),
+    accessKeyId: strEnv('BACKUP_S3_ACCESS_KEY_ID', ''),
+    secretAccessKey: strEnv('BACKUP_S3_SECRET_ACCESS_KEY', ''),
+    // Path-style addresses (endpoint/bucket/key) work with every provider;
+    // false: virtual-host style (bucket.endpoint/key).
+    forcePathStyle: boolEnv('BACKUP_S3_FORCE_PATH_STYLE', true),
+    prefix: strEnv('BACKUP_S3_PREFIX', 'pokyh'),
+    // Encrypts every copy before it leaves the server. Keep it somewhere else
+    // as well: without it no copy can be restored.
+    encryptionKey: strEnv('BACKUP_ENCRYPTION_KEY', ''),
+    retentionDays: boundedIntEnv('BACKUP_OFFSITE_RETENTION_DAYS', 30, 1, 3650),
+    syncIntervalMinutes: boundedIntEnv('BACKUP_OFFSITE_SYNC_MINUTES', 10, 1, 24 * 60),
+    maxFileBytes: boundedIntEnv('BACKUP_OFFSITE_MAX_FILE_MB', 2048, 1, 16_384) * 1024 * 1024,
+  },
 
   // ── School year rollover ──────────────────────────────────────────────────
   // On Aug 1 the live non-admin users/classes/todos/reminders are archived into

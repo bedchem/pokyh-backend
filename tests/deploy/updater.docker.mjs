@@ -14,7 +14,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 // writes — and small stand-in app images, switched between blue and green
 // while clients keep sending HTTPS requests through Caddy and opening
 // connections through the edge forwarder. Needs Docker with the images
-// node:22-alpine, mysql:8.0.40, redis:7.4.1-alpine and caddy:2.8.4-alpine;
+// node:22-alpine, mysql:8.4.10, redis:7.4.1-alpine and caddy:2.8.4-alpine;
 // run with `npm run test:updater`. Everything runs in a Compose project of its
 // own, bound to 127.0.0.1, and is removed afterwards.
 

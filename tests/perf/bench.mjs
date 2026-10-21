@@ -89,7 +89,8 @@ async function mysqlServer() {
     '-p', '127.0.0.1::3306',
     // Disk-backed like a real server (a tmpfs fills up with the binary log
     // of the seed and then stalls every write).
-    'mysql:8.0.40',
+    'mysql:8.4.10',
+    '--mysql-native-password=ON',
   ], { stdio: 'pipe' });
   const mapping = execFileSync('docker', ['port', container, '3306/tcp'], { encoding: 'utf8' }).trim().split('\n')[0];
   return { url: `mysql://root:${password}@127.0.0.1:${mapping.split(':').pop()}`, container };

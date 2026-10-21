@@ -5,6 +5,7 @@ import { requireAuth } from '../middleware/auth';
 import { readLimiter, writeLimiter } from '../middleware/rateLimiter';
 import { ForbiddenError, NotFoundError } from '../utils/errors';
 import { sseManager } from '../services/sse';
+import { cached } from '../services/cache';
 
 const router = Router({ mergeParams: true });
 
@@ -28,7 +29,8 @@ router.get('/', readLimiter, requireAuth, async (req: Request, res: Response) =>
     throw new ForbiddenError('You can only access your own todos');
   }
 
-  const todos = await getTodosForUser(req.user!.stableUid);
+  const { stableUid } = req.user!;
+  const todos = await cached(`todos:${stableUid}`, ['Todo'], 120, () => getTodosForUser(stableUid));
   res.json(todos);
 });
 

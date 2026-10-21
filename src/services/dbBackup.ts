@@ -1,7 +1,7 @@
 import { spawn } from 'child_process';
 import { createHash } from 'crypto';
 import { createReadStream, createWriteStream } from 'fs';
-import { mkdir, readdir, rename, stat, unlink } from 'fs/promises';
+import { mkdir, readFile, readdir, rename, stat, unlink, writeFile } from 'fs/promises';
 import path from 'path';
 import { pipeline, Writable } from 'stream';
 import { createGunzip, createGzip } from 'zlib';
@@ -9,6 +9,11 @@ import { prisma } from '../db';
 import { config } from '../config';
 import { logger } from '../utils/logger';
 import { runDatabaseRestore } from '../cluster/hooks';
+import { buildInfo } from '../cluster/version';
+import { invalidateAllCaches } from './cache';
+import { rememberDataPresent } from './dbHeal';
+import { syncOffsite } from './offsite';
+import { applyAdditiveSchema } from './schemaSync';
 
 // Alpine's mariadb-client (the mysqldump/mysql binaries available in this
 // image) doesn't ship the caching_sha2_password plugin that MySQL 8 uses by
@@ -273,15 +278,69 @@ async function runBackupInternal(trigger: 'scheduled' | 'manual'): Promise<{ fil
 
     await rename(partPath, finalPath);
     const stats = await stat(finalPath);
+    await writeManifest(finalPath, filename, trigger, stats.size);
     logger.info('Database backup completed', { action: 'db_backup_completed', trigger, filename, sizeBytes: stats.size });
     await recordRunResult('ok');
     await pruneOldBackups();
+    await rememberDataPresent();
+    void syncOffsite();
     return { filename, sizeBytes: stats.size };
   } catch (err) {
     await unlink(partPath).catch(() => {});
     logger.error('Database backup failed', { action: 'db_backup_failed', trigger, message: err instanceof Error ? err.message : String(err) });
     await recordRunResult('error');
     throw err;
+  }
+}
+
+// Every dump gets a manifest next to it (<file>.json): its SHA-256, size, the
+// build and when it was made. A restore checks the file against it first, so
+// a damaged or swapped file is never loaded. Dumps from before manifests
+// existed are checked by reading them back only.
+interface BackupManifest {
+  filename: string;
+  sha256: string;
+  sizeBytes: number;
+  createdAt: string;
+  trigger: string;
+  commit: string;
+}
+
+function sha256File(filePath: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const hash = createHash('sha256');
+    createReadStream(filePath)
+      .on('data', (chunk) => hash.update(chunk))
+      .on('error', reject)
+      .on('end', () => resolve(hash.digest('hex')));
+  });
+}
+
+async function writeManifest(filePath: string, filename: string, trigger: string, sizeBytes: number): Promise<void> {
+  try {
+    const manifest: BackupManifest = {
+      filename,
+      sha256: await sha256File(filePath),
+      sizeBytes,
+      createdAt: new Date().toISOString(),
+      trigger,
+      commit: buildInfo().commit,
+    };
+    await writeFile(`${filePath}.json`, JSON.stringify(manifest, null, 2));
+  } catch (err) {
+    logger.warn('Backup manifest could not be written', { action: 'db_backup_manifest_failed', filename, message: err instanceof Error ? err.message : String(err) });
+  }
+}
+
+async function verifyManifest(filePath: string): Promise<void> {
+  let manifest: BackupManifest;
+  try {
+    manifest = JSON.parse(await readFile(`${filePath}.json`, 'utf8')) as BackupManifest;
+  } catch {
+    return;
+  }
+  if (manifest.sha256 && (await sha256File(filePath)) !== manifest.sha256) {
+    throw new Error('backup file does not match its manifest (damaged or replaced)');
   }
 }
 
@@ -295,7 +354,14 @@ export async function pruneOldBackups(): Promise<number> {
     const filePath = resolveBackupPath(backup.filename);
     if (!filePath) continue;
     await unlink(filePath).catch(() => {});
+    await unlink(`${filePath}.json`).catch(() => {});
     pruned++;
+  }
+  // Manifests whose dump is gone (deleted in the panel) go as well.
+  const names = await readdir(config.backupDir).catch(() => [] as string[]);
+  const dumps = new Set(names.filter((name) => FILENAME_PATTERN.test(name)));
+  for (const name of names) {
+    if (name.endsWith('.sql.gz.json') && !dumps.has(name.slice(0, -'.json'.length))) await unlink(path.join(config.backupDir, name)).catch(() => {});
   }
   if (pruned > 0) {
     logger.info('Database backup retention pruning', { action: 'db_backup_pruned', pruned, retentionDays });
@@ -371,11 +437,39 @@ async function restoreBackupInternal(filename: string, filePath: string): Promis
   logger.info('Database backup restored', { action: 'db_backup_restored', filename });
 }
 
+// After a restore the tables are as old as the dump: columns added since are
+// put back (additively, nothing is dropped) and every cached answer goes.
+async function afterRestore(): Promise<void> {
+  await invalidateAllCaches();
+  try {
+    await applyAdditiveSchema();
+  } catch (err) {
+    logger.warn('Schema sync after the restore failed; it runs again at the next start', { action: 'db_restore_schema_sync_failed', message: err instanceof Error ? err.message.split('\n')[0] : String(err) });
+  }
+  await invalidateAllCaches();
+}
+
 export async function restoreBackup(filename: string): Promise<void> {
   const filePath = resolveBackupPath(filename);
   if (!filePath) throw new Error('Invalid backup filename');
+  await verifyManifest(filePath);
   await verifyBackupArchive(filePath);
   await runDatabaseRestore(() => restoreBackupInternal(filename, filePath));
+  await afterRestore();
+}
+
+/**
+ * The start-up rebuild of a lost database (services/dbHeal.ts): the same
+ * checks and restore, before the cluster layer runs. The schema is applied
+ * by the start-up sequence right after.
+ */
+export async function restoreBackupAtBoot(filename: string): Promise<void> {
+  const filePath = resolveBackupPath(filename);
+  if (!filePath) throw new Error('Invalid backup filename');
+  await verifyManifest(filePath);
+  await verifyBackupArchive(filePath);
+  await restoreBackupInternal(filename, filePath);
+  await invalidateAllCaches();
 }
 
 // ─── Scheduling ────────────────────────────────────────────────────────────────
@@ -389,6 +483,14 @@ async function checkAndRunScheduled(): Promise<void> {
   if (!cfg.enabled) return;
 
   const now = new Date();
+  // More than one backup a day: due once the last good one is that old.
+  if (config.backupIntervalHours < 24) {
+    const due = cfg.lastRunStatus !== 'ok' || !cfg.lastRunAt
+      || now.getTime() - cfg.lastRunAt.getTime() >= config.backupIntervalHours * 60 * 60 * 1000 - 60_000;
+    if (!due) return;
+    try { await runBackup('scheduled'); } catch { /* logged inside; retried at the next check */ }
+    return;
+  }
   if (now.getUTCHours() < cfg.scheduleHour) return;
 
   const alreadyRanToday = cfg.lastRunStatus === 'ok'

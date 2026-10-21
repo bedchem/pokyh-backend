@@ -1,6 +1,7 @@
 import { prisma } from '../db';
 import { logger } from '../utils/logger';
 import { invalidateDishesCache } from '../utils/cache';
+import { invalidateSqlTables } from '../services/cache';
 import { noteTokenRevocation } from '../utils/revokedTokens';
 import { publishDishRatings } from '../services/dishRatings';
 import { publishDishComments } from '../services/dishComments';
@@ -24,6 +25,8 @@ const pending = {
   ratedDishes: new Set<string>(),
   commentedDishes: new Set<string>(),
   dishes: false,
+  // Every table a batch changed: their cached answers (services/cache.ts) go.
+  tables: new Set<string>(),
 };
 
 function collect(target: Set<string>, column: string, ...rows: Row[]): void {
@@ -49,6 +52,7 @@ function splitDish(value: string): [string | null, string] {
 }
 
 export function queueEffect(table: string, before: Row, after: Row): void {
+  pending.tables.add(table);
   switch (table) {
     case 'todos':
       collect(pending.todoUsers, 'stable_uid', before, after);
@@ -87,6 +91,7 @@ function take(set: Set<string>): string[] {
 }
 
 async function run(): Promise<void> {
+  if (pending.tables.size) await invalidateSqlTables(take(pending.tables));
   if (pending.dishes) {
     pending.dishes = false;
     invalidateDishesCache();

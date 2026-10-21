@@ -24,6 +24,7 @@ name: ${COMPOSE_PROJECT_NAME:-pokyh}
 
 x-app-environment: &app-environment
   LEARN_REDIS_URL: redis://redis:6379
+  REDIS_URL: redis://redis:6379
   LEARN_AI_OLLAMA_BASE_URL: http://ollama:11434
   POKYH_UPDATE_DIR: /app/data/update
   POKYH_ACTIVATION_FILE: /app/data/update/active
@@ -73,14 +74,20 @@ x-app: &app
 
 services:
   mysql:
-    image: mysql:8.0.40
+    # MySQL 8.4 LTS. Its data lives in a volume of its own; on the first start
+    # the 8.0 data is copied over from the old volume (mounted read-only, never
+    # written to) and upgraded in place. See docs/database.md.
+    image: mysql:8.4.10
     restart: unless-stopped
+    # A clean shutdown matters: MySQL upgrades a data directory only after one.
+    stop_grace_period: 2m
     volumes:
       - type: bind
         source: ./.env
         target: /run/configs/pokyh-backend.env
         read_only: true
-      - mysql_data:/var/lib/mysql
+      - mysql84_data:/var/lib/mysql
+      - mysql_data:/legacy/mysql80:ro
     # MySQL receives only its own two values from the backend env file.
     entrypoint:
       - /bin/sh
@@ -94,12 +101,25 @@ services:
         mysql_database="$$(read_value DB_NAME)"
         test -n "$$mysql_root_password" || { echo "MYSQL_ROOT_PASSWORD is required" >&2; exit 1; }
         test -n "$$mysql_database" || { echo "DB_NAME is required" >&2; exit 1; }
+        datadir=/var/lib/mysql
+        legacy=/legacy/mysql80
+        if [ -e "$$datadir/.pokyh-copy-incomplete" ]; then
+          echo "[pokyh] an earlier copy of the 8.0 data did not finish; copying again"
+          rm -rf "$$datadir"/* "$$datadir"/.[!.]* 2>/dev/null || true
+        fi
+        if [ ! -e "$$datadir/mysql.ibd" ] && [ -e "$$legacy/mysql.ibd" ]; then
+          echo "[pokyh] copying the MySQL 8.0 data for the upgrade to 8.4 (the original volume stays untouched)"
+          touch "$$datadir/.pokyh-copy-incomplete"
+          cp -a "$$legacy/." "$$datadir/"
+          rm -f "$$datadir/.pokyh-copy-incomplete"
+        fi
         exec env -i PATH="$$PATH" HOME=/root \
           MYSQL_ROOT_PASSWORD="$$mysql_root_password" \
           MYSQL_DATABASE="$$mysql_database" \
           /usr/local/bin/docker-entrypoint.sh "$$@"
       - --
-    command: ["mysqld"]
+    # The API's backup account authenticates with mysql_native_password.
+    command: ["mysqld", "--mysql-native-password=ON", "--binlog-expire-logs-seconds=604800"]
     healthcheck:
       test: ["CMD", "sh", "-c", "mysqladmin ping -h localhost -u root --password=\"$$MYSQL_ROOT_PASSWORD\" --silent"]
       interval: 5s
@@ -112,7 +132,9 @@ services:
   redis:
     image: redis:7.4.1-alpine
     restart: unless-stopped
-    command: ["redis-server", "--appendonly", "no", "--save", "", "--protected-mode", "yes"]
+    # Bounded; only entries with a lifetime are evicted, never the table
+    # versions that keep the API's read cache correct.
+    command: ["redis-server", "--appendonly", "no", "--save", "", "--protected-mode", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "volatile-lru"]
     user: redis
     read_only: true
     tmpfs:
@@ -270,7 +292,9 @@ services:
       - ai-internal
 
 volumes:
+  # 8.0's data from before the upgrade, kept read-only as the way back.
   mysql_data:
+  mysql84_data:
   backups:
   ollama_data:
   caddy_data:

@@ -4,7 +4,7 @@
 
 **The API, realtime layer and admin panel behind POKYH, the school companion app.**
 
-Node.js 22 · Express 5 · TypeScript · Prisma · MySQL 8 · Server-Sent Events · Web Push · Docker
+Node.js 22 · Express 5 · TypeScript · Prisma · MySQL 8.4 · Redis · Server-Sent Events · Web Push · Docker
 
 [Quick start](#quick-start) · [Configuration](#configuration) · [API](#api-overview) · [Admin panel](#admin-panel) · [Cluster](#cluster) · [Testing](#testing)
 
@@ -50,10 +50,13 @@ class reminders, personal to-dos, the cafeteria menu with ratings and comments, 
 popups, push notifications — and, additively, the separate learning product **Pokyh Learn**.
 This backend is the **single source of truth** for everything that is *not* WebUntis data.
 
-Users never sign in here with a password. They authenticate against WebUntis in the **web
-frontend** or the **app**, which then perform a trusted **server-to-server** login here (guarded
-by a shared `SERVER_KEY`) to obtain a POKYH session. Parents and guardians receive no POKYH class
-identity or membership.
+The **website** is a static page and talks to this API directly: it signs in at `/webuntis/login`,
+where the password passes through to the school's WebUntis and is never stored or logged, and
+reads its WebUntis data through `/webuntis/*` with the person's own WebUntis session. That
+session lives sealed (AES-GCM) in httpOnly cookies on the API's address, never on the server.
+The **apps** authenticate against WebUntis themselves and then perform a trusted
+**server-to-server** login here (guarded by a shared `SERVER_KEY`). Parents and guardians receive
+no POKYH class identity or membership.
 
 The backend also serves a built-in **React admin panel** at `/admin/`, and can run as a
 **leaderless cluster** of several nodes that hold the same data.
@@ -64,19 +67,19 @@ The backend also serves a built-in **React admin panel** at `/admin/`, and can r
 
 ```
 ┌──────────────┐   ┌──────────────┐   ┌──────────────────┐
-│  Web (Next)  │   │     App      │   │  Learn web app   │
+│ Web (static) │   │     App      │   │  Learn web app   │
 └──────┬───────┘   └──────┬───────┘   └────────┬─────────┘
-       │  X-API-Key  ·  Bearer <JWT>  ·  X-Server-Key (login only)
+       │  X-API-Key · Bearer <JWT> · session cookies (web) · X-Server-Key (app login)
        ▼                  ▼                    ▼
 ┌─────────────────────────────────────────────────────────┐
-│                    POKYH Backend (node)                  │
-│  Express 5 · JWT · rate limits · REST + SSE + Web Push   │
-│  /admin/ (React SPA)  ·  /learn/*  ·  /cluster/v1/*      │
+│                    POKYH Backend (node)                  │──► WebUntis (per school,
+│  Express 5 · JWT · rate limits · REST + SSE + Web Push   │    the person's own session)
+│  /webuntis/* · /admin/ (React SPA) · /learn/* · /cluster │
 └──────────┬──────────────────┬───────────────┬────────────┘
            │                  │               │ mutual TLS, pinned certificates
      ┌─────▼─────┐     ┌──────▼─────┐   ┌─────▼───────────────┐
-     │  MySQL 8  │     │ Redis (opt)│   │ other nodes (opt.)  │
-     │  (Prisma) │     │ Learn cache│   │ same data, no leader│
+     │ MySQL 8.4 │     │   Redis    │   │ other nodes (opt.)  │
+     │  (Prisma) │     │ read cache │   │ same data, no leader│
      └───────────┘     └────────────┘   └─────────────────────┘
 ```
 
@@ -94,7 +97,7 @@ The backend also serves a built-in **React admin panel** at `/admin/`, and can r
 ### Prerequisites
 
 - Node.js ≥ 22
-- MySQL 8 (local, or the bundled Docker service)
+- MySQL 8.4 (local, or the bundled Docker service)
 
 ### Local development
 
@@ -119,7 +122,8 @@ cp .env.example .env        # development example only — never commit the resu
 `scripts/compose-stack.sh` passes one operator-owned environment file to the app and to the MySQL
 initialisation, with Compose's own `.env` interpolation disabled, so values containing `$` (bcrypt
 hashes) arrive unchanged. MySQL receives only its root password and database name. Redis is
-internal, non-persistent and only an optional Learn analytics cache. Use another file with
+internal and non-persistent: the API's read cache and the Learn analytics cache, never a source
+of truth (see [Read cache](#read-cache)). Use another file with
 `BACKEND_ENV_FILE=/secure/path/backend.env ./scripts/compose-stack.sh up --build -d`.
 
 ---
@@ -186,6 +190,20 @@ With `DB_AUTO_PUSH=true` the server applies additive schema changes at every sta
 deployment convenience, not a reviewed migration: before a production schema change, take and test
 a backup.
 
+**Failure handling and recovery** — [`docs/database.md`](docs/database.md): the layers (cluster,
+checksummed backups, point-in-time recovery through the `db-archiver` service, encrypted off-site
+copies), the start-up rebuild of a lost database, and the MySQL 8.4 upgrade with its way back.
+
+### Read cache
+
+What the API reads often and changes rarely — menus, popups, to-dos, reminders and their
+comments, dish ratings and comments, subject images, the WebUntis school search — is kept in
+Redis (`services/cache.ts`). Every entry is stored under the versions of the tables it was built
+from; any write to one of them raises the version, so an outdated answer is never served:
+writes through Prisma anywhere in the process, raw SQL (the tables are read from the statement),
+changes replicated from other nodes and restores. MySQL stays the only source of truth; without
+Redis the entries live in process memory. WebUntis data of a person is never cached.
+
 ---
 
 ## Authentication & security
@@ -213,6 +231,8 @@ bodies and secrets are never logged.
 | Group | Mount | Notes |
 | --- | --- | --- |
 | Auth | `/auth/login` · `/refresh` · `/logout` · `/me` · `/register` | Server-to-server login and token life cycle |
+| Website sign-in | `/auth/web/local-login` · `/register` · `/refresh` · `/logout` | POKYH-only accounts and the token life cycle of the website; refresh token in an httpOnly cookie |
+| WebUntis (website) | `/webuntis/login` · `/schools` · `/password-reset` · `/timetable` · `/grades` · `/absences/*` · `/messages/*` · `/attachment` · `/profile-image` · `/permissions` · `/password` · … | The person's WebUntis through their sealed session cookie; reads by cookie, writes also need `X-API-Key` |
 | Users | `/users/:username` | Profile lookup |
 | To-dos | `/users/:username/todos` | Per user, CRUD + SSE |
 | Classes | `/classes` · `/classes/mine` · `/classes/:id` | Joined/created by WebUntis class |
@@ -326,9 +346,10 @@ calls `/readyz`. Publish the API through your own TLS reverse proxy or load bala
 stdout as structured JSON (`docker compose logs -f app`, bounded by the local log driver) and to
 rotating files bounded by `LOG_FILE_RETENTION_DAYS`.
 
-This Compose file is a single-host topology, not a backup or disaster-recovery system: the MySQL
-volume is as durable as the host's storage. Configure off-host backups yourself (the admin panel's
-backup page covers scheduled dumps on the node).
+One Compose stack is one host: its volumes are as durable as that host's storage. Against losing
+it, add a second node at another location ([Cluster](#cluster)) and set up the encrypted off-site
+copies of the backups; the `db-archiver` service adds point-in-time recovery. See
+[`docs/database.md`](docs/database.md).
 
 To run several nodes, see [Cluster](#cluster); servers set up with the one-line installer run their
 own stack ([`deploy/node`](deploy/node)) with blue/green updates.

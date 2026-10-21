@@ -21,7 +21,7 @@ export const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 const { PrismaClient } = require(path.join(REPO, 'node_modules', '@prisma', 'client'));
 const jwt = require(path.join(REPO, 'node_modules', 'jsonwebtoken'));
 
-const MYSQL_IMAGE = 'mysql:8.0.40';
+const MYSQL_IMAGE = 'mysql:8.4.10';
 const ADMIN_USERNAME = 'clusteradmin';
 // Never used to sign in — it only has to be non-empty so the first-run setup
 // endpoint stays closed. Tests authenticate with tokens they mint themselves.
@@ -100,6 +100,8 @@ export class Cluster {
         '-p', '127.0.0.1::3306',
         '--tmpfs', '/var/lib/mysql:rw,size=1g',
         MYSQL_IMAGE,
+        // As in production: the backup account uses mysql_native_password.
+        '--mysql-native-password=ON',
       ], { stdio: 'pipe' });
       this.clientContainer = this.container;
       const mapping = execFileSync('docker', ['port', this.container, '3306/tcp'], { encoding: 'utf8' }).trim().split('\n')[0];

@@ -24,6 +24,9 @@ import { startArchiver } from './services/archiver';
 import { startSchoolYearArchiver } from './services/schoolYearArchiver';
 import { startBackupScheduler } from './services/dbBackup';
 import { applyAdditiveSchema } from './services/schemaSync';
+import { databaseIsEmpty, healLostDatabase, rememberDataPresent } from './services/dbHeal';
+import { startOffsiteSync } from './services/offsite';
+import { closeCache } from './services/cache';
 import { migrateStableKeys } from './utils/dishKey';
 import { reconcileDishRatings } from './services/dishRatings';
 import { logger } from './utils/logger';
@@ -129,6 +132,9 @@ app.use(
       credentials: true,
       methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
       allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key', 'X-Server-Key', 'Idempotency-Key', 'X-Pokyh-School'],
+      // The website calls this API directly: browsers may keep a preflight's
+      // answer this long (seconds) instead of asking before every request.
+      maxAge: 7200,
     });
   })
 );
@@ -564,6 +570,9 @@ function startBackgroundJobs() {
   // configured number of days and pruned automatically after each run.
   startJob('backup scheduler', () => startBackupScheduler());
 
+  // Encrypted copies of the backups in an S3-compatible bucket, when set up.
+  startJob('off-site backups', () => startOffsiteSync());
+
   // AI vocabulary trainer model provisioning ("check, else pull, then start"):
   // deliberately fire-and-forget, never awaited here. A multi-GB first-boot
   // model pull must never delay the HTTP server from listening or gate
@@ -617,8 +626,13 @@ function pushSchema(): Promise<boolean> {
 // stays alive across failures — reliable for first boot and rolling restarts.
 async function connectDatabaseWithRetry() {
   let attempt = 0;
+  // Whether the database was empty before the schema was applied: the
+  // signal that its volume was lost (services/dbHeal.ts). Kept across
+  // retries; unknown (null) while the database server cannot be reached.
+  let emptyBefore: boolean | null = null;
   for (;;) {
     try {
+      if (emptyBefore === null) emptyBefore = await databaseIsEmpty();
       if (config.dbAutoPush) {
         const ok = await pushSchema();
         if (!ok) {
@@ -636,6 +650,17 @@ async function connectDatabaseWithRetry() {
         }
       }
       await prisma.$connect();
+      // An empty database on a node that had data: rebuilt from the newest
+      // backup, then brought to the current schema again (the dump's tables
+      // are as old as the dump).
+      if (emptyBefore === true && await healLostDatabase()) {
+        if (!(config.dbAutoPush && await pushSchema())) {
+          await applyAdditiveSchema().catch((err) => {
+            logger.warn(`Additive schema sync after the rebuild failed: ${err instanceof Error ? err.message.split('\n')[0] : String(err)}`);
+          });
+        }
+      }
+      void rememberDataPresent();
       databaseReady = true;
       databaseStartupComplete = true;
       logger.info('Database ready (schema applied, connected)');
@@ -774,6 +799,7 @@ async function shutdown(signal: string) {
   await stopClusterListener().catch(() => {});
   await stopCluster().catch(() => {});
   await closeLearnCache().catch(() => {});
+  await closeCache().catch(() => {});
   await prisma.$disconnect().catch(() => {});
   process.exit(0);
 }

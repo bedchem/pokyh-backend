@@ -26,6 +26,7 @@ import { adminAccessRouter } from './adminSchools';
 import { adminMonitoringRouter } from './adminMonitoring';
 import { adminSearchRouter } from './adminSearch';
 import { clientErrorsRouter } from './clientErrors';
+import { webuntisRouter } from './webuntis';
 import { config } from '../config';
 
 const router = Router();
@@ -58,6 +59,11 @@ router.use('/api/admin', adminRouter);
 
 // Public dish catalog — no API key required (read-only menu data)
 router.use('/dishes', dishesRouter);
+
+// WebUntis for the website: reads are authenticated by the sealed session
+// cookie alone (pictures and documents load straight into the page), writes
+// need the API key as well — enforced inside the router.
+router.use('/webuntis', webuntisRouter);
 
 // Apply API key check to all other routes
 router.use(apiKeyMiddleware);

@@ -19,6 +19,7 @@
     "revoke-admin": "node scripts/revoke-admin.js",
     "set-admin-password": "node scripts/set-admin-password.js",
     "reset-admin-2fa": "node scripts/reset-admin-2fa.js",
+    "decrypt-backup": "node scripts/decrypt-backup.js",
     "create-user": "node scripts/create-user.js",
     "grant-ai-access": "node scripts/grant-ai-access.js",
     "revoke-ai-access": "node scripts/revoke-ai-access.js",

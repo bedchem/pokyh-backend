@@ -11,6 +11,7 @@ import { logger } from '../utils/logger';
 import { NotFoundError, ValidationError } from '../utils/errors';
 import { renderPopupContent } from '../services/popupRender';
 import { likeText } from '../utils/like';
+import { cached } from '../services/cache';
 
 // ─── Announcement popups ──────────────────────────────────────────────────────
 // Admin CRUD lives under /api/admin/popups (JWT admin), the client feed under
@@ -316,28 +317,31 @@ client.get('/active', optionalAuth, async (req: Request, res: Response): Promise
   // Popups for every school, and those of the signed-in account's school.
   const schoolId = user ? await schoolOfUser(user.stableUid) : null;
   const meantFor: Prisma.PopupWhereInput[] = [{ targetUsers: { none: {} }, targetClasses: { none: {} } }];
+  const klasseId = user && Number.isInteger(user.klasseId) && user.klasseId > 0 ? user.klasseId : 0;
   if (user) {
     meantFor.push({ targetUsers: { some: { stableUid: user.stableUid } } });
-    if (Number.isInteger(user.klasseId) && user.klasseId > 0) meantFor.push({ targetClasses: { some: { klasseId: user.klasseId } } });
+    if (klasseId) meantFor.push({ targetClasses: { some: { klasseId } } });
   }
-  const popups = await prisma.popup.findMany({
-    where: {
-      enabled: true,
-      platform: { in: ['all', platform] },
-      audience: { in: ['all', audience === 'guest' ? 'guests' : 'users'] },
-      AND: [
-        { OR: [{ startsAt: null }, { startsAt: { lte: now } }] },
-        { OR: [{ endsAt: null }, { endsAt: { gt: now } }] },
-        { OR: meantFor },
-        { OR: [{ schoolId: null }, ...(schoolId ? [{ schoolId }] : [])] },
-      ],
-    },
-    orderBy: { createdAt: 'asc' },
-  });
-  res.setHeader('Cache-Control', 'no-store');
-  res.json({
-    now: now.toISOString(),
-    popups: popups.map((p) => ({
+  // Every page load asks for this: kept in the shared cache per platform,
+  // audience, account, class and school. Any popup change drops it at once;
+  // the short TTL lets a popup's time window open or close on time.
+  const cacheName = `popups:${platform}:${audience}:${user?.stableUid ?? ''}:${klasseId}:${schoolId ?? ''}`;
+  const popups = await cached(cacheName, ['Popup', 'PopupTargetUser', 'PopupTargetClass'], POPUP_CACHE_SECONDS, async () => {
+    const rows = await prisma.popup.findMany({
+      where: {
+        enabled: true,
+        platform: { in: ['all', platform] },
+        audience: { in: ['all', audience === 'guest' ? 'guests' : 'users'] },
+        AND: [
+          { OR: [{ startsAt: null }, { startsAt: { lte: now } }] },
+          { OR: [{ endsAt: null }, { endsAt: { gt: now } }] },
+          { OR: meantFor },
+          { OR: [{ schoolId: null }, ...(schoolId ? [{ schoolId }] : [])] },
+        ],
+      },
+      orderBy: { createdAt: 'asc' },
+    });
+    return rows.map((p) => ({
       id: p.id,
       revision: p.revision,
       title: p.title,
@@ -346,8 +350,16 @@ client.get('/active', optionalAuth, async (req: Request, res: Response): Promise
       startsAt: p.startsAt?.toISOString() ?? null,
       endsAt: p.endsAt?.toISOString() ?? null,
       slotMs: slotMs(p),
-    })),
+    }));
+  });
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({
+    now: now.toISOString(),
+    // A window that closed while the list was kept is left out here.
+    popups: popups.filter((p) => !p.endsAt || new Date(p.endsAt).getTime() > now.getTime()),
   });
 });
+
+const POPUP_CACHE_SECONDS = 30;
 
 export { admin as popupsAdminRouter, client as popupsRouter };

@@ -1,7 +1,9 @@
 import { Router, Request, Response } from 'express';
 import { prisma } from '../db';
 import { readLimiter } from '../middleware/rateLimiter';
-import { dishesCache, currentSeason, dishesCacheKey } from '../utils/cache';
+import { currentSeason, dishesCacheKey } from '../utils/cache';
+import { cached } from '../services/cache';
+import { config } from '../config';
 import { rotatePastWeeks } from '../utils/mensaRotate';
 import { slugifyDishName } from '../utils/dishKey';
 import { logger } from '../utils/logger';
@@ -77,29 +79,24 @@ router.get('/', readLimiter, optionalAuth, async (req: Request, res: Response): 
     return;
   }
   const season = currentSeason();
-  const cacheKey = dishesCacheKey(menuId, season);
-  const cached = dishesCache.get(cacheKey);
-  if (cached !== undefined) {
-    res.json(cached);
-    return;
-  }
+  // Shared through Redis (services/cache.ts); any dish write drops it, the
+  // TTL makes sure past weeks are rotated even when nobody writes.
+  const payload = await cached(dishesCacheKey(menuId, season), ['Dish', 'DishImage'], Math.max(1, Math.round(config.cacheTtlMs / 1000)), async () => {
+    try {
+      await rotatePastWeeks(menuId, season);
+    } catch (err) {
+      // Rotation failure must not block serving the (possibly stale) menu.
+      logger.warn('opportunistic rotate failed', {
+        season, error: err instanceof Error ? err.message : String(err),
+      });
+    }
 
-  try {
-    await rotatePastWeeks(menuId, season);
-  } catch (err) {
-    // Rotation failure must not block serving the (possibly stale) menu.
-    logger.warn('opportunistic rotate failed', {
-      season, error: err instanceof Error ? err.message : String(err),
+    const dishes = await prisma.dish.findMany({
+      where: { menuId, plan: season },
+      orderBy: [{ date: 'asc' }, { sortOrder: 'asc' }, { nameDe: 'asc' }],
     });
-  }
-
-  const dishes = await prisma.dish.findMany({
-    where: { menuId, plan: season },
-    orderBy: [{ date: 'asc' }, { sortOrder: 'asc' }, { nameDe: 'asc' }],
+    return { available: true, menu: { dishes: dishes.map(dishToJson) } };
   });
-
-  const payload = { available: true, menu: { dishes: dishes.map(dishToJson) } };
-  dishesCache.set(cacheKey, payload);
   res.json(payload);
 });
 
