@@ -385,6 +385,9 @@ export const config = {
     // fifteen minutes (what stops guessing a password).
     webLoginMax: intEnv('RATE_LIMIT_WEB_LOGIN_MAX', 60),
     webLoginPerAccountMax: intEnv('RATE_LIMIT_WEB_LOGIN_PER_ACCOUNT_MAX', 10),
+    // Messages one website account may send to teachers (new, replies, excuses) per window.
+    webMessageMax: intEnv('RATE_LIMIT_WEB_MESSAGE_MAX', 30),
+    webMessageWindowMs: intEnv('RATE_LIMIT_WEB_MESSAGE_WINDOW_MS', 15 * 60 * 1000),
     // Token refresh is authenticated by an unguessable refresh token (not a
     // brute-forceable password), so it gets a far more generous per-IP budget.
     // Whole schools share one public IP via NAT, so a strict auth limit here

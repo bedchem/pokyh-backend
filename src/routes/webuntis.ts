@@ -31,6 +31,7 @@ import {
   extractAbsenceSubjectName,
   extractChildStudentId,
   extractImageUrl,
+  extractPersonName,
   fetchAbsenceCreateFlag,
   fetchAppData,
 } from '../webuntis/appData';
@@ -43,6 +44,7 @@ import {
   type WebUntisStudentClass,
 } from '../webuntis/accountClass';
 import { absenceWriteOutcome, conflictTexts, hmNumber, ymdNumber } from '../webuntis/absences';
+import { absenceSpan, composeExcuse, excuseLocale, parseExcuseSubject, type ExcuseAbsence, type ExcuseSpan } from '../webuntis/excuseMessage';
 import { fetchMessagePermissions, htmlToText, plainTextToHtml } from '../webuntis/messages';
 import { defaultSchool, parseSchool, schoolBase, schoolCookieValue, schoolLoginName, searchSchools, type UntisSchool } from '../webuntis/schools';
 import { openRenewal, readSession, requireUntisSession, sealRenewal, setRefreshCookie, setSessionCookie } from '../webuntis/session';
@@ -134,6 +136,19 @@ const passwordChangeLimiter = rateLimit({
   legacyHeaders: false,
   keyGenerator: (req) => `web-password:${req.untis?.sessionId ?? 'none'}`,
   message: { error: 'Zu viele Versuche. Bitte warte ein paar Minuten.', code: 'rate_limited' },
+});
+
+// Messages to teachers (new ones, replies, excuses) per account, however many
+// sign-ins or addresses it uses: nobody can flood a school's teachers through
+// POKYH. Drafts reach nobody and do not count.
+const messageLimiter = rateLimit({
+  windowMs: config.rateLimit.webMessageWindowMs,
+  max: config.rateLimit.webMessageMax,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req) => req.query['draft'] === '1',
+  keyGenerator: (req) => `web-message:${schoolLoginName(req.untis?.school)}:${String(req.untis?.username ?? 'none').toLowerCase()}`,
+  message: { error: 'Du hast gerade viele Nachrichten gesendet. Bitte warte ein paar Minuten.', code: 'rate_limited' },
 });
 
 // ─── Sign-in ───────────────────────────────────────────────────────────────────
@@ -821,46 +836,52 @@ router.get('/grades', async (req: Request, res: Response) => {
 
 const PAGE_SIZE = 100;
 
+type AbsenceList = { ok: true; absences: unknown[] } | { ok: false; reason: 'expired' | 'failed' };
+
+// The student's absences of a date range (YYYYMMDD), every page of them.
+async function readAbsences(s: UntisSession, startDate: string, endDate: string): Promise<AbsenceList> {
+  const baseUrl = `${config.webuntis.paths.absences}?studentId=${s.studentId}&startDate=${startDate}&endDate=${endDate}&excuseStatusId=-1&limit=${PAGE_SIZE}&pageSize=${PAGE_SIZE}`;
+  const all: unknown[] = [];
+  let totalCount: number | null = null;
+  // Safety cap: 50 pages × 100 = 5000 absences.
+  for (let page = 0; page < 50; page++) {
+    const r = await untisGetText(s, page === 0 ? baseUrl : `${baseUrl}&page=${page}`);
+    // Session errors count on the first page; later failures end the paging.
+    if (r.text.trimStart().startsWith('<') || r.status === 401 || r.status === 403) {
+      if (page === 0) return { ok: false, reason: 'expired' };
+      break;
+    }
+    if (!r.ok) {
+      if (page === 0) return { ok: false, reason: 'failed' };
+      break;
+    }
+    const parsed = JSON.parse(r.text) as Record<string, unknown>;
+    const inner = (parsed?.data as Record<string, unknown>) ?? parsed;
+    const items = (inner?.absences as unknown[]) ?? [];
+    if (totalCount === null) {
+      totalCount = (inner?.count as number) ?? (inner?.totalCount as number) ?? (inner?.totalElements as number) ?? null;
+    }
+    if (items.length === 0) break;
+    // WebUntis repeating the first page (no paging support): stop.
+    const firstId = (items[0] as Record<string, unknown>)?.id;
+    if (page > 0 && all.some((a) => (a as Record<string, unknown>).id === firstId)) break;
+    all.push(...items);
+    if (items.length < PAGE_SIZE || (totalCount !== null && all.length >= totalCount)) break;
+  }
+  return { ok: true, absences: all };
+}
+
 router.get('/absences', async (req: Request, res: Response) => {
   const range = dateRange(req, res);
   if (!range) return;
-  const s = session(req);
-  const baseUrl = `${config.webuntis.paths.absences}?studentId=${s.studentId}&startDate=${range.startDate}&endDate=${range.endDate}&excuseStatusId=-1&limit=${PAGE_SIZE}&pageSize=${PAGE_SIZE}`;
   try {
-    const all: unknown[] = [];
-    let totalCount: number | null = null;
-    // Safety cap: 50 pages × 100 = 5000 absences.
-    for (let page = 0; page < 50; page++) {
-      const r = await untisGetText(s, page === 0 ? baseUrl : `${baseUrl}&page=${page}`);
-      // Session errors count on the first page; later failures end the paging.
-      if (r.text.trimStart().startsWith('<') || r.status === 401 || r.status === 403) {
-        if (page === 0) {
-          sessionExpired(res);
-          return;
-        }
-        break;
-      }
-      if (!r.ok) {
-        if (page === 0) {
-          res.status(502).json({ error: 'Die Abwesenheiten konnten gerade nicht geladen werden.' });
-          return;
-        }
-        break;
-      }
-      const parsed = JSON.parse(r.text) as Record<string, unknown>;
-      const inner = (parsed?.data as Record<string, unknown>) ?? parsed;
-      const items = (inner?.absences as unknown[]) ?? [];
-      if (totalCount === null) {
-        totalCount = (inner?.count as number) ?? (inner?.totalCount as number) ?? (inner?.totalElements as number) ?? null;
-      }
-      if (items.length === 0) break;
-      // WebUntis repeating the first page (no paging support): stop.
-      const firstId = (items[0] as Record<string, unknown>)?.id;
-      if (page > 0 && all.some((a) => (a as Record<string, unknown>).id === firstId)) break;
-      all.push(...items);
-      if (items.length < PAGE_SIZE || (totalCount !== null && all.length >= totalCount)) break;
+    const list = await readAbsences(session(req), range.startDate, range.endDate);
+    if (!list.ok) {
+      if (list.reason === 'expired') sessionExpired(res);
+      else res.status(502).json({ error: 'Die Abwesenheiten konnten gerade nicht geladen werden.' });
+      return;
     }
-    res.json({ data: { absences: all, count: all.length } });
+    res.json({ data: { absences: list.absences, count: list.absences.length } });
   } catch (e) {
     res.status(500).json({ error: errorText(e) });
   }
@@ -911,6 +932,13 @@ router.get('/absence-reasons', async (req: Request, res: Response) => {
 
 // Reasons and defaults for "Abwesenheit melden" (GET /api/classreg/absences/meta,
 // what the official report dialog loads first).
+function metaReasons(d: Record<string, unknown>): { id: number; name: string }[] {
+  const list = (d.absenceReasons ?? d.reasons ?? []) as Array<Record<string, unknown>>;
+  return (Array.isArray(list) ? list : [])
+    .map((x) => ({ id: Number(x.id), name: String(x.name ?? x.longName ?? x.displayName ?? '').trim() }))
+    .filter((x) => Number.isFinite(x.id) && x.name && x.name !== '---');
+}
+
 router.get('/absences/meta', async (req: Request, res: Response) => {
   try {
     const r = await untis(session(req), '/api/classreg/absences/meta', { rest: false, timeoutMs: 12_000 });
@@ -924,10 +952,7 @@ router.get('/absences/meta', async (req: Request, res: Response) => {
     }
     const root = (r.json ?? {}) as Record<string, unknown>;
     const d = ((root.data as Record<string, unknown>) ?? root) as Record<string, unknown>;
-    const list = (d.absenceReasons ?? d.reasons ?? []) as Array<Record<string, unknown>>;
-    const reasons = (Array.isArray(list) ? list : [])
-      .map((x) => ({ id: Number(x.id), name: String(x.name ?? x.longName ?? x.displayName ?? '').trim() }))
-      .filter((x) => Number.isFinite(x.id) && x.name && x.name !== '---');
+    const reasons = metaReasons(d);
     const def = d.defaultAbsenceReason as { id?: unknown } | undefined;
     res.json({
       reasons,
@@ -1030,20 +1055,49 @@ router.post('/absences/delete', async (req: Request, res: Response) => {
   }
 });
 
-// A reason and a note for existing absences, what "entschuldigen" is for a
-// student in WebUntis (the excuse status itself is set by the school), as the
-// official edit dialog does it: read the absence (only when canEdit), then
-// POST /api/classreg/absences/students/edit keeping its own dates and times.
-interface UntisAbsence {
-  id?: number;
-  startDate?: number;
-  startTime?: number;
-  endDate?: number;
-  endTime?: number;
-  canEdit?: boolean;
+// "Entschuldigen" for an absence that is over. WebUntis refuses the edit that
+// would add a reason to it, so the excuse goes to the class teachers as a
+// message (webuntis/excuseMessage.ts), one each: the TEACHER option takes one
+// recipient per message. The absences are read from WebUntis by their ids,
+// never taken from the request, and only those not yet excused are named.
+// Whether the school then counts them as excused is the class teachers' call.
+
+interface OpenAbsence extends ExcuseAbsence {
+  id: number;
+  isExcused: boolean;
 }
 
-router.post('/absences/excuse', async (req: Request, res: Response) => {
+function openAbsence(item: unknown): OpenAbsence | null {
+  const a = (item ?? {}) as Record<string, unknown>;
+  const id = Number(a.id);
+  const startDate = Number(a.startDate);
+  const endDate = Number(a.endDate);
+  if (!Number.isInteger(id) || id <= 0 || !ymdNumber(startDate) || !ymdNumber(endDate)) return null;
+  return { id, startDate, endDate, startTime: Number(a.startTime) || 0, endTime: Number(a.endTime) || 0, isExcused: a.isExcused === true };
+}
+
+/** 1 September of the current school year to today, as YYYYMMDD. */
+function schoolYearSoFar(now = new Date()): { startDate: string; endDate: string } {
+  const year = now.getMonth() >= 8 ? now.getFullYear() : now.getFullYear() - 1;
+  return { startDate: `${year}0901`, endDate: isoDay(now).replace(/-/g, '') };
+}
+
+const EXCUSE_ERRORS: Record<string, string> = {
+  not_found: 'Die Abwesenheit wurde in WebUntis nicht gefunden.',
+  already_excused: 'Diese Abwesenheit ist bereits entschuldigt.',
+  absences_failed: 'Die Abwesenheit konnte gerade nicht geladen werden.',
+  reasons_failed: 'Abwesenheitsgründe konnten nicht geladen werden.',
+  messages_forbidden: 'Nachrichten an Lehrkräfte sind für dein Konto in WebUntis nicht freigegeben.',
+  recipients_failed: 'Deine Klassenlehrer konnten gerade nicht geladen werden.',
+  no_class_teacher: 'In WebUntis ist für deine Klasse keine Klassenlehrkraft hinterlegt.',
+  send_failed: 'Die Nachricht an deine Klassenlehrer konnte nicht gesendet werden.',
+};
+
+function excuseFail(res: Response, code: string, status: number): void {
+  res.status(status).json({ ok: false, error: EXCUSE_ERRORS[code] ?? EXCUSE_ERRORS.send_failed, code });
+}
+
+router.post('/absences/excuse', messageLimiter, async (req: Request, res: Response) => {
   const s = session(req);
   const body = (req.body ?? {}) as Record<string, unknown>;
   const ids = (Array.isArray(body.absenceIds) ? body.absenceIds : []).map(Number).filter((n) => Number.isInteger(n) && n > 0).slice(0, 20);
@@ -1057,63 +1111,197 @@ router.post('/absences/excuse', async (req: Request, res: Response) => {
     return;
   }
   const reasonId = Number(reasonRaw);
-  const text = String(body.text ?? '').slice(0, 1000);
+  const note = String(body.text ?? '').slice(0, 1000);
+  const locale = excuseLocale(body.locale);
+  // Where the absences are: the dates the page knows them by, or else the school year so far.
+  const from = ymdNumber(body.startDate);
+  const to = ymdNumber(body.endDate);
+  const range = from != null && to != null && to >= from ? { startDate: String(from), endDate: String(to) } : schoolYearSoFar();
 
-  const results: { id: number; ok: boolean; code?: string; error?: string; conflicts?: string[] }[] = [];
-  for (const id of ids) {
-    try {
-      const current = await untis(s, `/api/classreg/absences/student?absenceId=${id}`, { rest: false, timeoutMs: 12_000 });
-      if (current.expired) {
-        sessionExpired(res);
-        return;
-      }
-      const absence = (current.json as { data?: { absence?: UntisAbsence } } | null)?.data?.absence ?? null;
-      if (!current.ok || !absence) {
-        results.push({ id, ok: false, code: 'not_found' });
-        continue;
-      }
-      if (!absence.canEdit) {
-        results.push({ id, ok: false, code: 'not_editable' });
-        continue;
-      }
-      const r = await untisClassicWrite(s, '/api/classreg/absences/students/edit', {
-        method: 'POST',
-        json: { absenceId: id, startDate: absence.startDate, startTime: absence.startTime, endDate: absence.endDate, endTime: absence.endTime, text, reasonId },
-      });
-      if (r.expired) {
-        sessionExpired(res);
-        return;
-      }
-      const outcome = absenceWriteOutcome(r);
-      if (outcome.ok) results.push({ id, ok: true });
-      else {
-        if (!outcome.conflicts.length) logger.warn('[webuntis absences/excuse] WebUntis rejected the edit', { status: r.status, code: outcome.code ?? '' });
-        results.push({
-          id,
-          ok: false,
-          code: outcome.conflicts.length ? 'conflict' : (outcome.code ?? 'edit_failed'),
-          error: outcome.error,
-          conflicts: outcome.conflicts.length ? conflictTexts(outcome.conflicts) : undefined,
-        });
-      }
-    } catch {
-      results.push({ id, ok: false, code: 'edit_failed' });
-    }
-  }
-
-  const saved = results.filter((r) => r.ok).length;
-  if (saved === results.length) {
-    res.json({ ok: true, results });
+  // As for reporting: only whom WebUntis lets report absences excuses them.
+  if (!(await canReportAbsence(s))) {
+    res.status(403).json({ ok: false, error: 'Abwesenheiten entschuldigen ist für dein Konto in WebUntis nicht freigegeben.', code: 'not_allowed' });
     return;
   }
-  const first = results.find((r) => !r.ok);
-  const message =
-    first?.code === 'not_editable' ? 'WebUntis erlaubt dir bei dieser Abwesenheit keine Änderung.'
-    : first?.code === 'not_found' ? 'Die Abwesenheit wurde in WebUntis nicht gefunden.'
-    : first?.code === 'conflict' ? 'WebUntis meldet eine Überschneidung mit einer anderen Abwesenheit.'
-    : first?.error ?? 'Die Abwesenheit konnte nicht gespeichert werden.';
-  res.status(saved > 0 ? 207 : 422).json({ ok: false, saved, results, error: message, code: first?.code });
+
+  try {
+    const [list, meta, people, perms, appData] = await Promise.all([
+      readAbsences(s, range.startDate, range.endDate),
+      untis(s, '/api/classreg/absences/meta', { rest: false, timeoutMs: 12_000 }),
+      untis(s, config.webuntis.paths.messageRecipients, { timeoutMs: 12_000 }),
+      fetchMessagePermissions(s),
+      fetchAppData(s),
+    ]);
+    if ((!list.ok && list.reason === 'expired') || meta.expired || people.expired || perms.expired) {
+      sessionExpired(res);
+      return;
+    }
+    if (!list.ok) return excuseFail(res, 'absences_failed', 502);
+
+    const wanted = new Set(ids);
+    const found = list.absences.map(openAbsence).filter((a): a is OpenAbsence => a !== null && wanted.has(a.id));
+    if (found.length === 0) return excuseFail(res, 'not_found', 404);
+    const open = found.filter((a) => !a.isExcused);
+    if (open.length === 0) return excuseFail(res, 'already_excused', 409);
+
+    if (!meta.ok) return excuseFail(res, 'reasons_failed', 502);
+    const metaRoot = (meta.json ?? {}) as Record<string, unknown>;
+    const reasonName = metaReasons(((metaRoot.data as Record<string, unknown>) ?? metaRoot) as Record<string, unknown>).find((r) => r.id === reasonId)?.name;
+    if (!reasonName) {
+      res.status(400).json({ ok: false, error: 'Ungültiger Grund.', code: 'invalid_reason' });
+      return;
+    }
+
+    if (!people.ok) {
+      if (people.status !== 403) return excuseFail(res, 'recipients_failed', 502);
+      // WebUntis lets this account (a guardian, say) write to no teacher. Its own
+      // excuse is left: reason and note on the absence, where the school allows it.
+      const edit = await excuseInWebUntis(s, open, reasonId, note);
+      if (edit === 'expired') {
+        sessionExpired(res);
+        return;
+      }
+      if (edit === 'failed') return excuseFail(res, 'messages_forbidden', 403);
+      res.json({ ok: true, via: 'webuntis', absenceIds: open.map((a) => a.id), sentTo: [], failed: [], excuse: null });
+      return;
+    }
+    const teachers = parseRecipients(people.json).filter((p) => p.category === 'classTeacher');
+    if (teachers.length === 0) return excuseFail(res, 'no_class_teacher', 409);
+
+    const { subject, text } = composeExcuse({
+      absences: open,
+      locale,
+      reasonName,
+      note,
+      childName: s.isParent && appData.ok ? extractAbsenceSubjectName(appData.json) : undefined,
+      signature: appData.ok ? extractPersonName(appData.json) : undefined,
+    });
+    const html = plainTextToHtml(text);
+    const option = perms.recipientOptions[0] ?? 'TEACHER';
+    // One message per class teacher with the TEACHER option, one to all of them otherwise.
+    const batches = option === 'TEACHER' ? teachers.map((t) => [t]) : [teachers];
+
+    const sentTo: string[] = [];
+    const failed: string[] = [];
+    let expired = false;
+    for (const batch of batches) {
+      const names = batch.map((t) => t.name);
+      if (expired) {
+        failed.push(...names);
+        continue;
+      }
+      const { path, request } = messageRequest(option, subject, html, batch.map((t) => t.id));
+      const r = await untis(s, path, { form: multipart(request, []), timeoutMs: 30_000 });
+      if (r.ok) sentTo.push(...names);
+      else {
+        failed.push(...names);
+        expired = r.expired;
+        if (!r.expired) logger.warn('[webuntis absences/excuse] WebUntis rejected the message', { status: r.status });
+      }
+    }
+    if (sentTo.length === 0) {
+      if (expired) sessionExpired(res);
+      else excuseFail(res, 'send_failed', 502);
+      return;
+    }
+
+    res.json({
+      ok: true,
+      via: 'message',
+      absenceIds: open.map((a) => a.id),
+      sentTo,
+      failed,
+      excuse: { ...excuseSpanOf(open), sentAt: new Date().toISOString(), recipients: sentTo, messageId: null },
+    });
+  } catch (e) {
+    logger.warn('[webuntis absences/excuse] failed', { message: errorText(e, 'unknown').split('\n')[0] });
+    excuseFail(res, 'send_failed', 502);
+  }
 });
+
+/**
+ * WebUntis' own excuse, as its edit dialog makes it: read the absence (only
+ * when canEdit), then POST /api/classreg/absences/students/edit with its own
+ * dates and times and the reason and note. 'ok' only when every absence saved.
+ */
+async function excuseInWebUntis(s: UntisSession, absences: OpenAbsence[], reasonId: number, text: string): Promise<'ok' | 'failed' | 'expired'> {
+  for (const { id } of absences) {
+    const current = await untis(s, `/api/classreg/absences/student?absenceId=${id}`, { rest: false, timeoutMs: 12_000 });
+    if (current.expired) return 'expired';
+    const absence = (current.json as { data?: { absence?: Partial<ExcuseAbsence> & { canEdit?: boolean } } } | null)?.data?.absence;
+    if (!current.ok || !absence?.canEdit) return 'failed';
+    const r = await untisClassicWrite(s, '/api/classreg/absences/students/edit', {
+      method: 'POST',
+      json: { absenceId: id, startDate: absence.startDate, startTime: absence.startTime, endDate: absence.endDate, endTime: absence.endTime, text, reasonId },
+    });
+    if (r.expired) return 'expired';
+    if (!absenceWriteOutcome(r).ok) {
+      logger.warn('[webuntis absences/excuse] WebUntis rejected the edit', { status: r.status });
+      return 'failed';
+    }
+  }
+  return 'ok';
+}
+
+/** The span all the absences cover together, as the subject names it. */
+function excuseSpanOf(absences: ExcuseAbsence[]): ExcuseSpan {
+  const spans = absences.map(absenceSpan);
+  return { start: Math.min(...spans.map((x) => x.start)), end: Math.max(...spans.map((x) => x.end)) };
+}
+
+// The excuses sent so far, found again in "Gesendet" by their subject: the
+// absences page shows "Nachricht gesendet" on the absences they cover until
+// the school marks them excused. Class teachers who got the same excuse are
+// one entry. Read-only.
+router.get('/absences/excuses', async (req: Request, res: Response) => {
+  try {
+    const r = await untis(session(req), `${FOLDER_PATHS.sent}?pageSize=100&start=0`, { timeoutMs: 12_000 });
+    if (r.expired) {
+      sessionExpired(res);
+      return;
+    }
+    if (!r.ok) {
+      res.status(502).json({ error: 'Die gesendeten Nachrichten konnten gerade nicht geladen werden.' });
+      return;
+    }
+    const root = (r.json ?? {}) as Record<string, unknown>;
+    const data = (root.data as Record<string, unknown>) ?? {};
+    const list = (root.sentMessages ?? data.sentMessages ?? root.messages ?? []) as Record<string, unknown>[];
+    const bySpan = new Map<string, { start: number; end: number; sentAt: string; recipients: string[]; messageId: number | null }>();
+    for (const m of Array.isArray(list) ? list : []) {
+      const span = parseExcuseSubject(m?.subject);
+      if (!span) continue;
+      const key = `${span.start}-${span.end}`;
+      const sentAt = String(m.sentDateTime ?? m.sentDate ?? m.date ?? '');
+      const id = Number(m.id);
+      const entry = bySpan.get(key) ?? { ...span, sentAt, recipients: [], messageId: Number.isInteger(id) && id > 0 ? id : null };
+      // The newest sending of an excuse is the one shown.
+      if (sentAt > entry.sentAt) {
+        entry.sentAt = sentAt;
+        if (Number.isInteger(id) && id > 0) entry.messageId = id;
+      }
+      for (const name of sentRecipientNames(m)) if (!entry.recipients.includes(name)) entry.recipients.push(name);
+      bySpan.set(key, entry);
+    }
+    res.json({ excuses: [...bySpan.values()] });
+  } catch {
+    res.status(502).json({ error: 'Die gesendeten Nachrichten konnten gerade nicht geladen werden.' });
+  }
+});
+
+// Names of the people a sent message went to, whatever list WebUntis puts them in.
+function sentRecipientNames(m: Record<string, unknown>): string[] {
+  const names: string[] = [];
+  for (const list of [m.recipientPersons, m.recipientGroups, m.recipients, m.recipient ? [m.recipient] : null]) {
+    if (!Array.isArray(list)) continue;
+    for (const r of list as unknown[]) {
+      const o = r && typeof r === 'object' ? (r as Record<string, unknown>) : null;
+      const name = typeof r === 'string' ? r : o?.displayName ?? o?.name ?? o?.longName ?? o?.fullName;
+      if (typeof name === 'string' && name.trim() && !names.includes(name.trim())) names.push(name.trim());
+    }
+  }
+  return names;
+}
 
 // "Entschuldigungsschreiben drucken": the excuse letter WebUntis generates as a
 // PDF, requested like the official absence list does (handleOpenExcuseReport).
@@ -1569,11 +1757,32 @@ const SEND_MESSAGES: Record<string, string> = {
   session_expired: 'session_expired',
 };
 
+/** Where a message is sent and its "request" part, for the account's recipient option. */
+function messageRequest(option: string, subject: string, html: string, recipientIds: number[], draftId: number | null = null): { path: string; request: Record<string, unknown> } {
+  if (USER_OPTIONS.has(option)) {
+    return {
+      path: '/api/rest/view/v2/messages/users',
+      request: {
+        subject, content: html, requestConfirmation: false, recipientUserIds: recipientIds, forbidReply: false, oneDriveAttachments: [],
+        ...(draftId ? { draftMessageId: draftId } : {}),
+      },
+    };
+  }
+  return {
+    path: '/api/rest/view/v2/messages',
+    request: {
+      subject, content: html, recipientOption: option, recipientPersonIds: recipientIds, recipientGroupIds: [], copyToStudent: false,
+      requestConfirmation: false, forbidReply: false, oneDriveAttachments: [],
+      ...(draftId ? { draftMessageId: draftId } : {}),
+    },
+  };
+}
+
 function sendFail(res: Response, code: string, status: number, extra: Record<string, unknown> = {}): void {
   res.status(status).json({ error: SEND_MESSAGES[code] ?? code, code, ...extra });
 }
 
-router.post('/messages/send', async (req: Request, res: Response) => {
+router.post('/messages/send', messageLimiter, async (req: Request, res: Response) => {
   const s = session(req);
   const isDraft = req.query['draft'] === '1';
 
@@ -1632,19 +1841,8 @@ router.post('/messages/send', async (req: Request, res: Response) => {
       } else {
         path = '/api/rest/view/v2/messages/drafts';
       }
-    } else if (USER_OPTIONS.has(option)) {
-      path = '/api/rest/view/v2/messages/users';
-      request = {
-        subject, content: html, requestConfirmation: false, recipientUserIds: recipientIds, forbidReply: false, oneDriveAttachments: [],
-        ...(draftId ? { draftMessageId: draftId } : {}),
-      };
     } else {
-      path = '/api/rest/view/v2/messages';
-      request = {
-        subject, content: html, recipientOption: option, recipientPersonIds: recipientIds, recipientGroupIds: [], copyToStudent: false,
-        requestConfirmation: false, forbidReply: false, oneDriveAttachments: [],
-        ...(draftId ? { draftMessageId: draftId } : {}),
-      };
+      ({ path, request } = messageRequest(option, subject, html, recipientIds, draftId));
     }
 
     const r = await untis(s, path, { method, form: multipart(request, files), timeoutMs: 30_000 });
@@ -1692,7 +1890,7 @@ router.get('/messages/reply', async (req: Request, res: Response) => {
   }
 });
 
-router.post('/messages/reply', async (req: Request, res: Response) => {
+router.post('/messages/reply', messageLimiter, async (req: Request, res: Response) => {
   const s = session(req);
   const id = idParam(req);
   if (!id) {

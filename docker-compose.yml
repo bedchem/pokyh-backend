@@ -72,7 +72,13 @@ services:
     # the cache correct.
     image: redis:7.4.1-alpine
     restart: unless-stopped
-    command: ["redis-server", "--appendonly", "no", "--save", "", "--protected-mode", "yes", "--maxmemory", "${REDIS_MAXMEMORY:-256mb}", "--maxmemory-policy", "volatile-lru"]
+    # Protected mode stays off: with it on and no password, Redis refuses every
+    # client that is not on its own loopback, the API included, and the cache
+    # silently falls back to process memory. Redis is reachable only on the
+    # internal `database` network, by containers that hold the database
+    # credentials anyway, so a password would guard nothing they cannot read
+    # in MySQL. The official Redis image runs this way for the same reason.
+    command: ["redis-server", "--appendonly", "no", "--save", "", "--protected-mode", "no", "--maxmemory", "${REDIS_MAXMEMORY:-256mb}", "--maxmemory-policy", "volatile-lru"]
     # Running the image entrypoint as its built-in unprivileged account avoids
     # the root-only ownership repair that conflicts with cap_drop=ALL. Redis
     # does not need persistent writes: `/data` is a temporary cache filesystem.

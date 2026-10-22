@@ -3,6 +3,7 @@ import { prisma } from '../db';
 import { logger } from '../utils/logger';
 import { config } from '../config';
 import { schoolById, schoolOfUser } from './schools';
+import { schoolLoginName } from '../webuntis/schools';
 
 const POLL_INTERVAL_MS = config.pushPollIntervalMs;
 const DUE_CHECK_INTERVAL_MS = config.pushDueCheckIntervalMs;
@@ -39,7 +40,7 @@ async function sendPush(sub: PushSub, payload: { title: string; body: string; ur
 async function webuntisOf(stableUid: string): Promise<{ base: string; schoolCookie: string }> {
   const school = await schoolById(await schoolOfUser(stableUid));
   const base = (school?.webuntisBase || config.webuntisBase).replace(/\/$/, '');
-  const loginName = school?.webuntisSchool || config.webuntisSchool || 'lbs-brixen';
+  const loginName = school?.webuntisSchool || schoolLoginName(null);
   return { base, schoolCookie: '_' + Buffer.from(loginName).toString('base64') };
 }
 
