@@ -821,6 +821,8 @@ router.get('/grades', async (req: Request, res: Response) => {
             markValue: mark.markValue ?? 0,
             markDisplayValue: (mark.markDisplayValue as number) ?? (mark.markValue as number) ?? 0,
             examType: examType.longname ?? examType.name ?? g.examType ?? '',
+            // When the grade was entered (epoch ms), for "Kürzlich hinzugefügt"; null when WebUntis doesn't say.
+            enteredAt: gradeEnteredAt(g),
           };
         })
         .filter((g) => (g.markValue as number) > 0);
@@ -831,6 +833,38 @@ router.get('/grades', async (req: Request, res: Response) => {
     res.status(500).json({ error: errorText(e, 'Unbekannter Fehler') });
   }
 });
+
+// When a grade was entered or last changed, as epoch ms. WebUntis names it
+// differently between versions (and not every version sends it), so the usual
+// names are tried in turn; numbers may be epoch s/ms, YYYYMMDD or
+// YYYYMMDDHHMM(SS), strings ISO date-times. The apps list "Kürzlich
+// hinzugefügt" by it instead of by the exam date.
+const GRADE_ENTERED_KEYS = [
+  'createDate', 'creationDate', 'createdAt', 'created', 'insertDate', 'entryDate',
+  'lastUpdate', 'lastUpdated', 'lastModified', 'modifiedAt', 'lastChange', 'timestamp',
+];
+
+function gradeEnteredAt(g: Record<string, unknown>): number | null {
+  for (const key of GRADE_ENTERED_KEYS) {
+    const v = g[key];
+    if (v === undefined || v === null || v === '') continue;
+    const s = String(v).trim();
+    if (/^\d+$/.test(s)) {
+      const n = Number(s);
+      if (s.length === 13) return n;
+      if (s.length === 10) return n * 1000;
+      if (s.length === 8) return new Date(Math.floor(n / 10000), (Math.floor(n / 100) % 100) - 1, n % 100).getTime();
+      if (s.length === 12 || s.length === 14) {
+        const p = s.padEnd(14, '0');
+        return new Date(+p.slice(0, 4), +p.slice(4, 6) - 1, +p.slice(6, 8), +p.slice(8, 10), +p.slice(10, 12), +p.slice(12, 14)).getTime();
+      }
+      continue;
+    }
+    const t = Date.parse(s);
+    if (!Number.isNaN(t)) return t;
+  }
+  return null;
+}
 
 // ── Absences ────────────────────────────────────────────────────────────────
 
