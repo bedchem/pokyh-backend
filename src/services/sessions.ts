@@ -291,7 +291,7 @@ export async function listSessions(stableUid: string, currentSid?: string | null
   return [...sessions.filter((s) => s.current), ...sessions.filter((s) => !s.current)];
 }
 
-export type LoginMethod = 'webuntis' | 'office' | 'local' | 'register';
+export type LoginMethod = 'webuntis' | 'office' | 'local' | 'register' | 'qr';
 
 /**
  * Notes a sign-in by the person in the account's login history (best effort).

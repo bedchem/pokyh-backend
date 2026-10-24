@@ -55,6 +55,12 @@ export function extractPersonName(json: unknown): string | undefined {
   return full || undefined;
 }
 
+// The account's login name (`user.name`), where the app-data gives it.
+export function extractLoginName(json: unknown): string | undefined {
+  const u = appUser(json);
+  return text(at(u, 'name')) ?? text(at(u, 'loginName')) ?? text(at(u, 'userName'));
+}
+
 // The signed-in person's own id (`user.person.id`), or 0.
 export function extractPersonId(json: unknown): number {
   const u = appUser(json);

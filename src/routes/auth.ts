@@ -26,6 +26,8 @@ import {
   setRefreshCookie,
   webDeviceId,
 } from '../webuntis/session';
+import { approveQrLogin, codeFromScan, qrLoginInfo, type QrCredential } from '../services/qrLogin';
+import { parseSchool } from '../webuntis/schools';
 import {
   endSessionOfToken,
   listSessions,
@@ -477,7 +479,18 @@ async function localPasswordLogin(username: string, password: string, context: S
   if (!valid) {
     throw new UnauthorizedError('Ungültige Zugangsdaten');
   }
+  return signInLocalAccount(user, context, 'local');
+}
 
+/**
+ * The POKYH session of a POKYH-only account whose sign-in is already proven:
+ * by its password, or by the POKYH app signed in to it (the QR sign-in).
+ */
+export async function signInLocalAccount(
+  user: Prisma.UserGetPayload<object>,
+  context: SignInContext,
+  method: LoginMethod,
+): Promise<AuthenticatedUserResponse> {
   const admin = await prisma.admin.findUnique({ where: { stableUid: user.stableUid } });
   const role = parseAccountRole(user.role);
   const classId = await syncUserClass(
@@ -491,7 +504,7 @@ async function localPasswordLogin(username: string, password: string, context: S
   const accountClass = normalizeAccountClass(role, user.webuntisKlasseId, user.webuntisKlasseName);
   const session = await openSession(user.stableUid, context);
   const { sid, refreshToken } = session;
-  await recordLogin(user.stableUid, context, 'local', session);
+  await recordLogin(user.stableUid, context, method, session);
   const token = signJwt({
     stableUid: user.stableUid,
     username: user.username,
@@ -795,6 +808,69 @@ router.post('/sessions/sign-out-others', writeLimiter, requireAuth, async (req: 
 
 router.get('/login-history', readLimiter, requireAuth, async (req: Request, res: Response) => {
   res.json({ logins: await loginHistory(req.user!.stableUid), keptDays: config.loginHistoryDays });
+});
+
+// ─── The POKYH app signs the website in (/auth/qr, services/qrLogin.ts) ───────
+//
+// The app scanned the website's QR code: first it asks which website that is
+// (device, place, address — shown to the person before anything happens),
+// then, confirmed, it approves the code with its own sign-in. A WebUntis
+// account hands over its user name, password (or app key) and school, which
+// the website's sign-in then uses exactly like typed ones; the name must be
+// this account's.
+
+const QR_GONE = { error: 'Dieser QR-Code ist abgelaufen. Lade die Anmeldeseite am Computer neu.', code: 'qr_expired' };
+
+const qrApproveSchema = z.object({
+  username: z.string().trim().toLowerCase().max(100).optional(),
+  password: z.string().min(1).max(200).optional(),
+  key: z.string().min(1).max(200).optional(),
+  // The app's own WebUntis session: the website takes it over (no code needed
+  // with two-factor sign-in); the password, if the app has one, renews it later.
+  sessionId: z.string().trim().regex(/^[A-Za-z0-9._-]{8,200}$/).optional(),
+  school: z.object({
+    loginName: z.string().trim().min(1).max(100),
+    server: z.string().trim().min(1).max(253),
+    name: z.string().trim().max(200).optional(),
+  }).optional(),
+});
+
+router.get('/qr/:code', readLimiter, requireAuth, async (req: Request, res: Response) => {
+  const code = codeFromScan(String(req.params['code'] ?? ''));
+  const info = code ? await qrLoginInfo(code) : null;
+  if (!info) return res.status(404).json(QR_GONE);
+  res.json(info);
+});
+
+router.post('/qr/:code/approve', writeLimiter, requireAuth, async (req: Request, res: Response) => {
+  const code = codeFromScan(String(req.params['code'] ?? ''));
+  if (!code) return res.status(404).json(QR_GONE);
+  const { stableUid } = req.user!;
+  const user = await prisma.user.findUnique({ where: { stableUid }, select: { username: true, isUntisUser: true } });
+  if (!user) throw new UnauthorizedError('User not found');
+  const body = qrApproveSchema.parse(req.body ?? {});
+
+  let credential: QrCredential | null = null;
+  if (user.isUntisUser) {
+    if (!body.password && !body.key && !body.sessionId) {
+      return res.status(400).json({ error: 'Melde dich in der App einmal mit Passwort an, dann geht es.', code: 'credential_required' });
+    }
+    if (body.username !== user.username) {
+      return res.status(403).json({ error: 'Die Anmeldung gehört zu einem anderen Konto.', code: 'account_mismatch' });
+    }
+    if (body.school && !parseSchool(body.school)) {
+      return res.status(400).json({ error: 'Diese Schule ist nicht verfügbar.', code: 'school_invalid' });
+    }
+    credential = {
+      username: user.username,
+      ...(body.key ? { key: body.key } : body.password ? { password: body.password } : {}),
+      ...(body.sessionId ? { sessionId: body.sessionId } : {}),
+      ...(body.school ? { school: body.school } : {}),
+    };
+  }
+  if (!(await approveQrLogin(code, stableUid, credential))) return res.status(404).json(QR_GONE);
+  logger.info('Website sign-in approved in the app', { action: 'qr_login_approved', username: user.username });
+  res.json({ ok: true });
 });
 
 // ─── GET /auth/me ────────────────────────────────────────────────────────────

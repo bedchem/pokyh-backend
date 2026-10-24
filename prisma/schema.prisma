@@ -443,6 +443,35 @@ model LoginEvent {
   @@map("login_events")
 }
 
+// Signing the website in with the POKYH app (services/qrLogin.ts): the website
+// shows a code as a QR code, the signed-in app scans it and confirms. A row
+// lives at most two minutes and is used once. Only hashes of the code and of
+// the website's polling secret are kept; the sign-in the app hands over is
+// sealed (AES-GCM) and goes with the row.
+model QrLogin {
+  id         String   @id @default(uuid()) @db.VarChar(36)
+  codeHash   String   @unique @map("code_hash") @db.VarChar(64)
+  pollHash   String   @unique @map("poll_hash") @db.VarChar(64)
+  // "pending" → "approved" (by the app) → "done" (the website signed in)
+  status     String   @default("pending") @db.VarChar(10)
+  stableUid  String?  @map("stable_uid")
+  credential String?  @db.Text
+  // The website asking to be signed in, shown in the app before it confirms.
+  client     String   @default("") @db.VarChar(8)
+  platform   String   @default("") @db.VarChar(10)
+  os         String   @default("") @db.VarChar(40)
+  browser    String   @default("") @db.VarChar(40)
+  ip         String?  @db.VarChar(45)
+  country    String   @default("") @db.VarChar(2)
+  region     String?  @db.VarChar(80)
+  city       String?  @db.VarChar(80)
+  createdAt  DateTime @default(now()) @map("created_at")
+  expiresAt  DateTime @map("expires_at")
+
+  @@index([expiresAt])
+  @@map("qr_logins")
+}
+
 model KnownSubject {
   key       String   @id @db.VarChar(200)
   longName  String   @map("long_name") @db.VarChar(200)

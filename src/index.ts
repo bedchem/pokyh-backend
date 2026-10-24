@@ -39,6 +39,7 @@ import { closeLearnCache } from './services/learnCache';
 import { isSameOrigin, withWwwOriginAlias } from './utils/cors';
 import { loadSessionRevocations, loadTokenRevocations } from './utils/revokedTokens';
 import { cleanupSessions } from './services/sessions';
+import { cleanupQrLogins } from './services/qrLogin';
 import { mayRunExclusiveJob, ownsClusterWork } from './cluster/hooks';
 import { CLUSTER_PATH } from './cluster/protocol';
 import { createClusterRouter } from './cluster/router';
@@ -310,7 +311,9 @@ async function cleanupExpiredSessions() {
   // Device sessions unused (or signed out) for SESSION_IDLE_DAYS, and the
   // login history older than LOGIN_HISTORY_DAYS (services/sessions.ts).
   const { sessions, logins } = await cleanupSessions();
-  if (sessions > 0 || logins > 0) logger.info(`Session cleanup: ${sessions} device sessions and ${logins} login history entries deleted`);
+  // QR sign-ins that ran out (services/qrLogin.ts).
+  const qr = await cleanupQrLogins();
+  if (sessions > 0 || logins > 0 || qr > 0) logger.info(`Session cleanup: ${sessions} device sessions, ${logins} login history entries and ${qr} QR sign-ins deleted`);
 }
 
 async function cleanupExpiredRequestLogs() {

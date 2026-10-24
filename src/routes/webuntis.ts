@@ -8,7 +8,8 @@ import { AppError } from '../utils/errors';
 import { logger } from '../utils/logger';
 import { apiKeyMiddleware } from '../middleware/apiKey';
 import { clientIp } from '../middleware/requestLogger';
-import { completeWebUntisLogin, loginSchool } from './auth';
+import { completeWebUntisLogin, loginSchool, signInLocalAccount } from './auth';
+import { finishQrLogin, pollQrLogin, qrText, startQrLogin } from '../services/qrLogin';
 import {
   bearerToken,
   cookieHeader,
@@ -33,6 +34,7 @@ import {
   extractAbsenceSubjectName,
   extractChildStudentId,
   extractImageUrl,
+  extractLoginName,
   extractPersonId,
   extractPersonName,
   fetchAbsenceCreateFlag,
@@ -43,6 +45,7 @@ import { webFormLogin } from '../webuntis/webLogin';
 import { twoFactorCode } from '../webuntis/webLoginState';
 import { absenceBySubject, absenceTotals, readAbsenceTimes } from '../webuntis/absenceTimes';
 import { readHolidays } from '../webuntis/holidays';
+import { readTimetableFilter } from '../webuntis/timetableFilter';
 import QRCode from 'qrcode';
 import {
   accountClassForRole,
@@ -67,7 +70,7 @@ import {
   setSessionCookie,
   webDeviceId,
 } from '../webuntis/session';
-import { SessionRevokedError, signInContext } from '../services/sessions';
+import { SessionRevokedError, signInContext, type LoginMethod } from '../services/sessions';
 import { isSessionRevoked } from '../utils/revokedTokens';
 
 // WebUntis for the website. The website is a static page: it signs in here,
@@ -525,10 +528,42 @@ router.post('/login', loginByAddress, loginByAccount, async (req: Request, res: 
     return;
   }
   const school: UntisSchool = saved?.school ?? parseSchool(body.school) ?? defaultSchool();
+  await signInWebsite(req, res, {
+    username, credential, token, school, renewal, renewing: saved !== null,
+    method: 'key' in credential ? 'office' : 'webuntis',
+  });
+});
+
+interface WebsiteSignIn {
+  username: string;
+  credential: Credential;
+  /** The authenticator app's code, for an account with two-factor sign-in. */
+  token?: string;
+  school: UntisSchool;
+  /** An automatic renewal (left out of the account's sign-ins). */
+  renewal: boolean;
+  /** Renewing with the browser's renewal cookie: what the session knew is kept. */
+  renewing: boolean;
+  method: LoginMethod;
+  /**
+   * A WebUntis session that is signed in already (the POKYH app's, handed over
+   * with its QR sign-in): taken over instead of signing in to WebUntis again,
+   * so an account with two-factor sign-in needs no code here.
+   */
+  adopted?: { sessionId: string; personId: number };
+}
+
+// Signs the website in: WebUntis, then the POKYH session, then the sealed
+// cookies and the answer the website keeps. The password sign-in (/login)
+// and the sign-in with the POKYH app's QR code (/qr/poll) both end here.
+async function signInWebsite(req: Request, res: Response, input: WebsiteSignIn): Promise<void> {
+  const { username, credential, token, school, renewal } = input;
   const BASE = schoolBase(school);
 
   try {
-    const signedIn = await authenticate(BASE, school, username, credential, token);
+    const signedIn: Authenticated = input.adopted
+      ? { ok: true, sessionId: input.adopted.sessionId, personId: input.adopted.personId, klasseId: 0 }
+      : await authenticate(BASE, school, username, credential, token);
     if (!signedIn.ok) {
       res.status(signedIn.status).json({ error: signedIn.error, code: signedIn.code });
       return;
@@ -549,7 +584,7 @@ router.post('/login', loginByAddress, loginByAccount, async (req: Request, res: 
     // the session it renews (same account and school, at most 4 hours old:
     // openRenewal), so WebUntis only has to sign in again; a new sign-in
     // looks it all up.
-    const previous = saved ? readSession(req) : null;
+    const previous = input.renewing ? readSession(req) : null;
     const account: ResolvedAccount = previous && previous.studentId > 0 && previous.klasseId > 0
       ? {
         studentId: previous.studentId,
@@ -580,7 +615,7 @@ router.post('/login', loginByAddress, loginByAccount, async (req: Request, res: 
           username, klasseId: accountKlasseId, klasseName: accountKlasseName, role: account.isParent ? 'parent' : 'student', schoolId,
           // This browser as a device: it keeps its device session across renewals.
           context: signInContext(req, { renewal, deviceId: webDeviceId(req, res), currentToken: readRefreshCookie(req) }),
-          method: 'key' in credential ? 'office' : 'webuntis',
+          method: input.method,
         });
       } catch (err) {
         pokyhError = err;
@@ -619,7 +654,9 @@ router.post('/login', loginByAddress, loginByAccount, async (req: Request, res: 
     };
 
     setSessionCookie(res, sessionData);
-    sealRenewal(res, { username, ...credential, school });
+    // Renewed later with the password (or app key); a taken-over session
+    // without one simply ends with its WebUntis session.
+    if ('key' in credential ? credential.key : credential.password) sealRenewal(res, { username, ...credential, school });
     if (pokyh) {
       setRefreshCookie(res, pokyh.refreshToken);
       if (!renewal) res.locals.signedIn = { stableUid: pokyh.user.stableUid, username: pokyh.user.username };
@@ -638,7 +675,7 @@ router.post('/login', loginByAddress, loginByAccount, async (req: Request, res: 
     logger.error('[webuntis login] failed', { message: errorText(e, 'unknown').split('\n')[0] });
     res.status(502).json({ error: 'WebUntis ist gerade nicht erreichbar. Bitte versuche es später erneut.', code: 'unavailable' });
   }
-});
+}
 
 // "Passwort vergessen", WebUntis' own reset request (PasswordResetRequestActions):
 // POST /passwordReset/resetPassword.do { username, email }. WebUntis e-mails a
@@ -743,6 +780,133 @@ router.get('/login-options', schoolSearchLimiter, async (req: Request, res: Resp
   }
   res.setHeader('Cache-Control', 'public, max-age=600, s-maxage=3600');
   res.json(options);
+});
+
+// ─── Signing in with the POKYH app (QR code, services/qrLogin.ts) ────────────
+//
+// The website asks for a code and shows it as a QR code, then asks every few
+// seconds whether the app has confirmed it. Confirmed by a WebUntis account,
+// the website signs in with the sign-in the app handed over, through the very
+// steps of the password sign-in (two-factor sign-in included: the website then
+// asks for the code and sends it along); a POKYH-only account gets its POKYH
+// session.
+
+const qrStartLimiter = rateLimit({
+  windowMs: 5 * 60_000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Zu viele Versuche. Bitte warte 5 Minuten.', code: 'rate_limited' },
+});
+
+const qrPollLimiter = rateLimit({
+  windowMs: 60_000,
+  max: 90,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Zu viele Anfragen.', code: 'rate_limited' },
+});
+
+const POLL = /^[A-Za-z0-9_-]{24,64}$/;
+
+/**
+ * The POKYH app's WebUntis session, handed over with its QR sign-in, when it
+ * is still signed in and belongs to this account (the app-data's login name,
+ * where WebUntis gives one); null otherwise.
+ */
+async function adoptAppSession(school: UntisSchool, username: string, sessionId: string): Promise<{ sessionId: string; personId: number } | null> {
+  if (!/^[A-Za-z0-9._-]{8,200}$/.test(sessionId)) return null;
+  const probe: UntisSession = { sessionId, school, bearerToken: '', studentId: 0, klasseId: 0, klasseName: '', username };
+  try {
+    const appData = await fetchAppData(probe);
+    if (!appData.ok) return null;
+    const loginName = extractLoginName(appData.json);
+    if (loginName && loginName.toLowerCase() !== username.toLowerCase()) {
+      logger.warn('[webuntis qr] handed-over session belongs to another account', { school: school.loginName });
+      return null;
+    }
+    const personId = extractPersonId(appData.json);
+    return personId > 0 ? { sessionId, personId } : null;
+  } catch {
+    return null;
+  }
+}
+
+router.post('/qr/start', qrStartLimiter, async (req: Request, res: Response) => {
+  const { code, poll, expiresAt } = await startQrLogin(signInContext(req));
+  const qrSvg = await QRCode.toString(qrText(code), { type: 'svg', margin: 1, errorCorrectionLevel: 'M' });
+  res.json({ poll, qrSvg, expiresAt: expiresAt.toISOString() });
+});
+
+router.post('/qr/poll', qrPollLimiter, async (req: Request, res: Response) => {
+  const body = (req.body && typeof req.body === 'object' ? req.body : {}) as { poll?: unknown; token?: unknown };
+  const poll = typeof body.poll === 'string' && POLL.test(body.poll) ? body.poll : null;
+  if (!poll) {
+    res.status(400).json({ error: 'Ungültige Anfrage.', code: 'invalid' });
+    return;
+  }
+  const token = body.token !== undefined && body.token !== null && body.token !== '' ? twoFactorCode(body.token) : undefined;
+  if (token === null) {
+    res.status(400).json({ error: 'Der Code hat 6 Ziffern.', code: 'two_factor_invalid' });
+    return;
+  }
+
+  const state = await pollQrLogin(poll);
+  if (state.state === 'expired') {
+    res.status(410).json({ status: 'expired' });
+    return;
+  }
+  if (state.state === 'pending') {
+    res.json({ status: 'pending' });
+    return;
+  }
+
+  // A POKYH-only account: its POKYH session, as after its password.
+  if (!state.credential) {
+    const user = await prisma.user.findUnique({ where: { stableUid: state.stableUid } });
+    await finishQrLogin(state.id);
+    if (!user) {
+      res.status(410).json({ status: 'expired' });
+      return;
+    }
+    const result = await signInLocalAccount(user, signInContext(req, { deviceId: webDeviceId(req, res), currentToken: readRefreshCookie(req) }), 'qr');
+    setRefreshCookie(res, result.refreshToken);
+    res.locals.signedIn = { stableUid: result.user.stableUid, username: result.user.username };
+    res.json({
+      ok: true,
+      username: result.user.username,
+      token: result.token,
+      user: { username: result.user.username, studentId: 0, klasseId: 0, klasseName: '', isUntisUser: false, loginAt: Date.now() },
+    });
+    return;
+  }
+
+  // A WebUntis account. The app's own WebUntis session, when it handed one
+  // over and it is this account's and alive, is taken over (no code needed,
+  // two-factor sign-in or not); otherwise the password sign-in with what the
+  // app handed over, kept for a code only when WebUntis asks for one.
+  const handed = state.credential;
+  const credential: Credential = handed.key ? { key: handed.key } : { password: handed.password ?? '' };
+  const school = parseSchool(handed.school) ?? defaultSchool();
+  const adopted = handed.sessionId ? await adoptAppSession(school, handed.username, handed.sessionId) : null;
+  if (!adopted && !handed.key && !handed.password) {
+    await finishQrLogin(state.id);
+    res.status(410).json({ status: 'expired', code: 'session_gone', error: 'Die Anmeldung der App ist abgelaufen. Öffne die App kurz und scanne den Code noch einmal.' });
+    return;
+  }
+  let answered: { code?: unknown } | undefined;
+  const json = res.json.bind(res);
+  res.json = ((payload: unknown) => {
+    answered = payload as { code?: unknown };
+    return json(payload);
+  }) as Response['json'];
+  await signInWebsite(req, res, {
+    username: handed.username, credential, token, school,
+    renewal: false, renewing: false, method: 'qr', ...(adopted ? { adopted } : {}),
+  });
+  res.json = json;
+  const wantsCode = answered?.code === 'two_factor_required' || answered?.code === 'two_factor_invalid';
+  if (res.statusCode < 300 || !wantsCode) await finishQrLogin(state.id);
 });
 
 // ─── Everything below acts with the person's WebUntis session ────────────────
@@ -853,7 +1017,62 @@ router.get('/timetable', async (req: Request, res: Response) => {
   const [y, m, d] = date.split('-').map(Number);
   const end = isoDay(new Date(y, m - 1, d + 5));
   const s = session(req);
-  await relayGet(req, res, `/api/rest/view/v1/timetable/entries?start=${date}&end=${end}&format=1&resourceType=STUDENT&resources=${s.studentId}&periodTypes=&timetableType=MY_TIMETABLE&layout=START_TIME`, 'Der Stundenplan konnte gerade nicht geladen werden.');
+  // ?type=CLASS&id=…: another timetable ("Weitere Stundenpläne"), as far as
+  // the school shows it to this account; WebUntis itself refuses the others.
+  const other = otherTimetable(req);
+  if (other === null) {
+    res.status(400).json({ error: 'Unbekannter Stundenplan.' });
+    return;
+  }
+  const resource = other
+    ? `resourceType=${other.type}&resources=${other.id}&periodTypes=&timetableType=STANDARD`
+    : `resourceType=STUDENT&resources=${s.studentId}&periodTypes=&timetableType=MY_TIMETABLE`;
+  await relayGet(req, res, `/api/rest/view/v1/timetable/entries?start=${date}&end=${end}&format=1&${resource}&layout=START_TIME`, 'Der Stundenplan konnte gerade nicht geladen werden.');
+});
+
+const OTHER_TIMETABLES = new Set(['CLASS', 'TEACHER', 'ROOM', 'SUBJECT']);
+
+/** The other timetable a request names (?type=&id=); undefined: the own one; null: malformed. */
+function otherTimetable(req: Request): { type: string; id: string } | null | undefined {
+  const type = req.query['type'];
+  const id = req.query['id'];
+  if (type === undefined && id === undefined) return undefined;
+  if (typeof type !== 'string' || !OTHER_TIMETABLES.has(type) || typeof id !== 'string' || !/^\d{1,10}$/.test(id)) return null;
+  return { type, id };
+}
+
+// Which other timetables the school shows this account, per kind ("Weitere
+// Stundenpläne": classes, teachers, rooms, subjects), as WebUntis' own picker
+// lists them (GET /api/rest/view/v1/timetable/filter). Often only the own class.
+router.get('/timetable/filters', async (req: Request, res: Response) => {
+  const type = typeof req.query['type'] === 'string' ? req.query['type'] : 'CLASS';
+  if (!OTHER_TIMETABLES.has(type)) {
+    res.status(400).json({ error: 'Unbekannte Art.' });
+    return;
+  }
+  const monday = new Date();
+  monday.setDate(monday.getDate() - ((monday.getDay() + 6) % 7));
+  const start = isoDay(monday);
+  const end = isoDay(new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 5));
+  const path = `/api/rest/view/v1/timetable/filter?resourceType=${type}&timetableType=STANDARD&start=${start}&end=${end}`;
+  try {
+    const r = await untis(session(req), path, { timeoutMs: 12_000 });
+    if (r.expired) {
+      sessionExpired(res);
+      return;
+    }
+    if (r.status === 403) {
+      res.json({ type, items: [] });
+      return;
+    }
+    if (!r.ok) {
+      res.status(502).json({ error: 'Die Stundenpläne konnten gerade nicht geladen werden.' });
+      return;
+    }
+    res.json({ type, items: readTimetableFilter(r.json) });
+  } catch {
+    res.status(502).json({ error: 'Die Stundenpläne konnten gerade nicht geladen werden.' });
+  }
 });
 
 router.get('/lesson-detail', async (req: Request, res: Response) => {
@@ -1986,9 +2205,12 @@ router.get('/messages', async (req: Request, res: Response) => {
     return;
   }
   const folder = typeof req.query['folder'] === 'string' ? req.query['folder'] : 'inbox';
+  // ?q=: WebUntis' own search over subject, text and people (inbox and sent).
+  const q = typeof req.query['q'] === 'string' ? req.query['q'].replace(/[\p{C}]/gu, ' ').trim().slice(0, 80) : '';
+  const search = q && (folder === 'inbox' || folder === 'sent') ? `&searchText=${encodeURIComponent(q)}` : '';
   const path = messageId
     ? folder === 'sent' ? `/api/rest/view/v1/messages/sent/${messageId}` : `/api/rest/view/v1/messages/${messageId}`
-    : `${FOLDER_PATHS[folder] ?? FOLDER_PATHS.inbox}?pageSize=100&start=0`;
+    : `${FOLDER_PATHS[folder] ?? FOLDER_PATHS.inbox}?pageSize=100&start=0${search}`;
   const attachmentsOnly = messageId !== null && req.query['attachments'] === '1';
   try {
     const r = await untis(session(req), path, { textOnly: !attachmentsOnly });
@@ -2036,6 +2258,98 @@ router.post('/messages', async (req: Request, res: Response) => {
     res.json({ ok: r.ok });
   } catch {
     res.status(502).json({ ok: false });
+  }
+});
+
+// ── Read confirmations and taking a sent message back ──
+//
+// A sender may ask for a read confirmation. In the inbox such a message
+// carries `requestConfirmation` (allowSendRequestConfirmation, and once sent
+// confirmationDate); POST ?id= sends the confirmation, as the official
+// client's "Lesebestätigung senden" (POST …/messages/{id}/read-confirmation).
+router.post('/messages/confirm-read', async (req: Request, res: Response) => {
+  const id = idParam(req);
+  if (!id) {
+    res.status(400).json({ error: 'Ungültige Nachrichten-ID.' });
+    return;
+  }
+  try {
+    const r = await untis(session(req), `/api/rest/view/v1/messages/${id}/read-confirmation`, { method: 'POST', timeoutMs: 12_000 });
+    if (r.expired) {
+      sessionExpired(res);
+      return;
+    }
+    if (!r.ok) {
+      res.status(r.status === 403 ? 403 : 502).json({ error: untisError(r.json) ?? 'Die Lesebestätigung konnte nicht gesendet werden.' });
+      return;
+    }
+    res.json({ ok: true, requestConfirmation: r.json ?? null });
+  } catch {
+    res.status(502).json({ error: 'Die Lesebestätigung konnte nicht gesendet werden.' });
+  }
+});
+
+// Who has confirmed reading a sent message (GET …/messages/sent/{id}/
+// request-confirmation-status): per recipient, and for a class per person.
+router.get('/messages/read-status', async (req: Request, res: Response) => {
+  const id = idParam(req);
+  if (!id) {
+    res.status(400).json({ error: 'Ungültige Nachrichten-ID.' });
+    return;
+  }
+  try {
+    const r = await untis(session(req), `/api/rest/view/v1/messages/sent/${id}/request-confirmation-status`, { timeoutMs: 12_000 });
+    if (r.expired) {
+      sessionExpired(res);
+      return;
+    }
+    if (!r.ok) {
+      res.status(r.status === 403 ? 403 : 502).json({ error: 'Die Lesebestätigungen konnten gerade nicht geladen werden.' });
+      return;
+    }
+    const root = r.json as { data?: unknown } | unknown[] | null;
+    const list = Array.isArray(root) ? root : Array.isArray((root as { data?: unknown })?.data) ? (root as { data: unknown[] }).data : [];
+    const recipients = list.map((item) => {
+      const it = (item ?? {}) as { recipientId?: unknown; recipientDisplayName?: unknown; recipientClassName?: unknown; confirmationStates?: unknown };
+      const states = (Array.isArray(it.confirmationStates) ? it.confirmationStates : []).map((st) => {
+        const s = (st ?? {}) as { userId?: unknown; userDisplayName?: unknown; date?: unknown };
+        return { name: typeof s.userDisplayName === 'string' ? s.userDisplayName : '', date: typeof s.date === 'string' && s.date ? s.date : null };
+      });
+      return {
+        id: Number(it.recipientId) || 0,
+        name: typeof it.recipientDisplayName === 'string' ? it.recipientDisplayName : '',
+        className: typeof it.recipientClassName === 'string' ? it.recipientClassName : '',
+        confirmedAt: states.find((st) => st.date)?.date ?? null,
+        people: states,
+      };
+    });
+    res.json({ recipients });
+  } catch {
+    res.status(502).json({ error: 'Die Lesebestätigungen konnten gerade nicht geladen werden.' });
+  }
+});
+
+// Takes a sent message back (POST …/messages/{id}/revoke): the recipients no
+// longer see it. WebUntis allows it where the message says allowMessageDeletion.
+router.post('/messages/revoke', async (req: Request, res: Response) => {
+  const id = idParam(req);
+  if (!id) {
+    res.status(400).json({ error: 'Ungültige Nachrichten-ID.' });
+    return;
+  }
+  try {
+    const r = await untis(session(req), `/api/rest/view/v1/messages/${id}/revoke`, { method: 'POST', textOnly: true, timeoutMs: 12_000 });
+    if (r.expired) {
+      sessionExpired(res);
+      return;
+    }
+    if (!r.ok) {
+      res.status(r.status === 403 ? 403 : 502).json({ error: 'Die Nachricht konnte nicht zurückgezogen werden.' });
+      return;
+    }
+    res.json({ ok: true });
+  } catch {
+    res.status(502).json({ error: 'Die Nachricht konnte nicht zurückgezogen werden.' });
   }
 });
 
