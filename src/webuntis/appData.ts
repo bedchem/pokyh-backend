@@ -55,6 +55,13 @@ export function extractPersonName(json: unknown): string | undefined {
   return full || undefined;
 }
 
+// The signed-in person's own id (`user.person.id`), or 0.
+export function extractPersonId(json: unknown): number {
+  const u = appUser(json);
+  const id = Number(at(u, 'person', 'id') ?? at(u, 'personId'));
+  return Number.isInteger(id) && id > 0 ? id : 0;
+}
+
 // The profile-picture URL in the app-data: for a guardian the child's
 // (`user.students[0].imageUrl`), otherwise the person's (`user.person.imageUrl`).
 // Most accounts have none; the website then shows initials.

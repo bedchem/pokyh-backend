@@ -1,6 +1,7 @@
 import { config } from '../config';
 import { cachedFor } from '../services/cache';
 import { WEBUNTIS_SCHOOL_PATTERN } from '../services/schools';
+import { readLoginOptions, type LoginOptions } from './loginOptions';
 
 // The WebUntis school of a website sign-in: its login name ("lbs-brixen"),
 // the WebUntis server it runs on ("lbs-brixen.webuntis.com") and its name as
@@ -75,6 +76,29 @@ export function schoolLoginName(school?: UntisSchool | null): string {
 /** Value of WebUntis' `schoolname` cookie for a school. */
 export function schoolCookieValue(school?: UntisSchool | null): string {
   return '_' + Buffer.from(schoolLoginName(school)).toString('base64');
+}
+
+// ── Sign-in options ─────────────────────────────────────────────────────────
+
+// Kept an hour per school (public, and a school seldom changes how it signs
+// in), so the sign-in page does not open a WebUntis session for every visitor.
+// Failures are not kept.
+const OPTIONS_TTL_SECONDS = 60 * 60;
+
+/** How the school signs in (./loginOptions.ts); null when its page could not be read. */
+export function schoolLoginOptions(school: UntisSchool): Promise<LoginOptions | null> {
+  const key = `webuntis:login-options:${allowedServer(school.server)}:${schoolLoginName(school).toLowerCase()}`;
+  return cachedFor(key, OPTIONS_TTL_SECONDS, async () => {
+    try {
+      const res = await fetch(`${schoolBase(school)}/?school=${encodeURIComponent(schoolLoginName(school))}`, {
+        headers: { Accept: 'text/html' },
+        signal: AbortSignal.timeout(8_000),
+      });
+      return res.ok ? readLoginOptions(await res.text()) : null;
+    } catch {
+      return null;
+    }
+  }, (options) => options !== null);
 }
 
 // ── Search ──────────────────────────────────────────────────────────────────

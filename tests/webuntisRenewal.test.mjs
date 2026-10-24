@@ -64,3 +64,16 @@ test('other sealed values, other keys and tampered values are refused', () => {
   assert.equal(open(tampered, current), null);
   assert.equal(unsealWith(randomBytes(32), renew), null);
 });
+
+test('a sign-in made with the app key renews with the key, sealed like a password', () => {
+  const withKey = { username: 'anna.muster', key: 'ABCDEFGHIJKLMNOP', school };
+  const renew = sealedRenewal(withKey);
+  assert.ok(!renew.includes('ABCDEFGHIJKLMNOP'));
+  assert.deepEqual(open(renew, sealedSession()), withKey);
+});
+
+test('a renewal holds a password or a key, nothing else', () => {
+  const empty = sealWith(key, { kind: 'renewal', u: 'anna.muster', s: school });
+  assert.equal(open(empty, sealedSession()), null);
+  assert.equal(open(sealedRenewal(), sealedSession())?.key, undefined);
+});

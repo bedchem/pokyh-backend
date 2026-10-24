@@ -178,6 +178,17 @@ export async function rpc<T>(session: UntisSession, method: string, params: Reco
   }
 }
 
+/**
+ * Whether WebUntis still knows the session. WebUntis answers 403 when it
+ * refuses an account one right (grades, messages, … are switched off at many
+ * schools), and that is not the end of the session; only asking tells the two
+ * apart. No answer counts as alive: a network hiccup must not sign anyone out.
+ */
+export async function sessionAlive(session: UntisSession): Promise<boolean> {
+  const r = await rpc<unknown>(session, 'getLatestImportTime');
+  return r.ok || !r.expired;
+}
+
 /** Current school-year id (the `X-Webuntis-Api-School-Year-Id` header). */
 export function schoolYearId(session: UntisSession): Promise<number | undefined> {
   return memo.get(session.sessionId, 'schoolYear', async () => {

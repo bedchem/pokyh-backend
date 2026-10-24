@@ -4,6 +4,7 @@ import { Router, type NextFunction, type Request, type Response } from 'express'
 import rateLimit from 'express-rate-limit';
 import { prisma } from '../db';
 import { config } from '../config';
+import { AppError } from '../utils/errors';
 import { logger } from '../utils/logger';
 import { apiKeyMiddleware } from '../middleware/apiKey';
 import { clientIp } from '../middleware/requestLogger';
@@ -16,6 +17,7 @@ import {
   readFetch,
   rpc,
   schoolYearId,
+  sessionAlive,
   sessionHeaders,
   untis,
   untisBase,
@@ -31,10 +33,12 @@ import {
   extractAbsenceSubjectName,
   extractChildStudentId,
   extractImageUrl,
+  extractPersonId,
   extractPersonName,
   fetchAbsenceCreateFlag,
   fetchAppData,
 } from '../webuntis/appData';
+import { appKeyRequest, normaliseAppKey, readAppKeyAccount } from '../webuntis/appKey';
 import {
   accountClassForRole,
   findStudentClassIdInData,
@@ -46,7 +50,7 @@ import {
 import { absenceWriteOutcome, conflictTexts, hmNumber, ymdNumber } from '../webuntis/absences';
 import { absenceSpan, composeExcuse, excuseLocale, parseExcuseSubject, type ExcuseAbsence, type ExcuseSpan } from '../webuntis/excuseMessage';
 import { fetchMessagePermissions, htmlToText, plainTextToHtml } from '../webuntis/messages';
-import { defaultSchool, parseSchool, schoolBase, schoolCookieValue, schoolLoginName, searchSchools, type UntisSchool } from '../webuntis/schools';
+import { defaultSchool, parseSchool, schoolBase, schoolCookieValue, schoolLoginName, schoolLoginOptions, searchSchools, type UntisSchool } from '../webuntis/schools';
 import { openRenewal, readSession, requireUntisSession, sealRenewal, setRefreshCookie, setSessionCookie } from '../webuntis/session';
 
 // WebUntis for the website. The website is a static page: it signs in here,
@@ -79,6 +83,19 @@ router.use((_req, res, next) => {
 const session = (req: Request): UntisSession => req.untis as UntisSession;
 const sessionExpired = (res: Response) => res.status(401).json({ error: 'session_expired' });
 const errorText = (e: unknown, fallback = 'Fehler') => (e instanceof Error ? e.message : fallback);
+
+// WebUntis answered 403. Usually a right the school does not give the account
+// (grades, messages, …): that part stays empty and the person stays signed in.
+// Only a session WebUntis no longer knows is the end of the sign-in.
+async function refused(req: Request, res: Response, path: string): Promise<void> {
+  const s = session(req);
+  if (!(await sessionAlive(s))) {
+    sessionExpired(res);
+    return;
+  }
+  logger.info('[webuntis] refused by WebUntis', { school: schoolLoginName(s.school), path: path.split('?')[0] });
+  res.status(403).json({ error: 'Das ist für dein Konto in WebUntis nicht freigegeben.', code: 'not_allowed' });
+}
 
 // Pictures and documents the website shows from this address (profile
 // picture, attachments, excuse letter): its own site may embed them.
@@ -250,7 +267,7 @@ interface FreshSignIn {
 // and other logins need the app-data to find the child. With the class and the
 // profile picture.
 async function resolveAccount(signIn: FreshSignIn): Promise<ResolvedAccount> {
-  const { base, school, sessionId, cookie, username, studentId, klasseId, personType } = signIn;
+  const { base, school, sessionId, cookie, username, klasseId, personType } = signIn;
   const rpcUrl = `${base}/jsonrpc.do?school=${encodeURIComponent(school.loginName)}`;
 
   // Classes, the accessible students and the app-data, in parallel (the
@@ -279,17 +296,20 @@ async function resolveAccount(signIn: FreshSignIn): Promise<ResolvedAccount> {
       .then((sj) => (Array.isArray(sj.result) ? (sj.result as WebUntisStudentClass[]) : []))
       .catch(() => [] as WebUntisStudentClass[]),
     signIn.bearer.then((bearerToken) => Promise.race([
-      fetchAppData({ sessionId, school, bearerToken, studentId, klasseId, klasseName: '', username }),
+      fetchAppData({ sessionId, school, bearerToken, studentId: signIn.studentId, klasseId, klasseName: '', username }),
       new Promise<{ ok: false; status: number }>((resolve) => setTimeout(() => resolve({ ok: false, status: 0 }), 5_000)),
     ])),
   ]);
 
+  const appJson = appData.ok ? appData.json : null;
+  // The person the sign-in answered with; when it named nobody (an app-key
+  // sign-in may leave the person out), the app-data's.
+  const studentId = signIn.studentId > 0 ? signIn.studentId : appJson ? extractPersonId(appJson) : 0;
   let klasseName = klassen.find((k) => positiveId(k.id) === klasseId)?.name ?? '';
   let resolvedStudentId = studentId;
   let resolvedKlasseId = resolveOwnStudentClassId(klasseId, studentId, students);
   let isParent = false;
   const isStudentSelf = students.some((student) => positiveId(student.id) === studentId);
-  const appJson = appData.ok ? appData.json : null;
 
   // Parent detection must not depend on getStudents: some WebUntis answers
   // contain an id collision that makes a guardian look like the student.
@@ -345,8 +365,60 @@ async function resolveAccount(signIn: FreshSignIn): Promise<ResolvedAccount> {
 interface LoginBody {
   username?: unknown;
   password?: unknown;
+  /** The account's app key instead of a password (Office 365 schools, ../webuntis/appKey.ts). */
+  key?: unknown;
   renewal?: unknown;
   school?: unknown;
+}
+
+type Credential = { password: string } | { key: string };
+
+type Authenticated =
+  | { ok: true; sessionId: string; personId: number; klasseId: number; personType?: number }
+  | { ok: false; status: number; error: string; code: string };
+
+// 1. WebUntis signs the account in: with its password (JSON-RPC
+// `authenticate`) or with its app key (the one-time code of the moment through
+// WebUntis' mobile interface, ../webuntis/appKey.ts). Either way a WebUntis
+// session of the account comes back, the same for everything after.
+async function authenticate(base: string, school: UntisSchool, username: string, credential: Credential): Promise<Authenticated> {
+  const withKey = 'key' in credential;
+  const rpcRes = await fetch(withKey
+    ? `${base}/jsonrpc_intern.do?m=getUserData2017&school=${encodeURIComponent(school.loginName)}&v=i2.2`
+    : `${base}/jsonrpc.do?school=${encodeURIComponent(school.loginName)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(withKey
+      ? appKeyRequest(username, credential.key, Date.now())
+      : { id: 'pokyh-web', method: 'authenticate', params: { user: username, password: credential.password, client: 'pokyh' }, jsonrpc: '2.0' }),
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!rpcRes.ok) {
+    const error = rpcRes.status >= 500
+      ? 'WebUntis ist gerade nicht erreichbar. Bitte versuche es später erneut.'
+      : 'Die Verbindung zu WebUntis ist fehlgeschlagen.';
+    return { ok: false, status: 502, error, code: 'unavailable' };
+  }
+
+  const sessionId = (rpcRes.headers.get('set-cookie') ?? '').match(/JSESSIONID=([^;]+)/)?.[1] ?? '';
+  const rpcJson = (await rpcRes.json().catch(() => null)) as {
+    result?: { personId?: unknown; klasseId?: unknown; personType?: number };
+    error?: { code?: number };
+  } | null;
+  if (!rpcJson) return { ok: false, status: 502, error: 'WebUntis hat unerwartet geantwortet.', code: 'unavailable' };
+  if (rpcJson.error || !rpcJson.result) {
+    // -8504: wrong user name, password or key. Anything else: WebUntis refused
+    // the sign-in (account locked, school closed for API access, …).
+    if (rpcJson.error?.code === -8504) {
+      return { ok: false, status: 401, error: withKey ? 'Benutzername oder Schlüssel ist falsch.' : 'Benutzername oder Passwort ist falsch.', code: 'bad_credentials' };
+    }
+    return { ok: false, status: 401, error: 'WebUntis hat die Anmeldung abgelehnt.', code: 'refused' };
+  }
+  if (!sessionId) return { ok: false, status: 502, error: 'WebUntis hat unerwartet geantwortet.', code: 'unavailable' };
+
+  if (withKey) return { ok: true, sessionId, ...readAppKeyAccount(rpcJson.result) };
+  const { personId, klasseId, personType } = rpcJson.result;
+  return { ok: true, sessionId, personId: positiveId(personId), klasseId: positiveId(klasseId), personType };
 }
 
 router.post('/login', loginByAddress, loginByAccount, async (req: Request, res: Response) => {
@@ -357,21 +429,30 @@ router.post('/login', loginByAddress, loginByAccount, async (req: Request, res: 
   // they come from the renewal cookie of the session being renewed, so a
   // sign-in whose cookies were deleted stays signed out.
   const renewal = body.renewal === true;
-  const saved = renewal && body.password === undefined ? openRenewal(req) : null;
-  if (renewal && body.password === undefined && !saved) {
+  const sentSecret = body.password !== undefined || body.key !== undefined;
+  const saved = renewal && !sentSecret ? openRenewal(req) : null;
+  if (renewal && !sentSecret && !saved) {
     res.status(401).json({ error: 'session_expired', code: 'session_expired' });
     return;
   }
   const rawUsername = saved?.username ?? (typeof body.username === 'string' ? body.username : undefined);
-  const password = saved?.password ?? (typeof body.password === 'string' ? body.password : undefined);
   // Lower case for everything stored; WebUntis itself is case-insensitive.
   const username = rawUsername?.trim().toLowerCase() ?? '';
+  const credential: Credential = saved
+    ? saved.key !== undefined ? { key: saved.key } : { password: saved.password ?? '' }
+    : body.key !== undefined
+      ? { key: normaliseAppKey(body.key) }
+      : { password: typeof body.password === 'string' ? body.password : '' };
 
-  if (!username || !password?.trim()) {
-    res.status(400).json({ error: 'Benutzername und Passwort erforderlich.', code: 'missing' });
+  if ('key' in credential && body.key !== undefined && !credential.key && typeof body.key === 'string' && body.key.trim()) {
+    res.status(400).json({ error: 'Das ist kein gültiger Schlüssel.', code: 'key_invalid' });
     return;
   }
-  if (username.length > 100 || password.length > 200) {
+  if (!username || !('key' in credential ? credential.key : credential.password.trim())) {
+    res.status(400).json({ error: 'key' in credential ? 'Benutzername und Schlüssel erforderlich.' : 'Benutzername und Passwort erforderlich.', code: 'missing' });
+    return;
+  }
+  if (username.length > 100 || ('password' in credential && credential.password.length > 200)) {
     res.status(400).json({ error: 'Eingabe zu lang.', code: 'invalid' });
     return;
   }
@@ -384,44 +465,15 @@ router.post('/login', loginByAddress, loginByAccount, async (req: Request, res: 
   }
   const school: UntisSchool = saved?.school ?? parseSchool(body.school) ?? defaultSchool();
   const BASE = schoolBase(school);
-  const SCHOOL = encodeURIComponent(school.loginName);
 
   try {
-    // 1. WebUntis JSON-RPC authentication
-    const rpcRes = await fetch(`${BASE}/jsonrpc.do?school=${SCHOOL}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: 'pokyh-web', method: 'authenticate', params: { user: username, password, client: 'pokyh' }, jsonrpc: '2.0' }),
-      signal: AbortSignal.timeout(15_000),
-    });
-    if (!rpcRes.ok) {
-      const statusMsg = rpcRes.status >= 500
-        ? 'WebUntis ist gerade nicht erreichbar. Bitte versuche es später erneut.'
-        : 'Die Verbindung zu WebUntis ist fehlgeschlagen.';
-      res.status(502).json({ error: statusMsg, code: 'unavailable' });
+    const signedIn = await authenticate(BASE, school, username, credential);
+    if (!signedIn.ok) {
+      res.status(signedIn.status).json({ error: signedIn.error, code: signedIn.code });
       return;
     }
 
-    const sessionId = (rpcRes.headers.get('set-cookie') ?? '').match(/JSESSIONID=([^;]+)/)?.[1] ?? '';
-    const rpcJson = (await rpcRes.json().catch(() => null)) as {
-      result?: { personId?: unknown; klasseId?: unknown; personType?: number };
-      error?: { code?: number };
-    } | null;
-    if (!rpcJson) {
-      res.status(502).json({ error: 'WebUntis hat unerwartet geantwortet.', code: 'unavailable' });
-      return;
-    }
-    if (rpcJson.error || !rpcJson.result) {
-      // -8504: wrong user name or password. Anything else: WebUntis refused
-      // the sign-in (account locked, school closed for API access, …).
-      const bad = rpcJson.error?.code === -8504;
-      res.status(401).json(bad
-        ? { error: 'Benutzername oder Passwort ist falsch.', code: 'bad_credentials' }
-        : { error: 'WebUntis hat die Anmeldung abgelehnt.', code: 'refused' });
-      return;
-    }
-
-    const { personId: rawStudentId, klasseId: rawKlasseId, personType } = rpcJson.result;
+    const { sessionId, personType } = signedIn;
     // The school's POKYH record, looked up while WebUntis answers (awaited,
     // and a failure reported, with the POKYH session below).
     const schoolIdRequest = loginSchool(req, { school: school.loginName.toLowerCase(), schoolName: school.name, schoolServer: school.server });
@@ -447,16 +499,17 @@ router.post('/login', loginByAddress, loginByAccount, async (req: Request, res: 
       }
       : await resolveAccount({
         base: BASE, school, sessionId, cookie, username,
-        studentId: positiveId(rawStudentId), klasseId: positiveId(rawKlasseId), personType, bearer: bearerRequest,
+        studentId: signedIn.personId, klasseId: signedIn.klasseId, personType, bearer: bearerRequest,
       });
     // The sealed WebUntis session keeps a child's class (its endpoints need
     // it); the guardian's account itself has and stores no class.
     const { klasseId: accountKlasseId, klasseName: accountKlasseName } = accountClassForRole(account.isParent, account.klasseId, account.klasseName);
 
-    // 3. The POKYH session, alongside the bearer token. Without it the WebUntis
-    // data still works; pokyhSynced tells the website whether the POKYH layer
-    // was renewed too (it must not re-run its POKYH sign-in against a stale
-    // token otherwise).
+    // 3. The POKYH session, alongside the bearer token. On a renewal the
+    // WebUntis data keeps working without it; pokyhSynced tells the website
+    // whether the POKYH layer was renewed too (it must not re-run its POKYH
+    // sign-in against a stale token otherwise).
+    let pokyhError: unknown = null;
     const pokyhSession = (async () => {
       try {
         // Guardians are never assigned to their child's class; completeWebUntisLogin
@@ -466,11 +519,22 @@ router.post('/login', loginByAddress, loginByAccount, async (req: Request, res: 
           username, klasseId: accountKlasseId, klasseName: accountKlasseName, role: account.isParent ? 'parent' : 'student', schoolId,
         });
       } catch (err) {
+        pokyhError = err;
         logger.error('[webuntis login] POKYH session not created', { message: errorText(err, 'unknown').split('\n')[0] });
         return null;
       }
     })();
     const [bearer, pokyh] = await Promise.all([bearerRequest, pokyhSession]);
+
+    // A new sign-in without its POKYH account would be signed out by the
+    // website a moment later (everything of POKYH's own needs it), with
+    // nothing said; the reason is said now instead (school not enabled, name
+    // taken at another school, …).
+    if (!pokyh && !renewal) {
+      if (pokyhError instanceof AppError) res.status(pokyhError.statusCode).json({ error: pokyhError.message, code: 'account_refused' });
+      else res.status(503).json({ error: 'POKYH ist gerade nicht erreichbar. Bitte versuche es gleich noch einmal.', code: 'unavailable' });
+      return;
+    }
 
     const loginAt = Date.now();
     const sessionData: UntisSession = {
@@ -484,7 +548,7 @@ router.post('/login', loginByAddress, loginByAccount, async (req: Request, res: 
     };
 
     setSessionCookie(res, sessionData);
-    sealRenewal(res, { username, password, school });
+    sealRenewal(res, { username, ...credential, school });
     if (pokyh) {
       setRefreshCookie(res, pokyh.refreshToken);
       if (!renewal) res.locals.signedIn = { stableUid: pokyh.user.stableUid, username: pokyh.user.username };
@@ -592,6 +656,24 @@ router.get('/schools', schoolSearchLimiter, async (req: Request, res: Response) 
   res.json({ schools: result.schools });
 });
 
+// How a school signs in, for the sign-in page's buttons: password, Office 365
+// or both, as WebUntis' own sign-in page of the school offers it
+// (../webuntis/loginOptions.ts). Public, no personal data.
+router.get('/login-options', schoolSearchLimiter, async (req: Request, res: Response) => {
+  const school = parseSchool({ loginName: req.query['school'], server: req.query['server'] });
+  if (!school) {
+    res.status(400).json({ reason: 'school_invalid' });
+    return;
+  }
+  const options = await schoolLoginOptions(school);
+  if (!options) {
+    res.status(502).json({ reason: 'unavailable' });
+    return;
+  }
+  res.setHeader('Cache-Control', 'public, max-age=600, s-maxage=3600');
+  res.json(options);
+});
+
 // ─── Everything below acts with the person's WebUntis session ────────────────
 
 router.use(requireUntisSession);
@@ -608,9 +690,14 @@ function sendJsonText(res: Response, text: string): void {
 async function relayGet(req: Request, res: Response, path: string, failure: string, opts: { strict?: boolean } = {}): Promise<void> {
   try {
     const r = await untisGetText(session(req), path);
-    // `strict`: 403 means the session too (the routes that always treated it so).
-    if (r.text.trimStart().startsWith('<') || r.status === 401 || (opts.strict !== false && r.status === 403)) {
+    if (r.text.trimStart().startsWith('<') || r.status === 401) {
       sessionExpired(res);
+      return;
+    }
+    // `strict`: a 403 is told apart from the end of the session (the routes
+    // that always treated it as one); otherwise it is a failure like any other.
+    if (opts.strict !== false && r.status === 403) {
+      await refused(req, res, path);
       return;
     }
     if (!r.ok) {
@@ -785,9 +872,14 @@ router.get('/grades', async (req: Request, res: Response) => {
       return;
     }
 
-    const list = await untisGetText(s, `/api/classreg/grade/grading/list?studentId=${s.studentId}&schoolyearId=${schoolyearId}`, 20_000);
-    if (list.text.startsWith('<') || list.status === 401 || list.status === 403) {
+    const listPath = `/api/classreg/grade/grading/list?studentId=${s.studentId}&schoolyearId=${schoolyearId}`;
+    const list = await untisGetText(s, listPath, 20_000);
+    if (list.text.startsWith('<') || list.status === 401) {
       sessionExpired(res);
+      return;
+    }
+    if (list.status === 403) {
+      await refused(req, res, listPath);
       return;
     }
     if (!list.ok) {
@@ -870,7 +962,7 @@ function gradeEnteredAt(g: Record<string, unknown>): number | null {
 
 const PAGE_SIZE = 100;
 
-type AbsenceList = { ok: true; absences: unknown[] } | { ok: false; reason: 'expired' | 'failed' };
+type AbsenceList = { ok: true; absences: unknown[] } | { ok: false; reason: 'expired' | 'refused' | 'failed'; path?: string };
 
 // The student's absences of a date range (YYYYMMDD), every page of them.
 async function readAbsences(s: UntisSession, startDate: string, endDate: string): Promise<AbsenceList> {
@@ -882,7 +974,7 @@ async function readAbsences(s: UntisSession, startDate: string, endDate: string)
     const r = await untisGetText(s, page === 0 ? baseUrl : `${baseUrl}&page=${page}`);
     // Session errors count on the first page; later failures end the paging.
     if (r.text.trimStart().startsWith('<') || r.status === 401 || r.status === 403) {
-      if (page === 0) return { ok: false, reason: 'expired' };
+      if (page === 0) return r.status === 403 ? { ok: false, reason: 'refused', path: baseUrl } : { ok: false, reason: 'expired' };
       break;
     }
     if (!r.ok) {
@@ -912,6 +1004,7 @@ router.get('/absences', async (req: Request, res: Response) => {
     const list = await readAbsences(session(req), range.startDate, range.endDate);
     if (!list.ok) {
       if (list.reason === 'expired') sessionExpired(res);
+      else if (list.reason === 'refused') await refused(req, res, list.path ?? '');
       else res.status(502).json({ error: 'Die Abwesenheiten konnten gerade nicht geladen werden.' });
       return;
     }
@@ -1551,8 +1644,12 @@ router.get('/messages', async (req: Request, res: Response) => {
   const attachmentsOnly = messageId !== null && req.query['attachments'] === '1';
   try {
     const r = await untis(session(req), path, { textOnly: !attachmentsOnly });
-    if (r.expired || r.status === 403) {
+    if (r.expired) {
       sessionExpired(res);
+      return;
+    }
+    if (r.status === 403) {
+      await refused(req, res, path);
       return;
     }
     if (!r.ok) {
