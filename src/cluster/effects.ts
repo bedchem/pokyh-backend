@@ -2,7 +2,7 @@ import { prisma } from '../db';
 import { logger } from '../utils/logger';
 import { invalidateDishesCache } from '../utils/cache';
 import { invalidateSqlTables } from '../services/cache';
-import { noteTokenRevocation } from '../utils/revokedTokens';
+import { noteSessionRevocation, noteTokenRevocation } from '../utils/revokedTokens';
 import { publishDishRatings } from '../services/dishRatings';
 import { publishDishComments } from '../services/dishComments';
 import { sseManager } from '../services/sse';
@@ -77,6 +77,13 @@ export function queueEffect(table: string, before: Row, after: Row): void {
       const uid = after?.['stable_uid'];
       const at = after?.['revoked_at'];
       if (typeof uid === 'string' && at instanceof Date) noteTokenRevocation(uid, at);
+      break;
+    }
+    case 'refresh_tokens': {
+      // A device signed out on another node: its tokens end here too.
+      const sid = after?.['id'];
+      const at = after?.['revoked_at'];
+      if (typeof sid === 'string' && at instanceof Date && !(before?.['revoked_at'] instanceof Date)) noteSessionRevocation(sid, at);
       break;
     }
     default:

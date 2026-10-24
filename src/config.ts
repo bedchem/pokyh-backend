@@ -362,6 +362,14 @@ export const config = {
   adminRequireSecondFactor: boolEnv('ADMIN_REQUIRE_SECOND_FACTOR', true),
   adminRequirePasskey: boolEnv('ADMIN_REQUIRE_PASSKEY', false),
   refreshTokenExpiresInHours: intEnv('REFRESH_TOKEN_EXPIRES_HOURS', 1),
+  // Device sessions (services/sessions.ts): an account's device stays in its
+  // device list until it signs out, is signed out, or goes unused this long;
+  // a device signed out from elsewhere stays known as such for the same time,
+  // so its automatic sign-in is refused. At most this many devices per account.
+  sessionIdleDays: boundedIntEnv('SESSION_IDLE_DAYS', 60, 1, 400),
+  sessionsPerAccountMax: boundedIntEnv('SESSIONS_PER_ACCOUNT_MAX', 20, 1, 200),
+  // The account's own login history (login_events).
+  loginHistoryDays: boundedIntEnv('LOGIN_HISTORY_DAYS', 90, 7, 730),
   bcryptRounds: intEnv('BCRYPT_ROUNDS', 12),
 
   adminUsername: process.env.ADMIN_USERNAME ?? '',

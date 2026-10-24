@@ -27,6 +27,8 @@ export interface UntisSession {
   /** WebUntis profile-image URL, captured at login (the session is freshest then); '' when it has none. */
   imageUrl?: string;
   loginAt?: number;
+  /** The browser's POKYH device session (services/sessions.ts): signing it out ends this WebUntis session too. */
+  pokyhSid?: string;
 }
 
 /** `https://<server>/WebUntis` of the session's school. */

@@ -39,6 +39,11 @@ import {
   fetchAppData,
 } from '../webuntis/appData';
 import { appKeyRequest, normaliseAppKey, readAppKeyAccount } from '../webuntis/appKey';
+import { webFormLogin } from '../webuntis/webLogin';
+import { twoFactorCode } from '../webuntis/webLoginState';
+import { absenceBySubject, absenceTotals, readAbsenceTimes } from '../webuntis/absenceTimes';
+import { readHolidays } from '../webuntis/holidays';
+import QRCode from 'qrcode';
 import {
   accountClassForRole,
   findStudentClassIdInData,
@@ -51,7 +56,19 @@ import { absenceWriteOutcome, conflictTexts, hmNumber, ymdNumber } from '../webu
 import { absenceSpan, composeExcuse, excuseLocale, parseExcuseSubject, type ExcuseAbsence, type ExcuseSpan } from '../webuntis/excuseMessage';
 import { fetchMessagePermissions, htmlToText, plainTextToHtml } from '../webuntis/messages';
 import { defaultSchool, parseSchool, schoolBase, schoolCookieValue, schoolLoginName, schoolLoginOptions, searchSchools, type UntisSchool } from '../webuntis/schools';
-import { openRenewal, readSession, requireUntisSession, sealRenewal, setRefreshCookie, setSessionCookie } from '../webuntis/session';
+import {
+  clearSignInCookies,
+  openRenewal,
+  readRefreshCookie,
+  readSession,
+  requireUntisSession,
+  sealRenewal,
+  setRefreshCookie,
+  setSessionCookie,
+  webDeviceId,
+} from '../webuntis/session';
+import { SessionRevokedError, signInContext } from '../services/sessions';
+import { isSessionRevoked } from '../utils/revokedTokens';
 
 // WebUntis for the website. The website is a static page: it signs in here,
 // and this router talks to the person's school with their own WebUntis
@@ -367,11 +384,31 @@ interface LoginBody {
   password?: unknown;
   /** The account's app key instead of a password (Office 365 schools, ../webuntis/appKey.ts). */
   key?: unknown;
+  /** The six-digit code of the authenticator app, for an account with two-factor authentication. */
+  token?: unknown;
   renewal?: unknown;
   school?: unknown;
 }
 
 type Credential = { password: string } | { key: string };
+
+const TWO_FACTOR_ANSWERS: Record<string, { status: number; error: string }> = {
+  two_factor_required: { status: 401, error: 'Gib den Code aus deiner Authenticator-App ein.' },
+  two_factor_invalid: { status: 401, error: 'Der Code stimmt nicht oder ist abgelaufen. Versuche es mit dem neuen Code.' },
+  bad_credentials: { status: 401, error: 'Benutzername oder Passwort ist falsch.' },
+  refused: { status: 401, error: 'WebUntis hat die Anmeldung abgelehnt.' },
+  unavailable: { status: 502, error: 'WebUntis ist gerade nicht erreichbar. Bitte versuche es später erneut.' },
+};
+
+// The sign-in form's way (../webuntis/webLogin.ts): for accounts with
+// two-factor authentication. The person is then named by the app-data
+// (resolveAccount), as for an app-key sign-in.
+async function authenticateWithForm(base: string, school: UntisSchool, username: string, password: string, token?: string): Promise<Authenticated> {
+  const r = await webFormLogin(base, school, username, password, token);
+  if (r.ok) return { ok: true, sessionId: r.sessionId, personId: 0, klasseId: 0 };
+  const answer = TWO_FACTOR_ANSWERS[r.code] ?? TWO_FACTOR_ANSWERS.refused;
+  return { ok: false, status: answer.status, error: answer.error, code: r.code };
+}
 
 type Authenticated =
   | { ok: true; sessionId: string; personId: number; klasseId: number; personType?: number }
@@ -381,8 +418,10 @@ type Authenticated =
 // `authenticate`) or with its app key (the one-time code of the moment through
 // WebUntis' mobile interface, ../webuntis/appKey.ts). Either way a WebUntis
 // session of the account comes back, the same for everything after.
-async function authenticate(base: string, school: UntisSchool, username: string, credential: Credential): Promise<Authenticated> {
+async function authenticate(base: string, school: UntisSchool, username: string, credential: Credential, token?: string): Promise<Authenticated> {
   const withKey = 'key' in credential;
+  // With the authenticator app's code: only the sign-in form takes it.
+  if (!withKey && token) return authenticateWithForm(base, school, username, credential.password, token);
   const rpcRes = await fetch(withKey
     ? `${base}/jsonrpc_intern.do?m=getUserData2017&school=${encodeURIComponent(school.loginName)}&v=i2.2`
     : `${base}/jsonrpc.do?school=${encodeURIComponent(school.loginName)}`, {
@@ -407,6 +446,14 @@ async function authenticate(base: string, school: UntisSchool, username: string,
   } | null;
   if (!rpcJson) return { ok: false, status: 502, error: 'WebUntis hat unerwartet geantwortet.', code: 'unavailable' };
   if (rpcJson.error || !rpcJson.result) {
+    // An account with two-factor authentication cannot sign in through the
+    // JSON-RPC interface; the sign-in form tells whether that is why (and then
+    // asks for the code). Not after a plain wrong password (-8504): that would
+    // count every typo twice towards WebUntis' lock-out.
+    if (!withKey && rpcJson.error?.code !== -8504) {
+      const form = await authenticateWithForm(base, school, username, credential.password);
+      if (form.ok || form.code === 'two_factor_required') return form;
+    }
     // -8504: wrong user name, password or key. Anything else: WebUntis refused
     // the sign-in (account locked, school closed for API access, …).
     if (rpcJson.error?.code === -8504) {
@@ -435,6 +482,13 @@ router.post('/login', loginByAddress, loginByAccount, async (req: Request, res: 
     res.status(401).json({ error: 'session_expired', code: 'session_expired' });
     return;
   }
+  // A browser signed out from elsewhere (its device session revoked) does not
+  // sign itself in again; the person has to.
+  if (renewal && isSessionRevoked(readSession(req)?.pokyhSid)) {
+    clearSignInCookies(res);
+    res.status(401).json({ error: 'session_expired', code: 'session_revoked' });
+    return;
+  }
   const rawUsername = saved?.username ?? (typeof body.username === 'string' ? body.username : undefined);
   // Lower case for everything stored; WebUntis itself is case-insensitive.
   const username = rawUsername?.trim().toLowerCase() ?? '';
@@ -456,6 +510,13 @@ router.post('/login', loginByAddress, loginByAccount, async (req: Request, res: 
     res.status(400).json({ error: 'Eingabe zu lang.', code: 'invalid' });
     return;
   }
+  // The authenticator app's code, sent with the password after WebUntis asked
+  // for it (`two_factor_required`). It is used once and never kept.
+  const token = body.token !== undefined && body.token !== null && body.token !== '' ? twoFactorCode(body.token) : undefined;
+  if (token === null) {
+    res.status(400).json({ error: 'Der Code hat 6 Ziffern.', code: 'two_factor_invalid' });
+    return;
+  }
 
   // The school picked on the sign-in page; only WebUntis hosts are accepted.
   // A request without one (older clients) signs in at the default school.
@@ -467,7 +528,7 @@ router.post('/login', loginByAddress, loginByAccount, async (req: Request, res: 
   const BASE = schoolBase(school);
 
   try {
-    const signedIn = await authenticate(BASE, school, username, credential);
+    const signedIn = await authenticate(BASE, school, username, credential, token);
     if (!signedIn.ok) {
       res.status(signedIn.status).json({ error: signedIn.error, code: signedIn.code });
       return;
@@ -517,6 +578,9 @@ router.post('/login', loginByAddress, loginByAccount, async (req: Request, res: 
         const schoolId = await schoolIdRequest;
         return await completeWebUntisLogin({
           username, klasseId: accountKlasseId, klasseName: accountKlasseName, role: account.isParent ? 'parent' : 'student', schoolId,
+          // This browser as a device: it keeps its device session across renewals.
+          context: signInContext(req, { renewal, deviceId: webDeviceId(req, res), currentToken: readRefreshCookie(req) }),
+          method: 'key' in credential ? 'office' : 'webuntis',
         });
       } catch (err) {
         pokyhError = err;
@@ -525,6 +589,12 @@ router.post('/login', loginByAddress, loginByAccount, async (req: Request, res: 
       }
     })();
     const [bearer, pokyh] = await Promise.all([bearerRequest, pokyhSession]);
+
+    if (pokyhError instanceof SessionRevokedError) {
+      clearSignInCookies(res);
+      res.status(401).json({ error: 'session_expired', code: 'session_revoked' });
+      return;
+    }
 
     // A new sign-in without its POKYH account would be signed out by the
     // website a moment later (everything of POKYH's own needs it), with
@@ -540,6 +610,7 @@ router.post('/login', loginByAddress, loginByAccount, async (req: Request, res: 
     const sessionData: UntisSession = {
       sessionId, school, bearerToken: bearer, studentId: account.studentId, klasseId: account.klasseId, klasseName: account.klasseName,
       username, personType, isParent: account.isParent, imageUrl: account.imageUrl, loginAt,
+      pokyhSid: pokyh?.sessionId ?? previous?.pokyhSid,
     };
     // What the website shows; no token, no password.
     const user = {
@@ -1614,6 +1685,283 @@ router.post('/password', passwordChangeLimiter, async (req: Request, res: Respon
   }
 });
 
+// ── Account: settings and two-factor authentication ─────────────────────────
+//
+// What the person decides about their WebUntis account, as its profile page
+// has it (classic /api/profile/*: the cookie session, plus the CSRF token and
+// Tenant-Id on writes). The app key of "Freigaben" (the Untis Mobile access)
+// is part of WebUntis' answer and never leaves this server.
+
+const accountLimiter = rateLimit({
+  windowMs: 10 * 60_000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => `web-account:${req.untis?.sessionId ?? 'none'}`,
+  message: { error: 'Zu viele Versuche. Bitte warte ein paar Minuten.', code: 'rate_limited' },
+});
+
+interface ProfileGeneral {
+  name?: unknown; email?: unknown; languageCode?: unknown; userGroup?: unknown; department?: unknown;
+  forwardMessageToEmail?: unknown; userTaskNotifications?: unknown;
+  itemOnStartPage?: unknown; showLessonsOfDay?: unknown; showNextDayPeriods?: unknown;
+}
+
+const textOf = (v: unknown) => (typeof v === 'string' ? v : '');
+
+function profileOf(json: unknown): { profile: ProfileGeneral; pwChangeAllowed: boolean } | null {
+  const d = (json as { data?: { profile?: ProfileGeneral; pwChangeAllowed?: unknown } } | null)?.data;
+  return d?.profile ? { profile: d.profile, pwChangeAllowed: d.pwChangeAllowed !== false } : null;
+}
+
+type TotpCredentials = { secret?: unknown; qrText?: unknown; user?: unknown; isTotpRequired?: unknown } | null | undefined;
+
+function totpOf(json: unknown): TotpCredentials {
+  return (json as { data?: { totpCredentials?: TotpCredentials } } | null)?.data?.totpCredentials;
+}
+
+router.get('/account', async (req: Request, res: Response) => {
+  const s = session(req);
+  try {
+    const [general, languages, access] = await Promise.all([
+      untis(s, '/api/profile/general', { rest: false, timeoutMs: 12_000 }),
+      untis(s, '/api/profile/languages', { rest: false, timeoutMs: 12_000 }),
+      untis(s, '/api/profile/access', { rest: false, timeoutMs: 12_000 }),
+    ]);
+    if (general.expired) {
+      sessionExpired(res);
+      return;
+    }
+    const read = profileOf(general.json);
+    if (!read) {
+      if (general.status === 403) await refused(req, res, '/api/profile/general');
+      else res.status(502).json({ error: 'Dein WebUntis-Konto konnte gerade nicht geladen werden.' });
+      return;
+    }
+    const { profile, pwChangeAllowed } = read;
+    const languageList = (languages.json as { data?: { languages?: { key?: unknown; name?: unknown }[] } } | null)?.data?.languages;
+    const accessData = (access.json as { data?: { canUseTotp?: unknown } } | null)?.data;
+    const totp = totpOf(access.json);
+    res.json({
+      profile: {
+        name: textOf(profile.name),
+        email: textOf(profile.email),
+        languageCode: textOf(profile.languageCode),
+        userGroup: textOf(profile.userGroup),
+        department: textOf(profile.department),
+        forwardMessageToEmail: profile.forwardMessageToEmail === true,
+        userTaskNotifications: profile.userTaskNotifications === true,
+        passwordChangeAllowed: pwChangeAllowed,
+      },
+      languages: (Array.isArray(languageList) ? languageList : [])
+        .map((l) => ({ key: textOf(l.key), name: textOf(l.name) }))
+        .filter((l) => l.key && l.name),
+      twoFactor: {
+        // Whether the school lets accounts use an authenticator app at all.
+        available: accessData?.canUseTotp === true,
+        // WebUntis keeps the secret blank until it is set up.
+        enabled: Boolean(textOf(totp?.secret)),
+        // The school requires it for this account.
+        required: totp?.isTotpRequired === true,
+      },
+    });
+  } catch {
+    res.status(502).json({ error: 'Dein WebUntis-Konto konnte gerade nicht geladen werden.' });
+  }
+});
+
+const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// Changes some of the settings; WebUntis takes the whole set, so the others
+// are sent as they are.
+router.put('/account', accountLimiter, async (req: Request, res: Response) => {
+  const s = session(req);
+  const body = (req.body ?? {}) as { email?: unknown; languageCode?: unknown; forwardMessageToEmail?: unknown; userTaskNotifications?: unknown };
+  if (body.email !== undefined && (typeof body.email !== 'string' || body.email.length > 200 || (body.email.trim() !== '' && !EMAIL.test(body.email.trim())))) {
+    res.status(400).json({ error: 'Bitte eine gültige E-Mail-Adresse eingeben.', code: 'invalid_email' });
+    return;
+  }
+  if (body.languageCode !== undefined && (typeof body.languageCode !== 'string' || !/^[A-Za-z_-]{2,10}$/.test(body.languageCode))) {
+    res.status(400).json({ error: 'Unbekannte Sprache.', code: 'invalid_language' });
+    return;
+  }
+  for (const key of ['forwardMessageToEmail', 'userTaskNotifications'] as const) {
+    if (body[key] !== undefined && typeof body[key] !== 'boolean') {
+      res.status(400).json({ error: 'Ungültige Einstellung.', code: 'invalid' });
+      return;
+    }
+  }
+  try {
+    const current = await untis(s, '/api/profile/general', { rest: false, timeoutMs: 12_000 });
+    if (current.expired) {
+      sessionExpired(res);
+      return;
+    }
+    const read = profileOf(current.json);
+    if (!read) {
+      res.status(502).json({ error: 'Deine Einstellungen konnten nicht gespeichert werden.' });
+      return;
+    }
+    const p = read.profile;
+    const next = {
+      languageCode: typeof body.languageCode === 'string' ? body.languageCode : textOf(p.languageCode),
+      email: typeof body.email === 'string' ? body.email.trim() : textOf(p.email),
+      forwardMessageToEmail: typeof body.forwardMessageToEmail === 'boolean' ? body.forwardMessageToEmail : p.forwardMessageToEmail === true,
+      userTaskNotifications: typeof body.userTaskNotifications === 'boolean' ? body.userTaskNotifications : p.userTaskNotifications === true,
+      itemOnStartPage: p.itemOnStartPage,
+      showLessonsOfDay: p.showLessonsOfDay,
+      showNextDayPeriods: p.showNextDayPeriods,
+    };
+    const r = await untisClassicWrite(s, '/api/profile/general', { method: 'POST', json: next, timeoutMs: 15_000 });
+    if (r.expired) {
+      sessionExpired(res);
+      return;
+    }
+    const errors = (r.json as { errors?: unknown[] } | null)?.errors;
+    if (r.ok && !(Array.isArray(errors) && errors.length)) {
+      res.json({ ok: true });
+      return;
+    }
+    logger.warn('[webuntis account] WebUntis rejected the settings', { status: r.status, code: untisErrorCode(r.json) ?? '' });
+    res.status(r.status === 400 || r.status === 422 ? 400 : 502).json({
+      error: untisError(r.json) ?? 'Deine Einstellungen konnten nicht gespeichert werden.',
+      code: untisErrorCode(r.json) ?? 'save_failed',
+    });
+  } catch {
+    res.status(502).json({ error: 'Deine Einstellungen konnten nicht gespeichert werden.' });
+  }
+});
+
+// Setting up the authenticator app, as WebUntis' wizard does it: a new secret
+// (POST /api/profile/access/totp/create), shown to the person as QR code and
+// text; then the secret with the app's first code (POST /api/profile/access/totp)
+// turns it on. The secret goes to the person's own browser only — never logged,
+// never kept here.
+router.post('/account/two-factor/setup', accountLimiter, async (req: Request, res: Response) => {
+  try {
+    const r = await untisClassicWrite(session(req), '/api/profile/access/totp/create', { method: 'POST', json: {}, timeoutMs: 15_000 });
+    if (r.expired) {
+      sessionExpired(res);
+      return;
+    }
+    const totp = totpOf(r.json);
+    const secret = textOf(totp?.secret).replace(/\s+/g, '').toUpperCase();
+    const qrText = textOf(totp?.qrText);
+    if (!r.ok || !secret) {
+      res.status(r.status === 403 ? 403 : 502).json({ error: untisError(r.json) ?? 'Die Einrichtung konnte nicht gestartet werden.', code: 'setup_failed' });
+      return;
+    }
+    const qrSvg = qrText ? await QRCode.toString(qrText, { type: 'svg', margin: 1, errorCorrectionLevel: 'M' }) : null;
+    res.json({ secret, qrSvg, account: textOf(totp?.user) });
+  } catch {
+    res.status(502).json({ error: 'Die Einrichtung konnte nicht gestartet werden.', code: 'setup_failed' });
+  }
+});
+
+router.post('/account/two-factor', accountLimiter, async (req: Request, res: Response) => {
+  const body = (req.body ?? {}) as { secret?: unknown; code?: unknown };
+  const secret = typeof body.secret === 'string' ? body.secret.replace(/\s+/g, '').toUpperCase() : '';
+  const code = twoFactorCode(body.code);
+  if (!/^[A-Z2-7]{16,128}=*$/.test(secret)) {
+    res.status(400).json({ error: 'Starte die Einrichtung bitte noch einmal.', code: 'invalid_secret' });
+    return;
+  }
+  if (!code) {
+    res.status(400).json({ error: 'Der Code hat 6 Ziffern.', code: 'two_factor_invalid' });
+    return;
+  }
+  try {
+    const r = await untisClassicWrite(session(req), '/api/profile/access/totp', {
+      method: 'POST',
+      json: { key: secret, token: Number.parseInt(code, 10), algorithm: 'STANDARD' },
+      timeoutMs: 15_000,
+    });
+    if (r.expired) {
+      sessionExpired(res);
+      return;
+    }
+    const errors = (r.json as { errors?: unknown[] } | null)?.errors;
+    if (r.ok && !(Array.isArray(errors) && errors.length) && totpOf(r.json)) {
+      logger.info('[webuntis account] two-factor authentication turned on', { school: schoolLoginName(session(req).school) });
+      res.json({ ok: true });
+      return;
+    }
+    res.status(400).json({ error: 'Der Code stimmt nicht. Prüfe die Uhrzeit deines Handys und nimm den neuen Code.', code: 'two_factor_invalid' });
+  } catch {
+    res.status(502).json({ error: 'Die Zwei-Faktor-Anmeldung konnte nicht eingeschaltet werden.', code: 'enable_failed' });
+  }
+});
+
+router.delete('/account/two-factor', accountLimiter, async (req: Request, res: Response) => {
+  try {
+    const r = await untisClassicWrite(session(req), '/api/profile/access/totp', { method: 'DELETE', timeoutMs: 15_000 });
+    if (r.expired) {
+      sessionExpired(res);
+      return;
+    }
+    const errors = (r.json as { errors?: unknown[] } | null)?.errors;
+    if (r.ok && !(Array.isArray(errors) && errors.length)) {
+      logger.info('[webuntis account] two-factor authentication turned off', { school: schoolLoginName(session(req).school) });
+      res.json({ ok: true });
+      return;
+    }
+    res.status(r.status === 403 ? 403 : 502).json({ error: untisError(r.json) ?? 'Die Zwei-Faktor-Anmeldung konnte nicht ausgeschaltet werden.', code: 'disable_failed' });
+  } catch {
+    res.status(502).json({ error: 'Die Zwei-Faktor-Anmeldung konnte nicht ausgeschaltet werden.', code: 'disable_failed' });
+  }
+});
+
+// ── Missed lessons ("Fehlzeiten") and holidays ──────────────────────────────
+
+// The missed lessons of the school year (or startDate–endDate) as WebUntis
+// counts them, with the sums per subject (../webuntis/absenceTimes.ts).
+router.get('/absences/times', async (req: Request, res: Response) => {
+  const range = dateRange(req, res);
+  if (!range) return;
+  const s = session(req);
+  const now = new Date();
+  const year = now.getMonth() >= 8 ? now.getFullYear() : now.getFullYear() - 1;
+  const startDate = range.startDate || `${year}0901`;
+  const endDate = range.endDate || `${year + 1}0630`;
+  const path = `/api/classreg/absencetimes/student?startDate=${startDate}&endDate=${endDate}&studentId=${s.studentId}&excuseStatusId=-1&excludeAbsences=false&excludeLateness=false`;
+  try {
+    const r = await untis(s, path, { rest: false, timeoutMs: 15_000 });
+    if (r.expired) {
+      sessionExpired(res);
+      return;
+    }
+    if (r.status === 403) {
+      await refused(req, res, path);
+      return;
+    }
+    const times = r.ok ? readAbsenceTimes(r.json) : null;
+    if (!times) {
+      res.status(502).json({ error: 'Die Fehlzeiten konnten gerade nicht geladen werden.' });
+      return;
+    }
+    res.json({ startDate, endDate, totals: absenceTotals(times), bySubject: absenceBySubject(times), lessons: times });
+  } catch {
+    res.status(502).json({ error: 'Die Fehlzeiten konnten gerade nicht geladen werden.' });
+  }
+});
+
+// The school's holidays from a month ago on, merged into breaks (../webuntis/holidays.ts).
+router.get('/holidays', async (req: Request, res: Response) => {
+  const s = session(req);
+  const from = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000);
+  try {
+    const r = await rpc<unknown>(s, 'getHolidays');
+    if (!r.ok) {
+      if (r.expired) sessionExpired(res);
+      else res.status(502).json({ error: 'Die Ferien konnten gerade nicht geladen werden.' });
+      return;
+    }
+    res.json({ holidays: readHolidays(r.result, isoDay(from)) });
+  } catch {
+    res.status(502).json({ error: 'Die Ferien konnten gerade nicht geladen werden.' });
+  }
+});
+
 // ── Messages ────────────────────────────────────────────────────────────────
 
 const FOLDER_PATHS: Record<string, string> = {
@@ -1688,6 +2036,48 @@ router.post('/messages', async (req: Request, res: Response) => {
     res.json({ ok: r.ok });
   } catch {
     res.status(502).json({ ok: false });
+  }
+});
+
+// DELETE ?ids=1,2,3 deletes messages of the inbox, as the official client's
+// "Löschen" does (DELETE /api/rest/view/v1/messages?ids=…). Where WebUntis
+// refuses the list as a whole, each message is deleted on its own
+// (DELETE /api/rest/view/v1/messages/{id}), and the answer says which went.
+router.delete('/messages', async (req: Request, res: Response) => {
+  const raw = typeof req.query['ids'] === 'string' ? req.query['ids'] : '';
+  const ids = [...new Set(raw.split(',').map((id) => id.trim()).filter(Boolean))];
+  if (ids.length === 0 || ids.length > 100 || !ids.every((id) => ID.test(id))) {
+    res.status(400).json({ error: 'Ungültige Nachrichten-IDs.' });
+    return;
+  }
+  const s = session(req);
+  try {
+    const all = await untis(s, `/api/rest/view/v1/messages?ids=${ids.join(',')}`, { method: 'DELETE', textOnly: true, timeoutMs: 15_000 });
+    if (all.expired) {
+      sessionExpired(res);
+      return;
+    }
+    if (all.ok) {
+      res.json({ ok: true, deleted: ids, failed: [] });
+      return;
+    }
+    const deleted: string[] = [];
+    const failed: string[] = [];
+    for (const id of ids) {
+      const one = await untis(s, `/api/rest/view/v1/messages/${id}`, { method: 'DELETE', textOnly: true, timeoutMs: 12_000 });
+      if (one.expired) {
+        sessionExpired(res);
+        return;
+      }
+      (one.ok ? deleted : failed).push(id);
+    }
+    if (deleted.length === 0) {
+      res.status(all.status === 403 ? 403 : 502).json({ error: 'Die Nachrichten konnten nicht gelöscht werden.', deleted, failed });
+      return;
+    }
+    res.json({ ok: failed.length === 0, deleted, failed });
+  } catch {
+    res.status(502).json({ error: 'Die Nachrichten konnten nicht gelöscht werden.' });
   }
 });
 

@@ -1,5 +1,8 @@
+import { randomBytes } from 'crypto';
 import type { CookieOptions, NextFunction, Request, Response } from 'express';
 import { config } from '../config';
+import { deviceIdFrom } from '../services/sessionDevice';
+import { isSessionRevoked } from '../utils/revokedTokens';
 import type { UntisSession } from './client';
 import { seal, unseal } from './crypto';
 import { matchRenewal, renewalPayload, type SavedSignIn } from './renewal';
@@ -15,6 +18,9 @@ import { defaultSchool, parseSchool, type UntisSchool } from './schools';
 //                      by itself when WebUntis ends its session early, and is
 //                      only accepted next to the session it belongs to
 //   pokyh_api_refresh  the POKYH refresh token, 30 days
+//   pokyh_device       a random id of this browser, 400 days: the account's
+//                      device list knows the browser again when it signs in
+//                      anew (services/sessions.ts); outlives signing out
 //
 // The website's own pokyh_user and pokyh_api_token cookies are set by the
 // website from the sign-in's answer.
@@ -30,8 +36,11 @@ declare global {
 export const SESSION_COOKIE = 'pokyh_session';
 export const RENEWAL_COOKIE = 'pokyh_renew';
 export const REFRESH_COOKIE = 'pokyh_api_refresh';
+export const DEVICE_COOKIE = 'pokyh_device';
 export const RENEWAL_PATH = '/webuntis/login';
 const REFRESH_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+// Browsers cap cookie lifetimes at 400 days.
+const DEVICE_MAX_AGE_MS = 400 * 24 * 60 * 60 * 1000;
 
 function cookieOptions(path = '/'): CookieOptions {
   return { httpOnly: true, secure: config.webuntis.cookieSecure, sameSite: 'strict', path };
@@ -71,6 +80,14 @@ export function readRefreshCookie(req: Request): string | undefined {
   return cookie(req, REFRESH_COOKIE);
 }
 
+/** This browser's device id from its device cookie; a new one (and the cookie) when it has none. */
+export function webDeviceId(req: Request, res: Response): string {
+  const id = deviceIdFrom(cookie(req, DEVICE_COOKIE)) ?? randomBytes(18).toString('base64url');
+  // Set again on every sign-in, so the 400 days count from the last one.
+  res.cookie(DEVICE_COOKIE, id, { ...cookieOptions(), maxAge: DEVICE_MAX_AGE_MS });
+  return id;
+}
+
 function fresh(loginAt: unknown): boolean {
   return typeof loginAt !== 'number' || Date.now() - loginAt <= config.webuntis.sessionMaxAgeMs;
 }
@@ -95,12 +112,21 @@ export function openRenewal(req: Request): SavedSignIn | null {
   );
 }
 
-/** Routes that act with the person's WebUntis session; 401 `session_expired` without one. */
+/**
+ * Routes that act with the person's WebUntis session; 401 `session_expired`
+ * without one. A browser signed out from elsewhere (its device session
+ * revoked) loses every sign-in cookie and gets `session_revoked`.
+ */
 export function requireUntisSession(req: Request, res: Response, next: NextFunction): void {
   const session = readSession(req);
   if (!session) {
     res.clearCookie(SESSION_COOKIE, cookieOptions());
     res.status(401).json({ error: 'session_expired' });
+    return;
+  }
+  if (isSessionRevoked(session.pokyhSid)) {
+    clearSignInCookies(res);
+    res.status(401).json({ error: 'session_expired', code: 'session_revoked' });
     return;
   }
   req.untis = session;

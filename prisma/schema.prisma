@@ -32,6 +32,7 @@ model User {
   todos                   Todo[]
   classMembers            ClassMember[]
   refreshTokens           RefreshToken[]
+  loginEvents             LoginEvent[]
   pushSubscriptions       PushSubscription[]
   // Pokyh Learn is deliberately attached to the existing POKYH identity.  A
   // profile is created lazily on first Learn use, which also marks this account
@@ -379,17 +380,67 @@ model DishRating {
   @@map("dish_ratings")
 }
 
+// One signed-in device of an account (services/sessions.ts). The refresh token
+// is rotated in place, so the row — its id is the access token's `sid` — stays
+// the same device for as long as it is signed in. The device and place
+// details are shown to the account itself (its device list) and to admins,
+// and go with the row: when the device signs out, is signed out, or stays
+// unused for SESSION_IDLE_DAYS.
 model RefreshToken {
-  id        String    @id @default(uuid())
-  stableUid String    @map("stable_uid")
-  tokenHash String    @unique @map("token_hash")
-  expiresAt DateTime  @map("expires_at")
-  createdAt DateTime  @default(now()) @map("created_at")
-  revokedAt DateTime? @map("revoked_at")
+  id         String    @id @default(uuid())
+  stableUid  String    @map("stable_uid")
+  tokenHash  String    @unique @map("token_hash")
+  expiresAt  DateTime  @map("expires_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  revokedAt  DateTime? @map("revoked_at")
+  // The device id the app or the website's device cookie sent; null for
+  // clients that send none (older apps, the Learn BFF).
+  deviceId   String?   @map("device_id") @db.VarChar(64)
+  // "app" | "pwa" | "web" | "other" (services/sessionDevice.ts)
+  client     String    @default("") @db.VarChar(8)
+  // "android" | "ios" | "windows" | "macos" | "linux" | "chromeos" | "other"
+  platform   String    @default("") @db.VarChar(10)
+  os         String    @default("") @db.VarChar(40)
+  browser    String    @default("") @db.VarChar(40)
+  model      String    @default("") @db.VarChar(60)
+  // Where the device was last seen: address and the edge's coarse location.
+  ip         String?   @db.VarChar(45)
+  country    String    @default("") @db.VarChar(2)
+  region     String?   @db.VarChar(80)
+  city       String?   @db.VarChar(80)
+  lastUsedAt DateTime  @default(now()) @map("last_used_at")
 
   user User @relation(fields: [stableUid], references: [stableUid], onDelete: Cascade)
 
+  @@index([stableUid, deviceId])
   @@map("refresh_tokens")
+}
+
+// The account's sign-ins (its login history), kept LOGIN_HISTORY_DAYS. Only
+// sign-ins by the person: the website's automatic renewals are not one.
+model LoginEvent {
+  id        String   @id @default(uuid()) @db.VarChar(36)
+  stableUid String   @map("stable_uid")
+  createdAt DateTime @default(now()) @map("created_at")
+  // "webuntis" (password), "office" (app key), "local" (POKYH account), "register"
+  method    String   @default("webuntis") @db.VarChar(12)
+  // The device session the sign-in opened (refresh_tokens.id); it may be gone.
+  sessionId String?  @map("session_id") @db.VarChar(36)
+  client    String   @default("") @db.VarChar(8)
+  platform  String   @default("") @db.VarChar(10)
+  os        String   @default("") @db.VarChar(40)
+  browser   String   @default("") @db.VarChar(40)
+  model     String   @default("") @db.VarChar(60)
+  ip        String?  @db.VarChar(45)
+  country   String   @default("") @db.VarChar(2)
+  region    String?  @db.VarChar(80)
+  city      String?  @db.VarChar(80)
+
+  user User @relation(fields: [stableUid], references: [stableUid], onDelete: Cascade)
+
+  @@index([stableUid, createdAt])
+  @@index([createdAt])
+  @@map("login_events")
 }
 
 model KnownSubject {

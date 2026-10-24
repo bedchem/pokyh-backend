@@ -1,4 +1,4 @@
-import type { AdminStats, AdminClass, AdminSession, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish, AdminDishFull, AdminDishImportResult, AdminDishShiftResult, AdminDishRotateResult, AdminDishResetResult, AdminDishAnchorResult, DishPlan, AdminCommentsResponse, FileLogFile, FileLogResponse, FileLogEntry, FrontendActivityLogsResponse, FrontendActivityStats, AllTodosResponse, AllRemindersResponse, SchoolYearsResponse, ArchivedUsersResponse, ArchivedClass, ArchivedTodosResponse, ArchivedRemindersResponse, RolloverResult, RollbackResult, AdminApiKey, CreatedApiKey, LearnConfigValues, LearnAiConfigValues, LearnAiGrant, LearnAiTeamGrant, AdminLearnTeam, LearnTeamAssignableRole, AdminLearnCoursesResponse, AdminLearnCourseAccessResponse, AdminLearnCourse, AdminLearnCourseAccess, LearnCoursePermission, LearnCourseStatus, LearnCourseVisibility, AdminLearnCourseVocabularyResponse, AdminLearnVocabularyImportResponse, BackupsResponse, AdminPopup, PopupInput, ClusterStatus, ClusterInstall, CreatedClusterInstall, ClusterReach, ReachEntry, AdminAnalytics, AnalyticsRange, AnalyticsPeople, PeopleFilters, AnalyticsBreakdown, BreakdownKind, AnalyticsDishes, AnalyticsVisitors, AnalyticsVisitorIp, AnalyticsPersonDetail, VisitSource, ClusterUpdates, ClusterUpdateSettings, PopupTargetUser, PopupTargetClass, ClusterScope, WayTestResult, ReachKind, LoginResult, PasskeyChallenge, AdminSecurityStatus, TotpSetup, AdminPasskey, AccountRole, FactorKind, PermissionPreset, PresetDraft } from './types';
+import type { AdminStats, AdminClass, AdminSessionsResponse, AdminLoginEvent, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish, AdminDishFull, AdminDishImportResult, AdminDishShiftResult, AdminDishRotateResult, AdminDishResetResult, AdminDishAnchorResult, DishPlan, AdminCommentsResponse, FileLogFile, FileLogResponse, FileLogEntry, FrontendActivityLogsResponse, FrontendActivityStats, AllTodosResponse, AllRemindersResponse, SchoolYearsResponse, ArchivedUsersResponse, ArchivedClass, ArchivedTodosResponse, ArchivedRemindersResponse, RolloverResult, RollbackResult, AdminApiKey, CreatedApiKey, LearnConfigValues, LearnAiConfigValues, LearnAiGrant, LearnAiTeamGrant, AdminLearnTeam, LearnTeamAssignableRole, AdminLearnCoursesResponse, AdminLearnCourseAccessResponse, AdminLearnCourse, AdminLearnCourseAccess, LearnCoursePermission, LearnCourseStatus, LearnCourseVisibility, AdminLearnCourseVocabularyResponse, AdminLearnVocabularyImportResponse, BackupsResponse, AdminPopup, PopupInput, ClusterStatus, ClusterInstall, CreatedClusterInstall, ClusterReach, ReachEntry, AdminAnalytics, AnalyticsRange, AnalyticsPeople, PeopleFilters, AnalyticsBreakdown, BreakdownKind, AnalyticsDishes, AnalyticsVisitors, AnalyticsVisitorIp, AnalyticsPersonDetail, VisitSource, ClusterUpdates, ClusterUpdateSettings, PopupTargetUser, PopupTargetClass, ClusterScope, WayTestResult, ReachKind, LoginResult, PasskeyChallenge, AdminSecurityStatus, TotpSetup, AdminPasskey, AccountRole, FactorKind, PermissionPreset, PresetDraft } from './types';
 import type { SearchKind, SearchResponse } from './types';
 import type { AdminMe, AccessCatalog, AdminSchool, MensaMenu, AdminAccount, AdminGrantView, GrantInput, AuditEventsResponse, RequestScopeChoice, RequestsSummary, PerformanceReport, SystemHealth, SystemLogsResponse, ClientErrorGroup, ClientErrorOccurrence, PrivacyOverview, DishCommentGroupsResponse, DishCommentsResponse, ReminderCommentGroup, ReminderCommentItem } from './types';
 import type { AuthenticationResponseJSON, PublicKeyCredentialCreationOptionsJSON, PublicKeyCredentialRequestOptionsJSON, RegistrationResponseJSON } from '@simplewebauthn/browser';
@@ -405,11 +405,17 @@ export const adminApi = {
   classes: (): Promise<AdminClass[]> =>
     request<AdminClass[]>('GET', '/api/admin/classes'),
 
-  sessions: (): Promise<AdminSession[]> =>
-    request<AdminSession[]>('GET', '/api/admin/sessions'),
+  sessions: (): Promise<AdminSessionsResponse> =>
+    request<AdminSessionsResponse>('GET', '/api/admin/sessions'),
 
   revokeSession: (id: string): Promise<void> =>
-    request<void>('DELETE', `/api/admin/sessions/${id}`),
+    request<void>('DELETE', `/api/admin/sessions/${encodeURIComponent(id)}`),
+
+  revokeUserSessions: (stableUid: string): Promise<void> =>
+    request<void>('DELETE', `/api/admin/sessions/user/${encodeURIComponent(stableUid)}`),
+
+  userLogins: (stableUid: string): Promise<{ logins: AdminLoginEvent[] }> =>
+    request<{ logins: AdminLoginEvent[] }>('GET', `/api/admin/sessions/user/${encodeURIComponent(stableUid)}/logins`),
 
   revokeAllSessions: (): Promise<void> =>
     request<void>('DELETE', '/api/admin/sessions'),

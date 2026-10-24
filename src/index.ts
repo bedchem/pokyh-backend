@@ -37,7 +37,8 @@ import { localDayAndHour } from './services/usageAnalytics';
 import { keyUnkeyedVisits } from './services/visitorKey';
 import { closeLearnCache } from './services/learnCache';
 import { isSameOrigin, withWwwOriginAlias } from './utils/cors';
-import { loadTokenRevocations } from './utils/revokedTokens';
+import { loadSessionRevocations, loadTokenRevocations } from './utils/revokedTokens';
+import { cleanupSessions } from './services/sessions';
 import { mayRunExclusiveJob, ownsClusterWork } from './cluster/hooks';
 import { CLUSTER_PATH } from './cluster/protocol';
 import { createClusterRouter } from './cluster/router';
@@ -132,7 +133,8 @@ app.use(
       },
       credentials: true,
       methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
-      allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key', 'X-Server-Key', 'Idempotency-Key', 'X-Pokyh-School'],
+      // X-Pokyh-Client: "pwa" when the website runs installed (its entry in the device list).
+      allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key', 'X-Server-Key', 'Idempotency-Key', 'X-Pokyh-School', 'X-Pokyh-Client'],
       // The website calls this API directly: browsers may keep a preflight's
       // answer this long (seconds) instead of asking before every request.
       maxAge: 7200,
@@ -254,7 +256,7 @@ app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
 
   // Operational errors (our AppError subclasses)
   if (err instanceof AppError) {
-    res.status(err.statusCode).json({ error: err.message });
+    res.status(err.statusCode).json({ error: err.message, ...(err.code ? { code: err.code } : {}) });
     return;
   }
 
@@ -305,16 +307,10 @@ const SESSION_CLEANUP_INTERVAL = config.sessionCleanupIntervalMs;
 async function cleanupExpiredSessions() {
   // Replicated data: in a cluster one node cleaning up is enough.
   if (!ownsClusterWork('job:session-cleanup')) return;
-  const cutoff = new Date(Date.now() - 12 * 60 * 60 * 1000);
-  const { count } = await prisma.refreshToken.deleteMany({
-    where: {
-      AND: [
-        { OR: [{ revokedAt: { not: null } }, { expiresAt: { lt: new Date() } }] },
-        { createdAt: { lt: cutoff } },
-      ],
-    },
-  });
-  if (count > 0) logger.info(`Session cleanup: ${count} expired tokens deleted`);
+  // Device sessions unused (or signed out) for SESSION_IDLE_DAYS, and the
+  // login history older than LOGIN_HISTORY_DAYS (services/sessions.ts).
+  const { sessions, logins } = await cleanupSessions();
+  if (sessions > 0 || logins > 0) logger.info(`Session cleanup: ${sessions} device sessions and ${logins} login history entries deleted`);
 }
 
 async function cleanupExpiredRequestLogs() {
@@ -687,7 +683,7 @@ async function connectDatabaseWithRetry() {
         logger.warn(`dish rating reconcile failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
       }
       // Session revocations survive a restart through the database.
-      try { await loadTokenRevocations(); } catch (err) {
+      try { await loadTokenRevocations(); await loadSessionRevocations(); } catch (err) {
         logger.warn(`token revocation load failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
       }
       // Idempotent — the default school, and every school-specific row from

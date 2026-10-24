@@ -71,3 +71,42 @@ export function isTokenRevoked(stableUid: string, issuedAtSec: number): boolean 
   }
   return issuedAtSec < entry.revokedAtSec;
 }
+
+// ─── One device session ──────────────────────────────────────────────────────
+//
+// Signing out one device (services/sessions.ts) revokes its session
+// (refresh_tokens.revoked_at); its access tokens carry the session as `sid`
+// and the website's WebUntis cookie names it too. A revoked session never
+// comes back — the device's next sign-in opens a new one — so a revocation is
+// simply kept until nothing issued for the session can still be in use: the
+// longest access token, or the website's sealed WebUntis session.
+// The row itself is replicated; other nodes learn of it through
+// cluster/effects.ts.
+
+const SESSION_REVOCATION_LIFE_MS = Math.max(JWT_MAX_LIFE_MS, config.webuntis.sessionMaxAgeMs);
+const revokedSessions = new Map<string, number>(); // sid → Date.now() ms when the entry stops mattering
+
+export function noteSessionRevocation(sid: string, revokedAt: Date): void {
+  const expiresAt = revokedAt.getTime() + SESSION_REVOCATION_LIFE_MS;
+  if (!sid || !Number.isFinite(expiresAt) || expiresAt <= Date.now()) return;
+  revokedSessions.set(sid, expiresAt);
+}
+
+export function isSessionRevoked(sid: string | undefined | null): boolean {
+  if (!sid) return false;
+  const expiresAt = revokedSessions.get(sid);
+  if (expiresAt === undefined) return false;
+  if (Date.now() > expiresAt) {
+    revokedSessions.delete(sid);
+    return false;
+  }
+  return true;
+}
+
+// Restores still-relevant session revocations after a restart.
+export async function loadSessionRevocations(): Promise<number> {
+  const cutoff = new Date(Date.now() - SESSION_REVOCATION_LIFE_MS);
+  const rows = await prisma.refreshToken.findMany({ where: { revokedAt: { gt: cutoff } }, select: { id: true, revokedAt: true } });
+  for (const row of rows) if (row.revokedAt) noteSessionRevocation(row.id, row.revokedAt);
+  return rows.length;
+}

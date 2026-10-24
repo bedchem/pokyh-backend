@@ -1,72 +1,117 @@
-import { useEffect, useState, useCallback } from 'react';
-import { Activity, RefreshCw, LogOut, Trash2, MonitorSmartphone, TimerReset, ShieldX } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Activity, AppWindow, ChevronDown, History, LogOut, Monitor, MonitorSmartphone, RefreshCw, ShieldX, Smartphone, Trash2, Users } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import { adminApi } from '../api';
 import { useToast } from '../components/Toast';
 import { useAutoRefresh } from '../hooks/useAutoRefresh';
 import { useLive } from '../live';
-import { Avatar, Delta, Dialog, Empty, Figures, IconButton, PageHeader, Section, Spinner, Status, type Tone } from '../components/kit';
+import { Avatar, Collapse, Dialog, Empty, Figures, IconButton, PageHeader, SearchField, Section, Spinner, Tag, type Tone } from '../components/kit';
 import { Bars, SplitBar } from '../components/charts';
-import type { AdminSession } from '../types';
+import type { AdminLoginEvent, AdminSessionDevice, AdminSessionPerson, AdminSessionsResponse, SessionClient } from '../types';
+
+// Who is signed in where. One row per person; opening it lists their devices
+// (phone app, website, installed website) with place, address and last use,
+// each signed out on its own — or all of them at once — and their sign-ins.
 
 function formatDate(dateStr: string): string {
-  return new Date(dateStr).toLocaleString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
+  return new Date(dateStr).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
 function relativeTime(dateStr: string): string {
-  const diff = Date.now() - new Date(dateStr).getTime();
-  const secs = Math.floor(diff / 1000);
-  if (secs < 60) return `${secs}s ago`;
+  const secs = Math.max(0, Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000));
+  if (secs < 60) return 'just now';
   const mins = Math.floor(secs / 60);
-  if (mins < 60) return `${mins}m ago`;
+  if (mins < 60) return `${mins} min ago`;
   const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  return `${Math.floor(hrs / 24)}d ago`;
+  if (hrs < 24) return `${hrs} h ago`;
+  const days = Math.floor(hrs / 24);
+  return days === 1 ? 'yesterday' : `${days} days ago`;
 }
 
-type SessionStatus = 'active' | 'expired' | 'revoked';
-
-function getStatus(session: AdminSession): SessionStatus {
-  if (session.revokedAt) return 'revoked';
-  if (new Date(session.expiresAt) < new Date()) return 'expired';
-  return 'active';
-}
-
-const STATUS: Record<SessionStatus, { tone: Tone; label: string }> = {
-  active:  { tone: 'mint',  label: 'Active' },
-  expired: { tone: 'amber', label: 'Expired' },
-  revoked: { tone: 'rose',  label: 'Revoked' },
+const CLIENT: Record<SessionClient, { label: string; tone: Tone }> = {
+  app: { label: 'App', tone: 'violet' },
+  web: { label: 'Website', tone: 'sky' },
+  pwa: { label: 'Installed website', tone: 'mint' },
+  other: { label: 'Other', tone: 'ink' },
 };
 
-const WEEK = 7 * 86400000;
+function deviceIcon(device: Pick<AdminSessionDevice, 'client' | 'platform'>): LucideIcon {
+  if (device.client === 'pwa') return AppWindow;
+  if (device.client === 'app' || device.platform === 'android' || device.platform === 'ios') return Smartphone;
+  return Monitor;
+}
+
+const METHOD: Record<AdminLoginEvent['method'], string> = {
+  webuntis: 'WebUntis password',
+  office: 'Office 365 key',
+  local: 'POKYH password',
+  register: 'Registered',
+};
+
+function LoginHistory({ stableUid }: { stableUid: string }) {
+  const [logins, setLogins] = useState<AdminLoginEvent[] | null>(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    adminApi.userLogins(stableUid).then((r) => setLogins(r.logins)).catch(() => setFailed(true));
+  }, [stableUid]);
+
+  if (failed) return <p className="text-[13.5px] text-ink-3">The sign-ins could not be loaded.</p>;
+  if (!logins) return <div className="shimmer h-4 w-48 rounded-full" />;
+  if (logins.length === 0) return <p className="text-[13.5px] text-ink-3">No sign-ins recorded yet.</p>;
+  return (
+    <ul className="flex flex-col gap-2.5">
+      {logins.map((login) => (
+        <li key={login.id} className="grid grid-cols-[minmax(0,140px)_minmax(0,1fr)] gap-x-4 text-[13.5px] sm:grid-cols-[150px_minmax(0,1.3fr)_minmax(0,1fr)_140px]">
+          <span className="tabular whitespace-nowrap text-ink-2">{formatDate(login.at)}</span>
+          <span className="truncate">{login.label}</span>
+          <span className="hidden truncate text-ink-3 sm:block">{[login.place, login.ip].filter(Boolean).join(' · ') || 'Unknown place'}</span>
+          <span className="hidden truncate text-ink-3 sm:block">{METHOD[login.method] ?? login.method}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function DeviceRow({ device, busy, onRevoke }: { device: AdminSessionDevice; busy: boolean; onRevoke: () => void }) {
+  const Icon = deviceIcon(device);
+  const client = CLIENT[device.client] ?? CLIENT.other;
+  return (
+    <li className="flex items-center gap-4 py-3.5">
+      <span className="orb h-11 w-11"><Icon size={18} strokeWidth={1.6} /></span>
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="truncate text-[14.5px] font-medium">{device.label}</span>
+          <Tag tone={client.tone}>{client.label}</Tag>
+        </div>
+        <div className="mt-1 truncate text-[13px] text-ink-3">
+          {device.place || 'Unknown place'}
+          {device.ip && <> · <span className="font-mono text-[12.5px]">{device.ip}</span></>}
+        </div>
+        <div className="mt-0.5 truncate text-[13px] text-ink-3">
+          Active {relativeTime(device.lastUsedAt)} · signed in {formatDate(device.createdAt)}
+        </div>
+      </div>
+      <IconButton icon={LogOut} tone="rose" label={`Sign out ${device.label}`} busy={busy} onClick={onRevoke} />
+    </li>
+  );
+}
 
 export function SessionsPage() {
   const { showToast } = useToast();
-  const [sessions, setSessions] = useState<AdminSession[]>([]);
+  const [data, setData] = useState<AdminSessionsResponse | null>(null);
   const [loading, setLoading] = useState(true);
-  const [revoking, setRevoking] = useState<string | null>(null);
-  const [clearingAll, setClearingAll] = useState(false);
+  const [query, setQuery] = useState('');
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [historyOpen, setHistoryOpen] = useState<Set<string>>(new Set());
+  const [busy, setBusy] = useState<string | null>(null);
+  const [confirmPerson, setConfirmPerson] = useState<string | null>(null);
   const [confirmClearAll, setConfirmClearAll] = useState(false);
+  const [clearingAll, setClearingAll] = useState(false);
   const [deletingInactive, setDeletingInactive] = useState(false);
-  // IDs currently fading out (just revoked)
-  const [fadingOut, setFadingOut] = useState<Set<string>>(new Set());
 
   const fetchSessions = useCallback(async () => {
     try {
-      const data = await adminApi.sessions();
-      // Don't re-add sessions that are currently fading out
-      setSessions((prev) => {
-        const fading = new Set(prev.filter((s) => s.revokedAt && !data.find((d) => d.id === s.id)).map((s) => s.id));
-        if (fading.size === 0) return data;
-        // Keep fading ones in their current state, merge rest
-        const fadingMap = new Map(prev.filter((s) => fading.has(s.id)).map((s) => [s.id, s]));
-        const merged = data.filter((s) => !fading.has(s.id));
-        return [...merged, ...Array.from(fadingMap.values())];
-      });
+      setData(await adminApi.sessions());
     } catch (err) {
       showToast(err instanceof Error ? err.message : 'Failed to load sessions', 'error');
     } finally {
@@ -75,20 +120,54 @@ export function SessionsPage() {
   }, [showToast]);
 
   useEffect(() => { void fetchSessions(); }, [fetchSessions]);
-
-  const { refresh, refreshing } = useAutoRefresh(fetchSessions, 10000);
+  const { refresh, refreshing } = useAutoRefresh(fetchSessions, 15000);
   useLive(['sessions', 'users'], () => { void fetchSessions(); });
 
-  async function handleDeleteInactive() {
-    setDeletingInactive(true);
+  const toggle = (set: Set<string>, id: string) => {
+    const next = new Set(set);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  };
+
+  // A device or person gone from the list at once; the next refresh confirms.
+  function dropDevice(stableUid: string, deviceId: string | null) {
+    setData((prev) => {
+      if (!prev) return prev;
+      const people = prev.people
+        .map((p) => (p.stableUid !== stableUid ? p : { ...p, devices: deviceId ? p.devices.filter((d) => d.id !== deviceId) : [] }))
+        .filter((p) => p.devices.length > 0);
+      return { ...prev, people };
+    });
+  }
+
+  async function handleRevokeDevice(person: AdminSessionPerson, device: AdminSessionDevice) {
+    setBusy(device.id);
     try {
-      await adminApi.deleteInactiveSessions();
-      showToast('Old sessions deleted', 'success');
-      await fetchSessions();
+      await adminApi.revokeSession(device.id);
+      showToast(`${person.username} signed out on ${device.label}`, 'success');
+      dropDevice(person.stableUid, device.id);
     } catch (err) {
-      showToast(err instanceof Error ? err.message : 'Failed to delete sessions', 'error');
+      showToast(err instanceof Error ? err.message : 'Failed to sign out the device', 'error');
     } finally {
-      setDeletingInactive(false);
+      setBusy(null);
+    }
+  }
+
+  async function handleRevokePerson(person: AdminSessionPerson) {
+    if (confirmPerson !== person.stableUid) {
+      setConfirmPerson(person.stableUid);
+      return;
+    }
+    setBusy(person.stableUid);
+    try {
+      await adminApi.revokeUserSessions(person.stableUid);
+      showToast(`${person.username} signed out on all devices`, 'success');
+      dropDevice(person.stableUid, null);
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Failed to sign out', 'error');
+    } finally {
+      setBusy(null);
+      setConfirmPerson(null);
     }
   }
 
@@ -96,100 +175,87 @@ export function SessionsPage() {
     setClearingAll(true);
     try {
       await adminApi.revokeAllSessions();
-      showToast('All sessions cleared', 'success');
+      showToast('Everyone has been signed out', 'success');
       setConfirmClearAll(false);
       await fetchSessions();
     } catch (err) {
-      showToast(err instanceof Error ? err.message : 'Failed to clear sessions', 'error');
+      showToast(err instanceof Error ? err.message : 'Failed to sign everyone out', 'error');
     } finally {
       setClearingAll(false);
     }
   }
 
-  async function handleRevoke(session: AdminSession) {
-    setRevoking(session.id);
+  async function handleDeleteInactive() {
+    setDeletingInactive(true);
     try {
-      await adminApi.revokeSession(session.id);
-      showToast(`${session.username} has been logged out`, 'success');
-
-      // Mark as revoked instantly in the list
-      setSessions((prev) =>
-        prev.map((s) =>
-          s.id === session.id
-            ? { ...s, revokedAt: new Date().toISOString(), isActive: false }
-            : s
-        )
-      );
-
-      // Start fade-out animation, then remove from list after 3s
-      setFadingOut((prev) => new Set([...prev, session.id]));
-      setTimeout(() => {
-        setSessions((prev) => prev.filter((s) => s.id !== session.id));
-        setFadingOut((prev) => { const n = new Set(prev); n.delete(session.id); return n; });
-      }, 3000);
+      await adminApi.deleteInactiveSessions();
+      showToast('Unused devices removed', 'success');
+      await fetchSessions();
     } catch (err) {
-      showToast(err instanceof Error ? err.message : 'Failed to revoke session', 'error');
+      showToast(err instanceof Error ? err.message : 'Failed to remove devices', 'error');
     } finally {
-      setRevoking(null);
+      setDeletingInactive(false);
     }
   }
 
-  const counts = { active: 0, expired: 0, revoked: 0 };
-  for (const s of sessions) counts[getStatus(s)] += 1;
-  const activeSessions = sessions.filter((s) => s.isActive).length;
-  const expiringSoon = sessions.filter((s) => s.isActive && new Date(s.expiresAt).getTime() - Date.now() < WEEK).length;
-  const signedInUsers = new Set(sessions.filter((s) => s.isActive).map((s) => s.stableUid)).size;
+  const people = data?.people ?? [];
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return people;
+    return people.filter((p) =>
+      p.username.toLowerCase().includes(q)
+      || p.className.toLowerCase().includes(q)
+      || p.devices.some((d) => d.label.toLowerCase().includes(q) || d.place.toLowerCase().includes(q) || (d.ip ?? '').includes(q)));
+  }, [people, query]);
 
-  // Sign-ins per day over the last two weeks, from the sessions' creation dates.
+  const byClient = data?.totals.byClient ?? { app: 0, web: 0, pwa: 0, other: 0 };
+  const multiDevice = people.filter((p) => p.devices.length > 1).length;
+
   const days = Array.from({ length: 14 }, (_, i) => {
     const d = new Date();
-    d.setHours(0, 0, 0, 0);
+    d.setHours(12, 0, 0, 0);
     d.setDate(d.getDate() - (13 - i));
     return d;
   });
-  const perDay = days.map((day) => sessions.filter((s) => new Date(s.createdAt).toDateString() === day.toDateString()).length);
+  const dayKey = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const perDay = days.map((d) => data?.signInsPerDay[dayKey(d)] ?? 0);
 
   return (
     <div>
       {confirmClearAll && (
         <Dialog
           title="Sign everyone out?"
-          subtitle={`This revokes all ${activeSessions} active session${activeSessions !== 1 ? 's' : ''}. Every user has to log in again.`}
+          subtitle={`This signs out all ${data?.totals.devices ?? 0} device${data?.totals.devices === 1 ? '' : 's'} of ${data?.totals.people ?? 0} people. Everyone has to sign in again.`}
           onClose={() => { if (!clearingAll) setConfirmClearAll(false); }}
         >
           <div className="flex gap-3">
             <button type="button" className="btn btn-quiet flex-1" disabled={clearingAll} onClick={() => setConfirmClearAll(false)}>Cancel</button>
             <button type="button" className="btn btn-danger flex-1" disabled={clearingAll} onClick={() => void handleClearAll()}>
               {clearingAll ? <Spinner /> : <ShieldX size={16} strokeWidth={1.7} />}
-              Revoke all
+              Sign everyone out
             </button>
           </div>
         </Dialog>
       )}
 
-      <PageHeader title="Sessions" subtitle="Active refresh token sessions — revoke one to force a logout immediately.">
+      <PageHeader title="Sessions" subtitle="Who is signed in where. Open a person to see their devices and sign out one or all of them.">
         <IconButton icon={RefreshCw} label="Refresh" size={42} busy={refreshing} onClick={() => void refresh()} />
         <button type="button" className="btn btn-quiet" disabled={deletingInactive} onClick={() => void handleDeleteInactive()}>
           {deletingInactive ? <Spinner /> : <Trash2 size={16} strokeWidth={1.7} />}
-          Delete old
+          Remove unused
         </button>
-        <button type="button" className="btn btn-danger" disabled={clearingAll || activeSessions === 0} onClick={() => setConfirmClearAll(true)}>
+        <button type="button" className="btn btn-danger" disabled={clearingAll || !data?.totals.devices} onClick={() => setConfirmClearAll(true)}>
           <ShieldX size={16} strokeWidth={1.7} />
-          Clear all
+          Sign everyone out
         </button>
       </PageHeader>
 
       <Figures
         className="mt-10"
         items={[
-          { label: 'Active sessions', value: activeSessions, icon: Activity, note: <Delta>live</Delta> },
-          { label: 'Signed-in users', value: signedInUsers, icon: MonitorSmartphone },
-          {
-            label: 'Expiring in 7 days',
-            value: expiringSoon,
-            icon: TimerReset,
-            note: expiringSoon > 0 ? <Delta tone="amber">renew on next use</Delta> : undefined,
-          },
+          { label: 'Signed-in people', value: data?.totals.people ?? 0, icon: Users },
+          { label: 'Devices', value: data?.totals.devices ?? 0, icon: MonitorSmartphone },
+          { label: 'On more than one device', value: multiDevice, icon: Activity },
         ]}
       />
 
@@ -200,27 +266,33 @@ export function SessionsPage() {
               values={perDay}
               labels={days.map((d) => String(d.getDate()).padStart(2, '0'))}
               titles={days.map((d) => d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }))}
-              unit="sessions"
+              unit="sign-ins"
               tickEvery={2}
-              ariaLabel="Sessions created per day over the last 14 days"
+              ariaLabel="Sign-ins per day over the last 14 days"
             />
           </div>
         </Section>
-        <Section title="Status">
+        <Section title="Devices">
           <div className="mt-9">
             <SplitBar
-              ariaLabel="Sessions by status"
+              ariaLabel="Devices by kind"
               parts={[
-                { label: 'Active',  value: counts.active,  color: 'var(--mint)' },
-                { label: 'Expired', value: counts.expired, color: 'var(--amber)' },
-                { label: 'Revoked', value: counts.revoked, color: 'var(--rose)' },
+                { label: 'App', value: byClient.app ?? 0, color: 'var(--violet-solid)' },
+                { label: 'Website', value: byClient.web ?? 0, color: 'var(--sky)' },
+                { label: 'Installed', value: byClient.pwa ?? 0, color: 'var(--mint)' },
+                { label: 'Other', value: byClient.other ?? 0, color: 'var(--amber)' },
               ]}
             />
           </div>
         </Section>
       </div>
 
-      <Section className="mt-[52px]" title="All sessions" meta="Refreshes every 10 s">
+      <Section
+        className="mt-[52px]"
+        title="People"
+        meta={data ? `Devices unused for ${data.idleDays} days drop out` : undefined}
+        action={<SearchField value={query} onChange={setQuery} placeholder="Name, class, device, place or IP" className="w-full sm:w-[320px]" />}
+      >
         {loading ? (
           <div className="mt-7 flex flex-col gap-5">
             {Array.from({ length: 5 }).map((_, i) => (
@@ -231,60 +303,90 @@ export function SessionsPage() {
               </div>
             ))}
           </div>
-        ) : sessions.length === 0 ? (
-          <Empty icon={MonitorSmartphone}>No sessions yet.</Empty>
+        ) : filtered.length === 0 ? (
+          <Empty icon={MonitorSmartphone}>{query ? 'Nobody matches.' : 'Nobody is signed in.'}</Empty>
         ) : (
-          <div className="tbl-scroll mt-7">
-            <table className="tbl">
-              <thead>
-                <tr>
-                  <th>User</th>
-                  <th className="hidden sm:table-cell">Created</th>
-                  <th className="hidden md:table-cell">Expires</th>
-                  <th>Status</th>
-                  <th><span className="sr-only">Action</span></th>
-                </tr>
-              </thead>
-              <tbody>
-                {sessions.map((session) => {
-                  const status = STATUS[getStatus(session)];
-                  const isFading = fadingOut.has(session.id);
-                  return (
-                    <tr key={session.id} style={{ opacity: isFading ? 0 : 1, transition: 'opacity 0.6s ease' }}>
-                      <td>
-                        <div className="flex items-center gap-4">
-                          <Avatar name={session.username} size={44} />
-                          <div className="min-w-0">
-                            <div className="truncate font-medium">{session.username}</div>
-                            <div className="truncate font-mono text-[11.5px] text-ink-3">{session.stableUid.slice(0, 10)}…</div>
-                          </div>
+          <ul className="mt-5 divide-y" style={{ borderColor: 'rgb(var(--ink-rgb) / calc(0.054 * var(--veil)))' }}>
+            {filtered.map((person) => {
+              const open = expanded.has(person.stableUid);
+              const kinds = (['app', 'pwa', 'web', 'other'] as SessionClient[])
+                .map((kind) => ({ kind, count: person.devices.filter((d) => d.client === kind).length }))
+                .filter((k) => k.count > 0);
+              const confirming = confirmPerson === person.stableUid;
+              return (
+                <li key={person.stableUid}>
+                  <div
+                    role="button"
+                    tabIndex={0}
+                    aria-expanded={open}
+                    className="spot flex cursor-pointer items-center gap-4 py-4"
+                    onClick={() => setExpanded((s) => toggle(s, person.stableUid))}
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setExpanded((s) => toggle(s, person.stableUid)); } }}
+                  >
+                    <Avatar name={person.username} size={44} />
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-[14.5px] font-medium">{person.username}</div>
+                      <div className="mt-0.5 truncate text-[13px] text-ink-3">
+                        {[person.className, person.role === 'parent' ? 'Parent' : ''].filter(Boolean).join(' · ') || 'No class'}
+                        {' · '}active {relativeTime(person.lastUsedAt)}
+                      </div>
+                    </div>
+                    <span className="hidden items-center gap-1.5 md:flex">
+                      {kinds.map(({ kind, count }) => (
+                        <Tag key={kind} tone={CLIENT[kind].tone}>{CLIENT[kind].label}{count > 1 ? ` ×${count}` : ''}</Tag>
+                      ))}
+                    </span>
+                    <span
+                      className="tabular flex h-7 min-w-7 items-center justify-center rounded-full px-2 text-[13px] font-semibold"
+                      style={{ background: 'rgb(var(--ink-rgb) / calc(0.07 * var(--veil)))' }}
+                      title={`${person.devices.length} device${person.devices.length === 1 ? '' : 's'}`}
+                    >
+                      {person.devices.length}
+                    </span>
+                    <span className="flex flex-shrink-0 items-center gap-1.5" onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
+                      {confirming ? (
+                        <button type="button" className="btn btn-sm btn-danger" disabled={busy === person.stableUid} onClick={() => void handleRevokePerson(person)}>
+                          {busy === person.stableUid ? <Spinner /> : null}
+                          Sign out all?
+                        </button>
+                      ) : (
+                        <IconButton icon={LogOut} tone="rose" label={`Sign ${person.username} out everywhere`} onClick={() => void handleRevokePerson(person)} />
+                      )}
+                    </span>
+                    <ChevronDown size={18} strokeWidth={1.6} className={`flex-shrink-0 text-ink-3 transition-transform ${open ? 'rotate-180' : ''}`} />
+                  </div>
+                  <Collapse open={open}>
+                    <div className="pb-5 pl-0 sm:pl-[60px]">
+                      <ul className="divide-y" style={{ borderColor: 'rgb(var(--ink-rgb) / calc(0.054 * var(--veil)))' }}>
+                        {person.devices.map((device) => (
+                          <DeviceRow
+                            key={device.id}
+                            device={device}
+                            busy={busy === device.id}
+                            onRevoke={() => void handleRevokeDevice(person, device)}
+                          />
+                        ))}
+                      </ul>
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-quiet mt-3"
+                        aria-expanded={historyOpen.has(person.stableUid)}
+                        onClick={() => setHistoryOpen((s) => toggle(s, person.stableUid))}
+                      >
+                        <History size={15} strokeWidth={1.7} />
+                        {historyOpen.has(person.stableUid) ? 'Hide sign-ins' : 'Show sign-ins'}
+                      </button>
+                      <Collapse open={historyOpen.has(person.stableUid)}>
+                        <div className="mt-4">
+                          <LoginHistory stableUid={person.stableUid} />
                         </div>
-                      </td>
-                      <td className="hidden sm:table-cell">
-                        <div className="whitespace-nowrap text-ink-2">{formatDate(session.createdAt)}</div>
-                        <div className="mt-0.5 text-[12.5px] text-ink-3">{relativeTime(session.createdAt)}</div>
-                      </td>
-                      <td className="hidden whitespace-nowrap text-ink-2 md:table-cell">{formatDate(session.expiresAt)}</td>
-                      <td><Status tone={status.tone}>{status.label}</Status></td>
-                      <td>
-                        <div className="row-actions">
-                          {session.isActive && !isFading && (
-                            <IconButton
-                              icon={LogOut}
-                              tone="rose"
-                              label={`Revoke session of ${session.username}`}
-                              busy={revoking === session.id}
-                              onClick={() => void handleRevoke(session)}
-                            />
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+                      </Collapse>
+                    </div>
+                  </Collapse>
+                </li>
+              );
+            })}
+          </ul>
         )}
       </Section>
     </div>

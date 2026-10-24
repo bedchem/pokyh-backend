@@ -1,7 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { config } from '../config';
-import { isTokenRevoked } from '../utils/revokedTokens';
+import { isSessionRevoked, isTokenRevoked } from '../utils/revokedTokens';
 
 export interface JwtPayload {
   stableUid: string;
@@ -9,6 +9,8 @@ export interface JwtPayload {
   klasseId: number;
   klasseName: string;
   role: string;
+  /** The device session the token belongs to (services/sessions.ts); absent in tokens from before device sessions. */
+  sid?: string;
 }
 
 // Extend Express Request
@@ -48,12 +50,16 @@ function verifyToken(token: string, graceSeconds = 0): JwtPayload | null {
     }
     // Reject tokens issued before this user's session was revoked
     if (isTokenRevoked(decoded.stableUid, decoded.iat ?? 0)) return null;
+    // …and tokens of a device that was signed out.
+    const sid = typeof decoded.sid === 'string' && decoded.sid ? decoded.sid : undefined;
+    if (isSessionRevoked(sid)) return null;
     return {
       stableUid: decoded.stableUid,
       username: decoded.username,
       klasseId: decoded.klasseId,
       klasseName: decoded.klasseName,
       role: decoded.role ?? 'student',
+      ...(sid ? { sid } : {}),
     };
   } catch {
     return null;

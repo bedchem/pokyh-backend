@@ -18,6 +18,8 @@ import { prisma } from '../db';
 import { inScope, requireAdmin, requirePermission, schoolWhere, scopeSchool, allowDuringSecondFactorSetup } from '../middleware/requireAdmin';
 import { generateClassCode, generateClassId } from '../utils/uid';
 import { revokeUserTokens } from '../utils/revokedTokens';
+import { describeSession, loginHistory, revokeSession, revokeSessionIds, revokeSessions, SESSION_SELECT } from '../services/sessions';
+import { deviceLabel } from '../services/sessionDevice';
 import { logger } from '../utils/logger';
 import { invalidateDishesCache } from '../utils/cache';
 import { publishDishRatings } from '../services/dishRatings';
@@ -446,7 +448,8 @@ router.get('/stats', requireAdmin, requirePermission('dashboard.view'), async (r
     prisma.class.count({ where: inSchool }),
     prisma.todo.count({ where: schoolId ? { user: { schoolId } } : {} }),
     prisma.reminder.count({ where: schoolId ? { class: { schoolId } } : {} }),
-    prisma.refreshToken.count({ where: { revokedAt: null, expiresAt: { gt: new Date() }, ...(schoolId ? { user: { schoolId } } : {}) } }),
+    // Signed-in devices (services/sessions.ts).
+    prisma.refreshToken.count({ where: { revokedAt: null, lastUsedAt: { gt: new Date(Date.now() - config.sessionIdleDays * 24 * 60 * 60 * 1000) }, ...(schoolId ? { user: { schoolId } } : {}) } }),
     prisma.requestLog.count({ where: { createdAt: { gte: startOfToday }, ...APP_TRAFFIC_WHERE, ...inSchool } }),
     prisma.user.count({ where: { createdAt: { gte: startOfToday }, ...inSchool } }),
     prisma.user.count({ where: { createdAt: { gte: startOfWeek }, ...inSchool } }),
@@ -693,10 +696,7 @@ router.patch('/users/:stableUid/password', requireAdmin, requirePermission('user
 
   // A password reset is an incident-response action — it must actually cut
   // off a session an attacker already holds, not just block future logins.
-  await prisma.refreshToken.updateMany({
-    where: { stableUid, revokedAt: null },
-    data: { revokedAt: new Date() },
-  });
+  await revokeSessions(stableUid);
   revokeUserTokens(stableUid);
   audit(req, 'user.password', { type: 'user', id: stableUid }, { admin: targetIsAdmin }, user.schoolId);
 
@@ -1185,32 +1185,95 @@ router.get('/classes', requireAdmin, requirePermission('classes.view'), async (r
 
 // ─── GET /api/admin/sessions ──────────────────────────────────────────────────
 
+// Who is signed in where: one entry per person with their devices (phone
+// app, website, installed website …), each with its place, address and last
+// use (services/sessions.ts), newest use first; and the sign-ins per day of
+// the last 14 days from the login history.
 router.get('/sessions', requireAdmin, requirePermission('sessions.view'), async (req: Request, res: Response): Promise<void> => {
   const schoolId = scopeSchool(req);
-  const tokens = await prisma.refreshToken.findMany({
-    where: schoolId ? { user: { schoolId } } : {},
-    take: 50,
-    orderBy: { createdAt: 'desc' },
-    include: {
-      user: { select: { username: true } },
+  const idle = new Date(Date.now() - config.sessionIdleDays * 24 * 60 * 60 * 1000);
+  const rows = await prisma.refreshToken.findMany({
+    where: { revokedAt: null, lastUsedAt: { gt: idle }, ...(schoolId ? { user: { schoolId } } : {}) },
+    orderBy: { lastUsedAt: 'desc' },
+    take: 3000,
+    select: {
+      ...SESSION_SELECT,
+      stableUid: true,
+      expiresAt: true,
+      user: { select: { username: true, role: true, webuntisKlasseName: true } },
     },
   });
 
-  const now = new Date();
-  const result = tokens.map((t) => ({
-    id: t.id,
-    stableUid: t.stableUid,
-    username: t.user.username,
-    createdAt: t.createdAt.toISOString(),
-    expiresAt: t.expiresAt.toISOString(),
-    revokedAt: t.revokedAt ? t.revokedAt.toISOString() : null,
-    isActive: t.revokedAt === null && t.expiresAt > now,
-  }));
+  type Person = {
+    stableUid: string; username: string; role: string; className: string; lastUsedAt: string;
+    devices: Array<ReturnType<typeof describeSession> & { expiresAt: string }>;
+  };
+  const people = new Map<string, Person>();
+  const byClient: Record<string, number> = { app: 0, web: 0, pwa: 0, other: 0 };
+  for (const row of rows) {
+    const device = { ...describeSession(row), expiresAt: row.expiresAt.toISOString() };
+    byClient[device.client] = (byClient[device.client] ?? 0) + 1;
+    const person = people.get(row.stableUid);
+    if (person) person.devices.push(device);
+    else people.set(row.stableUid, {
+      stableUid: row.stableUid,
+      username: row.user.username,
+      role: row.user.role,
+      className: row.user.webuntisKlasseName,
+      lastUsedAt: device.lastUsedAt,
+      devices: [device],
+    });
+  }
 
-  res.json(result);
+  const tz = config.usageAnalytics.timezone;
+  const since = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000);
+  const logins = await prisma.loginEvent.findMany({
+    where: { createdAt: { gte: since }, ...(schoolId ? { user: { schoolId } } : {}) },
+    select: { createdAt: true },
+  });
+  const signInsPerDay: Record<string, number> = {};
+  for (const login of logins) {
+    const day = localDayAndHour(login.createdAt, tz).dayKey;
+    signInsPerDay[day] = (signInsPerDay[day] ?? 0) + 1;
+  }
+
+  res.json({
+    people: [...people.values()],
+    totals: { people: people.size, devices: rows.length, byClient },
+    signInsPerDay,
+    idleDays: config.sessionIdleDays,
+  });
 });
 
-// ─── DELETE /api/admin/sessions ── revoke all active + delete all expired/revoked
+// One person's sign-ins (their login history).
+router.get('/sessions/user/:stableUid/logins', requireAdmin, requirePermission('sessions.view'), async (req: Request, res: Response): Promise<void> => {
+  const stableUid = String(req.params['stableUid']);
+  const user = await prisma.user.findUnique({ where: { stableUid }, select: { schoolId: true } });
+  if (!user || !inScope(req, user.schoolId)) {
+    res.status(404).json({ error: 'User not found' });
+    return;
+  }
+  res.json({ logins: await loginHistory(stableUid, 50) });
+});
+
+// Signs one person out of every device.
+router.delete('/sessions/user/:stableUid', requireAdmin, requirePermission('sessions.revoke'), async (req: Request, res: Response): Promise<void> => {
+  const stableUid = String(req.params['stableUid']);
+  const user = await prisma.user.findUnique({ where: { stableUid }, select: { schoolId: true } });
+  if (!user || !inScope(req, user.schoolId)) {
+    res.status(404).json({ error: 'User not found' });
+    return;
+  }
+  const count = await revokeSessions(stableUid);
+  // Tokens from before device sessions name no session: they end this way.
+  revokeUserTokens(stableUid);
+  audit(req, 'sessions.revoke', { type: 'user', id: stableUid }, { devices: count }, user.schoolId);
+  res.status(204).send();
+});
+
+// ─── DELETE /api/admin/sessions ── sign every device out
+// The sessions are marked revoked rather than deleted: that is what stops the
+// devices from signing themselves in again (services/sessions.ts).
 router.delete('/sessions', requireAdmin, requirePermission('sessions.revoke'), async (req: Request, res: Response): Promise<void> => {
   const adminUsername = req.adminUser!.username;
   // A school's admin signs out that school's accounts only.
@@ -1219,10 +1282,10 @@ router.delete('/sessions', requireAdmin, requirePermission('sessions.revoke'), a
 
   const active = await prisma.refreshToken.findMany({
     where: { revokedAt: null, ...ofSchool },
-    select: { stableUid: true },
+    select: { id: true, stableUid: true },
   });
 
-  await prisma.refreshToken.deleteMany({ where: ofSchool });
+  await revokeSessionIds(active.map((t) => t.id));
 
   const seen = new Set<string>();
   for (const t of active) {
@@ -1232,19 +1295,22 @@ router.delete('/sessions', requireAdmin, requirePermission('sessions.revoke'), a
     }
   }
 
-  logger.info('Admin action: delete all sessions', { action: 'delete_all_sessions', adminUsername, affectedUsers: seen.size });
+  logger.info('Admin action: sign out all devices', { action: 'delete_all_sessions', adminUsername, affectedUsers: seen.size });
   audit(req, 'sessions.revoke_all', { type: 'sessions', id: schoolId ?? 'all' }, { affectedUsers: seen.size });
   res.status(204).send();
 });
 
-// ─── DELETE /api/admin/sessions/inactive ── delete only revoked/expired sessions
+// ─── DELETE /api/admin/sessions/inactive ── remove devices unused for SESSION_IDLE_DAYS
 router.delete('/sessions/inactive', requireAdmin, requirePermission('sessions.revoke'), async (req: Request, res: Response): Promise<void> => {
   const schoolId = scopeSchool(req);
+  const idle = new Date(Date.now() - config.sessionIdleDays * 24 * 60 * 60 * 1000);
   await prisma.refreshToken.deleteMany({
     where: {
       OR: [
-        { revokedAt: { not: null } },
-        { expiresAt: { lt: new Date() } },
+        { lastUsedAt: { lt: idle } },
+        { revokedAt: { lt: idle } },
+        // Refresh tokens from before device sessions.
+        { client: '', expiresAt: { lt: new Date() } },
       ],
       ...(schoolId ? { user: { schoolId } } : {}),
     },
@@ -1253,25 +1319,20 @@ router.delete('/sessions/inactive', requireAdmin, requirePermission('sessions.re
   res.status(204).send();
 });
 
-// ─── DELETE /api/admin/sessions/:id ──────────────────────────────────────────
+// ─── DELETE /api/admin/sessions/:id ── sign one device out
 
 router.delete('/sessions/:id', requireAdmin, requirePermission('sessions.revoke'), async (req: Request, res: Response): Promise<void> => {
   const id = String(req.params['id']);
 
-  const token = await prisma.refreshToken.findUnique({ where: { id }, select: { stableUid: true, user: { select: { schoolId: true } } } });
+  const token = await prisma.refreshToken.findUnique({ where: { id }, select: { stableUid: true, os: true, browser: true, model: true, user: { select: { schoolId: true } } } });
   if (!token || !inScope(req, token.user.schoolId)) {
     res.status(404).json({ error: 'Session not found' });
     return;
   }
 
-  await prisma.refreshToken.updateMany({
-    where: { id, revokedAt: null },
-    data: { revokedAt: new Date() },
-  });
-
-  // Force-expire any active access JWTs for this user immediately
-  revokeUserTokens(token.stableUid);
-  audit(req, 'sessions.revoke', { type: 'user', id: token.stableUid }, {}, token.user.schoolId);
+  // Only this device: its access tokens and its automatic sign-in end with it.
+  await revokeSession(token.stableUid, id);
+  audit(req, 'sessions.revoke', { type: 'user', id: token.stableUid }, { device: deviceLabel(token) }, token.user.schoolId);
 
   res.status(204).send();
 });

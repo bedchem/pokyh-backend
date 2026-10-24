@@ -145,14 +145,55 @@ export interface AdminClass {
   members: Array<{ stableUid: string; username: string; joinedAt: string }>;
 }
 
-export interface AdminSession {
+/** "app" (phone app), "pwa" (website installed to the home screen), "web" (browser), "other". */
+export type SessionClient = 'app' | 'pwa' | 'web' | 'other';
+
+/** One signed-in device of a person (services/sessions.ts). */
+export interface AdminSessionDevice {
   id: string;
+  client: SessionClient;
+  platform: string;
+  os: string;
+  browser: string;
+  model: string;
+  /** "Android · POKYH App 2.1.0" */
+  label: string;
+  ip: string | null;
+  country: string;
+  region: string | null;
+  city: string | null;
+  /** "Brixen, Trentino-Südtirol, IT"; "" when unknown. */
+  place: string;
+  createdAt: string;
+  lastUsedAt: string;
+  expiresAt: string;
+}
+
+export interface AdminSessionPerson {
   stableUid: string;
   username: string;
-  createdAt: string;
-  expiresAt: string;
-  revokedAt: string | null;
-  isActive: boolean;
+  role: string;
+  className: string;
+  lastUsedAt: string;
+  devices: AdminSessionDevice[];
+}
+
+export interface AdminSessionsResponse {
+  people: AdminSessionPerson[];
+  totals: { people: number; devices: number; byClient: Record<SessionClient, number> };
+  /** Sign-ins per local day ("2026-10-24") of the last 14 days. */
+  signInsPerDay: Record<string, number>;
+  idleDays: number;
+}
+
+export interface AdminLoginEvent {
+  id: string;
+  at: string;
+  method: 'webuntis' | 'office' | 'local' | 'register';
+  client: SessionClient;
+  label: string;
+  ip: string | null;
+  place: string;
 }
 
 export interface UsersResponse {

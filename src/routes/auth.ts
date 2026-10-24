@@ -1,13 +1,13 @@
 import { Router, Request, Response } from 'express';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcrypt';
-import { createHash, randomBytes, timingSafeEqual } from 'crypto';
+import { timingSafeEqual } from 'crypto';
 import { z } from 'zod';
 import { Prisma } from '@prisma/client';
 import { prisma } from '../db';
 import { config } from '../config';
 import { requireAuth } from '../middleware/auth';
-import { authLimiter, learnLoginLimiter, refreshLimiter } from '../middleware/rateLimiter';
+import { authLimiter, learnLoginLimiter, readLimiter, refreshLimiter, writeLimiter } from '../middleware/rateLimiter';
 import { generateStableUid, generateClassCode, generateClassId } from '../utils/uid';
 import { validateWebUntis } from '../services/webuntis';
 import { getLearnConfig } from '../services/learnConfig';
@@ -24,7 +24,22 @@ import {
   readRefreshCookie,
   readSession as readUntisSession,
   setRefreshCookie,
+  webDeviceId,
 } from '../webuntis/session';
+import {
+  endSessionOfToken,
+  listSessions,
+  loginHistory,
+  NO_CONTEXT,
+  openSession,
+  recordLogin,
+  revokeSession,
+  revokeSessions,
+  rotateSession,
+  signInContext,
+  type LoginMethod,
+  type SignInContext,
+} from '../services/sessions';
 import {
   AppError,
   UnauthorizedError,
@@ -37,6 +52,8 @@ const router = Router();
 export type AuthenticatedUserResponse = {
   token: string;
   refreshToken: string;
+  /** The device session (services/sessions.ts): the device's own entry in the account's device list. */
+  sessionId: string;
   user: {
     stableUid: string;
     username: string;
@@ -52,10 +69,8 @@ export type AuthenticatedUserResponse = {
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
-function hashToken(token: string): string {
-  return createHash('sha256').update(token).digest('hex');
-}
-
+// `sid`: the device session (services/sessions.ts) the token belongs to, so
+// signing out that one device ends its tokens too.
 function signJwt(payload: {
   stableUid: string;
   username: string;
@@ -63,32 +78,11 @@ function signJwt(payload: {
   klasseName: string;
   role: string;
   isUntisUser?: boolean;
+  sid: string;
 }): string {
   return jwt.sign(payload, config.jwtSecret, {
     expiresIn: config.jwtExpiresIn,
   } as jwt.SignOptions);
-}
-
-async function generateRefreshToken(stableUid: string): Promise<string> {
-  const raw = randomBytes(40).toString('hex');
-  const hash = hashToken(raw);
-  const expiresAt = new Date();
-  expiresAt.setTime(expiresAt.getTime() + config.refreshTokenExpiresInHours * 60 * 60 * 1000);
-
-  // Delete all existing tokens for this user — keep DB clean, one session per user
-  await prisma.refreshToken.deleteMany({
-    where: { stableUid },
-  });
-
-  await prisma.refreshToken.create({
-    data: {
-      stableUid,
-      tokenHash: hash,
-      expiresAt,
-    },
-  });
-
-  return raw;
 }
 
 async function removeUserFromClasses(stableUid: string): Promise<void> {
@@ -245,6 +239,8 @@ export async function completeWebUntisLogin({
   klasseName,
   role,
   schoolId,
+  context = NO_CONTEXT,
+  method = 'webuntis',
 }: {
   username: string;
   klasseId: number;
@@ -252,6 +248,9 @@ export async function completeWebUntisLogin({
   role: 'student' | 'parent';
   // The school whose WebUntis validated the account.
   schoolId: string;
+  // The device signing in (its session in the account's device list).
+  context?: SignInContext;
+  method?: LoginMethod;
 }): Promise<AuthenticatedUserResponse> {
   let user = await prisma.user.findUnique({ where: { username } });
   // Usernames are unique across the installation, WebUntis names only within
@@ -323,6 +322,9 @@ export async function completeWebUntisLogin({
 
   const classId = await syncUserClass(user.stableUid, username, klasseId, klasseName, parseAccountRole(user.role), user.schoolId ?? schoolId);
   const isAdmin = await prisma.admin.findUnique({ where: { stableUid: user.stableUid } }) !== null;
+  const session = await openSession(user.stableUid, context);
+  const { sid, refreshToken } = session;
+  await recordLogin(user.stableUid, context, method, session);
   const token = signJwt({
     stableUid: user.stableUid,
     username: user.username,
@@ -330,12 +332,13 @@ export async function completeWebUntisLogin({
     klasseName: user.webuntisKlasseName,
     role: user.role,
     isUntisUser: true,
+    sid,
   });
-  const refreshToken = await generateRefreshToken(user.stableUid);
 
   return {
     token,
     refreshToken,
+    sessionId: sid,
     user: {
       stableUid: user.stableUid,
       username: user.username,
@@ -398,6 +401,9 @@ const loginSchema = z.object({
   // with the credentials it holds), not a sign-in by the person. It is not
   // counted among the account's sign-ins.
   renewal: z.boolean().optional().default(false),
+  // How the person signed in to WebUntis, for the login history: with the
+  // password, or with the app key (Office 365 schools).
+  method: z.enum(['webuntis', 'office']).optional().default('webuntis'),
 });
 
 const localLoginSchema = z.object({
@@ -441,6 +447,7 @@ router.post('/learn-login', learnLoginLimiter, async (req: Request, res: Respons
     klasseName: untis.klasseName,
     role: 'student',
     schoolId: defaultSchoolId(),
+    context: signInContext(req),
   });
   if (learnCfg.legalGateEnabled) {
     await prisma.learnProfile.upsert({
@@ -460,7 +467,7 @@ router.post('/learn-login', learnLoginLimiter, async (req: Request, res: Respons
 });
 
 // A POKYH-only account (user name and password, no school account).
-async function localPasswordLogin(username: string, password: string): Promise<AuthenticatedUserResponse> {
+async function localPasswordLogin(username: string, password: string, context: SignInContext): Promise<AuthenticatedUserResponse> {
   const user = await prisma.user.findUnique({ where: { username } });
   if (!user || !user.passwordHash) {
     throw new UnauthorizedError('Ungültige Zugangsdaten');
@@ -482,6 +489,9 @@ async function localPasswordLogin(username: string, password: string): Promise<A
     user.schoolId ?? defaultSchoolId(),
   );
   const accountClass = normalizeAccountClass(role, user.webuntisKlasseId, user.webuntisKlasseName);
+  const session = await openSession(user.stableUid, context);
+  const { sid, refreshToken } = session;
+  await recordLogin(user.stableUid, context, 'local', session);
   const token = signJwt({
     stableUid: user.stableUid,
     username: user.username,
@@ -489,12 +499,13 @@ async function localPasswordLogin(username: string, password: string): Promise<A
     klasseName: accountClass.klasseName,
     role: user.role,
     isUntisUser: false,
+    sid,
   });
-  const refreshToken = await generateRefreshToken(user.stableUid);
 
   return {
     token,
     refreshToken,
+    sessionId: sid,
     user: {
       stableUid: user.stableUid,
       username: user.username,
@@ -515,7 +526,7 @@ router.post('/login', authLimiter, async (req: Request, res: Response) => {
   // ── Local password login (no server key) ──────────────────────────────────
   if (!serverKey) {
     const { username, password } = localLoginSchema.parse(req.body);
-    const result = await localPasswordLogin(username, password);
+    const result = await localPasswordLogin(username, password, signInContext(req));
     res.locals.signedIn = { stableUid: result.user.stableUid, username: result.user.username };
     return res.json(result);
   }
@@ -540,9 +551,15 @@ router.post('/login', authLimiter, async (req: Request, res: Response) => {
   }
 
   const body = loginSchema.parse(req.body);
-  const { username, klasseId, klasseName, role, renewal } = body;
+  const { username, klasseId, klasseName, role, renewal, method } = body;
 
-  const result = await completeWebUntisLogin({ username, klasseId, klasseName, role, schoolId: await loginSchool(req, body) });
+  // The app signs in again by itself (renewal: true) whenever its token
+  // expires; for a device signed out from elsewhere that is refused
+  // (`session_revoked`), and the app signs out.
+  const result = await completeWebUntisLogin({
+    username, klasseId, klasseName, role, schoolId: await loginSchool(req, body),
+    context: signInContext(req, { renewal }), method,
+  });
   if (!renewal) res.locals.signedIn = { stableUid: result.user.stableUid, username: result.user.username };
   res.json(result);
 });
@@ -560,7 +577,7 @@ const registerSchema = z.object({
 });
 
 // A new POKYH-only account; null when the name is taken.
-async function registerLocalAccount(username: string, password: string): Promise<{ token: string; refreshToken: string; user: Omit<AuthenticatedUserResponse['user'], 'schoolId'> } | null> {
+async function registerLocalAccount(username: string, password: string, context: SignInContext): Promise<{ token: string; refreshToken: string; sessionId: string; user: Omit<AuthenticatedUserResponse['user'], 'schoolId'> } | null> {
   const existing = await prisma.user.findUnique({ where: { username } });
   if (existing) return null;
 
@@ -580,6 +597,9 @@ async function registerLocalAccount(username: string, password: string): Promise
     },
   });
 
+  const session = await openSession(user.stableUid, context);
+  const { sid, refreshToken } = session;
+  await recordLogin(user.stableUid, context, 'register', session);
   const token = signJwt({
     stableUid: user.stableUid,
     username: user.username,
@@ -587,12 +607,13 @@ async function registerLocalAccount(username: string, password: string): Promise
     klasseName: '',
     role: user.role,
     isUntisUser: false,
+    sid,
   });
-  const refreshToken = await generateRefreshToken(user.stableUid);
 
   return {
     token,
     refreshToken,
+    sessionId: sid,
     user: {
       stableUid: user.stableUid,
       username: user.username,
@@ -608,7 +629,7 @@ async function registerLocalAccount(username: string, password: string): Promise
 
 router.post('/register', authLimiter, async (req: Request, res: Response) => {
   const { username, password } = registerSchema.parse(req.body);
-  const result = await registerLocalAccount(username, password);
+  const result = await registerLocalAccount(username, password, signInContext(req));
   if (!result) {
     return res.status(409).json({ error: 'Benutzername bereits vergeben' });
   }
@@ -622,20 +643,16 @@ const refreshSchema = z.object({
   refreshToken: z.string().min(1),
 });
 
-// A new access token for a refresh token, which is rotated on the way.
-async function refreshSession(rawToken: string): Promise<{ token: string; refreshToken: string }> {
-  const tokenHash = hashToken(rawToken);
-
-  const stored = await prisma.refreshToken.findUnique({
-    where: { tokenHash },
-    include: { user: true },
-  });
-
-  if (!stored || stored.revokedAt || stored.expiresAt < new Date()) {
+// A new access token for a refresh token, which is rotated on the way (in
+// place: the device keeps its session). Rotating on every use means a refresh
+// token that leaks once and gets replayed stops working with the next refresh.
+async function refreshSession(rawToken: string, context: SignInContext): Promise<{ token: string; refreshToken: string }> {
+  const rotated = await rotateSession(rawToken, context);
+  if (!rotated) {
     throw new UnauthorizedError('Invalid or expired refresh token');
   }
 
-  const { user } = stored;
+  const { user, sid, refreshToken } = rotated;
   const accountClass = normalizeAccountClass(
     parseAccountRole(user.role),
     user.webuntisKlasseId,
@@ -649,19 +666,15 @@ async function refreshSession(rawToken: string): Promise<{ token: string; refres
     klasseName: accountClass.klasseName,
     role: user.role,
     isUntisUser: user.isUntisUser,
+    sid,
   });
-  // Rotate on every use: a refresh token that leaks once and gets replayed
-  // would otherwise stay valid for its entire lifetime with no signal.
-  // generateRefreshToken() deletes this (and any other) existing token for
-  // the user before issuing the new one.
-  const refreshToken = await generateRefreshToken(user.stableUid);
 
   return { token, refreshToken };
 }
 
 router.post('/refresh', refreshLimiter, async (req: Request, res: Response) => {
   const { refreshToken: rawToken } = refreshSchema.parse(req.body);
-  res.json(await refreshSession(rawToken));
+  res.json(await refreshSession(rawToken, signInContext(req)));
 });
 
 // ─── The website's cookie sign-in (/auth/web/*) ───────────────────────────────
@@ -676,9 +689,14 @@ const localUserCookie = (username: string) => ({
   username, studentId: 0, klasseId: 0, klasseName: '', isUntisUser: false, loginAt: Date.now(),
 });
 
+// The browser as a device: its device cookie, and the refresh token it may
+// still hold from before (so signing in again keeps its device session).
+const webContext = (req: Request, res: Response) =>
+  signInContext(req, { deviceId: webDeviceId(req, res), currentToken: readRefreshCookie(req) });
+
 router.post('/web/local-login', authLimiter, async (req: Request, res: Response) => {
   const { username, password } = localLoginSchema.parse(req.body);
-  const result = await localPasswordLogin(username, password);
+  const result = await localPasswordLogin(username, password, webContext(req, res));
   res.locals.signedIn = { stableUid: result.user.stableUid, username: result.user.username };
   setRefreshCookie(res, result.refreshToken);
   res.json({ ok: true, username: result.user.username, token: result.token, user: localUserCookie(result.user.username) });
@@ -686,7 +704,7 @@ router.post('/web/local-login', authLimiter, async (req: Request, res: Response)
 
 router.post('/web/register', authLimiter, async (req: Request, res: Response) => {
   const { username, password } = registerSchema.parse(req.body);
-  const result = await registerLocalAccount(username, password);
+  const result = await registerLocalAccount(username, password, webContext(req, res));
   if (!result) {
     return res.status(409).json({ error: 'Benutzername bereits vergeben' });
   }
@@ -702,7 +720,7 @@ router.post('/web/refresh', refreshLimiter, async (req: Request, res: Response) 
   }
   let renewed: { token: string; refreshToken: string };
   try {
-    renewed = await refreshSession(rawToken);
+    renewed = await refreshSession(rawToken, signInContext(req));
   } catch (err) {
     if (!(err instanceof UnauthorizedError)) throw err;
     // Invalid, expired or revoked: gone from the browser, so it stops trying.
@@ -713,16 +731,12 @@ router.post('/web/refresh', refreshLimiter, async (req: Request, res: Response) 
   res.json({ ok: true, token: renewed.token });
 });
 
-// Signing out ends the sign-in everywhere it lives: the refresh token is
-// revoked and every sign-in cookie of this address goes. Needs no valid
+// Signing out ends the sign-in everywhere it lives: the browser's device
+// session ends and every sign-in cookie of this address goes. Needs no valid
 // access token: an expired one must still be able to sign out.
 router.post('/web/logout', async (req: Request, res: Response) => {
   const rawToken = readRefreshCookie(req);
-  if (rawToken) {
-    await prisma.refreshToken
-      .updateMany({ where: { tokenHash: hashToken(rawToken), revokedAt: null }, data: { revokedAt: new Date() } })
-      .catch(() => {});
-  }
+  if (rawToken) await endSessionOfToken(rawToken).catch(() => {});
   const untis = readUntisSession(req);
   if (untis) forgetUntisSession(untis.sessionId);
   clearSignInCookies(res);
@@ -738,15 +752,49 @@ const logoutSchema = z.object({
 router.post('/logout', requireAuth, async (req: Request, res: Response) => {
   const body = logoutSchema.safeParse(req.body);
   if (body.success) {
-    const tokenHash = hashToken(body.data.refreshToken);
-    await prisma.refreshToken
-      .updateMany({
-        where: { tokenHash, revokedAt: null },
-        data: { revokedAt: new Date() },
-      })
-      .catch(() => {});
+    await endSessionOfToken(body.data.refreshToken).catch(() => {});
+  } else if (req.user?.sid) {
+    // An app that signs out without its refresh token: the session of its access token.
+    await revokeSession(req.user.stableUid, req.user.sid).catch(() => {});
   }
   res.json({ ok: true });
+});
+
+// ─── The account's devices and sign-ins (/auth/sessions, /auth/login-history) ─
+//
+// What the account sees of itself, as on its settings page: where it is
+// signed in (device, app or website, place and address, last use), and its
+// sign-ins of the last LOGIN_HISTORY_DAYS. Any device can sign out any other.
+
+router.get('/sessions', readLimiter, requireAuth, async (req: Request, res: Response) => {
+  const { stableUid, sid } = req.user!;
+  res.json({ sessions: await listSessions(stableUid, sid) });
+});
+
+router.delete('/sessions/:id', writeLimiter, requireAuth, async (req: Request, res: Response) => {
+  const { stableUid, username } = req.user!;
+  const id = String(req.params['id'] ?? '').slice(0, 36);
+  if (!(await revokeSession(stableUid, id))) {
+    return res.status(404).json({ error: 'Dieses Gerät ist nicht (mehr) angemeldet.' });
+  }
+  logger.info('Device signed out by its account', { action: 'session_revoked_by_user', username });
+  res.json({ ok: true });
+});
+
+// Every device but the one asking. A token from before device sessions names
+// none, and would sign out its own device too: it is refused instead.
+router.post('/sessions/sign-out-others', writeLimiter, requireAuth, async (req: Request, res: Response) => {
+  const { stableUid, username, sid } = req.user!;
+  if (!sid) {
+    return res.status(409).json({ error: 'Bitte lade die Seite neu und versuche es noch einmal.', code: 'no_session' });
+  }
+  const count = await revokeSessions(stableUid, sid);
+  logger.info('Other devices signed out by their account', { action: 'sessions_revoked_by_user', username, count });
+  res.json({ ok: true, count });
+});
+
+router.get('/login-history', readLimiter, requireAuth, async (req: Request, res: Response) => {
+  res.json({ logins: await loginHistory(req.user!.stableUid), keptDays: config.loginHistoryDays });
 });
 
 // ─── GET /auth/me ────────────────────────────────────────────────────────────
