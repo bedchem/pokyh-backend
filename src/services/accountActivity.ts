@@ -51,7 +51,7 @@ function activityDays(now: Date): string[] {
 }
 
 /** Sign-ins per day: the counted ones, or the request logs where those are more (days from before counting). */
-function mergeSignIns(counted: string[], logged: string[]): string[] {
+export function mergeSignIns(counted: string[], logged: string[]): string[] {
   const perDay = (keys: string[]) => keys.reduce((m, k) => m.set(k, (m.get(k) ?? 0) + 1), new Map<string, number>());
   const a = perDay(counted);
   const b = perDay(logged);

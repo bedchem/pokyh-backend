@@ -861,6 +861,82 @@ export interface PopupInput {
   targetClasses: number[];
 }
 
+// ── Recaps ───────────────────────────────────────────────────────────────────
+
+export type RecapSection = 'school' | 'absences' | 'grades' | 'exams' | 'classreg' | 'pokyh';
+export type RecapStatus = 'disabled' | 'scheduled' | 'active' | 'expired';
+
+export interface RecapTargetSchool {
+  id: string;
+  name: string;
+  active?: boolean;
+  users?: number;
+}
+
+export interface RecapTargetClass {
+  schoolId: string;
+  schoolName: string;
+  id: number;
+  name: string;
+  users?: number;
+}
+
+export interface RecapTargetUser {
+  stableUid: string;
+  username: string;
+  klasseName: string;
+  schoolName: string;
+  role?: string;
+}
+
+export interface AdminRecap {
+  id: string;
+  title: string;
+  /** YYYY-MM-DD, both included. */
+  periodFrom: string;
+  periodTo: string;
+  startsAt: string | null;
+  endsAt: string | null;
+  sections: RecapSection[];
+  enabled: boolean;
+  status: RecapStatus;
+  // Null: every school.
+  schoolId: string | null;
+  schoolName: string | null;
+  // All empty: every student.
+  targetSchools: RecapTargetSchool[];
+  targetClasses: RecapTargetClass[];
+  targetUsers: RecapTargetUser[];
+  /** Accounts it reaches now. */
+  reached: number;
+  opened: number;
+  finished: number;
+  createdBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RecapInput {
+  title: string;
+  periodFrom: string;
+  periodTo: string;
+  startsAt: string | null;
+  endsAt: string | null;
+  sections: RecapSection[];
+  enabled: boolean;
+  resetSeen?: boolean;
+  targetSchools: string[];
+  targetClasses: Array<{ schoolId: string; klasseId: number }>;
+  targetUsers: string[];
+  schoolId?: string | null;
+}
+
+export interface RecapTargets {
+  schools: RecapTargetSchool[];
+  classes: RecapTargetClass[];
+  users: RecapTargetUser[];
+}
+
 // ── Cluster (multi-node replication) ─────────────────────────────────────────
 
 export type ClusterPeerState = 'PENDING' | 'ACTIVE' | 'DISABLED' | 'EXPIRED' | 'LOCKED' | 'REMOVED';

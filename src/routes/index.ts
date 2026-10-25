@@ -19,6 +19,7 @@ import { pushRouter } from './push';
 import { learnRouter } from './learn';
 import { learnAiRouter } from './learnAi';
 import { popupsAdminRouter, popupsRouter } from './popups';
+import { recapsAdminRouter, recapsRouter } from './recaps';
 import { clusterAdminRouter } from './adminCluster';
 import { analyticsAdminRouter } from './adminAnalytics';
 import { adminSecurityRouter } from './adminSecurity';
@@ -49,6 +50,7 @@ function requireLearnBrowserOrigin(req: Request, res: Response, next: NextFuncti
 
 // Admin routes — no API key required (same-origin, JWT-protected)
 router.use('/api/admin/popups', popupsAdminRouter);
+router.use('/api/admin/recaps', recapsAdminRouter);
 router.use('/api/admin/cluster', clusterAdminRouter);
 router.use('/api/admin/analytics', analyticsAdminRouter);
 router.use('/api/admin', adminSecurityRouter);
@@ -99,6 +101,8 @@ router.use('/privacy', privacyRouter);
 router.use('/push', pushRouter);
 // Announcement popups (admin-authored, shown in the web and Android apps)
 router.use('/popups', popupsRouter);
+// Recaps (admin-made looks back at a period, opened by students as a story)
+router.use('/recaps', recapsRouter);
 // AI vocabulary trainer — mounted ahead of the general /learn prefix below.
 // It only accepts a server-authorized vocabulary entry, never a chat prompt.
 router.use('/learn/ai', requireLearnBrowserOrigin, learnAiRouter);

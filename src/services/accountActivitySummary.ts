@@ -22,6 +22,12 @@ export interface ActivityInput {
   sessions: Array<{ dayKey: string; startHour: number; activeSeconds: number; screens: number }>;
   /** The local day of each successful sign-in. */
   signIns: string[];
+  /**
+   * Active days of a year already archived (archived_activity, see
+   * archiveSummary): [day, sign-ins, foreground seconds]. Only for days whose
+   * rows are gone; they count as active, without devices or hours.
+   */
+  archived?: ReadonlyArray<readonly [string, number, number]>;
 }
 
 export interface ActivitySummary {
@@ -81,6 +87,14 @@ export function summarizeActivity(input: ActivityInput): ActivitySummary {
     if (!day) continue;
     day.logins += 1;
     day.active = true;
+  }
+
+  for (const [dayKey, logins, seconds] of input.archived ?? []) {
+    const day = byDay.get(dayKey);
+    if (!day) continue;
+    day.active = true;
+    day.logins += Math.max(0, Math.round(logins));
+    day.activeSeconds += Math.max(0, Math.round(seconds));
   }
 
   const days = [...byDay.values()];

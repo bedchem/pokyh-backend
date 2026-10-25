@@ -28,6 +28,7 @@ import { LearnTeamsPage } from './pages/LearnTeamsPage';
 import { LearnCoursesPage } from './pages/LearnCoursesPage';
 import { BackupsPage } from './pages/BackupsPage';
 import { PopupsPage } from './pages/PopupsPage';
+import { RecapsPage } from './pages/RecapsPage';
 import { ClusterPage } from './pages/ClusterPage';
 import { RequestsPage } from './pages/RequestsPage';
 import { SchoolsPage } from './pages/SchoolsPage';
@@ -182,6 +183,7 @@ export default function App() {
             <Route path="/learn/courses"     element={<LearnCoursesPage />} />
             <Route path="/backups"           element={<BackupsPage />} />
             <Route path="/popups"            element={<PopupsPage />} />
+            <Route path="/recaps"            element={<RecapsPage />} />
             <Route path="/cluster"           element={<ClusterPage />} />
             </Route>
             <Route path="*"                  element={<Navigate to="/" replace />} />

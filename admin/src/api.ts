@@ -1,5 +1,6 @@
 import type { AdminStats, AdminClass, AdminSessionsResponse, AdminLoginEvent, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish, AdminDishFull, AdminDishImportResult, AdminDishShiftResult, AdminDishRotateResult, AdminDishResetResult, AdminDishAnchorResult, DishPlan, AdminCommentsResponse, FileLogFile, FileLogResponse, FileLogEntry, FrontendActivityLogsResponse, FrontendActivityStats, AllTodosResponse, AllRemindersResponse, SchoolYearsResponse, ArchivedUsersResponse, ArchivedClass, ArchivedTodosResponse, ArchivedRemindersResponse, RolloverResult, RollbackResult, AdminApiKey, CreatedApiKey, LearnConfigValues, LearnAiConfigValues, LearnAiGrant, LearnAiTeamGrant, AdminLearnTeam, LearnTeamAssignableRole, AdminLearnCoursesResponse, AdminLearnCourseAccessResponse, AdminLearnCourse, AdminLearnCourseAccess, LearnCoursePermission, LearnCourseStatus, LearnCourseVisibility, AdminLearnCourseVocabularyResponse, AdminLearnVocabularyImportResponse, BackupsResponse, AdminPopup, PopupInput, ClusterStatus, ClusterInstall, CreatedClusterInstall, ClusterReach, ReachEntry, AdminAnalytics, AnalyticsRange, AnalyticsPeople, PeopleFilters, AnalyticsBreakdown, BreakdownKind, AnalyticsDishes, AnalyticsVisitors, AnalyticsVisitorIp, AnalyticsPersonDetail, VisitSource, ClusterUpdates, ClusterUpdateSettings, PopupTargetUser, PopupTargetClass, ClusterScope, WayTestResult, ReachKind, LoginResult, PasskeyChallenge, AdminSecurityStatus, TotpSetup, AdminPasskey, AccountRole, FactorKind, PermissionPreset, PresetDraft } from './types';
 import type { SearchKind, SearchResponse } from './types';
+import type { AdminRecap, RecapInput, RecapTargets } from './types';
 import type { AdminMe, AccessCatalog, AdminSchool, MensaMenu, AdminAccount, AdminGrantView, GrantInput, AuditEventsResponse, RequestScopeChoice, RequestsSummary, PerformanceReport, SystemHealth, SystemLogsResponse, ClientErrorGroup, ClientErrorOccurrence, PrivacyOverview, DishCommentGroupsResponse, DishCommentsResponse, ReminderCommentGroup, ReminderCommentItem } from './types';
 import type { AuthenticationResponseJSON, PublicKeyCredentialCreationOptionsJSON, PublicKeyCredentialRequestOptionsJSON, RegistrationResponseJSON } from '@simplewebauthn/browser';
 
@@ -831,6 +832,26 @@ export const adminApi = {
   // Who a popup can be meant for: users by name, and every known class.
   getPopupTargets: (q: string): Promise<{ users: PopupTargetUser[]; classes: PopupTargetClass[] }> =>
     request<{ users: PopupTargetUser[]; classes: PopupTargetClass[] }>('GET', `/api/admin/popups/targets?q=${encodeURIComponent(q)}`),
+
+  // ── Recaps ────────────────────────────────────────────────────────────────
+  getRecaps: (): Promise<{ recaps: AdminRecap[] }> =>
+    request<{ recaps: AdminRecap[] }>('GET', '/api/admin/recaps'),
+
+  createRecap: (data: RecapInput): Promise<{ recap: AdminRecap }> =>
+    request<{ recap: AdminRecap }>('POST', '/api/admin/recaps', data),
+
+  updateRecap: (id: string, data: RecapInput): Promise<{ recap: AdminRecap }> =>
+    request<{ recap: AdminRecap }>('PUT', `/api/admin/recaps/${id}`, data),
+
+  setRecapEnabled: (id: string, enabled: boolean): Promise<{ recap: AdminRecap }> =>
+    request<{ recap: AdminRecap }>('PATCH', `/api/admin/recaps/${id}/enabled`, { enabled }),
+
+  deleteRecap: (id: string): Promise<void> =>
+    request<void>('DELETE', `/api/admin/recaps/${id}`),
+
+  // Who a recap can be for: the schools of the view, one school's classes, students by name.
+  getRecapTargets: (q: string, forSchool?: string | null): Promise<RecapTargets> =>
+    request<RecapTargets>('GET', `/api/admin/recaps/targets?q=${encodeURIComponent(q)}${forSchool ? `&forSchool=${encodeURIComponent(forSchool)}` : ''}`),
 
   // ── Cluster ───────────────────────────────────────────────────────────────
   getCluster: (): Promise<ClusterStatus> =>

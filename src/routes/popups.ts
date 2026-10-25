@@ -102,7 +102,7 @@ const popupSchema = z.object({
 // The classes a popup can be meant for: every WebUntis class a user signed
 // in with, and every class group created in the app, by id.
 // WebUntis class ids are per school, so classes are always of one school.
-async function knownClasses(schoolId: string | null): Promise<Map<number, { name: string; users: number }>> {
+export async function knownClasses(schoolId: string | null): Promise<Map<number, { name: string; users: number }>> {
   const ofSchool = schoolId ? { schoolId } : {};
   const [fromUsers, groups] = await Promise.all([
     prisma.user.groupBy({ by: ['webuntisKlasseId', 'webuntisKlasseName'], where: { webuntisKlasseId: { gt: 0 }, ...ofSchool }, _count: { _all: true } }),

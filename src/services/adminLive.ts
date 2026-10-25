@@ -64,6 +64,7 @@ const AREAS: Record<string, string[]> = {
   dishes: ['dishes'],
   'subject-images': ['subject-images'],
   popups: ['popups'],
+  recaps: ['recaps'],
   learn: ['learn'],
   'learn-ai': ['learn'],
   'learn-config': ['learn'],

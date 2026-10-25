@@ -57,6 +57,8 @@ model User {
   webVisits               WebVisit[]
   privacyConsent          PrivacyConsent?
   popupTargets            PopupTargetUser[]
+  recapTargets            RecapTargetUser[]
+  recapViews              RecapView[]
   bellMarks               BellMark[]
 
   @@index([schoolId, createdAt])
@@ -1592,6 +1594,100 @@ model PopupTargetClass {
   @@id([popupId, klasseId])
   @@index([klasseId])
   @@map("popup_target_classes")
+}
+
+// ─── Recaps ("Dein Schuljahr", a year in review) ─────────────────────────────
+// An admin-made review of a period (periodFrom … periodTo, local days, both
+// included) that students open as a story in the app, between startsAt and
+// endsAt (either may be null = open). Its WebUntis figures (lessons,
+// absences, grades …) are worked out on the student's device with their own
+// WebUntis session and never reach this server; the POKYH figures come from
+// what is kept anyway (services/recaps.ts). See src/routes/recaps.ts.
+model Recap {
+  id         String    @id @default(uuid())
+  title      String    @db.VarChar(120)
+  periodFrom String    @map("period_from") @db.VarChar(10)
+  periodTo   String    @map("period_to") @db.VarChar(10)
+  startsAt   DateTime? @map("starts_at")
+  endsAt     DateTime? @map("ends_at")
+  // The parts it shows, comma-separated ("school,absences,grades,pokyh");
+  // empty: every part.
+  sections   String    @default("") @db.VarChar(200)
+  enabled    Boolean   @default(true)
+  // Null: made in the global view, it may reach every school. Otherwise
+  // only the accounts of this school.
+  schoolId   String?   @map("school_id") @db.VarChar(36)
+  createdBy  String?   @map("created_by") @db.VarChar(100)
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+
+  // Meant for chosen schools, classes and students only (all empty: every
+  // student the recap's school allows).
+  targetSchools RecapTargetSchool[]
+  targetClasses RecapTargetClass[]
+  targetUsers   RecapTargetUser[]
+  views         RecapView[]
+
+  @@index([enabled])
+  @@index([schoolId])
+  @@map("recaps")
+}
+
+model RecapTargetSchool {
+  recapId  String @map("recap_id")
+  schoolId String @map("school_id") @db.VarChar(36)
+
+  recap Recap @relation(fields: [recapId], references: [id], onDelete: Cascade)
+
+  @@id([recapId, schoolId])
+  @@index([schoolId])
+  @@map("recap_target_schools")
+}
+
+// A WebUntis class (its id is unique within a school only). The name is kept
+// as chosen, for the admin panel.
+model RecapTargetClass {
+  recapId    String @map("recap_id")
+  schoolId   String @map("school_id") @db.VarChar(36)
+  klasseId   Int    @map("klasse_id")
+  klasseName String @default("") @map("klasse_name") @db.VarChar(100)
+
+  recap Recap @relation(fields: [recapId], references: [id], onDelete: Cascade)
+
+  @@id([recapId, schoolId, klasseId])
+  @@index([schoolId, klasseId])
+  @@map("recap_target_classes")
+}
+
+model RecapTargetUser {
+  recapId   String @map("recap_id")
+  stableUid String @map("stable_uid")
+
+  recap Recap @relation(fields: [recapId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [stableUid], references: [stableUid], onDelete: Cascade)
+
+  @@id([recapId, stableUid])
+  @@index([stableUid])
+  @@map("recap_target_users")
+}
+
+// That an account was shown a recap and watched it to the end — nothing it
+// showed. A recap opens by itself after signing in only while there is no
+// row: shown once on any device, every device has it as the banner in the
+// top bar instead. The admin panel counts the rows. Goes with the recap
+// (deleted again by "Allen wieder als neu zeigen") and with the account.
+model RecapView {
+  recapId    String    @map("recap_id")
+  stableUid  String    @map("stable_uid")
+  openedAt   DateTime  @default(now()) @map("opened_at")
+  finishedAt DateTime? @map("finished_at")
+
+  recap Recap @relation(fields: [recapId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [stableUid], references: [stableUid], onDelete: Cascade)
+
+  @@id([recapId, stableUid])
+  @@index([stableUid])
+  @@map("recap_views")
 }
 
 // ─── Session revocation ──────────────────────────────────────────────────────

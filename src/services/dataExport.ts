@@ -24,7 +24,7 @@ export async function exportAccountData(stableUid: string) {
   const [
     school, admin, memberships, todos, archivedTodos, reminders, comments, dishRatings, dishComments,
     push, consent, bellMarks, accountDays, usageSessions, webVisits, requestLogs, pageLogs,
-    archivedUsers, archivedActivity, popups, learnProfile, learnEnrollments, learnCompletions,
+    archivedUsers, archivedActivity, popups, recapViews, learnProfile, learnEnrollments, learnCompletions,
     learnAttempts, learnReviews, learnEntries, learnActivity, learnTeams, sessions, logins,
   ] = await Promise.all([
     user.schoolId ? prisma.school.findUnique({ where: { id: user.schoolId }, select: { name: true, webuntisSchool: true } }) : null,
@@ -47,6 +47,7 @@ export async function exportAccountData(stableUid: string) {
     prisma.archivedUser.findMany({ where: { stableUid } }),
     prisma.archivedActivity.findMany({ where: { stableUid } }),
     prisma.popupTargetUser.findMany({ where: { stableUid }, select: { popupId: true } }),
+    prisma.recapView.findMany({ where: { stableUid }, select: { recapId: true, openedAt: true, finishedAt: true } }),
     prisma.learnProfile.findUnique({ where: { stableUid } }),
     prisma.learnEnrollment.findMany({ where: { stableUid } }),
     prisma.learnSectionCompletion.findMany({ where: { stableUid } }),
@@ -97,6 +98,7 @@ export async function exportAccountData(stableUid: string) {
       pushSubscriptions: push.map((p) => ({ service: hostOf(p.endpoint), createdAt: iso(p.createdAt), updatedAt: iso(p.updatedAt) })),
       bellMarks,
       popupsShownTo: popups.map((p) => p.popupId),
+      recapsOpened: recapViews.map((v) => ({ recapId: v.recapId, openedAt: iso(v.openedAt), finishedAt: iso(v.finishedAt) })),
     },
     activity: {
       activeDays: accountDays,

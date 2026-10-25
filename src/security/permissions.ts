@@ -28,7 +28,7 @@ export const PERMISSION_GROUPS = [
   { key: 'classes', label: 'Klassen & Aufgaben' },
   { key: 'moderation', label: 'Kommentare & Bewertungen' },
   { key: 'mensa', label: 'Mensa' },
-  { key: 'communication', label: 'Popups' },
+  { key: 'communication', label: 'Popups & Recaps' },
   { key: 'logs', label: 'Anfragen & Logs' },
   { key: 'school', label: 'Schule & Admins' },
   { key: 'global', label: 'Global' },
@@ -70,6 +70,8 @@ const SPECS = {
 
   'popups.view': { group: 'communication', scope: 'school', action: 'read', label: 'Popups ansehen', description: 'Ankündigungen an die Schule.' },
   'popups.manage': { group: 'communication', scope: 'school', action: 'update', label: 'Popups verwalten', description: 'Ankündigungen an die Schule erstellen, ändern und löschen.' },
+  'recaps.view': { group: 'communication', scope: 'school', action: 'read', label: 'Recaps ansehen', description: 'Jahresrückblicke der Schule, wen sie erreichen und wie viele sie geöffnet haben.' },
+  'recaps.manage': { group: 'communication', scope: 'school', action: 'update', label: 'Recaps verwalten', description: 'Jahresrückblicke erstellen, Zeitraum und Empfänger festlegen, löschen.' },
 
   'requests.view': { group: 'logs', scope: 'school', action: 'read', label: 'Anfragen ansehen', description: 'API-Anfragen der Konten der Schule (Pfad, Status, Dauer).' },
   'logs.frontend.view': { group: 'logs', scope: 'school', action: 'read', label: 'Frontend-Logs ansehen', description: 'Seitenaufrufe, Anmeldungen und App-Fehler der Schule.' },
@@ -143,7 +145,7 @@ export const PRESETS: readonly Preset[] = [
     label: 'Viewer',
     description: 'Nur lesen: Dashboard, Analytics, Nutzer, Klassen, Kommentare und Speiseplan.',
     scope: 'school',
-    permissions: ['dashboard.view', 'analytics.view', 'users.view', 'classes.view', 'todos.view', 'comments.view', 'mensa.view', 'popups.view'],
+    permissions: ['dashboard.view', 'analytics.view', 'users.view', 'classes.view', 'todos.view', 'comments.view', 'mensa.view', 'popups.view', 'recaps.view'],
   },
   {
     key: 'moderator',
