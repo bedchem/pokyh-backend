@@ -47,7 +47,7 @@ import { startClusterListener, stopClusterListener } from './cluster/listener';
 import { RELAY_SCRIPT_PATH, handleRelayScript } from './cluster/relaySetup';
 import { SETUP_PATH, createSetupRouter } from './cluster/provision';
 import { startCluster, stopCluster } from './cluster';
-import { migrateLegacyAdmins, migrateToSchools } from './services/multiSchool';
+import { migrateLegacyAdmins, migrateNewPermissions, migrateToSchools } from './services/multiSchool';
 import { backfillAccountDays } from './services/accountDays';
 import { activityCutoffDay } from './services/accountActivity';
 import { BELL_MARK_RETENTION_DAYS, deleteExpiredBellMarks } from './services/bellMarks';
@@ -537,10 +537,13 @@ function startBackgroundJobs() {
   // become global admins (services/multiSchool.ts). On one node only; until
   // it ran, those accounts have no rights (denied, not granted, by default).
   // Retried until done — in a cluster the chosen node may be busy upgrading.
+  // Then rights added to the catalog since reach the grants that would have
+  // held them (security/permissionUpgrades.ts), each upgrade once.
   let legacyAdminsDone = false;
   const migrateAdmins = () => {
     if (legacyAdminsDone || !mayRunExclusiveJob('admin-grants-migration')) return;
     void migrateLegacyAdmins()
+      .then(() => migrateNewPermissions())
       .then(() => { legacyAdminsDone = true; })
       .catch((err) => logger.warn(`admin grant migration failed (retrying): ${err instanceof Error ? err.message.split('\n')[0] : String(err)}`));
   };

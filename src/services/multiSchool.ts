@@ -2,7 +2,8 @@ import { Prisma } from '@prisma/client';
 import { prisma } from '../db';
 import { logger } from '../utils/logger';
 import { GLOBAL_SCOPE, ALL_PERMISSIONS } from '../security/permissions';
-import { grantId } from './adminAccess';
+import { PERMISSION_UPGRADES, upgradeGrant } from '../security/permissionUpgrades';
+import { grantId, parsePermissionList } from './adminAccess';
 import { DEFAULT_MENU_ID, defaultSchoolId, ensureDefaultSchool, invalidateMenus } from './schools';
 
 // Bringing a database from the single-school era into schools — on every
@@ -147,6 +148,31 @@ export async function migrateLegacyAdmins(): Promise<number> {
     logger.info('Existing admin accounts became global admins', { action: 'admin_grants_migration', count: users.length });
   }
   return users.length;
+}
+
+/**
+ * Rights added to the catalog later reach the grants that would have held
+ * them (security/permissionUpgrades.ts) — each upgrade once, marked in
+ * app_migrations, so a right an administrator takes away afterwards stays
+ * away. Run after migrateLegacyAdmins, on one node of a cluster only.
+ */
+export async function migrateNewPermissions(): Promise<number> {
+  let changed = 0;
+  for (const upgrade of PERMISSION_UPGRADES) {
+    if (await marked(upgrade.id)) continue;
+    const grants = await prisma.adminGrant.findMany({ select: { id: true, scope: true, preset: true, permissions: true } });
+    const updates = grants.flatMap((g) => {
+      const next = upgradeGrant({ scope: g.scope, preset: g.preset, permissions: parsePermissionList(g.permissions) }, upgrade, GLOBAL_SCOPE);
+      return next ? [prisma.adminGrant.update({ where: { id: g.id }, data: { permissions: JSON.stringify(next) } })] : [];
+    });
+    await prisma.$transaction([
+      ...updates,
+      prisma.appMigration.upsert({ where: { id: upgrade.id }, create: { id: upgrade.id, detail: `${updates.length} grant(s) given ${upgrade.added.join(', ')}` }, update: {} }),
+    ]);
+    if (updates.length > 0) logger.info('New admin rights added to existing grants', { action: 'admin_grants_upgrade', upgrade: upgrade.id, count: updates.length });
+    changed += updates.length;
+  }
+  return changed;
 }
 
 export { defaultSchoolId };

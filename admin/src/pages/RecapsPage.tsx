@@ -491,27 +491,35 @@ const PAGES: Record<RecapSection, string[]> = {
   pokyh: ['Tage in POKYH & Serie', 'Wann du online bist', 'Was du in POKYH gemacht hast', '„Top x %“ deiner Schule'],
 };
 
+// The outline in the story's own look (pixel art, solid colours): a night
+// sky with the steps, the ground below.
+const PIXEL_CORNERS = 'polygon(0 8px, 4px 8px, 4px 4px, 8px 4px, 8px 0, calc(100% - 8px) 0, calc(100% - 8px) 4px, calc(100% - 4px) 4px, calc(100% - 4px) 8px, 100% 8px, 100% calc(100% - 8px), calc(100% - 4px) calc(100% - 8px), calc(100% - 4px) calc(100% - 4px), calc(100% - 8px) calc(100% - 4px), calc(100% - 8px) 100%, 8px 100%, 8px calc(100% - 4px), 4px calc(100% - 4px), 4px calc(100% - 8px), 0 calc(100% - 8px))';
+
 function StoryOutline({ title, from, to, sections }: { title: string; from: string; to: string; sections: RecapSection[] }) {
   let n = 1;
   return (
     <div className="min-w-0">
       <p className="mb-3 text-[12px]" style={dimText}>So läuft die Story ab</p>
-      <div className="rounded-[18px] p-5" style={{ background: 'linear-gradient(160deg, #3b2f8f, #1b1440 60%, #120e26)' }}>
-        <p className="text-[12px] text-white/60">{from && to ? `${dayText(from)} – ${dayText(to)}` : 'Zeitraum fehlt'}</p>
-        <p className="mt-1 text-[19px] font-semibold leading-tight text-white">{title.trim() || 'Ohne Titel'}</p>
-        <ol className="mt-4 flex flex-col gap-1.5">
-          <li className="text-[12.5px] text-white/70">{n++}. Begrüßung mit dem Maskottchen</li>
-          {SECTIONS.filter((s) => sections.includes(s.key)).flatMap((s) => PAGES[s.key].map((page) => (
-            <li key={`${s.key}-${page}`} className="flex items-center gap-2 text-[12.5px] text-white/85">
-              <s.icon size={12} strokeWidth={1.8} className="shrink-0 text-white/50" />
-              {n++}. {page}
-            </li>
-          )))}
-          <li className="text-[12.5px] text-white/70">{n++}. Zusammenfassung zum Teilen</li>
-        </ol>
-        <p className="mt-4 text-[11.5px] leading-snug text-white/50">
-          Seiten ohne Daten (z. B. keine Noten im Zeitraum, POKYH-Zeit ohne Einwilligung) werden übersprungen. Die Zahlen sieht nur der Schüler selbst.
-        </p>
+      <div style={{ background: '#1b1640', clipPath: PIXEL_CORNERS }}>
+        <div className="p-5">
+          <p className="text-[12px]" style={{ color: '#a9a3d9' }}>{from && to ? `${dayText(from)} – ${dayText(to)}` : 'Zeitraum fehlt'}</p>
+          <p className="mt-1 text-[19px] font-semibold leading-tight" style={{ color: '#ffd166' }}>{title.trim() || 'Ohne Titel'}</p>
+          <ol className="mt-4 flex flex-col gap-1.5">
+            <li className="text-[12.5px]" style={{ color: '#cfc9ff' }}>{n++}. Begrüßung mit dem Maskottchen</li>
+            {SECTIONS.filter((s) => sections.includes(s.key)).flatMap((s) => PAGES[s.key].map((page) => (
+              <li key={`${s.key}-${page}`} className="flex items-center gap-2 text-[12.5px]" style={{ color: '#e9e6ff' }}>
+                <s.icon size={12} strokeWidth={1.8} className="shrink-0" style={{ color: '#8f88c9' }} />
+                {n++}. {page}
+              </li>
+            )))}
+            <li className="text-[12.5px]" style={{ color: '#cfc9ff' }}>{n++}. Karte zum Teilen: 5 Designs, Pose und Zahlen wählbar, als PNG oder geteilt mit Link</li>
+          </ol>
+          <p className="mt-4 text-[11.5px] leading-snug" style={{ color: '#8f88c9' }}>
+            Seiten ohne Daten (z. B. keine Noten im Zeitraum, POKYH-Zeit ohne Einwilligung) werden übersprungen. Die Zahlen sieht nur der Schüler selbst.
+          </p>
+        </div>
+        <div style={{ height: 6, background: '#3d3488' }} />
+        <div style={{ height: 18, background: '#2c2566' }} />
       </div>
     </div>
   );

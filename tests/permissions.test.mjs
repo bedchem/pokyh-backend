@@ -103,3 +103,18 @@ test('presets: school presets hold school permissions only; the catalog is compl
   assert.equal(presetFor(GLOBAL_SCOPE, ALL_PERMISSIONS), 'global_admin');
   assert.equal(presetFor(A, ['users.view']), 'custom');
 });
+
+test('rights added later reach the grants that would have held them, once', async () => {
+  const { PERMISSION_UPGRADES, upgradeGrant } = await loadTs('src/security/permissionUpgrades.ts');
+  const recaps = PERMISSION_UPGRADES.find((u) => u.id === 'admin-grants-recaps-v1');
+  // A Global-Admin made before recaps existed: every right then, the new ones now.
+  const before = ALL_PERMISSIONS.filter((p) => !p.startsWith('recaps.'));
+  const upgraded = upgradeGrant({ scope: GLOBAL_SCOPE, preset: 'global_admin', permissions: before }, recaps);
+  assert.deepEqual([...upgraded].sort(), [...ALL_PERMISSIONS].sort());
+  // Someone who manages popups manages recaps; who only sees popups sees recaps.
+  assert.deepEqual(upgradeGrant({ scope: A, preset: 'custom', permissions: ['popups.view', 'popups.manage'] }, recaps), ['popups.view', 'popups.manage', 'recaps.view', 'recaps.manage']);
+  assert.deepEqual(upgradeGrant({ scope: A, preset: 'viewer', permissions: ['dashboard.view', 'popups.view'] }, recaps), ['dashboard.view', 'popups.view', 'recaps.view']);
+  // Nothing to do: unrelated grants, grants that already have them.
+  assert.equal(upgradeGrant({ scope: A, preset: 'moderator', permissions: ['comments.view'] }, recaps), null);
+  assert.equal(upgradeGrant({ scope: A, preset: 'custom', permissions: ['popups.view', 'recaps.view'] }, recaps), null);
+});
