@@ -40,6 +40,8 @@ import { isSameOrigin, withWwwOriginAlias } from './utils/cors';
 import { loadSessionRevocations, loadTokenRevocations } from './utils/revokedTokens';
 import { cleanupSessions } from './services/sessions';
 import { cleanupQrLogins } from './services/qrLogin';
+import { cleanupWebPasskeys } from './services/webPasskeys';
+import { UNLOCK_MAX_AGE_MS } from './webuntis/session';
 import { mayRunExclusiveJob, ownsClusterWork } from './cluster/hooks';
 import { CLUSTER_PATH } from './cluster/protocol';
 import { createClusterRouter } from './cluster/router';
@@ -312,6 +314,9 @@ async function cleanupExpiredSessions() {
   // login history older than LOGIN_HISTORY_DAYS (services/sessions.ts).
   const { sessions, logins } = await cleanupSessions();
   if (sessions > 0 || logins > 0) logger.info(`Session cleanup: ${sessions} device sessions and ${logins} login history entries deleted`);
+  // Sign-ins with the device lock unused for as long as their cookie lives (services/webPasskeys.ts).
+  const passkeys = await cleanupWebPasskeys(UNLOCK_MAX_AGE_MS);
+  if (passkeys > 0) logger.info(`Session cleanup: ${passkeys} unused device-lock sign-ins deleted`);
 }
 
 // QR sign-ins (services/qrLogin.ts) run out after two minutes. One the app

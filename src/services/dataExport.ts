@@ -25,7 +25,7 @@ export async function exportAccountData(stableUid: string) {
     school, admin, memberships, todos, archivedTodos, reminders, comments, dishRatings, dishComments,
     push, consent, bellMarks, accountDays, usageSessions, webVisits, requestLogs, pageLogs,
     archivedUsers, archivedActivity, popups, recapViews, learnProfile, learnEnrollments, learnCompletions,
-    learnAttempts, learnReviews, learnEntries, learnActivity, learnTeams, sessions, logins,
+    learnAttempts, learnReviews, learnEntries, learnActivity, learnTeams, sessions, logins, webPasskeys,
   ] = await Promise.all([
     user.schoolId ? prisma.school.findUnique({ where: { id: user.schoolId }, select: { name: true, webuntisSchool: true } }) : null,
     prisma.admin.findUnique({ where: { stableUid } }),
@@ -58,6 +58,7 @@ export async function exportAccountData(stableUid: string) {
     prisma.learnTeamMember.findMany({ where: { stableUid } }),
     listSessions(stableUid),
     loginHistory(stableUid, 1000),
+    prisma.webPasskey.findMany({ where: { stableUid }, select: { rpId: true, createdAt: true, lastUsedAt: true }, orderBy: { createdAt: 'asc' } }),
   ]);
 
   return {
@@ -86,6 +87,8 @@ export async function exportAccountData(stableUid: string) {
     signIn: {
       devices: sessions,
       loginHistory: logins,
+      // Sign-in with the device's own lock: where it was set up and used (the key itself stays on the device).
+      deviceLock: webPasskeys.map((p) => ({ address: p.rpId, createdAt: iso(p.createdAt), lastUsedAt: iso(p.lastUsedAt) })),
     },
     privacy: consent,
     classes: memberships.map((m) => ({ classId: m.classId, className: m.class.name, role: m.role, joinedAt: iso(m.joinedAt) })),

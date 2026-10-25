@@ -189,7 +189,7 @@ export interface AdminSessionsResponse {
 export interface AdminLoginEvent {
   id: string;
   at: string;
-  method: 'webuntis' | 'office' | 'local' | 'register' | 'qr';
+  method: 'webuntis' | 'office' | 'local' | 'register' | 'qr' | 'passkey';
   client: SessionClient;
   label: string;
   ip: string | null;

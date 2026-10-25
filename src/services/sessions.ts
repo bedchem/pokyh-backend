@@ -226,20 +226,33 @@ export async function revokeSessionIds(ids: string[]): Promise<number> {
   return count;
 }
 
+// A device signed out from elsewhere (the account's device list, an admin)
+// can no longer sign in again with its own lock either (services/webPasskeys.ts);
+// one that signs itself out (endSessionOfToken) keeps it.
+async function forgetDeviceUnlocks(rows: { stableUid: string; deviceId: string | null }[]): Promise<void> {
+  const devices = rows.filter((row): row is { stableUid: string; deviceId: string } => row.deviceId !== null);
+  if (devices.length === 0) return;
+  await prisma.webPasskey.deleteMany({ where: { OR: devices.map(({ stableUid, deviceId }) => ({ stableUid, deviceId })) } });
+}
+
 /** Signs out one device of the account; false when it is not one of its signed-in devices. */
 export async function revokeSession(stableUid: string, sid: string): Promise<boolean> {
-  const row = await prisma.refreshToken.findFirst({ where: { id: sid, stableUid, revokedAt: null }, select: { id: true } });
+  const row = await prisma.refreshToken.findFirst({ where: { id: sid, stableUid, revokedAt: null }, select: { id: true, stableUid: true, deviceId: true } });
   if (!row) return false;
-  return (await revokeSessionIds([row.id])) > 0;
+  const revoked = (await revokeSessionIds([row.id])) > 0;
+  await forgetDeviceUnlocks([row]);
+  return revoked;
 }
 
 /** Signs out every device of the account but `keepSid` (none kept when it is null). */
 export async function revokeSessions(stableUid: string, keepSid: string | null = null): Promise<number> {
   const rows = await prisma.refreshToken.findMany({
     where: { stableUid, revokedAt: null, ...(keepSid ? { id: { not: keepSid } } : {}) },
-    select: { id: true },
+    select: { id: true, stableUid: true, deviceId: true },
   });
-  return revokeSessionIds(rows.map((row) => row.id));
+  const count = await revokeSessionIds(rows.map((row) => row.id));
+  await forgetDeviceUnlocks(rows);
+  return count;
 }
 
 /** The device holding this refresh token signs itself out. */
@@ -291,7 +304,7 @@ export async function listSessions(stableUid: string, currentSid?: string | null
   return [...sessions.filter((s) => s.current), ...sessions.filter((s) => !s.current)];
 }
 
-export type LoginMethod = 'webuntis' | 'office' | 'local' | 'register' | 'qr';
+export type LoginMethod = 'webuntis' | 'office' | 'local' | 'register' | 'qr' | 'passkey';
 
 /**
  * Notes a sign-in by the person in the account's login history (best effort).

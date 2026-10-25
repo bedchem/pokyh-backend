@@ -47,6 +47,7 @@ const METHOD: Record<AdminLoginEvent['method'], string> = {
   local: 'POKYH password',
   register: 'Registered',
   qr: 'POKYH app (QR code)',
+  passkey: 'Device lock (Face ID, fingerprint, PIN)',
 };
 
 function LoginHistory({ stableUid }: { stableUid: string }) {

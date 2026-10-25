@@ -5,6 +5,7 @@ import { deviceIdFrom } from '../services/sessionDevice';
 import { isSessionRevoked } from '../utils/revokedTokens';
 import type { UntisSession } from './client';
 import { seal, unseal } from './crypto';
+import { readUnlock, unlockPayload, type DeviceUnlock } from './deviceUnlock';
 import { matchRenewal, renewalPayload, type SavedSignIn } from './renewal';
 import { defaultSchool, parseSchool, type UntisSchool } from './schools';
 
@@ -21,6 +22,12 @@ import { defaultSchool, parseSchool, type UntisSchool } from './schools';
 //   pokyh_device       a random id of this browser, 400 days: the account's
 //                      device list knows the browser again when it signs in
 //                      anew (services/sessions.ts); outlives signing out
+//   pokyh_unlock       the installed website's sign-in with the device's own
+//                      lock (services/webPasskeys.ts): account, passkey and
+//                      the sign-in as pokyh_renew holds it, sealed, 180 days
+//                      from its last use, sent only to the sign-in address;
+//                      counts only with a fresh answer of its passkey and
+//                      outlives signing out (it is turned off in the settings)
 //
 // The website's own pokyh_user and pokyh_api_token cookies are set by the
 // website from the sign-in's answer.
@@ -37,10 +44,12 @@ export const SESSION_COOKIE = 'pokyh_session';
 export const RENEWAL_COOKIE = 'pokyh_renew';
 export const REFRESH_COOKIE = 'pokyh_api_refresh';
 export const DEVICE_COOKIE = 'pokyh_device';
+export const UNLOCK_COOKIE = 'pokyh_unlock';
 export const RENEWAL_PATH = '/webuntis/login';
 const REFRESH_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 // Browsers cap cookie lifetimes at 400 days.
 const DEVICE_MAX_AGE_MS = 400 * 24 * 60 * 60 * 1000;
+export const UNLOCK_MAX_AGE_MS = 180 * 24 * 60 * 60 * 1000;
 
 function cookieOptions(path = '/'): CookieOptions {
   return { httpOnly: true, secure: config.webuntis.cookieSecure, sameSite: 'strict', path };
@@ -56,6 +65,15 @@ export function sealRenewal(res: Response, signIn: SavedSignIn): void {
   res.cookie(RENEWAL_COOKIE, seal(renewalPayload(signIn)), { ...cookieOptions(RENEWAL_PATH), maxAge: config.webuntis.sessionMaxAgeMs });
 }
 
+/** This device's sign-in with its lock; set again on every use, so its 180 days count from the last one. */
+export function setUnlockCookie(res: Response, unlock: DeviceUnlock): void {
+  res.cookie(UNLOCK_COOKIE, seal(unlockPayload(unlock)), { ...cookieOptions(RENEWAL_PATH), maxAge: UNLOCK_MAX_AGE_MS });
+}
+
+export function clearUnlockCookie(res: Response): void {
+  res.clearCookie(UNLOCK_COOKIE, cookieOptions(RENEWAL_PATH));
+}
+
 export function setRefreshCookie(res: Response, refreshToken: string): void {
   res.cookie(REFRESH_COOKIE, refreshToken, { ...cookieOptions(), maxAge: REFRESH_MAX_AGE_MS });
 }
@@ -64,7 +82,7 @@ export function clearRefreshCookie(res: Response): void {
   res.clearCookie(REFRESH_COOKIE, cookieOptions());
 }
 
-/** Ends the website sign-in in this browser: every cookie above goes. */
+/** Ends the website sign-in in this browser: every cookie above goes but pokyh_device and pokyh_unlock. */
 export function clearSignInCookies(res: Response): void {
   res.clearCookie(SESSION_COOKIE, cookieOptions());
   res.clearCookie(RENEWAL_COOKIE, cookieOptions(RENEWAL_PATH));
@@ -78,6 +96,11 @@ function cookie(req: Request, name: string): string | undefined {
 
 export function readRefreshCookie(req: Request): string | undefined {
   return cookie(req, REFRESH_COOKIE);
+}
+
+/** What this device's unlock cookie holds, or null when it has none. */
+export function readUnlockCookie(req: Request): DeviceUnlock | null {
+  return readUnlock(unseal(cookie(req, UNLOCK_COOKIE)), parseSchool);
 }
 
 /** This browser's device id from its device cookie; a new one (and the cookie) when it has none. */

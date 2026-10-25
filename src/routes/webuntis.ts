@@ -2,14 +2,30 @@ import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { Router, type NextFunction, type Request, type Response } from 'express';
 import rateLimit from 'express-rate-limit';
+import type { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simplewebauthn/server';
 import { prisma } from '../db';
 import { config } from '../config';
 import { AppError } from '../utils/errors';
+import { withWwwOriginAlias } from '../utils/cors';
 import { logger } from '../utils/logger';
 import { apiKeyMiddleware } from '../middleware/apiKey';
+import { requireAuth } from '../middleware/auth';
 import { clientIp } from '../middleware/requestLogger';
 import { completeWebUntisLogin, loginSchool, signInLocalAccount } from './auth';
 import { finishQrLogin, pollQrLogin, qrText, startQrLogin } from '../services/qrLogin';
+import {
+  devicePasskey,
+  finishPasskeyLogin,
+  finishPasskeySetup,
+  issueCodeTicket,
+  passkeyLoginOptions,
+  passkeySetupOptions,
+  readCodeTicket,
+  removePasskey,
+  type RelyingParty,
+} from '../services/webPasskeys';
+import { deviceFromRequest } from '../services/sessionDevice';
+import { websiteRelyingParty } from '../webuntis/deviceUnlock';
 import {
   bearerToken,
   cookieHeader,
@@ -61,16 +77,20 @@ import { fetchMessagePermissions, htmlToText, plainTextToHtml } from '../webunti
 import { defaultSchool, parseSchool, schoolBase, schoolCookieValue, schoolLoginName, schoolLoginOptions, searchSchools, type UntisSchool } from '../webuntis/schools';
 import {
   clearSignInCookies,
+  clearUnlockCookie,
   openRenewal,
   readRefreshCookie,
   readSession,
+  readUnlockCookie,
   requireUntisSession,
   sealRenewal,
   setRefreshCookie,
   setSessionCookie,
+  setUnlockCookie,
   webDeviceId,
+  type SavedSignIn,
 } from '../webuntis/session';
-import { SessionRevokedError, signInContext, type LoginMethod } from '../services/sessions';
+import { CLIENT_HEADER, SessionRevokedError, signInContext, type LoginMethod } from '../services/sessions';
 import { isSessionRevoked } from '../utils/revokedTokens';
 
 // WebUntis for the website. The website is a static page: it signs in here,
@@ -656,10 +676,15 @@ async function signInWebsite(req: Request, res: Response, input: WebsiteSignIn):
     setSessionCookie(res, sessionData);
     // Renewed later with the password (or app key); a taken-over session
     // without one simply ends with its WebUntis session.
-    if ('key' in credential ? credential.key : credential.password) sealRenewal(res, { username, ...credential, school });
+    const hasSecret = Boolean('key' in credential ? credential.key : credential.password);
+    if (hasSecret) sealRenewal(res, { username, ...credential, school });
     if (pokyh) {
       setRefreshCookie(res, pokyh.refreshToken);
       if (!renewal) res.locals.signedIn = { stableUid: pokyh.user.stableUid, username: pokyh.user.username };
+      // This device's sign-in with its own lock follows what WebUntis just
+      // accepted: a changed password, after the new one was typed once.
+      const unlock = hasSecret && !input.adopted ? readUnlockCookie(req) : null;
+      if (unlock && unlock.uid === pokyh.user.stableUid) setUnlockCookie(res, { ...unlock, signIn: { username, ...credential, school } });
     }
     res.json({
       ok: true,
@@ -907,6 +932,223 @@ router.post('/qr/poll', qrPollLimiter, async (req: Request, res: Response) => {
   res.json = json;
   const wantsCode = answered?.code === 'two_factor_required' || answered?.code === 'two_factor_invalid';
   if (res.statusCode < 300 || !wantsCode) await finishQrLogin(state.id);
+});
+
+// ─── Signing in with the device's own lock (services/webPasskeys.ts) ──────────
+//
+// Only in the installed website (X-Pokyh-Client: pwa): Face ID, Touch ID, a
+// fingerprint or the device's PIN instead of the password. Turned on in the
+// settings, signed in: the device makes a passkey and keeps the sign-in of
+// the moment (the renewal cookie's) in its unlock cookie. On the sign-in page
+// it answers its passkey, and the website signs in with what the cookie holds,
+// through the very steps of the password sign-in (two-factor sign-in
+// included: then the code follows with a ticket, without a second Face ID).
+//
+//   GET    /login/passkey                which account this device's passkey is for
+//   POST   /login/passkey/options        a challenge for it
+//   POST   /login/passkey                its answer, or the ticket and the code → signed in
+//   POST   /login/passkey/setup/options  turning it on: a challenge for a new passkey
+//   POST   /login/passkey/setup          the new passkey
+//   DELETE /login/passkey                turning it off on this device
+//
+// Under /login, so the renewal and unlock cookies (sent to the sign-in
+// address only) come along.
+
+const passkeyLimiter = rateLimit({
+  windowMs: 5 * 60_000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Zu viele Anfragen.', code: 'rate_limited' },
+});
+
+const passkeySetupLimiter = rateLimit({
+  windowMs: 15 * 60_000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Zu viele Versuche. Bitte warte 15 Minuten.', code: 'rate_limited' },
+});
+
+const NO_PASSKEY = { error: 'Auf diesem Gerät ist die Anmeldung mit der Gerätesperre nicht eingerichtet.', code: 'none' };
+const PASSKEY_STALE = 'WebUntis hat das gespeicherte Passwort nicht angenommen. Melde dich einmal mit deinem Passwort an, dann geht es wieder mit der Gerätesperre.';
+
+function installedWebsite(req: Request, res: Response): boolean {
+  if (deviceFromRequest(req.headers['user-agent'], req.headers[CLIENT_HEADER]).client === 'pwa') return true;
+  res.status(403).json({ error: 'Das geht nur in der App auf dem Startbildschirm.', code: 'pwa_only' });
+  return false;
+}
+
+// The website's own addresses (CORS_ORIGIN, with their www/apex twin).
+const websiteOrigins = config.corsOrigin.split(',').map((o) => o.trim()).filter(Boolean).flatMap(withWwwOriginAlias);
+
+// The page asking: its Origin, or — behind `next dev`'s proxy, which leaves
+// the Origin out — the one it names. Either must be one of the website's own;
+// the passkey's answer carries the real one, which is checked against it.
+function relyingParty(req: Request, res: Response): RelyingParty | null {
+  const named = (req.body as { origin?: unknown } | undefined)?.origin;
+  const rp = websiteRelyingParty(req.get('origin') ?? named, websiteOrigins, config.isDev);
+  if (!rp) res.status(400).json({ error: 'Von dieser Adresse aus geht das nicht.', code: 'origin_invalid' });
+  return rp;
+}
+
+// Who turns it on: the signed-in account, and for a WebUntis account the
+// sign-in of its current session (the renewal cookie), which the device keeps.
+async function passkeyAccount(req: Request, res: Response): Promise<{ stableUid: string; username: string; signIn?: SavedSignIn } | null> {
+  const user = await prisma.user.findUnique({ where: { stableUid: req.user!.stableUid }, select: { stableUid: true, username: true, isUntisUser: true } });
+  if (!user) {
+    res.status(401).json({ error: 'User not found' });
+    return null;
+  }
+  if (!user.isUntisUser) return { stableUid: user.stableUid, username: user.username };
+  const signIn = openRenewal(req);
+  if (!signIn || signIn.username !== user.username) {
+    res.status(409).json({ error: 'Melde dich einmal ab und mit deinem Passwort wieder an, dann lässt es sich einschalten.', code: 'password_needed' });
+    return null;
+  }
+  return { stableUid: user.stableUid, username: user.username, signIn };
+}
+
+router.get('/login/passkey', passkeyLimiter, async (req: Request, res: Response) => {
+  const unlock = readUnlockCookie(req);
+  const found = await devicePasskey(unlock);
+  if (!found) {
+    if (unlock) clearUnlockCookie(res);
+    res.status(404).json(NO_PASSKEY);
+    return;
+  }
+  res.json({ username: found.username });
+});
+
+router.post('/login/passkey/options', passkeyLimiter, async (req: Request, res: Response) => {
+  if (!installedWebsite(req, res)) return;
+  const rp = relyingParty(req, res);
+  if (!rp) return;
+  const unlock = readUnlockCookie(req);
+  const challenge = unlock ? await passkeyLoginOptions(unlock, rp) : null;
+  if (!challenge) {
+    if (unlock) clearUnlockCookie(res);
+    res.status(404).json(NO_PASSKEY);
+    return;
+  }
+  res.json(challenge);
+});
+
+router.post('/login/passkey', loginByAddress, async (req: Request, res: Response) => {
+  if (!installedWebsite(req, res)) return;
+  const unlock = readUnlockCookie(req);
+  if (!unlock) {
+    res.status(404).json(NO_PASSKEY);
+    return;
+  }
+  const body = (req.body && typeof req.body === 'object' ? req.body : {}) as { challengeToken?: unknown; response?: unknown; ticket?: unknown; token?: unknown };
+
+  // The passkey's answer, or — WebUntis asked for the authenticator app's
+  // code after it — the ticket that says it was given, with the code.
+  let token: string | undefined;
+  const ticket = typeof body.ticket === 'string' ? body.ticket : undefined;
+  if (ticket) {
+    const code = twoFactorCode(body.token);
+    if (!code) {
+      res.status(400).json({ error: 'Der Code hat 6 Ziffern.', code: 'two_factor_invalid', ticket });
+      return;
+    }
+    readCodeTicket(ticket, unlock);
+    token = code;
+  } else {
+    await finishPasskeyLogin(unlock, body.challengeToken, body.response as AuthenticationResponseJSON);
+  }
+
+  const user = await prisma.user.findUnique({ where: { stableUid: unlock.uid } });
+  if (!user) {
+    await removePasskey(unlock);
+    clearUnlockCookie(res);
+    res.status(404).json(NO_PASSKEY);
+    return;
+  }
+
+  // A POKYH-only account: its POKYH session, as after its password.
+  if (!user.isUntisUser) {
+    const result = await signInLocalAccount(user, signInContext(req, { deviceId: webDeviceId(req, res), currentToken: readRefreshCookie(req) }), 'passkey');
+    setRefreshCookie(res, result.refreshToken);
+    setUnlockCookie(res, unlock);
+    res.locals.signedIn = { stableUid: result.user.stableUid, username: result.user.username };
+    res.json({
+      ok: true,
+      username: result.user.username,
+      token: result.token,
+      user: { username: result.user.username, studentId: 0, klasseId: 0, klasseName: '', isUntisUser: false, loginAt: Date.now() },
+    });
+    return;
+  }
+
+  // WebUntis refused the saved password before (it was changed): only the
+  // password itself helps, which then saves the new one (signInWebsite).
+  const signIn = unlock.signIn;
+  if (!signIn || signIn.username !== user.username) {
+    res.status(409).json({ error: PASSKEY_STALE, code: 'passkey_stale', username: user.username });
+    return;
+  }
+
+  // The password sign-in, with what the cookie holds. Its answer gets a
+  // ticket when WebUntis wants the code (the same one again for a wrong code,
+  // so its attempts add up); a refused password is not tried again, which
+  // would count towards WebUntis' lock-out.
+  const send = res.json.bind(res);
+  res.json = ((payload: { code?: unknown } & Record<string, unknown>) => {
+    if (payload?.code === 'two_factor_required' || payload?.code === 'two_factor_invalid') {
+      return send({ ...payload, ticket: ticket ?? issueCodeTicket(unlock) });
+    }
+    if (payload?.code === 'bad_credentials') {
+      setUnlockCookie(res, { uid: unlock.uid, cid: unlock.cid });
+      res.status(409);
+      return send({ error: PASSKEY_STALE, code: 'passkey_stale', username: user.username });
+    }
+    return send(payload);
+  }) as Response['json'];
+  try {
+    await signInWebsite(req, res, {
+      username: signIn.username,
+      credential: signIn.key !== undefined ? { key: signIn.key } : { password: signIn.password ?? '' },
+      token,
+      school: signIn.school,
+      renewal: false,
+      renewing: false,
+      method: 'passkey',
+    });
+  } finally {
+    res.json = send;
+  }
+});
+
+router.post('/login/passkey/setup/options', passkeySetupLimiter, requireAuth, async (req: Request, res: Response) => {
+  if (!installedWebsite(req, res)) return;
+  const rp = relyingParty(req, res);
+  if (!rp) return;
+  const account = await passkeyAccount(req, res);
+  if (!account) return;
+  res.json(await passkeySetupOptions(account, rp, webDeviceId(req, res)));
+});
+
+router.post('/login/passkey/setup', passkeySetupLimiter, requireAuth, async (req: Request, res: Response) => {
+  if (!installedWebsite(req, res)) return;
+  const account = await passkeyAccount(req, res);
+  if (!account) return;
+  const body = (req.body && typeof req.body === 'object' ? req.body : {}) as { challengeToken?: unknown; response?: unknown };
+  const cid = await finishPasskeySetup(account.stableUid, body.challengeToken, body.response as RegistrationResponseJSON, webDeviceId(req, res));
+  // A device keeps one: the passkey it had before (of any account) goes.
+  const previous = readUnlockCookie(req);
+  if (previous && previous.cid !== cid) await removePasskey(previous);
+  setUnlockCookie(res, { uid: account.stableUid, cid, ...(account.signIn ? { signIn: account.signIn } : {}) });
+  logger.info('Sign-in with the device lock turned on', { action: 'web_passkey_added', username: account.username });
+  res.json({ ok: true, username: account.username });
+});
+
+router.delete('/login/passkey', passkeyLimiter, async (req: Request, res: Response) => {
+  const unlock = readUnlockCookie(req);
+  if (unlock) await removePasskey(unlock);
+  clearUnlockCookie(res);
+  res.json({ ok: true });
 });
 
 // ─── Everything below acts with the person's WebUntis session ────────────────

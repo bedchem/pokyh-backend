@@ -60,6 +60,7 @@ model User {
   recapTargets            RecapTargetUser[]
   recapViews              RecapView[]
   bellMarks               BellMark[]
+  webPasskeys             WebPasskey[]
 
   @@index([schoolId, createdAt])
   @@index([schoolId, role])
@@ -424,7 +425,8 @@ model LoginEvent {
   id        String   @id @default(uuid()) @db.VarChar(36)
   stableUid String   @map("stable_uid")
   createdAt DateTime @default(now()) @map("created_at")
-  // "webuntis" (password), "office" (app key), "local" (POKYH account), "register"
+  // "webuntis" (password), "office" (app key), "local" (POKYH account), "register",
+  // "qr" (the POKYH app), "passkey" (the device's own lock, services/webPasskeys.ts)
   method    String   @default("webuntis") @db.VarChar(12)
   // The device session the sign-in opened (refresh_tokens.id); it may be gone.
   sessionId String?  @map("session_id") @db.VarChar(36)
@@ -472,6 +474,33 @@ model QrLogin {
 
   @@index([expiresAt])
   @@map("qr_logins")
+}
+
+// Signing in to the installed website with the device's own lock (Face ID,
+// fingerprint, PIN; services/webPasskeys.ts): the public part of the passkey.
+// The sign-in it unlocks lives sealed on that device only (cookie
+// pokyh_unlock), so a passkey alone opens nothing.
+model WebPasskey {
+  id           String    @id @default(uuid()) @db.VarChar(36)
+  stableUid    String    @map("stable_uid")
+  // WebAuthn credential id, base64url.
+  credentialId String    @unique @map("credential_id") @db.VarChar(512)
+  // COSE public key, base64url.
+  publicKey    String    @map("public_key") @db.Text
+  counter      BigInt    @default(0)
+  transports   String    @default("") @db.VarChar(255)
+  // The domain the passkey was made for; it only works under that domain.
+  rpId         String    @map("rp_id") @db.VarChar(255)
+  // The browser's pokyh_device id: signing that device out from elsewhere
+  // removes its passkey too.
+  deviceId     String?   @map("device_id") @db.VarChar(64)
+  createdAt    DateTime  @default(now()) @map("created_at")
+  lastUsedAt   DateTime? @map("last_used_at")
+
+  user User @relation(fields: [stableUid], references: [stableUid], onDelete: Cascade)
+
+  @@index([stableUid, deviceId])
+  @@map("web_passkeys")
 }
 
 model KnownSubject {
