@@ -115,7 +115,8 @@ export async function finishQrLogin(id: string): Promise<void> {
   await prisma.qrLogin.updateMany({ where: { id }, data: { status: 'done', credential: null } });
 }
 
+/** Codes that ran out, with whatever they hold (index.ts runs this every minute). */
 export async function cleanupQrLogins(): Promise<number> {
-  const { count } = await prisma.qrLogin.deleteMany({ where: { expiresAt: { lt: new Date(Date.now() - 60_000) } } });
+  const { count } = await prisma.qrLogin.deleteMany({ where: { expiresAt: { lt: new Date() } } });
   return count;
 }

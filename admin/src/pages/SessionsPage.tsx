@@ -46,6 +46,7 @@ const METHOD: Record<AdminLoginEvent['method'], string> = {
   office: 'Office 365 key',
   local: 'POKYH password',
   register: 'Registered',
+  qr: 'POKYH app (QR code)',
 };
 
 function LoginHistory({ stableUid }: { stableUid: string }) {

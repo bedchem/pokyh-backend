@@ -311,9 +311,19 @@ async function cleanupExpiredSessions() {
   // Device sessions unused (or signed out) for SESSION_IDLE_DAYS, and the
   // login history older than LOGIN_HISTORY_DAYS (services/sessions.ts).
   const { sessions, logins } = await cleanupSessions();
-  // QR sign-ins that ran out (services/qrLogin.ts).
+  if (sessions > 0 || logins > 0) logger.info(`Session cleanup: ${sessions} device sessions and ${logins} login history entries deleted`);
+}
+
+// QR sign-ins (services/qrLogin.ts) run out after two minutes. One the app
+// approved holds the sign-in it handed over, sealed, until the website used
+// it; an unused one goes within a minute of running out, not with the hourly
+// cleanup (the privacy policy says at most three minutes after the code).
+const QR_CLEANUP_INTERVAL = 60_000;
+
+async function cleanupExpiredQrLogins() {
+  if (!ownsClusterWork('job:session-cleanup')) return;
   const qr = await cleanupQrLogins();
-  if (sessions > 0 || logins > 0 || qr > 0) logger.info(`Session cleanup: ${sessions} device sessions, ${logins} login history entries and ${qr} QR sign-ins deleted`);
+  if (qr > 0) logger.info(`QR sign-in cleanup: ${qr} deleted`);
 }
 
 async function cleanupExpiredRequestLogs() {
@@ -494,6 +504,7 @@ function startBackgroundJobs() {
   // Session cleanup: deferred first run + interval.
   setTimeout(() => void cleanupExpiredSessions().catch(() => {}), 5000);
   setInterval(() => void cleanupExpiredSessions().catch(() => {}), SESSION_CLEANUP_INTERVAL);
+  setInterval(() => void cleanupExpiredQrLogins().catch(() => {}), QR_CLEANUP_INTERVAL);
 
   // Request/audit correlation is valuable for support and security, but these
   // records contain technical personal data. Remove expired rows on a bounded,

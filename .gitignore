@@ -32,6 +32,10 @@ prisma/migrations/
 *.sql.gz
 *.dump
 pokyh-export-*.json
+# Unfinished dumps, and the server's note that its database holds data (services/dbHeal.ts):
+# both written into backups/ when the API runs from the repository.
+*.sql.gz.part
+backups/database-state.json
 
 # ─── Cloudflare tunnel credentials (contain secrets) ──────────────────────────
 ~/.cloudflared/*.json
