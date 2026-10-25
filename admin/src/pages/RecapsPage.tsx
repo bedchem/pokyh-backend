@@ -318,6 +318,13 @@ export function RecapsPage() {
                     </button>
                   ))}
                 </div>
+                {form.periodFrom && form.periodFrom < `${schoolYearOf()}-08-01` && form.sections.includes('pokyh') && (
+                  <p className="text-[12px] leading-snug" style={{ color: 'var(--amber-deep)' }}>
+                    Der Zeitraum beginnt vor dem laufenden Schuljahr: POKYH-Zahlen (Tage in POKYH, Uhrzeit, Rang) kommen dafür aus dem
+                    Jahresarchiv vom 1. August. Admin- und Learn-Konten haben dort erst ab der nächsten Umstellung einen Eintrag; fehlt er,
+                    zeigt die Story eine Seite „keine Nutzungsdaten“. Die WebUntis-Zahlen betrifft das nicht.
+                  </p>
+                )}
               </div>
 
               <div className="flex flex-col gap-3 rounded-[14px] p-4" style={{ background: '#141416' }}>
@@ -488,7 +495,7 @@ const PAGES: Record<RecapSection, string[]> = {
   grades: ['Noten & Durchschnitt', 'Bestes Fach & beste Note'],
   exams: ['Prüfungen & Hausaufgaben'],
   classreg: ['Klassenbuch'],
-  pokyh: ['Tage in POKYH & Serie', 'Wann du online bist', 'Was du in POKYH gemacht hast', '„Top x %“ deiner Schule'],
+  pokyh: ['Tage in POKYH & Serie', 'Wann du online bist', 'Was du in POKYH gemacht hast', '„Top x %“ deiner Schule (oder: keine Nutzungsdaten aus dem Zeitraum)'],
 };
 
 // The outline in the story's own look (pixel art, solid colours): a night
@@ -512,7 +519,7 @@ function StoryOutline({ title, from, to, sections }: { title: string; from: stri
                 {n++}. {page}
               </li>
             )))}
-            <li className="text-[12.5px]" style={{ color: '#cfc9ff' }}>{n++}. Karte zum Teilen: 5 Designs, Pose und Zahlen wählbar, als PNG oder geteilt mit Link</li>
+            <li className="text-[12.5px]" style={{ color: '#cfc9ff' }}>{n++}. Poster zum Teilen: Pose, Farbe und Zahlen wählbar, als PNG oder geteilt mit Link</li>
           </ol>
           <p className="mt-4 text-[11.5px] leading-snug" style={{ color: '#8f88c9' }}>
             Seiten ohne Daten (z. B. keine Noten im Zeitraum, POKYH-Zeit ohne Einwilligung) werden übersprungen. Die Zahlen sieht nur der Schüler selbst.

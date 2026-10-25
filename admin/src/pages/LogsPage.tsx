@@ -465,7 +465,7 @@ function ByUserTab({ initialUsername }: { initialUsername?: string }) {
           ) : topUsers.length === 0 ? (
             <p className="px-4 py-8 text-center text-[13px]" style={{ color: 'rgb(var(--ink-rgb) / 0.54)' }}>Noch keine Daten</p>
           ) : (
-            <div className="divide-y" style={{ borderColor: 'rgb(var(--ink-rgb) / calc(0.054 * var(--veil)))' }}>
+            <div className="stack">
               {topUsers.map((u, idx) => (
                 <button key={u.username} className="w-full flex items-center gap-4 px-4 py-3 transition-colors text-left"
                   style={{ background: 'transparent' }}
@@ -560,7 +560,7 @@ function AuditLogTab() {
             <p className="text-[13px]" style={{ color: 'rgb(var(--ink-rgb) / 0.54)' }}>Noch keine Admin-Aktionen</p>
           </div>
         ) : (
-          <div className="divide-y" style={{ borderColor: 'rgb(var(--ink-rgb) / calc(0.054 * var(--veil)))' }}>
+          <div className="stack">
             {entries.map((entry, idx) => {
               const action = String(entry['action'] ?? '');
               const label = ACTION_LABELS[action] ?? action;

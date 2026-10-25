@@ -85,13 +85,15 @@ export async function performRollover(
 
   const usernameByUid = new Map(users.map((u) => [u.stableUid, u.username]));
 
-  // Each archived account's year in figures (active days, sign-ins and, with
+  // Every account's year in figures (active days, sign-ins and, with
   // consent, foreground time), from the first day of the closed school year
-  // to the day before the next one.
+  // to the day before the next one. Also of the accounts that stay (admins,
+  // Learn): their rows of the year are deleted after the rollover just the
+  // same, and a recap of the year reads them from here.
   const pad = (n: number) => String(n).padStart(2, '0');
   const yearFrom = `${startYear}-${pad(config.schoolYearRolloverMonth)}-${pad(config.schoolYearRolloverDay)}`;
   const yearTo = addDays(`${startYear + 1}-${pad(config.schoolYearRolloverMonth)}-${pad(config.schoolYearRolloverDay)}`, -1);
-  const activity = await yearSummaries(usersToArchive.map((u) => u.stableUid), yearFrom, yearTo);
+  const activity = await yearSummaries(users.map((u) => u.stableUid), yearFrom, yearTo);
 
   // ── Atomic snapshot + delete ──────────────────────────────────────────────
   await prisma.$transaction(async (tx) => {
@@ -121,7 +123,7 @@ export async function performRollover(
       });
     }
 
-    // 1b. Their activity of the year (services/accountActivity.ts).
+    // 1b. Every account's activity of the year (services/accountActivity.ts).
     if (activity.size > 0) {
       await tx.archivedActivity.createMany({
         data: [...activity.entries()].map(([stableUid, a]) => ({

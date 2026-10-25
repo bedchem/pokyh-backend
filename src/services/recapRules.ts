@@ -92,3 +92,68 @@ export function topPercent(mine: number, others: readonly number[]): number | nu
   const atLeast = 1 + others.filter((v) => v >= mine).length;
   return Math.max(1, Math.ceil((atLeast / group) * 100));
 }
+
+// ── A closed school year, from the archive (archived_activity) ──────────────
+
+export interface ArchiveSummary {
+  from?: unknown;
+  to?: unknown;
+  hours?: unknown;
+  platforms?: unknown;
+  days?: unknown;
+}
+
+export type ArchivedDay = [string, number, number];
+
+export function archivedDaysOf(summary: ArchiveSummary): ArchivedDay[] {
+  if (!Array.isArray(summary.days)) return [];
+  return summary.days.flatMap((entry): ArchivedDay[] => (
+    Array.isArray(entry) && typeof entry[0] === 'string' ? [[entry[0], Number(entry[1]) || 0, Number(entry[2]) || 0]] : []
+  ));
+}
+
+export function parseArchive(json: string): ArchiveSummary | null {
+  try {
+    const parsed = JSON.parse(json) as unknown;
+    return parsed && typeof parsed === 'object' ? (parsed as ArchiveSummary) : null;
+  } catch {
+    return null;
+  }
+}
+
+export interface ArchivePart {
+  days: ArchivedDay[];
+  /** Foreground seconds by starting hour, for the part of the archived year in the period. */
+  hours: number[];
+  platforms: { phone: number; desktop: number; app: number; web: number };
+  found: boolean;
+}
+
+/**
+ * What archived years (their summaryJson) hold of a period: the active days
+ * in it — only before `cutoff`, whose live rows are gone, each day once — and
+ * the hours and devices, kept for a year as a whole, taken in the share of
+ * that year's time and days that lies in the period.
+ */
+export function archiveInPeriod(jsons: readonly string[], from: string, to: string, cutoff: string): ArchivePart {
+  const part: ArchivePart = { days: [], hours: Array.from({ length: 24 }, () => 0), platforms: { phone: 0, desktop: 0, app: 0, web: 0 }, found: false };
+  const seen = new Set<string>();
+  for (const json of jsons) {
+    const summary = parseArchive(json);
+    if (!summary) continue;
+    const all = archivedDaysOf(summary);
+    const inside = all.filter(([day]) => day >= from && day <= to && day < cutoff && !seen.has(day));
+    if (inside.length === 0) continue;
+    part.found = true;
+    for (const d of inside) { seen.add(d[0]); part.days.push(d); }
+    const totalSeconds = all.reduce((a, d) => a + d[2], 0);
+    const share = totalSeconds > 0 ? inside.reduce((a, d) => a + d[2], 0) / totalSeconds : 0;
+    if (Array.isArray(summary.hours)) {
+      summary.hours.forEach((v, h) => { if (h < 24) part.hours[h]! += Math.round((Number(v) || 0) * share); });
+    }
+    const daysShare = inside.length / all.length;
+    const p = (summary.platforms ?? {}) as Record<string, unknown>;
+    for (const key of ['phone', 'desktop', 'app', 'web'] as const) part.platforms[key] += Math.round((Number(p[key]) || 0) * daysShare);
+  }
+  return part;
+}

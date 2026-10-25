@@ -664,7 +664,9 @@ model ArchivedTodo {
 // An account's year in figures, taken at the rollover from request_account_days
 // and (with consent) usage_sessions — see services/accountActivitySummary.ts:
 // totals, weekdays, hours, platforms and the active days, as JSON. Archived
-// with the other data of the year and deleted with it.
+// with the other data of the year and deleted with it — for every account,
+// also those that stay after the rollover (admins, Learn; from 2026-10), as
+// their rows of the year go just the same. A recap of the year reads it.
 model ArchivedActivity {
   id           String   @id @default(uuid())
   schoolYearId String   @map("school_year_id")

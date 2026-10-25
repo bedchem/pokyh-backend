@@ -100,3 +100,26 @@ test('archived days count as active, with their sign-ins and time', () => {
   assert.equal(s.hours.reduce((a, b) => a + b, 0), 0);
   assert.equal(s.platforms.web, 0);
 });
+
+test('a closed year from the archive: its days in the period, hours and devices in their share', async () => {
+  const { archiveInPeriod } = await loadTs('src/services/recapRules.ts');
+  const year = JSON.stringify({
+    from: '2025-08-01', to: '2026-07-31',
+    hours: Array.from({ length: 24 }, (_, h) => (h === 22 ? 3000 : 0)),
+    platforms: { phone: 4, desktop: 0, app: 4, web: 0 },
+    // [day, sign-ins, seconds]: three days in the school year, one in the summer.
+    days: [['2025-09-02', 1, 600], ['2025-10-10', 0, 1200], ['2026-03-05', 2, 600], ['2026-07-20', 0, 600]],
+  });
+  const part = archiveInPeriod([year], '2025-09-01', '2026-06-30', '2026-08-01');
+  assert.equal(part.found, true);
+  assert.deepEqual(part.days.map((d) => d[0]), ['2025-09-02', '2025-10-10', '2026-03-05']);
+  // 2400 of the year's 3000 seconds lie in the period: 80 % of each hour's time.
+  assert.equal(part.hours[22], 2400);
+  // Three of its four days: three quarters of the device days.
+  assert.equal(part.platforms.phone, 3);
+  // Days whose live rows still exist (from the cutoff on) are not taken twice.
+  assert.equal(archiveInPeriod([year], '2025-09-01', '2026-06-30', '2026-03-01').days.length, 2);
+  // Nothing of it in the period, or no archive: nothing found.
+  assert.equal(archiveInPeriod([year], '2026-09-01', '2027-06-30', '2027-08-01').found, false);
+  assert.equal(archiveInPeriod(['not json'], '2025-09-01', '2026-06-30', '2026-08-01').found, false);
+});

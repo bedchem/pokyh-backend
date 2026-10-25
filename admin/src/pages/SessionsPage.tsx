@@ -307,7 +307,7 @@ export function SessionsPage() {
         ) : filtered.length === 0 ? (
           <Empty icon={MonitorSmartphone}>{query ? 'Nobody matches.' : 'Nobody is signed in.'}</Empty>
         ) : (
-          <ul className="mt-5 divide-y" style={{ borderColor: 'rgb(var(--ink-rgb) / calc(0.054 * var(--veil)))' }}>
+          <ul className="stack mt-5">
             {filtered.map((person) => {
               const open = expanded.has(person.stableUid);
               const kinds = (['app', 'pwa', 'web', 'other'] as SessionClient[])
@@ -358,7 +358,7 @@ export function SessionsPage() {
                   </div>
                   <Collapse open={open}>
                     <div className="pb-5 pl-0 sm:pl-[60px]">
-                      <ul className="divide-y" style={{ borderColor: 'rgb(var(--ink-rgb) / calc(0.054 * var(--veil)))' }}>
+                      <ul className="stack">
                         {person.devices.map((device) => (
                           <DeviceRow
                             key={device.id}
