@@ -197,6 +197,13 @@ app.use(globalLimiter);
 let databaseReady = false;
 let databaseStartupComplete = false;
 
+// robots.txt: the API is no website, crawlers stay out. Answered here, ahead
+// of the API key check below, so search engines get it instead of a 401
+// (Search Console lists a robots.txt it cannot fetch as an error).
+app.get('/robots.txt', (_req, res) => {
+  res.type('text/plain').set('Cache-Control', 'public, max-age=86400').send('User-agent: *\nDisallow: /\n');
+});
+
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
