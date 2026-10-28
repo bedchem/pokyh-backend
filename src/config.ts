@@ -279,6 +279,18 @@ export const config = {
     sessionMaxAgeMs: 4 * 60 * 60 * 1000,
     // The public WebUntis school search behind the sign-in page.
     schoolSearchUrl: strEnv('WEBUNTIS_SCHOOL_SEARCH_URL', 'https://mobile.webuntis.com/ms/schoolquery2'),
+    // The website's sign-in QR code as a link (e.g. https://api.pokyh.com/l/): a phone's own
+    // camera then opens the POKYH app with it (services/qrLogin.ts). Empty: the plain text the
+    // apps' scanners read ("POKYH-LOGIN:…") — keep it empty until every app in use reads links
+    // (Android from 2.1.0; the iOS app needs the same change first).
+    qrLinkBase: strEnv('QR_LINK_BASE', ''),
+    // The Android apps that may open those links (/.well-known/assetlinks.json) and the SHA-256
+    // of the key they are signed with.
+    androidApps: ['dev.plattnericus.project', 'dev.plattnericus.project.debug'],
+    androidCertSha256: strEnv(
+      'ANDROID_CERT_SHA256',
+      '53:3D:92:58:41:E7:AF:90:61:F8:73:4B:3F:C8:43:59:88:E7:D5:54:A7:45:F1:44:03:AB:99:10:92:DA:2B:13',
+    ),
     // Optional: only these schools (WebUntis login names) may sign in.
     schoolAllowlist: strEnv('WEBUNTIS_SCHOOL_ALLOWLIST', '')
       .split(',')

@@ -204,6 +204,54 @@ app.get('/robots.txt', (_req, res) => {
   res.type('text/plain').set('Cache-Control', 'public, max-age=86400').send('User-agent: *\nDisallow: /\n');
 });
 
+// Android App Links: the POKYH app may open https://<this host>/l/<code> — the website's
+// sign-in QR code read with the phone's own camera (QR_LINK_BASE, services/qrLogin.ts).
+// Android fetches this once when the app is installed or updated.
+app.get('/.well-known/assetlinks.json', (_req, res) => {
+  res.set('Cache-Control', 'public, max-age=3600').json(
+    config.webuntis.androidApps.map((pkg) => ({
+      relation: ['delegate_permission/common.handle_all_urls'],
+      target: { namespace: 'android_app', package_name: pkg, sha256_cert_fingerprints: [config.webuntis.androidCertSha256] },
+    })),
+  );
+});
+
+// The same link opened in a browser — no app installed, or Android not (yet) sure the link is
+// the app's: a button that opens the app with it, and how to sign in otherwise.
+app.get('/l/:code', (req, res) => {
+  const code = String(req.params['code'] ?? '');
+  if (!/^[A-Za-z0-9_-]{24,64}$/.test(code)) {
+    res.status(404).type('text/plain').send('Not found');
+    return;
+  }
+  // The Host header is the client's: only a plain host name goes into the page.
+  const rawHost = req.get('host') ?? '';
+  const host = /^[a-z0-9.-]+(:\d{1,5})?$/i.test(rawHost) ? rawHost : 'api.pokyh.com';
+  const openApp = `intent://${host}/l/${code}#Intent;scheme=https;package=${config.webuntis.androidApps[0]};end`;
+  res
+    .set('Cache-Control', 'no-store')
+    .set('Referrer-Policy', 'no-referrer')
+    .type('html')
+    .send(`<!doctype html>
+<html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex"><title>POKYH</title>
+<style>
+:root{color-scheme:light dark;--bg:#F2EEE7;--ink:#1C1A17;--ink2:#625B52;--accent:#6264ED}
+@media (prefers-color-scheme:dark){:root{--bg:#111114;--ink:#F2F2F4;--ink2:#A2A2A8}}
+body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,-apple-system,sans-serif}
+main{max-width:360px;padding:32px 20px;text-align:center}
+h1{font-size:28px;letter-spacing:-.04em;margin:0 0 8px}
+p{color:var(--ink2);margin:0 0 24px}
+a.key{display:inline-block;background:var(--accent);color:#fff;text-decoration:none;font-weight:600;padding:12px 22px;border-radius:14px}
+small{display:block;margin-top:24px;color:var(--ink2)}
+</style></head><body><main>
+<h1>POKYH</h1>
+<p>Am Computer anmelden: öffne diesen Code in der POKYH-App und bestätige dort.</p>
+<a class="key" href="${openApp}">In der POKYH-App öffnen</a>
+<small>Ohne die App: scanne den Code in POKYH unter Einstellungen, „Am Computer anmelden“. · Accedi sul computer: apri il codice nell’app POKYH. · Sign in on the computer: open the code in the POKYH app.</small>
+</main></body></html>`);
+});
+
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });

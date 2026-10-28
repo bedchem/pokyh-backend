@@ -1,4 +1,5 @@
 import { randomBytes } from 'crypto';
+import { config } from '../config';
 import { prisma } from '../db';
 import { seal, unseal } from '../webuntis/crypto';
 import { hashToken, type SignInContext } from './sessions';
@@ -32,12 +33,20 @@ export interface QrCredential {
 
 const newSecret = () => randomBytes(24).toString('base64url');
 
-/** What the QR code holds. */
-export const qrText = (code: string) => `${QR_PREFIX}${code}`;
+/**
+ * What the QR code holds: a link to /l/<code> when QR_LINK_BASE is set (a phone's own camera
+ * opens the app with it), else the plain text the apps' scanners read.
+ */
+export const qrText = (code: string) => {
+  const base = config.webuntis.qrLinkBase.trim();
+  return base ? `${base.replace(/\/*$/, '/')}${code}` : `${QR_PREFIX}${code}`;
+};
 
-/** The code from what the app scanned (the whole text or only the code). */
+/** The code from what the app scanned: the whole text, the link, or only the code. */
 export function codeFromScan(value: string): string | null {
-  const code = value.trim().replace(QR_PREFIX, '');
+  const text = value.trim();
+  const link = /\/l\/([A-Za-z0-9_-]+)\/?(?:[?#].*)?$/.exec(text);
+  const code = link ? link[1] : text.replace(QR_PREFIX, '');
   return /^[A-Za-z0-9_-]{24,64}$/.test(code) ? code : null;
 }
 
