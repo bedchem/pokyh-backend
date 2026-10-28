@@ -7,9 +7,6 @@ export const issuedApiKeyScopes = [
   'core:read',
   'core:write',
   'auth:session',
-  'learn:catalog',
-  'learn:read',
-  'learn:write',
 ] as const;
 
 export type IssuedApiKeyScope = (typeof issuedApiKeyScopes)[number];
@@ -28,8 +25,6 @@ export function serializeApiKeyScopes(scopes: readonly string[]): string {
 
 export function requiredApiKeyScope(method: string, path: string): IssuedApiKeyScope {
   const readOnly = method === 'GET' || method === 'HEAD' || method === 'OPTIONS';
-  if (path.startsWith('/learn/catalog')) return 'learn:catalog';
-  if (path.startsWith('/learn')) return readOnly ? 'learn:read' : 'learn:write';
   if (path.startsWith('/auth/')) return 'auth:session';
   return readOnly ? 'core:read' : 'core:write';
 }

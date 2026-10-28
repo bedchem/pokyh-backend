@@ -53,8 +53,8 @@ export function SystemPage() {
   useAutoRefresh(load, 30_000);
 
   const scopeParts = useMemo(() => {
-    const color: Record<string, string> = { core: 'var(--sky)', learn: 'var(--mint)', admin: 'var(--amber)' };
-    const label: Record<string, string> = { core: 'Pokyh', learn: 'Learn', admin: 'Admin-Panel' };
+    const color: Record<string, string> = { core: 'var(--sky)', admin: 'var(--amber)' };
+    const label: Record<string, string> = { core: 'Pokyh', admin: 'Admin-Panel' };
     return (perf?.byScope ?? []).map((s) => ({ label: label[s.scope] ?? s.scope, value: s.count, color: color[s.scope] ?? 'var(--well-3)' }));
   }, [perf]);
 

@@ -80,8 +80,7 @@ export function apiKeyMiddleware(
 
   // Fallback: an admin-issued key (expiry/revocation aware). Only reached on
   // static-key mismatch, so this is purely additive. Rate-limited first —
-  // every request here (valid issued key or garbage) costs a DB round-trip,
-  // and /learn/* traffic skips the global limiter entirely (see rateLimiter.ts).
+  // every request here (valid issued key or garbage) costs a DB round-trip.
   apiKeyLookupLimiter(req, res, (limiterErr?: unknown) => {
     if (limiterErr) { next(limiterErr); return; }
     if (res.headersSent) return; // limiter already responded 429

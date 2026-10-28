@@ -18,14 +18,12 @@
 # command was made (compose.env): the cluster channel (edge: mutual TLS,
 # pinned certificates), and either 80/443 (Caddy, own domain, profile "web")
 # or the API port for the administrator's proxy (gateway, profile "gateway").
-# MySQL, Redis and Ollama are reachable only inside their Docker networks.
+# MySQL and Redis are reachable only inside their Docker networks.
 
 name: ${COMPOSE_PROJECT_NAME:-pokyh}
 
 x-app-environment: &app-environment
-  LEARN_REDIS_URL: redis://redis:6379
   REDIS_URL: redis://redis:6379
-  LEARN_AI_OLLAMA_BASE_URL: http://ollama:11434
   POKYH_UPDATE_DIR: /app/data/update
   POKYH_ACTIVATION_FILE: /app/data/update/active
 
@@ -70,7 +68,6 @@ x-app: &app
   networks:
     - edge
     - database
-    - ai-internal
 
 services:
   mysql:
@@ -270,39 +267,11 @@ services:
     networks:
       - edge
 
-  # The AI vocabulary trainer's model runtime; only with profile "ai".
-  ollama:
-    image: ollama/ollama:0.34.2
-    profiles: ["ai"]
-    restart: unless-stopped
-    volumes:
-      - ollama_data:/root/.ollama
-    environment:
-      - OLLAMA_KEEP_ALIVE=${OLLAMA_KEEP_ALIVE:-30m}
-      - OLLAMA_NUM_PARALLEL=${OLLAMA_NUM_PARALLEL:-10}
-      - OLLAMA_MAX_LOADED_MODELS=${OLLAMA_MAX_LOADED_MODELS:-1}
-      - OLLAMA_NUM_THREAD=${OLLAMA_NUM_THREAD:-4}
-    mem_limit: ${OLLAMA_MEM_LIMIT:-10g}
-    cpus: ${OLLAMA_CPUS:-4}
-    healthcheck:
-      test: ["CMD", "ollama", "list"]
-      interval: 15s
-      timeout: 5s
-      retries: 10
-      start_period: 30s
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
-    networks:
-      - ai-internal
-
 volumes:
   # 8.0's data from before the upgrade, kept read-only as the way back.
   mysql_data:
   mysql84_data:
   backups:
-  ollama_data:
   caddy_data:
   caddy_config:
 
@@ -310,4 +279,3 @@ networks:
   edge:
   database:
     internal: true
-  ai-internal:

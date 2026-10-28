@@ -30,7 +30,6 @@ import {
   retryUpdate,
   rollBack,
   saveUpdateSettings,
-  setReplicationScope,
   testReachWay,
 } from '../cluster';
 
@@ -160,7 +159,6 @@ const installSchema = z.object({
   name: z.string().trim().min(1).max(120),
   // Optional: the new server's domain or IP; empty = detected.
   address: z.string().trim().max(253).optional(),
-  withAi: z.boolean().optional(),
   acmeEmail: z.string().trim().max(254).optional(),
   // This node's public address as the browser shows it (window.location.origin).
   origin: z.string().trim().min(1).max(255),
@@ -180,7 +178,6 @@ router.post('/node-installs', requireAdmin, requirePermission('cluster.manage'),
     const install = await createNodeInstall({
       name: body.name,
       address: body.address ?? '',
-      withAi: body.withAi === true,
       acmeEmail: body.acmeEmail ?? '',
       origin: body.origin,
       options: {
@@ -379,7 +376,7 @@ router.post('/updates/rollback', requireAdmin, requirePermission('cluster.manage
   });
 });
 
-// ─── Ways and scope ──────────────────────────────────────────────────────────
+// ─── Ways ────────────────────────────────────────────────────────────────────
 
 const wayTestSchema = z.object({
   kind: z.enum(['direct', 'proxy-port', 'proxy-sni', 'proxy-path']),
@@ -395,20 +392,6 @@ router.post('/reach/test', requireAdmin, requirePermission('cluster.manage'), wr
   }
   await guarded(res, async () => {
     res.json(await testReachWay(parsed.data.kind, parsed.data.endpoint));
-  });
-});
-
-// What the cluster exchanges — the same for every node (replication scope).
-router.put('/scope', requireAdmin, requirePermission('cluster.manage'), writeLimiter, async (req: Request, res: Response): Promise<void> => {
-  const parsed = z.object({ learn: z.boolean() }).safeParse(req.body);
-  if (!parsed.success) {
-    res.status(400).json({ error: 'Invalid scope' });
-    return;
-  }
-  await guarded(res, async () => {
-    const scope = await setReplicationScope({ learn: parsed.data.learn, actor: actor(req) });
-    logger.info('Admin action: cluster replication scope changed', { action: 'cluster_scope_set', adminUsername: actor(req), learn: parsed.data.learn });
-    res.json(scope);
   });
 });
 

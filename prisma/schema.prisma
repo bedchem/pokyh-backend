@@ -12,11 +12,11 @@ datasource db {
 }
 
 model User {
-  id                 String   @id @default(uuid())
-  stableUid          String   @unique @map("stable_uid")
-  username           String   @unique
-  webuntisKlasseId   Int      @default(0) @map("webuntis_klasse_id")
-  webuntisKlasseName String   @default("") @map("webuntis_klasse_name")
+  id                 String    @id @default(uuid())
+  stableUid          String    @unique @map("stable_uid")
+  username           String    @unique
+  webuntisKlasseId   Int       @default(0) @map("webuntis_klasse_id")
+  webuntisKlasseName String    @default("") @map("webuntis_klasse_name")
   // The class rules version (CLASS_CHECK_VERSION, src/utils/accountClass.ts)
   // under which WebUntis last confirmed the class above, or that the account
   // has none; 0 = never. A WebUntis account below the current version has no
@@ -24,50 +24,31 @@ model User {
   classCheckVersion  Int       @default(0) @map("class_check_version")
   // When WebUntis last confirmed it.
   classCheckedAt     DateTime? @map("class_checked_at")
-  passwordHash       String?  @map("password_hash") @db.VarChar(100)
-  isUntisUser        Boolean  @default(true) @map("is_untis_user")
+  passwordHash       String?   @map("password_hash") @db.VarChar(100)
+  isUntisUser        Boolean   @default(true) @map("is_untis_user")
   // Account role: "student" (default) or "parent". Parents have their own todos,
   // no class identity/membership and no reminders.
-  role               String   @default("student") @db.VarChar(20)
+  role               String    @default("student") @db.VarChar(20)
   // The school the account belongs to (schools.id). Set at sign-in from the
   // WebUntis school the account signed in with; every account that existed
   // before schools were introduced belongs to the default school.
-  schoolId           String?  @map("school_id") @db.VarChar(36)
-  createdAt          DateTime @default(now()) @map("created_at")
-  updatedAt          DateTime @updatedAt @map("updated_at")
+  schoolId           String?   @map("school_id") @db.VarChar(36)
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @updatedAt @map("updated_at")
 
-  todos                   Todo[]
-  classMembers            ClassMember[]
-  refreshTokens           RefreshToken[]
-  loginEvents             LoginEvent[]
-  pushSubscriptions       PushSubscription[]
-  // Pokyh Learn is deliberately attached to the existing POKYH identity.  A
-  // profile is created lazily on first Learn use, which also marks this account
-  // as persistent across the school-year cleanup.
-  learnProfile            LearnProfile?
-  learnCoursesCreated     LearnCourse[]            @relation("LearnCourseCreator")
-  learnCourseAccesses     LearnCourseAccess[]
-  learnEnrollments        LearnEnrollment[]
-  learnVocabularyEntries  LearnVocabularyEntry[]   @relation("LearnVocabularyCreator")
-  learnVocabularyReviews  LearnVocabularyReview[]
-  learnQuizAttempts       LearnQuizAttempt[]
-  // Privacy-preserving, per-day learning aggregates. These retain counts and
-  // dates, not answer text, and power the learner's own analytics screen.
-  learnActivityDays       LearnActivityDaily[]
-  learnTeamsCreated       LearnTeam[]              @relation("LearnTeamCreator")
-  learnTeamMemberships    LearnTeamMember[]
-  learnSectionCompletions LearnSectionCompletion[]
-  learnAiAccessGrant      LearnAiAccessGrant?
-  learnAiUsageCounters    LearnAiUsageCounter[]
-  learnAiTrainingPrompts  LearnAiTrainingPrompt[]
-  usageSessions           UsageSession[]
-  webVisits               WebVisit[]
-  privacyConsent          PrivacyConsent?
-  popupTargets            PopupTargetUser[]
-  recapTargets            RecapTargetUser[]
-  recapViews              RecapView[]
-  bellMarks               BellMark[]
-  webPasskeys             WebPasskey[]
+  todos             Todo[]
+  classMembers      ClassMember[]
+  refreshTokens     RefreshToken[]
+  loginEvents       LoginEvent[]
+  pushSubscriptions PushSubscription[]
+  usageSessions     UsageSession[]
+  webVisits         WebVisit[]
+  privacyConsent    PrivacyConsent?
+  popupTargets      PopupTargetUser[]
+  recapTargets      RecapTargetUser[]
+  recapViews        RecapView[]
+  bellMarks         BellMark[]
+  webPasskeys       WebPasskey[]
 
   @@index([schoolId, createdAt])
   @@index([schoolId, role])
@@ -404,7 +385,7 @@ model RefreshToken {
   createdAt  DateTime  @default(now()) @map("created_at")
   revokedAt  DateTime? @map("revoked_at")
   // The device id the app or the website's device cookie sent; null for
-  // clients that send none (older apps, the Learn BFF).
+  // clients that send none (older apps).
   deviceId   String?   @map("device_id") @db.VarChar(64)
   // "app" | "pwa" | "web" | "other" (services/sessionDevice.ts)
   client     String    @default("") @db.VarChar(8)
@@ -565,7 +546,7 @@ model RequestLog {
   // Correlates this row with the same request's Winston log lines and its
   // X-Request-Id response header (see src/middleware/requestId.ts).
   requestId String?  @map("request_id") @db.VarChar(64)
-  // 'learn' | 'core' — which feature area this request belongs to, derived
+  // 'admin' | 'core' — which feature area this request belongs to, derived
   // from the path prefix in requestLogger.ts. Lets the admin Logs page filter
   // by feature without a second logging system.
   scope     String?  @db.VarChar(20)
@@ -589,8 +570,8 @@ model RequestLog {
   @@map("request_logs")
 }
 
-// Admin-editable scheduled-backup settings — a singleton row (id is always 1),
-// same pattern as LearnConfig. A missing row, or a null field on it, falls
+// Admin-editable scheduled-backup settings — a singleton row (id is always 1).
+// A missing row, or a null field on it, falls
 // back to the BACKUP_* environment defaults in src/config.ts. Individual
 // backup files themselves are not tracked here — they're listed by scanning
 // config.backupDir directly (see src/services/dbBackup.ts), so this table
@@ -613,7 +594,7 @@ model BackupConfig {
 // ─── School year archive ──────────────────────────────────────────────────────
 // On August 1st each year school-only users, classes, todos and reminders are
 // snapshotted here and then removed from the live tables so the new school year
-// starts fresh. Admins and users with a LearnProfile keep their User records.
+// starts fresh. Admins keep their User records.
 
 model SchoolYear {
   id        String   @id @default(uuid())
@@ -701,7 +682,7 @@ model ArchivedTodo {
 // and (with consent) usage_sessions — see services/accountActivitySummary.ts:
 // totals, weekdays, hours, platforms and the active days, as JSON. Archived
 // with the other data of the year and deleted with it — for every account,
-// also those that stay after the rollover (admins, Learn; from 2026-10), as
+// also those that stay after the rollover (admins; from 2026-10), as
 // their rows of the year go just the same. A recap of the year reads it.
 model ArchivedActivity {
   id           String   @id @default(uuid())
@@ -1114,452 +1095,6 @@ model UsageSchoolClassDay {
   @@map("usage_school_class_days")
 }
 
-// ─── Pokyh Learn ─────────────────────────────────────────────────────────────
-// Learn content lives alongside the existing POKYH account rather than creating
-// a second identity or token system.  Fields ending in `Json` intentionally use
-// text so import/export payloads remain portable and the public API can validate
-// their shape before persisting them.
-
-model LearnProfile {
-  stableUid                   String    @id @map("stable_uid")
-  dailyGoalMinutes            Int       @default(15) @map("daily_goal_minutes")
-  timezone                    String    @default("") @db.VarChar(80)
-  locale                      String    @default("de") @db.VarChar(5)
-  theme                       String    @default("system") @db.VarChar(10)
-  privacyNoticeVersion        String    @default("") @map("privacy_notice_version") @db.VarChar(80)
-  privacyNoticeAcknowledgedAt DateTime? @map("privacy_notice_acknowledged_at")
-  dailyStreak                 Int       @default(0) @map("daily_streak")
-  lastActiveAt                DateTime? @map("last_active_at")
-  createdAt                   DateTime  @default(now()) @map("created_at")
-  updatedAt                   DateTime  @updatedAt @map("updated_at")
-
-  user User @relation(fields: [stableUid], references: [stableUid], onDelete: Cascade)
-
-  @@index([lastActiveAt])
-  @@map("learn_profiles")
-}
-
-model LearnCourse {
-  id            String   @id @default(uuid())
-  slug          String   @unique @db.VarChar(191)
-  title         String   @db.VarChar(160)
-  summary       String   @default("") @db.VarChar(2000)
-  subject       String   @default("") @db.VarChar(120)
-  language      String   @default("") @db.VarChar(80)
-  level         String   @default("") @db.VarChar(50)
-  // PRIVATE, TEAM, or PUBLIC.  PUBLIC courses are only shown in the catalog
-  // once their status is PUBLISHED.
-  visibility    String   @default("PRIVATE") @db.VarChar(20)
-  // DRAFT, PUBLISHED, or ARCHIVED.
-  status        String   @default("DRAFT") @db.VarChar(20)
-  coverImageUrl String   @default("") @map("cover_image_url") @db.VarChar(1000)
-  createdBy     String   @map("created_by")
-  teamId        String?  @map("team_id")
-  // When true, a platform administrator has deliberately locked this course's
-  // ownership — reassigning createdBy is blocked until an admin unlocks it
-  // first. A safety guard against accidental reassignment, not a permission
-  // change: an admin can always toggle it, just not reassign in the same step.
-  ownerLocked   Boolean  @default(false) @map("owner_locked")
-  createdAt     DateTime @default(now()) @map("created_at")
-  updatedAt     DateTime @updatedAt @map("updated_at")
-
-  creator            User                     @relation("LearnCourseCreator", fields: [createdBy], references: [stableUid], onDelete: Cascade)
-  team               LearnTeam?               @relation(fields: [teamId], references: [id], onDelete: SetNull)
-  sections           LearnCourseSection[]
-  accessGrants       LearnCourseAccess[]
-  enrollments        LearnEnrollment[]
-  vocabulary         LearnVocabularyEntry[]
-  quizAttempts       LearnQuizAttempt[]
-  sectionCompletions LearnSectionCompletion[]
-  activityDays       LearnActivityDaily[]
-
-  @@index([createdBy])
-  @@index([teamId])
-  @@index([visibility, status, updatedAt])
-  @@map("learn_courses")
-}
-
-model LearnCourseSection {
-  id          String   @id @default(uuid())
-  courseId    String   @map("course_id")
-  title       String   @db.VarChar(200)
-  summary     String   @default("") @db.VarChar(2000)
-  // LESSON, VOCABULARY, GRAMMAR, QUIZ, or a future server-defined type.
-  type        String   @default("LESSON") @db.VarChar(40)
-  sortOrder   Int      @default(0) @map("sort_order")
-  contentJson String   @map("content_json") @db.LongText
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
-
-  course      LearnCourse              @relation(fields: [courseId], references: [id], onDelete: Cascade)
-  vocabulary  LearnVocabularyEntry[]
-  completions LearnSectionCompletion[]
-
-  @@unique([courseId, sortOrder])
-  @@index([courseId])
-  @@map("learn_course_sections")
-}
-
-// Explicit per-course grants make it possible for a POKYH administrator to
-// allow trusted learners to contribute content without making them global admins.
-model LearnCourseAccess {
-  courseId   String   @map("course_id")
-  stableUid  String   @map("stable_uid")
-  // VIEW, EDIT, or MANAGE.
-  permission String   @default("VIEW") @db.VarChar(20)
-  grantedBy  String?  @map("granted_by")
-  createdAt  DateTime @default(now()) @map("created_at")
-  updatedAt  DateTime @updatedAt @map("updated_at")
-
-  course LearnCourse @relation(fields: [courseId], references: [id], onDelete: Cascade)
-  user   User        @relation(fields: [stableUid], references: [stableUid], onDelete: Cascade)
-
-  @@id([courseId, stableUid])
-  @@index([stableUid])
-  @@map("learn_course_access")
-}
-
-model LearnEnrollment {
-  courseId          String    @map("course_id")
-  stableUid         String    @map("stable_uid")
-  // ACTIVE, PAUSED, or COMPLETED.
-  status            String    @default("ACTIVE") @db.VarChar(20)
-  progressPercent   Float     @default(0) @map("progress_percent")
-  completedSections Int       @default(0) @map("completed_sections")
-  lastOpenedAt      DateTime? @map("last_opened_at")
-  completedAt       DateTime? @map("completed_at")
-  createdAt         DateTime  @default(now()) @map("created_at")
-  updatedAt         DateTime  @updatedAt @map("updated_at")
-
-  course LearnCourse @relation(fields: [courseId], references: [id], onDelete: Cascade)
-  user   User        @relation(fields: [stableUid], references: [stableUid], onDelete: Cascade)
-
-  @@id([courseId, stableUid])
-  @@index([stableUid, lastOpenedAt])
-  @@map("learn_enrollments")
-}
-
-// A completion is an explicit learner action on one real server-side section.
-// Aggregate enrollment progress is derived from these records instead of
-// accepting an arbitrary percentage from the browser.
-model LearnSectionCompletion {
-  stableUid   String   @map("stable_uid")
-  courseId    String   @map("course_id")
-  sectionId   String   @map("section_id")
-  completedAt DateTime @default(now()) @map("completed_at")
-
-  user    User               @relation(fields: [stableUid], references: [stableUid], onDelete: Cascade)
-  course  LearnCourse        @relation(fields: [courseId], references: [id], onDelete: Cascade)
-  section LearnCourseSection @relation(fields: [sectionId], references: [id], onDelete: Cascade)
-
-  @@id([stableUid, sectionId])
-  @@index([courseId, stableUid])
-  @@map("learn_section_completions")
-}
-
-model LearnVocabularyEntry {
-  id                 String   @id @default(uuid())
-  courseId           String   @map("course_id")
-  sectionId          String?  @map("section_id")
-  sourceLanguage     String   @map("source_language") @db.VarChar(20)
-  targetLanguage     String   @map("target_language") @db.VarChar(20)
-  sourceText         String   @map("source_text") @db.VarChar(500)
-  targetText         String   @map("target_text") @db.VarChar(500)
-  normalizedSource   String   @map("normalized_source") @db.VarChar(500)
-  normalizedTarget   String   @map("normalized_target") @db.VarChar(500)
-  article            String   @default("") @db.VarChar(40)
-  partOfSpeech       String   @default("") @map("part_of_speech") @db.VarChar(80)
-  notes              String   @default("") @db.VarChar(2000)
-  tagsJson           String   @map("tags_json") @db.Text
-  // UNVERIFIED, VERIFIED, or FLAGGED.  A future dictionary integration can
-  // populate verificationSource without changing the entry contract.
-  verificationStatus String   @default("UNVERIFIED") @map("verification_status") @db.VarChar(20)
-  verificationSource String   @default("") @map("verification_source") @db.VarChar(120)
-  createdBy          String   @map("created_by")
-  createdAt          DateTime @default(now()) @map("created_at")
-  updatedAt          DateTime @updatedAt @map("updated_at")
-
-  course            LearnCourse             @relation(fields: [courseId], references: [id], onDelete: Cascade)
-  section           LearnCourseSection?     @relation(fields: [sectionId], references: [id], onDelete: SetNull)
-  creator           User                    @relation("LearnVocabularyCreator", fields: [createdBy], references: [stableUid], onDelete: Cascade)
-  reviewStates      LearnVocabularyReview[]
-  aiTrainingPrompts LearnAiTrainingPrompt[]
-
-  @@index([courseId, sectionId])
-  @@index([createdBy])
-  @@map("learn_vocabulary_entries")
-}
-
-// Per-user spaced-review state.  It is updated atomically with a quiz attempt,
-// so a wrong answer remains recoverable for a dedicated review quiz.
-model LearnVocabularyReview {
-  id             String    @id @default(uuid())
-  stableUid      String    @map("stable_uid")
-  entryId        String    @map("entry_id")
-  intervalDays   Int       @default(0) @map("interval_days")
-  easeFactor     Float     @default(2.5) @map("ease_factor")
-  dueAt          DateTime  @default(now()) @map("due_at")
-  lastReviewedAt DateTime? @map("last_reviewed_at")
-  correctCount   Int       @default(0) @map("correct_count")
-  incorrectCount Int       @default(0) @map("incorrect_count")
-  lastWasCorrect Boolean   @default(false) @map("last_was_correct")
-  // The next prompt reverses this direction. The server stores it rather
-  // than letting a browser choose which translation should be graded.
-  lastDirection  String?   @map("last_direction") @db.VarChar(20)
-  createdAt      DateTime  @default(now()) @map("created_at")
-  updatedAt      DateTime  @updatedAt @map("updated_at")
-
-  user  User                 @relation(fields: [stableUid], references: [stableUid], onDelete: Cascade)
-  entry LearnVocabularyEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
-
-  @@unique([stableUid, entryId])
-  @@index([stableUid, dueAt])
-  @@map("learn_vocabulary_reviews")
-}
-
-// A durable, idempotent record of server-graded answers.  `answersJson` stores
-// the submitted answer and the server result; expected answers never come from
-// the client and are not exposed by the review queue endpoint.
-model LearnQuizAttempt {
-  id             String   @id @default(uuid())
-  stableUid      String   @map("stable_uid")
-  courseId       String   @map("course_id")
-  mode           String   @default("PRACTICE") @db.VarChar(40)
-  idempotencyKey String   @map("idempotency_key") @db.VarChar(191)
-  answersJson    String   @map("answers_json") @db.LongText
-  totalQuestions Int      @map("total_questions")
-  correctAnswers Int      @map("correct_answers")
-  score          Float    @default(0)
-  // Client-measured wall-clock time actively spent on this attempt (session
-  // start to submit), sanity-capped server-side. Optional and defaults to 0
-  // for older clients — never inferred or estimated, only ever real elapsed
-  // time the client actually observed, so profile/streak minutes stay honest.
-  durationMs     Int      @default(0) @map("duration_ms")
-  createdAt      DateTime @default(now()) @map("created_at")
-
-  user   User        @relation(fields: [stableUid], references: [stableUid], onDelete: Cascade)
-  course LearnCourse @relation(fields: [courseId], references: [id], onDelete: Cascade)
-
-  @@unique([stableUid, idempotencyKey])
-  @@index([stableUid, createdAt])
-  @@index([courseId, createdAt])
-  @@map("learn_quiz_attempts")
-}
-
-// One compact activity row per learner, course and local calendar day. It is
-// updated in the same transaction as a server-graded quiz attempt, so the
-// analytics view is durable, idempotent and never needs raw answer text.
-model LearnActivityDaily {
-  stableUid      String   @map("stable_uid")
-  courseId       String   @map("course_id")
-  dayKey         String   @map("day_key") @db.VarChar(10)
-  attemptCount   Int      @default(0) @map("attempt_count")
-  answerCount    Int      @default(0) @map("answer_count")
-  correctCount   Int      @default(0) @map("correct_count")
-  durationMs     Int      @default(0) @map("duration_ms")
-  lastActivityAt DateTime @map("last_activity_at")
-  createdAt      DateTime @default(now()) @map("created_at")
-  updatedAt      DateTime @updatedAt @map("updated_at")
-
-  user   User        @relation(fields: [stableUid], references: [stableUid], onDelete: Cascade)
-  course LearnCourse @relation(fields: [courseId], references: [id], onDelete: Cascade)
-
-  @@id([stableUid, courseId, dayKey])
-  @@index([stableUid, dayKey])
-  @@index([courseId, dayKey])
-  @@map("learn_activity_daily")
-}
-
-model LearnTeam {
-  id          String   @id @default(uuid())
-  name        String   @db.VarChar(120)
-  description String   @default("") @db.VarChar(1000)
-  createdBy   String   @map("created_by")
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
-
-  creator       User                    @relation("LearnTeamCreator", fields: [createdBy], references: [stableUid], onDelete: Cascade)
-  members       LearnTeamMember[]
-  courses       LearnCourse[]
-  aiAccessGrant LearnAiTeamAccessGrant?
-
-  @@index([createdBy])
-  @@map("learn_teams")
-}
-
-model LearnTeamMember {
-  teamId    String   @map("team_id")
-  stableUid String   @map("stable_uid")
-  // OWNER, MANAGER, or MEMBER.
-  role      String   @default("MEMBER") @db.VarChar(20)
-  joinedAt  DateTime @default(now()) @map("joined_at")
-
-  team LearnTeam @relation(fields: [teamId], references: [id], onDelete: Cascade)
-  user User      @relation(fields: [stableUid], references: [stableUid], onDelete: Cascade)
-
-  @@id([teamId, stableUid])
-  @@index([stableUid])
-  @@map("learn_team_members")
-}
-
-// Admin-editable Learn configuration — a singleton row (id is always 1). Read
-// live via src/services/learnConfig.ts with a short in-memory cache; a missing
-// row, or a null field on it, falls back to the LEARN_* environment defaults
-// in src/config.ts, so the app works correctly before any admin ever saves
-// this. LEARN_ALLOWED_ORIGINS is deliberately NOT included: it is a security-
-// boundary value and stays environment-only, never admin-editable at runtime.
-model LearnConfig {
-  id                                  Int      @id @default(1)
-  legalGateEnabled                    Boolean? @map("legal_gate_enabled")
-  // Set via the admin UI but never read back in plaintext by the API —
-  // matches docs/legal-readiness.md's requirement to report the legal gate
-  // as ready without exposing the approval reference itself.
-  webUntisAuthorizationReference      String?  @map("webuntis_authorization_reference") @db.VarChar(255)
-  privacyNoticeUrl                    String?  @map("privacy_notice_url") @db.VarChar(500)
-  privacyNoticeVersion                String?  @map("privacy_notice_version") @db.VarChar(80)
-  dictionaryEnabled                   Boolean? @map("dictionary_enabled")
-  dictionaryProvider                  String?  @map("dictionary_provider") @db.VarChar(40)
-  dictionaryBaseUrl                   String?  @map("dictionary_base_url") @db.VarChar(500)
-  dictionaryContactEmail              String?  @map("dictionary_contact_email") @db.VarChar(255)
-  dictionaryAllowedPairs              String?  @map("dictionary_allowed_pairs") @db.VarChar(500)
-  dictionaryTimeoutMs                 Int?     @map("dictionary_timeout_ms")
-  dictionaryCacheTtlMs                Int?     @map("dictionary_cache_ttl_ms")
-  dictionaryMaxCacheEntries           Int?     @map("dictionary_max_cache_entries")
-  // Free Dictionary API is configured separately from optional translation
-  // suggestions. The backend supports its documented English endpoint only.
-  dictionaryValidationEnabled         Boolean? @map("dictionary_validation_enabled")
-  dictionaryValidationProvider        String?  @map("dictionary_validation_provider") @db.VarChar(40)
-  dictionaryValidationBaseUrl         String?  @map("dictionary_validation_base_url") @db.VarChar(500)
-  dictionaryValidationTimeoutMs       Int?     @map("dictionary_validation_timeout_ms")
-  dictionaryValidationCacheTtlMs      Int?     @map("dictionary_validation_cache_ttl_ms")
-  dictionaryValidationMaxCacheEntries Int?     @map("dictionary_validation_max_cache_entries")
-  // Adaptive-review policy and pseudonymous analytics retention. The browser
-  // never supplies scheduling decisions; these values are applied server-side.
-  reviewInitialIntervalDays           Int?     @map("review_initial_interval_days")
-  reviewMaxIntervalDays               Int?     @map("review_max_interval_days")
-  reviewMinimumEase                   Float?   @map("review_minimum_ease")
-  reviewMaximumEase                   Float?   @map("review_maximum_ease")
-  reviewCorrectEaseStep               Float?   @map("review_correct_ease_step")
-  reviewIncorrectEasePenalty          Float?   @map("review_incorrect_ease_penalty")
-  reviewWrongDelayMinutes             Int?     @map("review_wrong_delay_minutes")
-  analyticsRetentionDays              Int?     @map("analytics_retention_days")
-  importMaxCourses                    Int?     @map("import_max_courses")
-  importMaxSectionsPerCourse          Int?     @map("import_max_sections_per_course")
-  importMaxVocabularyPerCourse        Int?     @map("import_max_vocabulary_per_course")
-  updatedAt                           DateTime @updatedAt @map("updated_at")
-  updatedBy                           String?  @map("updated_by")
-
-  @@map("learn_config")
-}
-
-// ─── Pokyh Learn AI trainer ─────────────────────────────────────────────────
-// AI exists only inside vocabulary practice. A prompt stores the AI-generated
-// sentence and its expected translation server-side for a short time; clients
-// receive only the source sentence, so they cannot supply their own answer key
-// or make a grading decision.
-model LearnAiTrainingPrompt {
-  id                String    @id @default(uuid())
-  stableUid         String    @map("stable_uid")
-  entryId           String    @map("entry_id")
-  direction         String    @db.VarChar(20)
-  promptText        String    @map("prompt_text") @db.VarChar(1000)
-  // SHA-256 of normalized promptText. Repeated calls for the same learner and
-  // word must not recycle an earlier AI sentence.
-  promptFingerprint String?   @map("prompt_fingerprint") @db.Char(64)
-  expectedText      String    @map("expected_text") @db.VarChar(1000)
-  modelName         String    @map("model_name") @db.VarChar(120)
-  createdAt         DateTime  @default(now()) @map("created_at")
-  expiresAt         DateTime  @map("expires_at")
-  completedAt       DateTime? @map("completed_at")
-  resultCorrect     Boolean?  @map("result_correct")
-
-  user  User                 @relation(fields: [stableUid], references: [stableUid], onDelete: Cascade)
-  entry LearnVocabularyEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
-
-  @@unique([stableUid, entryId, promptFingerprint])
-  @@index([stableUid, expiresAt])
-  @@index([entryId])
-  @@map("learn_ai_training_prompts")
-}
-
-// Pilot allowlist — the only source of AI-trainer access. A learner with no
-// row here, or whose grant has revokedAt set, gets 403 on every /learn/ai/*
-// route regardless of any other configuration.
-model LearnAiAccessGrant {
-  stableUid String    @id @map("stable_uid")
-  grantedBy String    @map("granted_by")
-  grantedAt DateTime  @default(now()) @map("granted_at")
-  revokedBy String?   @map("revoked_by")
-  revokedAt DateTime? @map("revoked_at")
-  note      String    @default("") @db.VarChar(500)
-
-  user User @relation(fields: [stableUid], references: [stableUid], onDelete: Cascade)
-
-  @@index([revokedAt])
-  @@map("learn_ai_access_grants")
-}
-
-// A whole-team grant: every current and future member of the team has
-// trainer access without an individual LearnAiAccessGrant row per person —
-// canonical Pokyh administrator action only, same spirit as team creation
-// itself. hasActiveAiGrant() (learnAiAccess.ts) checks both this and the
-// per-user grant above; either is sufficient.
-model LearnAiTeamAccessGrant {
-  teamId    String    @id @map("team_id")
-  grantedBy String    @map("granted_by")
-  grantedAt DateTime  @default(now()) @map("granted_at")
-  revokedBy String?   @map("revoked_by")
-  revokedAt DateTime? @map("revoked_at")
-  note      String    @default("") @db.VarChar(500)
-
-  team LearnTeam @relation(fields: [teamId], references: [id], onDelete: Cascade)
-
-  @@index([revokedAt])
-  @@map("learn_ai_team_access_grants")
-}
-
-// The authoritative per-user quota ledger (src/services/learnAiRateLimit.ts).
-// Redis may accelerate the check but this table enforces it, so the limit
-// still holds correctly if Redis is absent or fails.
-model LearnAiUsageCounter {
-  stableUid    String   @map("stable_uid")
-  windowStart  DateTime @map("window_start")
-  messageCount Int      @default(0) @map("message_count")
-  tokenCount   Int      @default(0) @map("token_count")
-  updatedAt    DateTime @updatedAt @map("updated_at")
-
-  user User @relation(fields: [stableUid], references: [stableUid], onDelete: Cascade)
-
-  @@id([stableUid, windowStart])
-  @@index([windowStart])
-  @@map("learn_ai_usage_counters")
-}
-
-// Admin-editable AI operational policy. A missing row, or a null field on it,
-// falls back to the LEARN_AI_* environment defaults in src/config.ts.
-model LearnAiConfig {
-  id                               Int      @id @default(1)
-  // Global kill-switch, independent of per-user pilot grants — both must
-  // allow a request through.
-  enabled                          Boolean? @map("enabled")
-  modelName                        String?  @map("model_name") @db.VarChar(120)
-  // num_ctx sent to Ollama. Deliberately kept small by default: RAM for a
-  // CPU-quantized model grows sharply with context length (see docs).
-  contextTokens                    Int?     @map("context_tokens")
-  numPredictFast                   Int?     @map("num_predict_fast")
-  rateLimitMessagesPerHour         Int?     @map("rate_limit_messages_per_hour")
-  // The in-app trainer caps outgoing model work before Ollama. This default
-  // is intentionally configurable so a larger verified host can serve a
-  // whole class without exposing an unbounded inference endpoint.
-  maxConcurrentTrainingGenerations Int?     @map("max_concurrent_training_generations")
-  ollamaBaseUrl                    String?  @map("ollama_base_url") @db.VarChar(300)
-  ollamaTimeoutMs                  Int?     @map("ollama_timeout_ms")
-  updatedAt                        DateTime @updatedAt @map("updated_at")
-  updatedBy                        String?  @map("updated_by")
-
-  @@map("learn_ai_config")
-}
-
 // ─── Announcement popups ──────────────────────────────────────────────────────
 // Admin-authored popups shown inside the web app and/or the Android app.
 // `content` is the Markdown/HTML source the admin typed; `contentHtml` is the
@@ -1759,13 +1294,6 @@ model ClusterNode {
   // The ways to reach this node set in the admin panel (JSON; see
   // src/cluster/reach.ts), in addition to CLUSTER_MTLS_URL/_ENDPOINTS.
   reachConfig  String?  @map("reach_config") @db.Text
-  // What the cluster exchanges (src/cluster/scopeRules.ts), as this node last
-  // set or took over: Pokyh Learn yes/no, when, on which node, by whom.
-  // Unset: CLUSTER_REPLICATE_LEARN.
-  scopeLearn   Boolean? @map("scope_learn")
-  scopeVersion BigInt   @default(0) @map("scope_version")
-  scopeBy      String?  @map("scope_by") @db.VarChar(36)
-  scopeActor   String?  @map("scope_actor") @db.VarChar(100)
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
@@ -1890,7 +1418,6 @@ model ClusterInstall {
   peerId        String    @map("peer_id") @db.VarChar(36)
   domain        String    @db.VarChar(253)
   name          String    @default("") @db.VarChar(120)
-  withAi        Boolean   @default(false) @map("with_ai")
   acmeEmail     String    @default("") @map("acme_email") @db.VarChar(254)
   // How the new server is reached: web mode, ports, addresses, allowed
   // sources (JSON, src/cluster/installOptions.ts).

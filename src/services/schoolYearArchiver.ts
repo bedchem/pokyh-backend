@@ -27,8 +27,7 @@ export interface RolloverResult {
 // Performs the full school-year rollover atomically:
 //   1. Snapshot school-only users, classes, todos, reminders → archive tables
 //   2. Delete the live rows (cascade removes class_members, reminder comments, etc.)
-// Users with a LearnProfile are deliberately retained: Learn is a durable
-// product account, not a school-year-only record.
+// Admin accounts are deliberately retained.
 // Idempotent per startYear (throws if the year has already been rolled over).
 // `target` overrides which school year is being closed; defaults to the current
 // running year (`computeSchoolYear(now)`), which is what a manual rollover uses.
@@ -48,7 +47,7 @@ export async function performRollover(
   logger.info(`School year rollover starting for ${label}…`);
 
   // ── Read all live data in parallel ────────────────────────────────────────
-  const [users, classMembersAll, classes, todos, reminders, comments, adminRecords, learnProfiles] = await Promise.all([
+  const [users, classMembersAll, classes, todos, reminders, comments, adminRecords] = await Promise.all([
     prisma.user.findMany(),
     prisma.classMember.findMany(),
     prisma.class.findMany(),
@@ -56,12 +55,9 @@ export async function performRollover(
     prisma.reminder.findMany(),
     prisma.comment.findMany(),
     prisma.admin.findMany({ select: { stableUid: true } }),
-    prisma.learnProfile.findMany({ select: { stableUid: true } }),
   ]);
 
-  const adminUids = new Set(adminRecords.map((a) => a.stableUid));
-  const learnUids = new Set(learnProfiles.map((profile) => profile.stableUid));
-  const retainedUserUids = new Set([...adminUids, ...learnUids]);
+  const retainedUserUids = new Set(adminRecords.map((a) => a.stableUid));
   const usersToArchive = users.filter((u) => !retainedUserUids.has(u.stableUid));
   const todosToArchive = todos.filter((todo) => !retainedUserUids.has(todo.stableUid));
 
@@ -87,8 +83,8 @@ export async function performRollover(
 
   // Every account's year in figures (active days, sign-ins and, with
   // consent, foreground time), from the first day of the closed school year
-  // to the day before the next one. Also of the accounts that stay (admins,
-  // Learn): their rows of the year are deleted after the rollover just the
+  // to the day before the next one. Also of the accounts that stay (admins):
+  // their rows of the year are deleted after the rollover just the
   // same, and a recap of the year reads them from here.
   const pad = (n: number) => String(n).padStart(2, '0');
   const yearFrom = `${startYear}-${pad(config.schoolYearRolloverMonth)}-${pad(config.schoolYearRolloverDay)}`;
@@ -99,8 +95,8 @@ export async function performRollover(
   await prisma.$transaction(async (tx) => {
     const sy = await tx.schoolYear.create({ data: { label, startYear, rolledAt: now, note } });
 
-    // 1. Archive only users that are actually removed below. Admin and Learn
-    // users stay live, so duplicating them in a school-year snapshot would make
+    // 1. Archive only users that are actually removed below. Admin users
+    // stay live, so duplicating them in a school-year snapshot would make
     // rollback ambiguous.
     if (usersToArchive.length > 0) {
       await tx.archivedUser.createMany({
@@ -214,7 +210,7 @@ export async function performRollover(
     // 5. Delete live data — FK cascade removes children automatically.
     //    Delete classes first → cascade: class_members, reminders, comments.
     //    Delete only school-only users → cascade: todos, refresh_tokens,
-    //    push_subscriptions. Admin and Learn-profile users are durable.
+    //    push_subscriptions. Admin users are durable.
     await tx.class.deleteMany();
     if (retainedUserUids.size > 0) {
       await tx.user.deleteMany({ where: { stableUid: { notIn: [...retainedUserUids] } } });

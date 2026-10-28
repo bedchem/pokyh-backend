@@ -73,8 +73,6 @@ import {
 import { MAX_FRAME_BYTES, RpcError, dropSessionsOf, dropUnpinnedSessionsOfLockedPeers, pinAccepted, rpc, setChannelHook, setRpcHandler, sweepSessions } from './transport';
 import { createNodeCertificate, inspectNodeCertificate } from './x509';
 import { handleDigest, handleRows, verifyPeer } from './verify';
-import { adoptScope, loadScope, replicationScope, setScope } from './scope';
-import { exchangedIn, isLearnTable, restrictCatalog } from './scopeRules';
 import {
   checkNow as checkUpdatesNow,
   handleBuildCall,
@@ -134,10 +132,10 @@ function labelOf(peer: { name: string; baseUrl?: string; address?: string }): st
 
 let captureInFlight: Promise<void> | null = null;
 
-// Every table is captured; what is exchanged follows the replication scope.
+// Every replicated table is captured and exchanged.
 function useCatalog(catalog: Catalog): void {
   state.captureCatalog = catalog;
-  state.catalog = restrictCatalog(catalog, exchangedIn(replicationScope()));
+  state.catalog = catalog;
 }
 
 // Loads the table catalog, installs the capture triggers and registers every
@@ -472,64 +470,6 @@ function heartbeatPayload(peer: PeerRuntime): Heartbeat {
     })(),
     via: peer.tls ? currentPathTo(peer.tls.pin) : null,
     upd: updateAdvert(),
-    scope: (() => {
-      const scope = replicationScope();
-      return { learn: scope.learn, v: scope.version, by: scope.by, actor: scope.actor };
-    })(),
-  };
-}
-
-// ─── Replication scope ───────────────────────────────────────────────────────
-
-// Applies a changed scope: what is exchanged, and — when Pokyh Learn is
-// exchanged again — a complete transfer to every peer, which merges the
-// Learn data of all nodes (the newer version of a row wins).
-async function applyScope(previousLearn: boolean, by: string): Promise<void> {
-  if (state.captureCatalog) useCatalog(state.captureCatalog);
-  const now = replicationScope();
-  if (now.learn === previousLearn) return;
-  recordEvent('warn', now.learn
-    ? `Pokyh Learn is exchanged with all nodes again (set ${by}); its data is being merged`
-    : `Pokyh Learn is no longer exchanged (set ${by}); every node keeps its own Learn data`);
-  logger.info('Cluster replication scope changed', { action: 'cluster_scope_changed', learn: now.learn, version: now.version });
-  if (now.learn) {
-    for (const peer of state.peers.values()) {
-      await startFullTransfer(peer.rowId).catch((err) => logger.warn('Cluster transfer could not be started', { action: 'cluster_scope_transfer_failed', peer: peer.nodeId, message: message(err) }));
-    }
-  }
-  for (const peer of state.peers.values()) void heartbeatPeer(peer);
-}
-
-let scopeQueue: Promise<void> = Promise.resolve();
-
-function absorbScope(peer: PeerRuntime, advert: NonNullable<Heartbeat['scope']>): void {
-  scopeQueue = scopeQueue.then(async () => {
-    const previous = await adoptScope({ learn: advert.learn, version: advert.v, by: advert.by, actor: advert.actor });
-    if (previous) await applyScope(previous.learn, `by ${advert.actor ?? 'an administrator'} on ${labelOf(peer)}`);
-  }).catch((err) => {
-    logger.warn('Cluster replication scope could not be taken over', { action: 'cluster_scope_adopt_failed', message: message(err) });
-  });
-}
-
-export async function setReplicationScope(input: { learn: boolean; actor: string }): Promise<ReturnType<typeof scopeStatus>> {
-  requireRunning();
-  const previous = replicationScope().learn;
-  await setScope(input.learn, input.actor, state.nodeId);
-  await applyScope(previous, `by ${input.actor}`);
-  return scopeStatus();
-}
-
-function scopeStatus() {
-  const scope = replicationScope();
-  const all = state.captureCatalog?.ordered.map((table) => table.name) ?? [];
-  return {
-    learn: scope.learn,
-    source: scope.version === 0 ? 'env' as const : 'panel' as const,
-    changedAt: scope.version > 0 ? new Date(scope.version).toISOString() : null,
-    changedBy: scope.actor,
-    learnTables: all.filter(isLearnTable).length,
-    // Peers that exchange something else right now (until they take over the setting).
-    differing: [...state.peers.values()].filter((peer) => peer.remote.learn !== null && peer.remote.learn !== scope.learn).map((peer) => labelOf(peer)),
   };
 }
 
@@ -563,16 +503,12 @@ function absorbHeartbeat(peer: PeerRuntime, remote: Heartbeat): void {
     addr: remote.addr,
     via: remote.via ?? null,
     update: remote.upd ?? null,
-    learn: remote.scope ? remote.scope.learn : null,
   };
-  if (remote.scope) absorbScope(peer, remote.scope);
   if (remote.tls) absorbPaths(peer, remote.tls.paths ?? []);
   const localSchema = state.catalog?.fingerprint ?? '';
   const schemaMatch = Boolean(localSchema) && remote.schema === localSchema;
   if (peer.schemaMatch !== schemaMatch) {
-    const scopeDiffers = remote.scope !== undefined && remote.scope.learn !== replicationScope().learn;
-    if (!schemaMatch && scopeDiffers) recordEvent('info', `${labelOf(peer)} exchanges ${remote.scope!.learn ? 'Pokyh Learn' : 'no Pokyh Learn'}; replication waits until both nodes use the newest setting`);
-    else if (!schemaMatch) recordEvent('warn', `${labelOf(peer)} runs a different database schema; replication with it is paused`);
+    if (!schemaMatch) recordEvent('warn', `${labelOf(peer)} runs a different database schema; replication with it is paused`);
     else if (peer.schemaMatch === false) recordEvent('info', `${labelOf(peer)} runs the same database schema again; replication resumes`);
   }
   peer.schemaMatch = schemaMatch;
@@ -789,10 +725,7 @@ async function maintenance(): Promise<void> {
   if (state.captureReady && !state.paused) {
     if (Date.now() - lastPruneAt > PRUNE_EVERY_MS) {
       lastPruneAt = Date.now();
-      // Deletions in tables that are not exchanged right now stay recorded:
-      // once they are again, they must win over the rows other nodes kept.
-      const exchanged = new Set(state.catalog?.ordered.map((table) => table.name) ?? []);
-      await pruneTombstones((state.captureCatalog?.ordered ?? []).map((table) => table.name).filter((name) => !exchanged.has(name)));
+      await pruneTombstones();
     }
     await meshTick();
   }
@@ -805,7 +738,6 @@ export async function startCluster(): Promise<void> {
   try {
     const node = await loadOrCreateNode();
     state.nodeId = node.nodeId;
-    await loadScope(node.nodeId);
     state.nodeName = node.name;
     state.advertiseUrl = node.advertiseUrl;
     await loadOrCreateIdentity(node.nodeId);
@@ -1534,11 +1466,8 @@ export async function clusterStatus() {
       // Defaults for a server set up with the one-line installer: like this one.
       apiPort: config.port,
       clusterPort: config.cluster.mtlsPort,
-      // Default for the AI choice of a server set up with the one-line installer.
-      aiEnabled: config.learnAi.enabled,
     },
     channel: channelStatus(),
-    scope: scopeStatus(),
     peers,
     events: [...state.events].reverse().slice(0, 50),
   };

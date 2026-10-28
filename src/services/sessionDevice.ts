@@ -14,7 +14,7 @@ function firstHeader(value: HeaderValue): string {
   return typeof raw === 'string' ? raw : '';
 }
 
-/** "app": a native app; "pwa": the website installed to the home screen; "web": a browser; "other": anything else (the Learn BFF, scripts). */
+/** "app": a native app; "pwa": the website installed to the home screen; "web": a browser; "other": anything else (scripts). */
 export type SessionClient = 'app' | 'pwa' | 'web' | 'other';
 
 /** "android" | "ios" | "windows" | "macos" | "linux" | "chromeos" | "other" */

@@ -14,7 +14,7 @@ layers in [`database.md`](database.md)
 - [Adding a server with one command](#adding-a-server-with-one-command)
 - [Adding a node with an invite code](#adding-a-node-with-an-invite-code)
 - [How the nodes reach each other](#how-the-nodes-reach-each-other)
-- [What is exchanged: Pokyh Learn in or out](#what-is-exchanged-pokyh-learn-in-or-out)
+- [What is exchanged](#what-is-exchanged)
 - [Updates without downtime, node by node](#updates-without-downtime-node-by-node)
 - [Security model](#security-model)
 - [Consistency and failure handling](#consistency-and-failure-handling)
@@ -79,7 +79,7 @@ The stack ([`deploy/node/compose.yml`](../deploy/node/compose.yml)): MySQL, Redi
 `app-blue`/`app-green` (see [Updates](#updates-without-downtime-node-by-node)), `edge` (owns the
 cluster port and passes connections on unchanged), `updater` (the only part with Docker access; no
 port), `caddy` (own domain) or `gateway` (behind your proxy; trusts your proxy's addresses for the
-client address), and Ollama if chosen.
+client address).
 
 How the command is protected:
 
@@ -96,7 +96,7 @@ How the command is protected:
   the handshake.
 
 What the new node takes over: the settings that must be equal on every node (secrets, admin login,
-CORS, `PUBLIC_BASE_URL`, WebUntis, Learn, rate limits, school year, cluster and update settings;
+CORS, `PUBLIC_BASE_URL`, WebUntis, rate limits, school year, cluster and update settings;
 see [`src/cluster/sharedEnv.ts`](../src/cluster/sharedEnv.ts)). Never: database credentials,
 `CLUSTER_SECRET`, its own addresses, ports, proxy trust or paths.
 
@@ -159,26 +159,19 @@ and a compromised relay can do no more than refuse to carry traffic.
 | Own plain port | `CLUSTER_PORT`, `CLUSTER_BIND_ADDRESS` |
 | Address restriction (both plain entry points) | `CLUSTER_ALLOWLIST` (IPs and CIDR ranges) |
 
-## What is exchanged: Pokyh Learn in or out
+## What is exchanged
 
-Pokyh itself (users, to-dos, classes, menu, popups, …) is always exchanged. **Pokyh Learn**
-(courses, vocabulary, progress, teams, AI settings: every `learn_*` table) can be left out:
-**Cluster** → **Was wird abgeglichen**, or `CLUSTER_REPLICATE_LEARN`. The setting is the same on
-every node: changed on one node, it travels with the heartbeat and the newest setting wins
-everywhere (equal ages are settled the same way on every node). While nodes disagree, replication
-between them pauses for a moment.
-
-When Learn is left out, every node keeps its own Learn data; route Learn users to the same node in
-your proxy. Changes keep being recorded meanwhile, and deletions in Learn are kept, so switching it
-back on **merges** the Learn data of all nodes: a complete transfer runs to every peer and, for the
-same row, the newer change wins.
+Every table of POKYH is exchanged, except the ones that only make sense on the node that wrote
+them (request logs, error reports, backup settings, the cluster's own bookkeeping) and
+`CLUSTER_EXCLUDE_TABLES`. Tables an earlier version of Pokyh Learn left in a database (`learn_*`)
+stay on their node and are never exchanged.
 
 ## Updates without downtime, node by node
 
 Set the repository and branch in the panel (**Cluster** → **Updates**) or with
 `CLUSTER_UPDATE_REPO`/`CLUSTER_UPDATE_BRANCH`. Every node checks the branch (git's own HTTP
-protocol, any git host) and, with `CLUSTER_UPDATE_REQUIRE_CI`, accepts a commit only when all its
-GitHub checks passed. With `CLUSTER_UPDATE_AUTO` new versions roll out by themselves; otherwise the
+protocol, any git host) and, with `CLUSTER_UPDATE_REQUIRE_CI` (off by default: the repository runs
+no checks of its own), accepts a commit only when all its GitHub checks passed. With `CLUSTER_UPDATE_AUTO` new versions roll out by themselves; otherwise the
 panel waits for **Jetzt ausrollen**. Settings changed in the panel apply to every node.
 
 There is **no leader**: every node sorts all nodes by SHA-256(commit, node id), the same order
@@ -251,7 +244,6 @@ The complete list with explanations is in [`.env.example`](../.env.example). The
 | `CLUSTER_PATH_ENDPOINTS` | Ways through your web proxy on the API address (unpinned; used last). |
 | `CLUSTER_CHANNEL_RETRY_SECONDS` | How long calls take another way before the channel is tried again. |
 | `CLUSTER_RELAY_KEYS` · `CLUSTER_RELAY_LABEL` · `CLUSTER_RELAY_DEFAULT_PORT` | Relays for this node only; its name there; the relay port shown in proxy configuration. |
-| `CLUSTER_REPLICATE_LEARN` | Exchange Pokyh Learn (default for the panel switch). |
 | `CLUSTER_INSTALL_TTL_MINUTES` · `CLUSTER_PAIRING_TTL_MINUTES` | How long install commands and invite codes stay valid. |
 | `CLUSTER_UPDATE_*` | Repository, branch, automatic, checks, polling, skipping offline nodes, health timeout, optional GitHub token. |
 | `CLUSTER_ALLOWLIST` · `CLUSTER_PUBLIC_PATH` · `CLUSTER_PORT` | Plain entry points and their address restriction. |
@@ -281,8 +273,8 @@ touches your `.env` or database:
 - [`update.e2e.mjs`](../tests/cluster/update.e2e.mjs): leaderless rollout. A single node, nodes
   catching up with the build of a node that has it, a failure stopping the rollout, retry, release
   by hand, shared settings, the edge forwarder in front of the channel.
-- [`features.e2e.mjs`](../tests/cluster/features.e2e.mjs): targeted popups on every node, Pokyh
-  Learn left out and merged back in, *Weg testen*, the way through a web proxy carrying a locked
+- [`features.e2e.mjs`](../tests/cluster/features.e2e.mjs): targeted popups on every node,
+  *Weg testen*, the way through a web proxy carrying a locked
   link when the channel fails (only while it is offered) with nothing readable on it.
 
 `npm run test:updater` ([`updater.docker.mjs`](../tests/deploy/updater.docker.mjs)) runs the real
@@ -298,6 +290,6 @@ becomes healthy (no request reaches it), roll back, and a tampered build.
 | Install command refused: "public https address" | Open the admin panel under the node's public https address, not an internal one. |
 | Join stays *Tritt bei...* | The invite was used or expired, or one node cannot reach the other: check the ways and **Weg testen**. |
 | Capture could not be set up | The database account may not create triggers: grant `TRIGGER` (with binary logging and a non-`SUPER` account also `log_bin_trust_function_creators=1`). |
-| Peer *Online* but nothing arrives | See the warnings on the Cluster page: a different schema (finish the update), a different Learn setting being taken over, or a peer on hold after a long absence. |
+| Peer *Online* but nothing arrives | See the warnings on the Cluster page: a different schema (finish the update) or a peer on hold after a long absence. |
 | Peer shows *über Web-Proxy (ohne Pinning)* | Its pinned ways fail; check them with **Weg testen**. The link falls back to the API path until they work again. |
 | An update waits | The rollout order shows who is next; a failed node stops it until **Erneut versuchen**. Nodes without the POKYH updater (e.g. Dokploy) are updated where they are deployed. |

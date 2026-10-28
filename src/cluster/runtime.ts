@@ -65,8 +65,6 @@ export interface RemoteView {
   via: string | null;
   // Its version and update state (updates.ts); null from older nodes.
   update: UpdateAdvert | null;
-  // Whether it exchanges Pokyh Learn (null: an older node, which does).
-  learn: boolean | null;
 }
 
 // Where a peer stands in this node's change feed. The durable part
@@ -182,8 +180,8 @@ export const state = {
   nodeName: '',
   // Saved address of this node (see pairing.advertisedAddress).
   advertiseUrl: '',
-  // What is exchanged with the peers (restricted to the replication scope,
-  // scopeRules.ts) — and everything that is captured, a superset.
+  // What is captured and exchanged with the peers (catalog.ts); the two are
+  // the same tables.
   catalog: null as Catalog | null,
   captureCatalog: null as Catalog | null,
   // True once the capture triggers are verified to be in place.
@@ -214,7 +212,7 @@ export function peerByNodeId(nodeId: string): PeerRuntime | undefined {
 }
 
 export function emptyRemoteView(): RemoteView {
-  return { name: null, schema: null, appVersion: null, captureReady: null, peers: [], pairing: [], blocked: [], addr: '', via: null, update: null, learn: null };
+  return { name: null, schema: null, appVersion: null, captureReady: null, peers: [], pairing: [], blocked: [], addr: '', via: null, update: null };
 }
 
 export function nowMicros(): bigint {

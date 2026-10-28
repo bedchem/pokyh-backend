@@ -24,8 +24,7 @@ export async function exportAccountData(stableUid: string) {
   const [
     school, admin, memberships, todos, archivedTodos, reminders, comments, dishRatings, dishComments,
     push, consent, bellMarks, accountDays, usageSessions, webVisits, requestLogs, pageLogs,
-    archivedUsers, archivedActivity, popups, recapViews, learnProfile, learnEnrollments, learnCompletions,
-    learnAttempts, learnReviews, learnEntries, learnActivity, learnTeams, sessions, logins, webPasskeys,
+    archivedUsers, archivedActivity, popups, recapViews, sessions, logins, webPasskeys,
   ] = await Promise.all([
     user.schoolId ? prisma.school.findUnique({ where: { id: user.schoolId }, select: { name: true, webuntisSchool: true } }) : null,
     prisma.admin.findUnique({ where: { stableUid } }),
@@ -48,14 +47,6 @@ export async function exportAccountData(stableUid: string) {
     prisma.archivedActivity.findMany({ where: { stableUid } }),
     prisma.popupTargetUser.findMany({ where: { stableUid }, select: { popupId: true } }),
     prisma.recapView.findMany({ where: { stableUid }, select: { recapId: true, openedAt: true, finishedAt: true } }),
-    prisma.learnProfile.findUnique({ where: { stableUid } }),
-    prisma.learnEnrollment.findMany({ where: { stableUid } }),
-    prisma.learnSectionCompletion.findMany({ where: { stableUid } }),
-    prisma.learnQuizAttempt.findMany({ where: { stableUid }, orderBy: { createdAt: 'asc' } }),
-    prisma.learnVocabularyReview.findMany({ where: { stableUid } }),
-    prisma.learnVocabularyEntry.findMany({ where: { createdBy: stableUid } }),
-    prisma.learnActivityDaily.findMany({ where: { stableUid } }),
-    prisma.learnTeamMember.findMany({ where: { stableUid } }),
     listSessions(stableUid),
     loginHistory(stableUid, 1000),
     prisma.webPasskey.findMany({ where: { stableUid }, select: { rpId: true, createdAt: true, lastUsedAt: true }, orderBy: { createdAt: 'asc' } }),
@@ -111,16 +102,6 @@ export async function exportAccountData(stableUid: string) {
       websitePages: pageLogs,
     },
     previousSchoolYears: { accounts: archivedUsers, activity: archivedActivity },
-    learn: learnProfile || learnEnrollments.length || learnAttempts.length ? {
-      profile: learnProfile,
-      enrollments: learnEnrollments,
-      sectionsCompleted: learnCompletions,
-      quizAttempts: learnAttempts,
-      vocabularyReviews: learnReviews,
-      vocabularyCreated: learnEntries,
-      activityDays: learnActivity,
-      teams: learnTeams,
-    } : null,
   };
 }
 

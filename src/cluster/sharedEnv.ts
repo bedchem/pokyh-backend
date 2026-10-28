@@ -3,7 +3,7 @@
 //
 // Only settings that must be equal on every node for clients to move freely
 // between them (token secrets, keys, admin login, push keys) and policy that
-// should not differ by node (Learn, rate limits, school year, cluster tuning)
+// should not differ by node (rate limits, school year, cluster tuning)
 // are shared, as is the cluster's public address. Everything that identifies
 // or protects one node — database credentials, CLUSTER_SECRET, its own
 // addresses, ports, proxy trust, paths — is never shared; the installer
@@ -42,9 +42,6 @@ const SHARED_KEYS = new Set([
   'CACHE_TTL_MS',
   'SSE_HEARTBEAT_MS',
   'MENSA_IMPORT_URL',
-  'OLLAMA_KEEP_ALIVE',
-  'OLLAMA_NUM_PARALLEL',
-  'OLLAMA_MAX_LOADED_MODELS',
   // Cluster behaviour that every node should apply alike.
   'CLUSTER_AUTO_MESH',
   'CLUSTER_HEARTBEAT_INTERVAL_MS',
@@ -66,7 +63,6 @@ const SHARED_KEYS = new Set([
   'CLUSTER_DEFERRED_MAX_AGE_HOURS',
   'CLUSTER_EXCLUDE_TABLES',
   'CLUSTER_INSTALL_TTL_MINUTES',
-  'CLUSTER_REPLICATE_LEARN',
   'CLUSTER_CHANNEL_RETRY_SECONDS',
   'CLUSTER_UPDATE_REPO',
   'CLUSTER_UPDATE_BRANCH',
@@ -77,12 +73,10 @@ const SHARED_KEYS = new Set([
   'CLUSTER_UPDATE_HEALTH_TIMEOUT_SECONDS',
 ]);
 
-const SHARED_PREFIXES = ['LEARN_', 'RATE_LIMIT_', 'VAPID_', 'WEBUNTIS_', 'SCHOOL_YEAR_ROLLOVER_', 'BACKUP_'];
+const SHARED_PREFIXES = ['RATE_LIMIT_', 'VAPID_', 'WEBUNTIS_', 'SCHOOL_YEAR_ROLLOVER_', 'BACKUP_'];
 
 // Inside a shared prefix, but tied to the node's own containers or disk.
 const NODE_LOCAL_KEYS = new Set([
-  'LEARN_REDIS_URL',
-  'LEARN_AI_OLLAMA_BASE_URL',
   'BACKUP_DIR',
 ]);
 

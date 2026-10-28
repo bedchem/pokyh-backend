@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
-  AlertTriangle, Check, Copy, Database, Hourglass, KeyRound, LogIn, Network, Plus, Power, RefreshCw, Save, Server, ShieldCheck, Terminal, Trash2, UserPlus, Wifi, X,
+  AlertTriangle, Check, Copy, Hourglass, KeyRound, LogIn, Network, Plus, Power, RefreshCw, Save, Server, ShieldCheck, Terminal, Trash2, UserPlus, Wifi, X,
 } from 'lucide-react';
 import { adminApi } from '../api';
 import { useToast } from '../components/Toast';
 import { useAutoRefresh } from '../hooks/useAutoRefresh';
 import { Collapse, Delta, Dialog, Empty, FieldLabel, Figures, FormSection, IconButton, Notice, PageHeader, Section, Segmented, Spinner, Status, Tag, type Tone } from '../components/kit';
-import { Explained, InfoTip, ToggleField } from '../components/cluster/explain';
+import { Explained, InfoTip } from '../components/cluster/explain';
 import { UpdatesSection } from '../components/cluster/UpdatesSection';
 import type { ClusterInstall, ClusterPeer, ClusterStatus, CreatedClusterInstall, InstallWebMode } from '../types';
 import { ReachSection } from '../components/cluster/ReachSection';
@@ -158,7 +158,6 @@ function InstallDialog({ data, onClose, onCreated }: { data: ClusterStatus | nul
   const [name, setName] = useState('');
   const [address, setAddress] = useState('');
   const [acmeEmail, setAcmeEmail] = useState('');
-  const [withAi, setWithAi] = useState(Boolean(data?.node.aiEnabled));
   // How the new server is reached: web access, ports, addresses, sources.
   const [web, setWeb] = useState<InstallWebMode>('none');
   const [webTouched, setWebTouched] = useState(false);
@@ -193,7 +192,6 @@ function InstallDialog({ data, onClose, onCreated }: { data: ClusterStatus | nul
         name: name.trim(),
         address: trimmed || undefined,
         acmeEmail: webMode === 'domain' ? acmeEmail.trim() || undefined : undefined,
-        withAi,
         origin,
         web: webMode,
         ...(webMode === 'proxy' ? { apiPort: Number(apiPort), apiBind: apiBind.trim(), apiFrom: apiFrom.trim() } : {}),
@@ -328,13 +326,6 @@ function InstallDialog({ data, onClose, onCreated }: { data: ClusterStatus | nul
               </div>
             </Collapse>
           </div>
-          <ToggleField
-            checked={withAi}
-            onChange={setWithAi}
-            label="KI-Vokabeltrainer mitinstallieren"
-            hint="Ollama auf dem neuen Server — braucht mindestens 12 GB RAM."
-            tip="Installiert zusätzlich Ollama, das Sprachmodell für den KI-Vokabeltrainer. Hat der Server zu wenig Arbeitsspeicher, lässt der Installer es weg und sagt Bescheid. Ohne KI läuft alles andere ganz normal."
-          />
           <div className="flex flex-col gap-1.5 rounded-[16px] bg-well px-4 py-3 text-[12.5px] leading-relaxed text-ink-3">
             <span className="flex items-center gap-1.5 text-[13px] text-ink-2">
               <ShieldCheck size={14} strokeWidth={1.7} /> So bleibt das sicher
@@ -720,7 +711,6 @@ export function ClusterPage() {
                       <span className="text-[14px] font-medium">{install.name || 'Server'}</span>
                       <span className="font-mono text-[12.5px] text-ink-3">{install.address || 'IP wird erkannt'}</span>
                       <Status tone={state.tone}>{state.label}</Status>
-                      {install.withAi && <Tag tone="violet">mit KI</Tag>}
                     </div>
                     <div className="mt-1 text-[12.5px] text-ink-3">
                       {install.status === 'OPEN' ? `startbar ${remaining(install.expiresAt, now)}` : `erstellt ${ago(install.createdAt)}`}
@@ -771,8 +761,6 @@ export function ClusterPage() {
         </FormSection>
 
         <ReachSection running={Boolean(data?.running)} />
-
-        <ScopeSection data={data} onChanged={() => void load()} />
 
         <UpdatesSection running={Boolean(data?.running)} />
 
@@ -832,64 +820,3 @@ export function ClusterPage() {
   );
 }
 
-// What the nodes exchange — the same for all of them. Changing it here
-// reaches every other node within a heartbeat.
-function ScopeSection({ data, onChanged }: { data: ClusterStatus | null; onChanged: () => void }) {
-  const { showToast } = useToast();
-  const [busy, setBusy] = useState(false);
-  if (!data?.running) return null;
-  const scope = data.scope;
-
-  async function setLearn(learn: boolean) {
-    const question = learn
-      ? 'Pokyh Learn wieder mit allen Nodes abgleichen? Die Learn-Daten aller Nodes werden zusammengeführt — bei derselben Zeile gewinnt die neuere Änderung.'
-      : 'Pokyh Learn nicht mehr abgleichen? Danach behält jede Node ihre eigenen Learn-Daten (Kurse, Vokabeln, Fortschritt). Sinnvoll nur, wenn dein Proxy Learn-Nutzer immer zur selben Node schickt.';
-    if (!window.confirm(question)) return;
-    setBusy(true);
-    try {
-      await adminApi.setClusterScope(learn);
-      showToast(learn ? 'Learn wird wieder abgeglichen — die anderen Nodes übernehmen es sofort' : 'Learn wird nicht mehr abgeglichen — gilt sofort für alle Nodes', 'success');
-      onChanged();
-    } catch (err) {
-      showToast(err instanceof Error ? err.message : 'Speichern fehlgeschlagen', 'error');
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <FormSection
-      icon={Database}
-      title={<Explained tip={<>
-        Was die Nodes untereinander abgleichen. Pokyh selbst (Benutzer, Todos, Klassen, Speiseplan, Popups …) wird immer abgeglichen.
-        <b> Pokyh Learn</b> (Kurse, Vokabeln, Lernfortschritt, Teams, KI-Einstellungen) kann draußen bleiben — dann hat jede Node ihre eigenen
-        Learn-Daten. Die Einstellung gilt für alle Nodes gleich; wird sie hier geändert, übernehmen die anderen sie mit dem nächsten Herzschlag.
-        Wieder eingeschaltet, werden die Learn-Daten aller Nodes zusammengeführt (neuere Änderung gewinnt). Änderungen werden auch im
-        ausgeschalteten Zustand weiter erfasst, damit dabei nichts verloren geht.
-      </>}>Was wird abgeglichen</Explained>}
-      hint="Gilt für alle Nodes gleich."
-    >
-      <div className="flex max-w-[620px] flex-col gap-4">
-        <ToggleField
-          checked={scope.learn}
-          disabled={busy}
-          onChange={(next) => void setLearn(next)}
-          label="Pokyh Learn mit allen Nodes abgleichen"
-          hint={`${scope.learnTables} Learn-Tabellen · ${scope.source === 'env' ? 'Standard aus CLUSTER_REPLICATE_LEARN' : `geändert ${scope.changedAt ? new Date(scope.changedAt).toLocaleString('de-DE') : ''}${scope.changedBy ? ` von ${scope.changedBy}` : ''}`}`}
-          tip="An: Learn-Daten sind auf jeder Node gleich, Schüler können jede Node benutzen. Aus: jede Node hat ihre eigenen Learn-Daten — dann sollte dein Proxy Learn-Anfragen (z. B. /learn) immer an dieselbe Node schicken."
-        />
-        {!scope.learn && (
-          <Notice tone="amber" icon={AlertTriangle}>
-            Learn wird nicht abgeglichen: Jede Node hat ihre eigenen Kurse, Vokabeln und Fortschritte. Schicke Learn-Anfragen in deinem Proxy
-            immer an dieselbe Node, sonst sehen Schüler je nach Node andere Daten.
-          </Notice>
-        )}
-        {scope.differing.length > 0 && (
-          <Notice tone="sky" icon={RefreshCw}>
-            Wird gerade übernommen von: {scope.differing.join(', ')} — bis dahin pausiert der Abgleich mit diesen Nodes kurz.
-          </Notice>
-        )}
-      </div>
-    </FormSection>
-  );
-}

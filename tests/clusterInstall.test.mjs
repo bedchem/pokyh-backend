@@ -41,7 +41,7 @@ function samplePayload(t, overrides = {}) {
     v: 1,
     t: Date.now(),
     node: {
-      name: 'Graz 2', domain: 'node2.example.org', withAi: false, acmeEmail: 'ops@example.org',
+      name: 'Graz 2', domain: 'node2.example.org', acmeEmail: 'ops@example.org',
       web: 'domain', apiPort: 0, apiBind: '', apiFrom: [], clusterPort: 4100, clusterBind: '', clusterFrom: [],
     },
     env: { JWT_SECRET: 'j'.repeat(40), API_KEY: 'k'.repeat(30), ADMIN_PASSWORD_HASH: '$2b$12$abc$def' },
@@ -138,18 +138,18 @@ test('only cluster-wide settings are shared; node secrets and process controls n
     CLUSTER_HEARTBEAT_INTERVAL_MS: '5000',
     DATABASE_URL: 'mysql://root:pw@mysql/pokyh', DB_PASSWORD: 'pw', MYSQL_ROOT_PASSWORD: 'pw', CLUSTER_SECRET: 'cs',
     CLUSTER_ADVERTISE_URL: 'https://a', CLUSTER_MTLS_URL: 'https://a:4100', CLUSTER_NODE_NAME: 'a', PORT: '4000',
-    TRUST_PROXY: 'loopback', PUBLIC_BASE_URL: 'https://a', LEARN_REDIS_URL: 'redis://x', LEARN_AI_OLLAMA_BASE_URL: 'http://o',
+    TRUST_PROXY: 'loopback', PUBLIC_BASE_URL: 'https://a', REDIS_URL: 'redis://x',
     BACKUP_DIR: '/x', NODE_OPTIONS: '--require /tmp/x.js', PATH: '/bin', HOME: '/root', LD_PRELOAD: '/x.so', UNKNOWN_SETTING: 'x',
     CORS_ORIGIN: 'https://ok\nINJECTED=1',
   };
   const result = shared.sharedEnvironment(env);
   for (const key of ['JWT_SECRET', 'REFRESH_TOKEN_SECRET', 'API_KEY', 'SERVER_KEY', 'ADMIN_PASSWORD_HASH', 'ADMIN_USERNAME',
-    'VAPID_PUBLIC_KEY', 'VAPID_PRIVATE_KEY', 'WEBUNTIS_BASE', 'LEARN_AI_ENABLED', 'RATE_LIMIT_AUTH_MAX', 'CLUSTER_HEARTBEAT_INTERVAL_MS',
+    'VAPID_PUBLIC_KEY', 'VAPID_PRIVATE_KEY', 'WEBUNTIS_BASE', 'RATE_LIMIT_AUTH_MAX', 'CLUSTER_HEARTBEAT_INTERVAL_MS',
     'PUBLIC_BASE_URL']) {
     assert.equal(result.values[key], env[key], `${key} is shared`);
   }
   for (const key of ['DATABASE_URL', 'DB_PASSWORD', 'MYSQL_ROOT_PASSWORD', 'CLUSTER_SECRET', 'CLUSTER_ADVERTISE_URL', 'CLUSTER_MTLS_URL',
-    'CLUSTER_NODE_NAME', 'PORT', 'TRUST_PROXY', 'LEARN_REDIS_URL', 'LEARN_AI_OLLAMA_BASE_URL', 'BACKUP_DIR',
+    'CLUSTER_NODE_NAME', 'PORT', 'TRUST_PROXY', 'REDIS_URL', 'BACKUP_DIR', 'LEARN_AI_ENABLED',
     'NODE_OPTIONS', 'PATH', 'HOME', 'LD_PRELOAD', 'UNKNOWN_SETTING']) {
     assert.equal(result.values[key], undefined, `${key} stays on its node`);
   }
@@ -161,7 +161,7 @@ test('the new node\'s env file has its own secrets, the shared ones, and nothing
   const t = sampleToken();
   const payload = bootstrap.validatePayload(samplePayload(t, {
     env: {
-      JWT_SECRET: 'j'.repeat(40), ADMIN_PASSWORD_HASH: '$2b$12$abc$def', LEARN_AI_ENABLED: 'true',
+      JWT_SECRET: 'j'.repeat(40), ADMIN_PASSWORD_HASH: '$2b$12$abc$def',
       // Never sent by a correct node — refused all the same.
       DATABASE_URL: 'mysql://evil', CLUSTER_SECRET: 'evil', NODE_OPTIONS: '--import=data:text/javascript,evil', PATH: '/evil', LD_PRELOAD: '/evil.so',
     },
@@ -179,7 +179,6 @@ test('the new node\'s env file has its own secrets, the shared ones, and nothing
   assert.equal(env.NODE_OPTIONS, undefined);
   assert.equal(env.PATH, undefined);
   assert.equal(env.LD_PRELOAD, undefined);
-  assert.equal(env.LEARN_AI_ENABLED, 'false', 'the AI follows the choice for this server');
   assert.equal(env.CLUSTER_MTLS_URL, 'https://node2.example.org:4100');
   assert.equal(env.CLUSTER_PUBLIC_PATH, 'false', 'the node-to-node channel exists on the pinned port only');
   assert.equal(env.CLUSTER_BOOTSTRAP_DIR, '/app/data/bootstrap');
@@ -196,9 +195,9 @@ test('the new node\'s env file has its own secrets, the shared ones, and nothing
 test('a configuration that does not fit is refused before anything is written', () => {
   const t = sampleToken();
   const refuse = (overrides, pattern) => assert.throws(() => bootstrap.validatePayload(samplePayload(t, overrides), t), pattern);
-  refuse({ node: { name: 'x\nNODE_OPTIONS=evil', domain: 'node2.example.org', withAi: false, acmeEmail: '', web: 'domain', apiPort: 0, apiBind: '', apiFrom: [], clusterPort: 4100, clusterBind: '', clusterFrom: [] } }, /name/);
-  refuse({ node: { name: 'x', domain: 'node2.example.org\n', withAi: false, acmeEmail: '', web: 'domain', apiPort: 0, apiBind: '', apiFrom: [], clusterPort: 4100, clusterBind: '', clusterFrom: [] } }, /domain/);
-  refuse({ node: { name: 'x', domain: 'node2.example.org', withAi: false, acmeEmail: 'a}@b.cd', web: 'domain', apiPort: 0, apiBind: '', apiFrom: [], clusterPort: 4100, clusterBind: '', clusterFrom: [] } }, /e-mail/);
+  refuse({ node: { name: 'x\nNODE_OPTIONS=evil', domain: 'node2.example.org', acmeEmail: '', web: 'domain', apiPort: 0, apiBind: '', apiFrom: [], clusterPort: 4100, clusterBind: '', clusterFrom: [] } }, /name/);
+  refuse({ node: { name: 'x', domain: 'node2.example.org\n', acmeEmail: '', web: 'domain', apiPort: 0, apiBind: '', apiFrom: [], clusterPort: 4100, clusterBind: '', clusterFrom: [] } }, /domain/);
+  refuse({ node: { name: 'x', domain: 'node2.example.org', acmeEmail: 'a}@b.cd', web: 'domain', apiPort: 0, apiBind: '', apiFrom: [], clusterPort: 4100, clusterBind: '', clusterFrom: [] } }, /e-mail/);
   refuse({ env: { CORS_ORIGIN: 'a\nb' } }, /setting/);
   refuse({ env: { 'lower case': 'x' } }, /setting/);
   refuse({ bundle: { sha256: 'xyz', bytes: 1 } }, /hash/);
@@ -208,7 +207,7 @@ test('a configuration that does not fit is refused before anything is written', 
   refuse({ cluster: { url: t.url, nodeId: t.nodeId, name: 'Graz\nX=1', cert: node.certPem, pairingUntil: 1 } }, /name/);
 });
 
-test('the Caddyfile, compose settings and AI sizing follow the choices', () => {
+test('the Caddyfile and compose settings follow the choices', () => {
   const caddy = bootstrap.renderCaddyfile({ domain: 'node2.example.org', acmeEmail: 'ops@example.org', tlsInternal: false });
   assert.match(caddy, /email ops@example\.org/);
   assert.match(caddy, /^node2\.example\.org \{$/m);
@@ -217,14 +216,10 @@ test('the Caddyfile, compose settings and AI sizing follow the choices', () => {
   assert.match(caddy, /lb_try_duration/);
   assert.doesNotMatch(caddy, /tls internal/);
   assert.match(bootstrap.renderCaddyfile({ domain: 'a.b', acmeEmail: '', tlsInternal: true }), /tls internal/);
-  assert.deepEqual(bootstrap.aiPlan({ withAi: false, memKb: 64e6, cpus: 8 }), { enabled: false, note: '' });
-  assert.equal(bootstrap.aiPlan({ withAi: true, memKb: 8 * 1024 * 1024, cpus: 8 }).enabled, false, 'too little memory');
-  const big = bootstrap.aiPlan({ withAi: true, memKb: 32 * 1024 * 1024, cpus: 8 });
-  assert.deepEqual([big.enabled, big.memLimit, big.cpus], [true, '10g', '4']);
   const withDomain = { web: 'domain', clusterPort: 4100, clusterBind: '', apiPort: 0, apiBind: '' };
   const without = { web: 'none', clusterPort: 4100, clusterBind: '', apiPort: 0, apiBind: '' };
-  assert.match(bootstrap.renderComposeEnv({ ai: big, node: withDomain }), /^COMPOSE_PROFILES=blue,web,ai$/m);
-  const plain = bootstrap.renderComposeEnv({ ai: { enabled: false }, node: without, runtime: { repo: 'https://github.com/bedchem/pokyh-backend', branch: 'main' } });
+  assert.match(bootstrap.renderComposeEnv({ node: withDomain }), /^COMPOSE_PROFILES=blue,web$/m);
+  const plain = bootstrap.renderComposeEnv({ node: without, runtime: { repo: 'https://github.com/bedchem/pokyh-backend', branch: 'main' } });
   assert.match(plain, /^COMPOSE_PROFILES=blue$/m, 'no domain: no Caddy');
   assert.match(plain, /^POKYH_RUNTIME_REPO=https:\/\/github\.com\/bedchem\/pokyh-backend$/m);
   assert.match(plain, /^POKYH_RUNTIME_BRANCH=main$/m);
@@ -362,7 +357,7 @@ test('the token names the inviting node\'s public address, and the bootstrap rea
 
 test('a node without a domain is reached at its IP and serves no web of its own', () => {
   const t = sampleToken();
-  const ipOnly = samplePayload(t, { node: { name: 'Homelab', domain: '', address: '203.0.113.20', withAi: false, acmeEmail: '', web: 'none', apiPort: 0, apiBind: '', apiFrom: [], clusterPort: 4100, clusterBind: '', clusterFrom: [] } });
+  const ipOnly = samplePayload(t, { node: { name: 'Homelab', domain: '', address: '203.0.113.20', acmeEmail: '', web: 'none', apiPort: 0, apiBind: '', apiFrom: [], clusterPort: 4100, clusterBind: '', clusterFrom: [] } });
   assert.doesNotThrow(() => bootstrap.validatePayload(ipOnly, t));
   const env = Object.fromEntries(bootstrap.buildEnvFile({ payload: ipOnly, secrets: { mysqlRootPassword: 'pw', clusterSecret: 'cs' }, generatedAt: 'now' })
     .split('\n').filter((line) => /^[A-Z]/.test(line)).map((line) => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)]));
@@ -372,7 +367,7 @@ test('a node without a domain is reached at its IP and serves no web of its own'
   assert.equal(env.POKYH_ACTIVATION_FILE, '/app/data/update/active');
   assert.equal(bootstrap.channelHost({ domain: '', address: '2001:db8::5' }), '[2001:db8::5]');
   assert.equal(bootstrap.channelHost({ domain: '', address: '' }), '', 'unknown: reached through relays only');
-  assert.throws(() => bootstrap.validatePayload(samplePayload(t, { node: { name: 'x', domain: '', address: 'not-an-ip', withAi: false, acmeEmail: '', web: 'none', apiPort: 0, apiBind: '', apiFrom: [], clusterPort: 4100, clusterBind: '', clusterFrom: [] } }), t), /address/);
+  assert.throws(() => bootstrap.validatePayload(samplePayload(t, { node: { name: 'x', domain: '', address: 'not-an-ip', acmeEmail: '', web: 'none', apiPort: 0, apiBind: '', apiFrom: [], clusterPort: 4100, clusterBind: '', clusterFrom: [] } }), t), /address/);
   assert.throws(() => bootstrap.validatePayload(samplePayload(t, { update: { repo: 'http://evil.example/x/y', branch: 'main' } }), t), /update/);
   assert.throws(() => bootstrap.validatePayload(samplePayload(t, { update: { repo: '', branch: '../x' } }), t), /update/);
 });

@@ -19,8 +19,6 @@ const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
 const MARKER = 'PLAINTEXT-MARKER-7f3a91c2';
 
 const users = {};
-let courseId;
-let sectionIds;
 let classId;
 let dishId;
 
@@ -118,38 +116,6 @@ test('audit fixes hold on a running server', async () => {
   users.anna.refreshToken = refreshed.json.refreshToken;
 });
 
-test('a personal import within the configured limits completes', async () => {
-  const uuid = () => crypto.randomUUID();
-  const courses = Array.from({ length: 4 }, (_, n) => {
-    const sections = Array.from({ length: 10 }, (_, i) => ({ sourceRef: uuid(), title: `Abschnitt ${i}` }));
-    return {
-      sourceRef: uuid(),
-      title: `Importkurs ${n}`,
-      sections,
-      completedSectionRefs: [sections[0].sourceRef],
-      vocabulary: Array.from({ length: 1000 }, (_, i) => ({
-        sourceRef: uuid(),
-        sectionRef: sections[i % sections.length].sourceRef,
-        sourceLanguage: 'en',
-        targetLanguage: 'de',
-        sourceText: `word ${n}-${i}`,
-        targetText: `Wort ${n}-${i}`,
-        review: { intervalDays: 1, easeFactor: 2.5, dueAt: new Date().toISOString(), correctCount: 1, incorrectCount: 0, lastWasCorrect: true },
-      })),
-      enrollment: { status: 'ACTIVE', progressPercent: 0, completedSections: 0 },
-    };
-  });
-  // Imported on C, which stays unpaired for a while: the rows then also
-  // exercise the transfer of a larger existing data set later on.
-  const importer = await cluster.login(c, 'importeur');
-  const res = await cluster.request(c, 'POST', '/learn/library/import', {
-    token: importer.token,
-    body: { kind: 'pokyh-learn-personal-export', version: 1, courses },
-  });
-  assert.equal(res.status, 201, res.text.slice(0, 300));
-  assert.equal(res.json.imported.vocabularyCount, 4000);
-});
-
 // ─── Data that exists before the cluster does ────────────────────────────────
 
 test('seed data on the first node', async () => {
@@ -173,36 +139,6 @@ test('seed data on the first node', async () => {
   assert.equal(image.status, 200, image.text);
   const rating = await cluster.request(a, 'POST', `/dish-ratings/${dishId}`, { token: users.anna.token, body: { stars: 4 } });
   assert.equal(rating.status, 200, rating.text);
-
-  const course = await cluster.request(a, 'POST', '/learn/courses', {
-    token: users.anna.token,
-    body: {
-      title: 'Englisch Unit 1',
-      sections: [{ title: 'Eins' }, { title: 'Zwei' }, { title: 'Drei' }],
-    },
-  });
-  assert.equal(course.status, 201, course.text);
-  courseId = course.json.id;
-  sectionIds = course.json.sections.map((section) => section.id);
-  assert.equal(sectionIds.length, 3);
-});
-
-test('reordering one list from several requests at once succeeds every time', async () => {
-  // Without a retry, a good part of these requests fails with a lock conflict.
-  const statuses = [];
-  for (let round = 0; round < 10; round++) {
-    statuses.push(...await Promise.all(Array.from({ length: 6 }, (_, i) => {
-      const shift = (i + round) % sectionIds.length;
-      const rotated = [...sectionIds.slice(shift), ...sectionIds.slice(0, shift)];
-      return cluster.request(a, 'POST', `/learn/courses/${courseId}/sections/reorder`, { token: users.anna.token, body: { sectionIds: rotated } })
-        .then((res) => res.status);
-    })));
-  }
-  assert.deepEqual(statuses.filter((status) => status !== 200), []);
-  const rows = await a.db.$queryRawUnsafe('SELECT sort_order FROM learn_course_sections WHERE course_id = ? ORDER BY sort_order', courseId);
-  assert.deepEqual(rows.map((row) => row.sort_order), [0, 1, 2], 'the list is left in a clean order');
-  // Back to a known order for the tests that follow.
-  await cluster.request(a, 'POST', `/learn/courses/${courseId}/sections/reorder`, { token: users.anna.token, body: { sectionIds } });
 });
 
 // ─── Pairing ─────────────────────────────────────────────────────────────────
@@ -340,15 +276,6 @@ test('a live update reaches a browser connected to another node', async () => {
     controller.abort();
     await pump;
   }
-});
-
-test('a reordered list arrives intact', async () => {
-  const reversed = [...sectionIds].reverse();
-  const res = await cluster.request(a, 'POST', `/learn/courses/${courseId}/sections/reorder`, { token: users.anna.token, body: { sectionIds: reversed } });
-  assert.equal(res.status, 200, res.text);
-  await cluster.converged([a, b]);
-  const rows = await b.db.$queryRawUnsafe('SELECT id FROM learn_course_sections WHERE course_id = ? ORDER BY sort_order', courseId);
-  assert.deepEqual(rows.map((row) => row.id), reversed);
 });
 
 test('writes that bypass the application are captured as well', async () => {
@@ -552,19 +479,6 @@ test('nodes that were separated converge on one consistent state', async () => {
   await cluster.request(a, 'POST', '/users/doppelt/todos', { token: onA.token, body: { title: 'gehört dem ersten Konto' } });
   await cluster.request(b, 'POST', '/users/doppelt/todos', { token: onB.token, body: { title: 'gehört dem zweiten Konto' } });
 
-  // A new list entry at the same position on both sides.
-  const sectionA = await cluster.request(a, 'POST', `/learn/courses/${courseId}/sections`, { token: users.anna.token, body: { title: 'neu auf A' } });
-  const sectionB = await cluster.request(b, 'POST', `/learn/courses/${courseId}/sections`, { token: users.anna.token, body: { title: 'neu auf B' } });
-  assert.equal(sectionA.status, 201, sectionA.text);
-  assert.equal(sectionB.status, 201, sectionB.text);
-  assert.equal(sectionA.json.sortOrder, sectionB.json.sortOrder);
-
-  // Two different courses that picked the same address.
-  const courseA = await cluster.request(a, 'POST', '/learn/courses', { token: users.anna.token, body: { title: 'Kurs von A', slug: 'gleiche-adresse' } });
-  const courseB = await cluster.request(b, 'POST', '/learn/courses', { token: users.ben.token, body: { title: 'Kurs von B', slug: 'gleiche-adresse' } });
-  assert.equal(courseA.status, 201, courseA.text);
-  assert.equal(courseB.status, 201, courseB.text);
-
   // Reconnect.
   for (const peer of sa.peers) {
     assert.equal((await cluster.admin(a, 'PATCH', `/cluster/peers/${peer.id}`, { enabled: true })).status, 200);
@@ -583,16 +497,6 @@ test('nodes that were separated converge on one consistent state', async () => {
     assert.equal(accounts[0].stable_uid, onA.user.stableUid, `${node.name}: the account created first is kept`);
     const owned = await node.db.$queryRawUnsafe('SELECT title FROM todos WHERE stable_uid IN (?, ?)', onA.user.stableUid, onB.user.stableUid);
     assert.deepEqual(owned.map((todo) => todo.title), ['gehört dem ersten Konto'], node.name);
-
-    const sections = await node.db.$queryRawUnsafe('SELECT title, sort_order FROM learn_course_sections WHERE course_id = ? ORDER BY sort_order', courseId);
-    assert.equal(sections.length, 5, `${node.name}: both new entries are kept`);
-    assert.equal(new Set(sections.map((section) => section.sort_order)).size, 5, `${node.name}: every position is unique`);
-    assert.ok(sections.some((section) => section.title === 'neu auf A') && sections.some((section) => section.title === 'neu auf B'));
-
-    const courses = await node.db.$queryRawUnsafe("SELECT title, slug FROM learn_courses WHERE slug LIKE 'gleiche-adresse%' ORDER BY title");
-    assert.deepEqual(courses.map((course) => course.title), ['Kurs von A', 'Kurs von B'], `${node.name}: both courses are kept`);
-    assert.equal(new Set(courses.map((course) => course.slug)).size, 2, `${node.name}: their addresses differ now`);
-    assert.ok(courses.some((course) => course.slug === 'gleiche-adresse'), `${node.name}: one course keeps the address`);
   }
 });
 
@@ -673,13 +577,11 @@ test('many simultaneous writers on two nodes neither fail nor block each other',
       return statuses;
     });
   }
-  // Meanwhile a list is reordered again and again on the third node.
-  const order = (await c.db.$queryRawUnsafe('SELECT id FROM learn_course_sections WHERE course_id = ? ORDER BY sort_order', courseId)).map((row) => row.id);
+  // Meanwhile one account writes again and again on the third node.
   tasks.push(async () => {
     const statuses = [];
     for (let i = 0; i < 8; i++) {
-      const rotated = [...order.slice(i % order.length), ...order.slice(0, i % order.length)];
-      statuses.push((await cluster.request(c, 'POST', `/learn/courses/${courseId}/sections/reorder`, { token: users.anna.token, body: { sectionIds: rotated } })).status);
+      statuses.push((await cluster.request(c, 'POST', '/users/anna/todos', { token: users.anna.token, body: { title: `auf C ${i}` } })).status);
     }
     return statuses;
   });

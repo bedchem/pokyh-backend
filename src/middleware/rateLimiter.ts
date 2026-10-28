@@ -28,13 +28,10 @@ export const globalLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many requests, please try again later.' },
-  // Learn's BFF multiplexes many authenticated people through one server IP.
-  // Its own route-level limiters use the verified stable UID after auth, so do
-  // not make all learners compete for the application's IP-wide global bucket.
   // The usage heartbeat (once a minute per open app) has its own per-account
-  // limiter too; behind a school's single address it would otherwise use up
-  // the bucket that real requests need.
-  skip: (req) => req.method === 'OPTIONS' || hasValidServerKey(req) || req.path.startsWith('/learn') || req.path === '/usage/ping',
+  // limiter; behind a school's single address it would otherwise use up the
+  // bucket that real requests need.
+  skip: (req) => req.method === 'OPTIONS' || hasValidServerKey(req) || req.path === '/usage/ping',
 });
 
 export const authLimiter = rateLimit({
@@ -45,24 +42,6 @@ export const authLimiter = rateLimit({
   message: { error: 'Too many authentication attempts, please try again later.' },
   // Trusted server-to-server logins bypass the per-IP brute-force limiter.
   skip: (req) => hasValidServerKey(req),
-});
-
-// The Learn login BFF is already API-key protected but all authenticating users
-// arrive from the same host. Key this sensitive operation by the normalized
-// submitted username rather than the BFF IP, so one failed account cannot deny
-// service to the whole school. WebUntis remains the actual credential check.
-export const learnLoginLimiter = rateLimit({
-  windowMs: config.rateLimit.authWindowMs,
-  max: config.rateLimit.authMax,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: 'Too many authentication attempts, please try again later.' },
-  keyGenerator: (req) => {
-    const candidate = req.body && typeof req.body === 'object' && typeof req.body.username === 'string'
-      ? req.body.username.trim().toLocaleLowerCase('en-US').slice(0, 100)
-      : 'invalid-request';
-    return `learn-login:${candidate}`;
-  },
 });
 
 // Token refresh limiter — generous because refresh is gated by an unguessable
@@ -78,13 +57,11 @@ export const refreshLimiter = rateLimit({
 
 // Guards the DB-issued-API-key lookup path (src/middleware/apiKey.ts): every
 // request whose key doesn't match the static master key costs one indexed
-// Prisma round-trip, including /learn/* traffic, which globalLimiter above
-// deliberately skips. Without this, an unauthenticated caller could hammer
-// the shared production database with garbage keys at unlimited volume. Keyed
-// by IP (not by the learn-specific stableUid limiters, which are never
-// reached for an invalid key) and sized like readLimiter — generous enough
-// for legitimate issued-key integrations, which always miss the static-key
-// fast path and land here on every call.
+// Prisma round-trip. Without this, an unauthenticated caller could hammer the
+// shared production database with garbage keys at unlimited volume. Keyed by
+// IP and sized like readLimiter — generous enough for legitimate issued-key
+// integrations, which always miss the static-key fast path and land here on
+// every call.
 export const apiKeyLookupLimiter = rateLimit({
   windowMs: config.rateLimit.readWindowMs,
   max: config.rateLimit.readMax,
@@ -107,42 +84,6 @@ export const readLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many read requests, please slow down.' },
-});
-
-// These limiters must be mounted only after requireAuth. The BFF turns all
-// browser traffic into one backend source IP, so a stable user ID is the only
-// fair and reliable key for protected Learn reads/writes.
-export const learnReadLimiter = rateLimit({
-  windowMs: config.rateLimit.readWindowMs,
-  max: config.rateLimit.readMax,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: 'Too many learning reads, please slow down.' },
-  keyGenerator: (req) => `learn-read:${req.user?.stableUid ?? 'unauthenticated'}`,
-});
-
-export const learnWriteLimiter = rateLimit({
-  windowMs: config.rateLimit.writeWindowMs,
-  max: config.rateLimit.writeMax,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: 'Too many learning changes, please slow down.' },
-  keyGenerator: (req) => `learn-write:${req.user?.stableUid ?? 'unauthenticated'}`,
-});
-
-// Baseline abuse protection for the AI vocabulary trainer, keyed like the other Learn
-// limiters above. This is deliberately generous compared to the real quota:
-// the admin-configurable per-hour sentence-request limit (src/services/learnAiRateLimit.ts)
-// is the actual product-facing control; this just bounds request rate itself
-// so one client can't hammer the endpoint (and the self-hosted CPU model)
-// with malformed/duplicate requests faster than a person could ever type.
-export const learnAiLimiter = rateLimit({
-  windowMs: config.rateLimit.writeWindowMs,
-  max: config.rateLimit.writeMax,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: 'Too many vocabulary trainer requests, please slow down.' },
-  keyGenerator: (req) => `learn-ai:${req.user?.stableUid ?? 'unauthenticated'}`,
 });
 
 // Live streams (EventSource). The website opens them straight from the browser,

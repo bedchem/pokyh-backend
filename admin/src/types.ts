@@ -562,233 +562,6 @@ export interface CreatedApiKey extends AdminApiKey {
   key: string;
 }
 
-export interface LearnConfigValues {
-  legalGateEnabled: boolean;
-  legalGateReady: boolean;
-  hasWebUntisAuthorizationReference: boolean;
-  privacyNoticeUrl: string;
-  privacyNoticeVersion: string;
-  dictionaryEnabled: boolean;
-  dictionaryProvider: string;
-  dictionaryBaseUrl: string;
-  dictionaryContactEmail: string;
-  dictionaryAllowedPairs: string;
-  dictionaryTimeoutMs: number;
-  dictionaryCacheTtlMs: number;
-  dictionaryMaxCacheEntries: number;
-  dictionaryValidationEnabled: boolean;
-  dictionaryValidationProvider: string;
-  dictionaryValidationBaseUrl: string;
-  dictionaryValidationTimeoutMs: number;
-  dictionaryValidationCacheTtlMs: number;
-  dictionaryValidationMaxCacheEntries: number;
-  reviewInitialIntervalDays: number;
-  reviewMaxIntervalDays: number;
-  reviewMinimumEase: number;
-  reviewMaximumEase: number;
-  reviewCorrectEaseStep: number;
-  reviewIncorrectEasePenalty: number;
-  reviewWrongDelayMinutes: number;
-  analyticsRetentionDays: number;
-  importMaxCourses: number;
-  importMaxSectionsPerCourse: number;
-  importMaxVocabularyPerCourse: number;
-}
-
-// ── Learn AI vocabulary trainer administration ───────────────────────────────────
-// Access is separate from this config: it always additionally requires a
-// LearnAiGrant (personal) or LearnAiTeamGrant (team) below — `enabled` here
-// is only the platform-wide kill-switch, never a substitute for a grant.
-export interface LearnAiConfigValues {
-  enabled: boolean;
-  modelName: string;
-  contextTokens: number;
-  numPredictFast: number;
-  rateLimitMessagesPerHour: number;
-  maxConcurrentTrainingGenerations: number;
-  ollamaBaseUrl: string;
-  ollamaTimeoutMs: number;
-}
-
-export interface LearnAiGrant {
-  stableUid: string;
-  username: string;
-  grantedBy: string;
-  grantedAt: string;
-  revokedBy: string | null;
-  revokedAt: string | null;
-  note: string;
-}
-
-export interface LearnAiTeamGrant {
-  teamId: string;
-  teamName: string;
-  memberCount: number;
-  grantedBy: string;
-  grantedAt: string;
-  revokedBy: string | null;
-  revokedAt: string | null;
-  note: string;
-}
-
-// ── Learn group administration ──────────────────────────────────────────────
-// These values intentionally reflect the admin-only `/api/admin/learn/teams`
-// response. It exposes membership and aggregate course counts, never course
-// content, answer data, credentials, or API-key material.
-export type LearnTeamRole = 'OWNER' | 'MANAGER' | 'MEMBER';
-export type LearnTeamAssignableRole = Exclude<LearnTeamRole, 'OWNER'>;
-
-export interface AdminLearnTeamMember {
-  stableUid: string;
-  role: LearnTeamRole;
-  joinedAt: string;
-  user: {
-    username: string;
-    isUntisUser: boolean;
-  } | null;
-}
-
-export interface AdminLearnTeam {
-  id: string;
-  name: string;
-  description: string;
-  createdAt: string;
-  updatedAt: string;
-  creator: { username: string } | null;
-  memberCount: number;
-  courseCount: number;
-  members: AdminLearnTeamMember[];
-}
-
-// ── Learn course administration ─────────────────────────────────────────────
-// The admin course surface carries operational metadata and explicit grants
-// only. It intentionally does not expose lesson JSON, vocabulary/answer text,
-// quiz attempts, or learner analytics.
-export type LearnCourseStatus = 'DRAFT' | 'PUBLISHED' | 'ARCHIVED';
-export type LearnCourseVisibility = 'PRIVATE' | 'TEAM' | 'PUBLIC';
-export type LearnCoursePermission = 'VIEW' | 'EDIT' | 'MANAGE';
-
-export interface AdminLearnCourseCounts {
-  sections: number;
-  vocabulary: number;
-  enrollments: number;
-  directAccess: number;
-}
-
-export interface AdminLearnCourse {
-  id: string;
-  slug: string;
-  title: string;
-  summary: string;
-  subject: string;
-  language: string;
-  level: string;
-  visibility: LearnCourseVisibility;
-  status: LearnCourseStatus;
-  coverImageUrl: string;
-  ownerLocked: boolean;
-  createdAt: string;
-  updatedAt: string;
-  creator: { username: string };
-  team: { id: string; name: string } | null;
-  counts: AdminLearnCourseCounts;
-}
-
-export interface AdminLearnCourseAccess {
-  stableUid: string;
-  permission: LearnCoursePermission;
-  createdAt: string;
-  updatedAt: string;
-  user: {
-    username: string;
-    isUntisUser: boolean;
-  };
-}
-
-export interface AdminLearnCoursesResponse {
-  courses: AdminLearnCourse[];
-  total: number;
-  page: number;
-  limit: number;
-}
-
-export interface AdminLearnCourseAccessResponse {
-  course: AdminLearnCourse;
-  access: {
-    items: AdminLearnCourseAccess[];
-    total: number;
-    page: number;
-    limit: number;
-  };
-}
-
-// ── Learn vocabulary list administration ────────────────────────────────────
-// A "vocabulary list" is a Learn course's vocabulary entries. Unlike the
-// learner-facing quiz surface, these admin views intentionally include the
-// target-language translation — this is the admin's own authoritative view
-// of curated content, not something a learner could read answers from.
-export type LearnVocabularyVerificationStatus = 'UNVERIFIED' | 'VERIFIED' | 'FLAGGED';
-
-export interface AdminLearnVocabularyEntry {
-  id: string;
-  sourceLanguage: string;
-  targetLanguage: string;
-  sourceText: string;
-  targetText: string;
-  article: string;
-  partOfSpeech: string;
-  notes: string;
-  tags: string[];
-  verificationStatus: LearnVocabularyVerificationStatus;
-  verificationSource: string;
-  createdAt: string;
-  updatedAt: string;
-  creator: { username: string };
-}
-
-export interface AdminLearnCourseVocabularyResponse {
-  course: AdminLearnCourse;
-  vocabulary: {
-    items: AdminLearnVocabularyEntry[];
-    total: number;
-    page: number;
-    limit: number;
-  };
-}
-
-export type LearnVocabularyImportOutcome =
-  | 'added'
-  | 'synonym_added'
-  | 'duplicate_exact'
-  | 'duplicate_near_translation'
-  | 'duplicate_near_source'
-  | 'skipped_missing_translation';
-
-export interface AdminLearnVocabularyImportResultItem {
-  sourceText: string;
-  targetText: string;
-  outcome: LearnVocabularyImportOutcome;
-  matchedExisting: { sourceText: string; targetText: string } | null;
-  possibleTypoOf: string | null;
-  dictionaryAdvisory: { translation: string; matchesIncoming: boolean } | null;
-}
-
-export interface AdminLearnVocabularyImportSummary {
-  totalIncoming: number;
-  added: number;
-  synonymAdded: number;
-  duplicateExact: number;
-  duplicateNearTranslation: number;
-  duplicateNearSource: number;
-  skippedMissingTranslation: number;
-}
-
-export interface AdminLearnVocabularyImportResponse {
-  course: AdminLearnCourse | null;
-  summary: AdminLearnVocabularyImportSummary;
-  results: AdminLearnVocabularyImportResultItem[];
-}
-
 export interface BackupFile {
   filename: string;
   createdAt: string;
@@ -984,7 +757,6 @@ export interface ClusterInstall {
   address: string;
   web: InstallWebMode;
   name: string;
-  withAi: boolean;
   failures: number;
   expiresAt: string;
   provisionedAt: string | null;
@@ -1015,20 +787,10 @@ export interface CreatedClusterInstall {
   scriptSha256: string;
 }
 
-export interface ClusterScope {
-  learn: boolean;
-  source: 'env' | 'panel';
-  changedAt: string | null;
-  changedBy: string | null;
-  learnTables: number;
-  differing: string[];
-}
-
 export interface ClusterStatus {
   enabled: boolean;
   running: boolean;
   paused: boolean;
-  scope: ClusterScope;
   node: {
     id: string;
     name: string;
@@ -1046,7 +808,6 @@ export interface ClusterStatus {
     verifyIntervalMinutes: number;
     inviteMinutes: number;
     installMinutes: number;
-    aiEnabled: boolean;
     apiPort: number;
     clusterPort: number;
   };
@@ -1290,7 +1051,6 @@ export interface AdminAnalytics {
     local: number;
     newInRange: number;
     withPush: number;
-    withLearn: number;
     admins: number;
     classes: number;
     oldestDays: number;
@@ -1308,10 +1068,6 @@ export interface AdminAnalytics {
     dishComments: number;
     dishRatings: number;
     avgStars: number | null;
-    learnAnswers: number;
-    learnCorrect: number;
-    learnMinutes: number;
-    learnLearners: number;
     pageViews: number;
     downloads: number;
   };
@@ -1379,7 +1135,7 @@ export interface AnalyticsPeople {
 }
 
 // GET /api/admin/analytics/breakdown — what a "created" figure is made of.
-export type BreakdownKind = 'todos' | 'reminders' | 'reminderComments' | 'downloads' | 'learn';
+export type BreakdownKind = 'todos' | 'reminders' | 'reminderComments' | 'downloads';
 
 export interface AnalyticsBreakdown {
   kind: BreakdownKind;
@@ -1719,7 +1475,7 @@ export interface AuditEventsResponse {
 
 // ─── Requests and monitoring ──────────────────────────────────────────────────
 
-export type RequestScopeChoice = 'app' | 'core' | 'learn' | 'admin' | 'all';
+export type RequestScopeChoice = 'app' | 'core' | 'admin' | 'all';
 
 export interface EndpointStat {
   endpoint: string;

@@ -101,51 +101,6 @@ function fixTextDefaults(stmt: string): string {
   );
 }
 
-// The general Learn AI chat was intentionally retired in favour of the
-// vocabulary-only trainer. These are exact, former chat-only tables/columns
-// from that feature; they hold no vocabulary, course, enrollment, grant, or
-// review state. This one-purpose cleanup is deliberately kept separate from
-// the additive reconciler above, which otherwise never executes destructive
-// DDL. It is safe to repeat: we inspect the current schema first and issue
-// fixed statements only for objects that still exist.
-const RETIRED_AI_CHAT_TABLES = [
-  'learn_ai_attachments',
-  'learn_ai_messages',
-  'learn_ai_conversations',
-] as const;
-const RETIRED_AI_CHAT_CONFIG_COLUMNS = [
-  'personalized_context_enabled',
-  'upload_max_bytes',
-  'uploads_enabled',
-] as const;
-
-async function removeRetiredAiChatSchema(): Promise<void> {
-  const tables = await prisma.$queryRawUnsafe<Array<{ TABLE_NAME: string }>>(
-    "SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN ('learn_ai_attachments', 'learn_ai_messages', 'learn_ai_conversations')",
-  );
-  const existingTables = new Set(tables.map((row) => row.TABLE_NAME));
-  let removedTables = 0;
-  for (const table of RETIRED_AI_CHAT_TABLES) {
-    if (!existingTables.has(table)) continue;
-    await prisma.$executeRawUnsafe(`DROP TABLE \`${table}\``);
-    removedTables++;
-  }
-
-  const columns = await prisma.$queryRawUnsafe<Array<{ COLUMN_NAME: string }>>(
-    "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'learn_ai_config' AND COLUMN_NAME IN ('personalized_context_enabled', 'upload_max_bytes', 'uploads_enabled')",
-  );
-  const existingColumns = new Set(columns.map((row) => row.COLUMN_NAME));
-  let removedColumns = 0;
-  for (const column of RETIRED_AI_CHAT_CONFIG_COLUMNS) {
-    if (!existingColumns.has(column)) continue;
-    await prisma.$executeRawUnsafe(`ALTER TABLE \`learn_ai_config\` DROP COLUMN \`${column}\``);
-    removedColumns++;
-  }
-  if (removedTables || removedColumns) {
-    logger.info('Retired general AI chat data removed', { removedTables, removedColumns });
-  }
-}
-
 // Apply the additive portion of the schema diff. Returns the number of
 // statements executed. Throws only if generating the diff fails — individual
 // statement errors are logged and skipped so one stale object can't block the
@@ -157,7 +112,6 @@ export async function applyAdditiveSchema(): Promise<number> {
   const skipped   = statements.length - additive.length;
 
   if (additive.length === 0) {
-    await removeRetiredAiChatSchema();
     if (skipped > 0) {
       logger.warn(`Schema diff has ${skipped} change(s), but all are destructive — skipped to protect data. Run a migration manually if intended.`);
     }
@@ -177,7 +131,6 @@ export async function applyAdditiveSchema(): Promise<number> {
       logger.warn(`Additive schema statement failed (continuing): ${msg}`);
     }
   }
-  await removeRetiredAiChatSchema();
   logger.info(`Additive schema sync applied ${applied}/${additive.length} statement(s)${skipped ? `, skipped ${skipped} destructive` : ''}`);
   return applied;
 }

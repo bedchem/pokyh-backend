@@ -30,12 +30,8 @@ import { closeCache } from './services/cache';
 import { migrateStableKeys } from './utils/dishKey';
 import { reconcileDishRatings } from './services/dishRatings';
 import { logger } from './utils/logger';
-import { getLearnConfig } from './services/learnConfig';
-import { ensureModelReady } from './services/learnAiOllama';
-import { learningDayKey } from './services/learnAnalytics';
 import { localDayAndHour } from './services/usageAnalytics';
 import { keyUnkeyedVisits } from './services/visitorKey';
-import { closeLearnCache } from './services/learnCache';
 import { isSameOrigin, withWwwOriginAlias } from './utils/cors';
 import { loadSessionRevocations, loadTokenRevocations } from './utils/revokedTokens';
 import { cleanupSessions } from './services/sessions';
@@ -118,7 +114,6 @@ if (parsedCorsOrigins.length === 0 && config.corsOrigin.trim() !== '') {
 
 const allowedOrigins = new Set([
   ...parsedCorsOrigins.flatMap(withWwwOriginAlias),
-  ...config.learnAllowedOrigins,
   ...(config.isDev ? ['http://localhost:3000', 'http://localhost:3001', 'http://localhost:3005', 'http://localhost:5173'] : []),
   `http://localhost:${config.port}`,
   `https://localhost:${config.port}`,
@@ -164,13 +159,6 @@ app.use(SETUP_PATH, createSetupRouter());
 
 // Larger body limit for image upload routes; biggest for full-DB JSON import
 app.use('/api/admin/import', express.json({ limit: config.bodyLimitImport }));
-// Learn personal imports are separately scoped and never share the legacy
-// database-import route, but they need the same configured size budget.
-app.use('/learn/library/import', express.json({ limit: config.bodyLimitImport }));
-// A vocabulary-list merge import can carry up to a course's full configured
-// word cap worth of text/notes/tags, which can exceed the general admin
-// body limit below.
-app.use('/api/admin/learn/courses/:courseId/vocabulary/import', express.json({ limit: config.bodyLimitImport }));
 app.use('/subject-images', express.json({ limit: config.bodyLimitUpload }));
 app.use('/api/admin', express.json({ limit: config.bodyLimitUpload }));
 app.use(express.json({ limit: config.bodyLimit }));
@@ -194,7 +182,7 @@ app.use(globalLimiter);
 
 // /health deliberately stays a process liveness check for existing callers.
 // Compose and load balancers should use /readyz, which additionally proves the
-// database connection is ready to serve durable Pokyh/Learn state.
+// database connection is ready to serve durable Pokyh state.
 let databaseReady = false;
 let databaseStartupComplete = false;
 
@@ -403,23 +391,6 @@ async function cleanupExpiredRequestLogs() {
   });
 }
 
-async function cleanupExpiredLearnAnalytics() {
-  if (!ownsClusterWork('job:learn-analytics-cleanup')) return;
-  const learnCfg = await getLearnConfig();
-  const cutoff = new Date(Date.now() - learnCfg.analyticsRetentionDays * 24 * 60 * 60 * 1000);
-  // Activity rows contain a user-local calendar key. UTC gives a stable,
-  // conservative cleanup boundary and cannot delete a newer local day.
-  const cutoffDayKey = learningDayKey(cutoff, 'UTC');
-  const { count } = await prisma.learnActivityDaily.deleteMany({
-    where: { dayKey: { lt: cutoffDayKey } },
-  });
-  if (count > 0) logger.info('Learn analytics retention cleanup', {
-    action: 'learn_analytics_retention_cleanup',
-    deletedCount: count,
-    retentionDays: learnCfg.analyticsRetentionDays,
-  });
-}
-
 async function cleanupExpiredUsageSessions() {
   // Replicated data: in a cluster one node cleaning up is enough.
   if (!ownsClusterWork('job:usage-analytics-cleanup')) return;
@@ -573,12 +544,6 @@ function startBackgroundJobs() {
   setTimeout(() => void cleanupExpiredRequestLogs().catch(() => {}), 10_000);
   setInterval(() => void cleanupExpiredRequestLogs().catch(() => {}), config.requestLogCleanupIntervalMs);
 
-  // Daily aggregates deliberately have a bounded, administrator-configurable
-  // retention policy. This job handles the privacy lifecycle independently of
-  // the normal request-log cleanup cadence.
-  setTimeout(() => void cleanupExpiredLearnAnalytics().catch(() => {}), 15_000);
-  setInterval(() => void cleanupExpiredLearnAnalytics().catch(() => {}), 24 * 60 * 60 * 1000);
-
   // Per-visit usage rows behind the admin Analytics page have a finite,
   // documented retention as well (USAGE_ANALYTICS_RETENTION_DAYS).
   setTimeout(() => void cleanupExpiredUsageSessions().catch(() => {}), 20_000);
@@ -657,24 +622,6 @@ function startBackgroundJobs() {
 
   // Encrypted copies of the backups in an S3-compatible bucket, when set up.
   startJob('off-site backups', () => startOffsiteSync());
-
-  // AI vocabulary trainer model provisioning ("check, else pull, then start"):
-  // deliberately fire-and-forget, never awaited here. A multi-GB first-boot
-  // model pull must never delay the HTTP server from listening or gate
-  // /readyz — training requests check isModelReady() themselves and return a
-  // friendly 503 until the pull completes.
-  //
-  // Never re-downloads an already-present model: ensureModelReady() checks
-  // Ollama's /api/tags first and only calls /api/pull if the configured
-  // model is missing from it. The pulled model is stored in the named
-  // `ollama_data` Docker volume (docker-compose.yml), which persists across
-  // container restarts/redeploys — so every subsequent boot (including a
-  // Dokploy redeploy) finds the model already there and skips the pull
-  // entirely. Live-verified: recreating both the `app` and `ollama`
-  // containers with the model already pulled produced no re-pull, only the
-  // "Database ready" log line. Also re-invoked (same no-op-if-present
-  // behaviour) after an admin changes the model in the Pokyh AI admin page.
-  void ensureModelReady();
 }
 
 // Create the database (if missing) and apply the schema via `prisma db push`.
@@ -889,7 +836,6 @@ async function shutdown(signal: string) {
 
   await stopClusterListener().catch(() => {});
   await stopCluster().catch(() => {});
-  await closeLearnCache().catch(() => {});
   await closeCache().catch(() => {});
   await prisma.$disconnect().catch(() => {});
   process.exit(0);

@@ -7,10 +7,8 @@ import { Prisma } from '@prisma/client';
 import { prisma } from '../db';
 import { config } from '../config';
 import { requireAuth } from '../middleware/auth';
-import { authLimiter, learnLoginLimiter, readLimiter, refreshLimiter, writeLimiter } from '../middleware/rateLimiter';
+import { authLimiter, readLimiter, refreshLimiter, writeLimiter } from '../middleware/rateLimiter';
 import { generateStableUid, generateClassCode, generateClassId } from '../utils/uid';
-import { validateWebUntis } from '../services/webuntis';
-import { getLearnConfig } from '../services/learnConfig';
 import { reclaimDishRatings } from '../services/dishRatings';
 import { logger } from '../utils/logger';
 import {
@@ -265,8 +263,8 @@ export function accountFromWebUntis(account: ResolvedAccount, claimed: 'student'
 
 /**
  * Creates the normal POKYH session only after a trusted WebUntis validation.
- * Both the established server-to-server login and the Learn-only BFF route use
- * this one path, which prevents their user/profile semantics from diverging.
+ * The website and the apps' server-to-server login both use this one path,
+ * which keeps their user/profile semantics from diverging.
  *
  * The account's role and class follow what WebUntis said at this sign-in
  * (decideAccountRole, decideAccountClass): a class only when WebUntis named the
@@ -470,63 +468,6 @@ const loginSchema = z.object({
 const localLoginSchema = z.object({
   username: z.string().min(1).max(100).trim().toLowerCase(),
   password: z.string().min(1).max(200),
-});
-
-const learnLoginSchema = z.object({
-  username: z.string().min(1).max(100).trim().toLowerCase(),
-  password: z.string().min(1).max(200),
-  privacyNoticeVersion: z.string().trim().max(80).optional(),
-});
-
-// The Learn BFF has the ordinary API key but deliberately never receives the
-// backend's server key. It validates WebUntis credentials here, then receives
-// the same signed Pokyh session as the established Pokyh WebUntis login flow.
-// No password is stored or logged by this route.
-router.post('/learn-login', learnLoginLimiter, async (req: Request, res: Response) => {
-  const { username, password, privacyNoticeVersion } = learnLoginSchema.parse(req.body);
-  const learnCfg = await getLearnConfig();
-  if (!learnCfg.legalGateReady) {
-    throw new AppError('Pokyh Learn is not available until its operator completes the required privacy configuration', 503);
-  }
-  if (learnCfg.legalGateEnabled && privacyNoticeVersion !== learnCfg.privacyNoticeVersion) {
-    throw new ValidationError('Please acknowledge the current Pokyh Learn privacy notice before signing in');
-  }
-  // Only a rejected WebUntis validation is an authentication failure. A
-  // fault while creating the Pokyh session afterwards (for example the
-  // database being unavailable) must surface as a server error, not tell a
-  // correctly authenticated person that their credentials are wrong.
-  let untis: Awaited<ReturnType<typeof validateWebUntis>>;
-  try {
-    untis = await validateWebUntis(username, password);
-  } catch {
-    throw new UnauthorizedError('WebUntis-Anmeldung fehlgeschlagen');
-  }
-  // Learn validates against the configured WebUntis school (WEBUNTIS_SCHOOL);
-  // what the account is and its class, as for every other sign-in.
-  const account = await resolveSession(defaultSchool(), untis.sessionId, username, {
-    personId: untis.studentId, klasseId: untis.klasseId, personType: untis.personType,
-  });
-  const result: AuthenticatedUserResponse = await completeWebUntisLogin({
-    username,
-    ...accountFromWebUntis(account),
-    schoolId: defaultSchoolId(),
-    context: signInContext(req),
-  });
-  if (learnCfg.legalGateEnabled) {
-    await prisma.learnProfile.upsert({
-      where: { stableUid: result.user.stableUid },
-      create: {
-        stableUid: result.user.stableUid,
-        privacyNoticeVersion: learnCfg.privacyNoticeVersion,
-        privacyNoticeAcknowledgedAt: new Date(),
-      },
-      update: {
-        privacyNoticeVersion: learnCfg.privacyNoticeVersion,
-        privacyNoticeAcknowledgedAt: new Date(),
-      },
-    });
-  }
-  res.json(result);
 });
 
 // A POKYH-only account (user name and password, no school account).

@@ -6,7 +6,6 @@ import { Cluster, sleep, waitFor } from './harness.mjs';
 
 // End-to-end tests with real backend processes for:
 //   - popups meant for chosen users and classes only;
-//   - leaving Pokyh Learn out of the exchange, and merging it back in;
 //   - a way through the administrator's own web proxy on the API address,
 //     taken when the pinned channel fails, and "test this way".
 // Run with `npm run test:cluster`.
@@ -153,51 +152,6 @@ test('a popup meant for chosen users and classes reaches exactly them — on eve
 
   // Only administrators choose recipients.
   assert.ok([401, 403].includes((await cluster.request(a, 'GET', '/api/admin/popups/targets', { token: s1.token })).status));
-});
-
-// ─── Pokyh Learn in or out of the exchange ───────────────────────────────────
-
-test('Pokyh Learn can be left out of the exchange for every node, and merged back in', async () => {
-  const learner = await cluster.login(a, 'learn-lena');
-  await waitFor(async () => (await b.db.user.count({ where: { stableUid: learner.user.stableUid } })) === 1, { timeoutMs: 30_000, label: 'the user to reach B' });
-  await a.db.learnProfile.create({ data: { stableUid: learner.user.stableUid, dailyGoalMinutes: 20 } });
-  await waitFor(async () => (await b.db.learnProfile.findUnique({ where: { stableUid: learner.user.stableUid } }))?.dailyGoalMinutes === 20,
-    { timeoutMs: 30_000, label: 'the Learn row to reach B' });
-  assert.equal((await cluster.status(a)).scope.learn, true);
-
-  // Off — set on A, taken over by B.
-  const off = await cluster.admin(a, 'PUT', '/cluster/scope', { learn: false });
-  assert.equal(off.status, 200, off.text);
-  assert.equal(off.json.learn, false);
-  await waitFor(async () => (await cluster.status(b)).scope.learn === false, { timeoutMs: 15_000, label: 'B to take the setting over' });
-  assert.equal((await cluster.status(b)).scope.changedBy, 'clusteradmin');
-  await waitFor(async () => {
-    const [sa, sb] = await Promise.all([cluster.status(a), cluster.status(b)]);
-    return cluster.peerOf(sa, b).warnings.length === 0 && sa.node.schema === sb.node.schema;
-  }, { timeoutMs: 30_000, label: 'both nodes to exchange the same again' });
-
-  // Learn stays where it was written; everything else still travels.
-  await a.db.learnProfile.update({ where: { stableUid: learner.user.stableUid }, data: { dailyGoalMinutes: 30 } });
-  const other = await cluster.login(b, 'learn-otto');
-  await waitFor(async () => (await a.db.user.count({ where: { stableUid: other.user.stableUid } })) === 1, { timeoutMs: 30_000, label: 'a user made on B to reach A' });
-  await b.db.learnProfile.create({ data: { stableUid: other.user.stableUid, dailyGoalMinutes: 45 } });
-  const todo = await cluster.request(a, 'POST', `/users/${learner.user.username}/todos`, { token: learner.token, body: { title: 'still replicated' } });
-  assert.ok([200, 201].includes(todo.status), todo.text);
-  await waitFor(async () => JSON.stringify((await cluster.request(b, 'GET', `/users/${learner.user.username}/todos`, { token: learner.token })).json).includes('still replicated'),
-    { timeoutMs: 30_000, label: 'the todo to reach B' });
-  await sleep(3_000);
-  assert.equal((await b.db.learnProfile.findUnique({ where: { stableUid: learner.user.stableUid } })).dailyGoalMinutes, 20, 'B keeps its own Learn data');
-  assert.equal(await a.db.learnProfile.count({ where: { stableUid: other.user.stableUid } }), 0, 'A keeps its own Learn data');
-
-  // On again — set on B this time: the Learn data of both nodes is merged.
-  const on = await cluster.admin(b, 'PUT', '/cluster/scope', { learn: true });
-  assert.equal(on.status, 200, on.text);
-  await waitFor(async () => (await cluster.status(a)).scope.learn === true, { timeoutMs: 15_000, label: 'A to take the setting over' });
-  await waitFor(async () => (await b.db.learnProfile.findUnique({ where: { stableUid: learner.user.stableUid } }))?.dailyGoalMinutes === 30,
-    { timeoutMs: 60_000, label: 'the newer Learn change made on A to reach B' });
-  await waitFor(async () => (await a.db.learnProfile.findUnique({ where: { stableUid: other.user.stableUid } }))?.dailyGoalMinutes === 45,
-    { timeoutMs: 60_000, label: 'the Learn row made on B to reach A' });
-  await cluster.converged([a, b], { timeoutMs: 60_000 });
 });
 
 // ─── A way through the web proxy ─────────────────────────────────────────────

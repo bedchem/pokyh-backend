@@ -52,7 +52,7 @@ const ENV_KEY = /^[A-Z][A-Z0-9_]{0,63}$/;
 // carries them (src/cluster/sharedEnv.ts); they are refused here as well.
 const NODE_LOCAL = new Set([
   'NODE_ENV', 'PORT', 'TRUST_PROXY', 'DATABASE_URL', 'MYSQL_ROOT_PASSWORD',
-  'LEARN_REDIS_URL', 'LEARN_AI_OLLAMA_BASE_URL', 'BACKUP_DIR',
+  'REDIS_URL', 'BACKUP_DIR',
   'CLUSTER_ENABLED', 'CLUSTER_SECRET', 'CLUSTER_NODE_NAME', 'CLUSTER_ADVERTISE_URL', 'CLUSTER_PUBLIC_PATH',
   'CLUSTER_PORT', 'CLUSTER_BIND_ADDRESS', 'CLUSTER_ALLOWLIST', 'CLUSTER_MTLS_PORT', 'CLUSTER_MTLS_BIND_ADDRESS',
   'CLUSTER_MTLS_URL', 'CLUSTER_BOOTSTRAP_DIR', 'CLUSTER_MTLS_ENDPOINTS', 'CLUSTER_RELAY_KEYS', 'CLUSTER_RELAY_LABEL', 'CLUSTER_RELAY_POOL_SIZE',
@@ -226,7 +226,6 @@ export function validatePayload(payload, token) {
   if (typeof node.name !== 'string' || !NAME.test(node.name)) fail('name');
   const optionsProblem = validOptions(node);
   if (optionsProblem) fail(optionsProblem);
-  if (typeof node.withAi !== 'boolean') fail('AI choice');
   if (typeof node.acmeEmail !== 'string' || (node.acmeEmail !== '' && !EMAIL.test(node.acmeEmail))) fail('e-mail');
   if (!payload.env || typeof payload.env !== 'object' || Array.isArray(payload.env)) fail('settings');
   for (const [key, value] of Object.entries(payload.env)) {
@@ -299,7 +298,6 @@ export function buildEnvFile({ payload, secrets, generatedAt }) {
     POKYH_ACTIVATION_FILE: '/app/data/update/active',
   };
   const shared = Object.fromEntries(Object.entries(payload.env).filter(([key]) => !isNodeLocal(key)));
-  shared.LEARN_AI_ENABLED = node.withAi ? 'true' : 'false';
   // PUBLIC_BASE_URL follows the cluster exactly: links stored in replicated
   // data must not point at one particular node, so an empty value (relative
   // links) stays empty here as well.
@@ -371,23 +369,9 @@ export function renderGatewayCaddyfile({ trusted }) {
   return text;
 }
 
-// Sizes the AI runtime for this host and decides whether it fits at all.
-export function aiPlan({ withAi, memKb, cpus }) {
-  const memGb = Math.floor(memKb / (1024 * 1024));
-  if (!withAi) return { enabled: false, note: '' };
-  if (memGb < 12) return { enabled: false, note: `The AI runtime needs at least 12 GB of memory; this server has ${memGb} GB, so it is left out` };
-  return {
-    enabled: true,
-    memLimit: `${Math.min(10, memGb - 4)}g`,
-    cpus: String(Math.max(1, Math.min(4, cpus))),
-    threads: String(Math.max(1, Math.min(4, cpus))),
-    note: '',
-  };
-}
-
-export function renderComposeEnv({ ai, node = { web: 'none', clusterPort: APP_CHANNEL_PORT, clusterBind: '', apiPort: 0, apiBind: '' }, home = '/opt/pokyh', runtime = { repo: '', branch: 'main' } }) {
+export function renderComposeEnv({ node = { web: 'none', clusterPort: APP_CHANNEL_PORT, clusterBind: '', apiPort: 0, apiBind: '' }, home = '/opt/pokyh', runtime = { repo: '', branch: 'main' } }) {
   const webProfile = node.web === 'domain' ? ['web'] : node.web === 'proxy' ? ['gateway'] : [];
-  const profiles = ['blue', ...webProfile, ...(ai.enabled ? ['ai'] : [])];
+  const profiles = ['blue', ...webProfile];
   let text = '# Stack settings for compose.yml (not secret). Written by the installer;\n';
   text += '# the updater changes POKYH_IMAGE_* and COMPOSE_PROFILES (blue/green).\n';
   text += 'COMPOSE_PROJECT_NAME=pokyh\n';
@@ -398,7 +382,6 @@ export function renderComposeEnv({ ai, node = { web: 'none', clusterPort: APP_CH
   // Where the outside reaches this server (chosen when the command was made).
   text += `POKYH_CLUSTER_PORT=${node.clusterPort}\nPOKYH_CLUSTER_BIND=${node.clusterBind || '0.0.0.0'}\n`;
   if (node.web === 'proxy') text += `POKYH_API_PORT=${node.apiPort}\nPOKYH_API_BIND=${node.apiBind || '0.0.0.0'}\n`;
-  if (ai.enabled) text += `OLLAMA_MEM_LIMIT=${ai.memLimit}\nOLLAMA_CPUS=${ai.cpus}\nOLLAMA_NUM_THREAD=${ai.threads}\n`;
   return text;
 }
 
@@ -713,12 +696,9 @@ export async function main({ out = process.env.POKYH_OUT || '/out', tokenText } 
     writePrivate(secretsFile, JSON.stringify(secrets));
   }
 
-  const ai = aiPlan({ withAi: payload.node.withAi, memKb: Number(process.env.POKYH_MEM_KB || 0), cpus: Number(process.env.POKYH_CPUS || 1) });
-  if (ai.note) log(ai.note);
-  const effective = ai.enabled || !payload.node.withAi ? payload : { ...payload, node: { ...payload.node, withAi: false } };
-  writePrivate(path.join(out, '.env'), buildEnvFile({ payload: effective, secrets, generatedAt: new Date().toISOString() }));
+  writePrivate(path.join(out, '.env'), buildEnvFile({ payload, secrets, generatedAt: new Date().toISOString() }));
   const { node } = payload;
-  writePrivate(path.join(out, 'compose.env'), renderComposeEnv({ ai, node, home: process.env.POKYH_HOME_ON_HOST || '/opt/pokyh', runtime: payload.update ?? { repo: '', branch: 'main' } }));
+  writePrivate(path.join(out, 'compose.env'), renderComposeEnv({ node, home: process.env.POKYH_HOME_ON_HOST || '/opt/pokyh', runtime: payload.update ?? { repo: '', branch: 'main' } }));
   if (node.web === 'domain') {
     fs.writeFileSync(path.join(out, 'Caddyfile'), renderCaddyfile({
       domain: node.domain,
@@ -742,7 +722,6 @@ export async function main({ out = process.env.POKYH_OUT || '/out', tokenText } 
     `address=${node.address ?? ''}`,
     `name=${safeName}`,
     `peer=${safePeer}`,
-    `ai=${ai.enabled ? 'yes' : 'no'}`,
     `web=${node.web}`,
     `cluster_port=${node.clusterPort}`,
     `cluster_from=${node.clusterFrom.join(' ')}`,

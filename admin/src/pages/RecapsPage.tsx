@@ -321,7 +321,7 @@ export function RecapsPage() {
                 {form.periodFrom && form.periodFrom < `${schoolYearOf()}-08-01` && form.sections.includes('pokyh') && (
                   <p className="text-[12px] leading-snug" style={{ color: 'var(--amber-deep)' }}>
                     Der Zeitraum beginnt vor dem laufenden Schuljahr: POKYH-Zahlen (Tage in POKYH, Uhrzeit, Rang) kommen dafür aus dem
-                    Jahresarchiv vom 1. August. Admin- und Learn-Konten haben dort erst ab der nächsten Umstellung einen Eintrag; fehlt er,
+                    Jahresarchiv vom 1. August. Admin-Konten haben dort erst ab der nächsten Umstellung einen Eintrag; fehlt er,
                     zeigt die Story eine Seite „keine Nutzungsdaten“. Die WebUntis-Zahlen betrifft das nicht.
                   </p>
                 )}

@@ -6,6 +6,7 @@ import { matchEnvAdmin } from '../security/adminLogin';
 import {
   GLOBAL_SCOPE,
   accessFrom,
+  isPermission,
   mayGrant,
   mayManageTarget,
   managesAdminsIn,
@@ -37,10 +38,12 @@ export function isOwner(username: string): boolean {
   return matchEnvAdmin(username, config.adminUsernames) !== null;
 }
 
+// The known permissions of a stored list. One that no longer exists (a
+// removed feature's) is dropped, so a grant holding it still loads and saves.
 export function parsePermissionList(text: string): string[] {
   try {
     const value = JSON.parse(text) as unknown;
-    return Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : [];
+    return Array.isArray(value) ? value.filter(isPermission) : [];
   } catch {
     return [];
   }

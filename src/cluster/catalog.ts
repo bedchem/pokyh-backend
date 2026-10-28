@@ -1,7 +1,7 @@
 import { prisma } from '../db';
 import { config } from '../config';
 import { kindOf, type CodecColumn } from './codec';
-import { fingerprintOf } from './scopeRules';
+import { fingerprintOf } from './fingerprint';
 import { isSafeIdentifier, type SqlTable } from './sqlgen';
 
 // The set of replicated tables, read from the live database rather than
@@ -19,6 +19,9 @@ const NODE_LOCAL_TABLES = new Set([
   '_prisma_migrations',
 ]);
 const NODE_LOCAL_PREFIX = 'cluster_';
+// Tables Pokyh Learn left in databases that had it. Learn is no part of POKYH
+// any more: what each node still holds stays there and is never exchanged.
+const LEFTOVER_PREFIX = 'learn_';
 
 export interface UniqueIndex {
   name: string;
@@ -51,6 +54,7 @@ function isReplicated(table: string): boolean {
   const name = table.toLowerCase();
   if (!isSafeIdentifier(table)) return false;
   if (name.startsWith(NODE_LOCAL_PREFIX)) return false;
+  if (name.startsWith(LEFTOVER_PREFIX)) return false;
   if (NODE_LOCAL_TABLES.has(name)) return false;
   if (config.cluster.excludeTables.includes(name)) return false;
   return true;

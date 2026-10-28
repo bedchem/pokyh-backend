@@ -22,10 +22,6 @@ import { TodosRemindersPage } from './pages/TodosRemindersPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { SchoolYearsPage } from './pages/SchoolYearsPage';
 import { ApiKeysPage } from './pages/ApiKeysPage';
-import { LearnConfigPage } from './pages/LearnConfigPage';
-import { LearnAiPage } from './pages/LearnAiPage';
-import { LearnTeamsPage } from './pages/LearnTeamsPage';
-import { LearnCoursesPage } from './pages/LearnCoursesPage';
 import { BackupsPage } from './pages/BackupsPage';
 import { PopupsPage } from './pages/PopupsPage';
 import { RecapsPage } from './pages/RecapsPage';
@@ -177,10 +173,6 @@ export default function App() {
             <Route path="/settings"          element={<SettingsPage />} />
             <Route path="/school-years"      element={<SchoolYearsPage />} />
             <Route path="/api-keys"          element={<ApiKeysPage />} />
-            <Route path="/learn"             element={<LearnConfigPage />} />
-            <Route path="/learn/ai"          element={<LearnAiPage />} />
-            <Route path="/learn/teams"       element={<LearnTeamsPage />} />
-            <Route path="/learn/courses"     element={<LearnCoursesPage />} />
             <Route path="/backups"           element={<BackupsPage />} />
             <Route path="/popups"            element={<PopupsPage />} />
             <Route path="/recaps"            element={<RecapsPage />} />

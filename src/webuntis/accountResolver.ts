@@ -232,24 +232,15 @@ export function mintBearer(base: string, cookie: string): Promise<string> {
 }
 
 /**
- * The same for a WebUntis session signed in elsewhere: the POKYH app's, or
- * Pokyh Learn's own (with what its `authenticate` answered). Its class only
- * counts for `username` when the app-data shows that login (or none, as
- * with a session taken over by the QR sign-in).
+ * The same for a WebUntis session signed in elsewhere (the POKYH app's): only
+ * the session is known, so the app-data names the person. Its class only
+ * counts for `username` when the app-data shows that login (or none, as with
+ * a session taken over by the QR sign-in).
  */
-export async function resolveSession(
-  school: UntisSchool,
-  sessionId: string,
-  username: string,
-  authenticated: { personId: number; klasseId: number; personType?: number } = { personId: 0, klasseId: 0 },
-): Promise<ResolvedAccount> {
+export async function resolveSession(school: UntisSchool, sessionId: string, username: string): Promise<ResolvedAccount> {
   const base = schoolBase(school);
   const cookie = `JSESSIONID=${sessionId}; schoolname="${schoolCookieValue(school)}"`;
-  const resolved = await resolveAccount({
-    base, school, sessionId, cookie, username,
-    studentId: authenticated.personId, klasseId: authenticated.klasseId, personType: authenticated.personType,
-    bearer: mintBearer(base, cookie),
-  });
+  const resolved = await resolveAccount({ base, school, sessionId, cookie, username, studentId: 0, klasseId: 0, bearer: mintBearer(base, cookie) });
   if (resolved.loginName && resolved.loginName !== username.toLowerCase()) {
     logger.warn('[webuntis login] session belongs to another account', { school: school.loginName });
     return { ...resolved, kind: 'unknown', evidence: { kind: 'unknown' }, isParent: false };

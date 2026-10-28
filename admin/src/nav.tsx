@@ -11,12 +11,9 @@ import {
   Settings,
   Archive,
   KeyRound,
-  GraduationCap,
-  BookOpen,
   DatabaseBackup,
   Megaphone,
   Sparkles,
-  Bot,
   Network,
   Activity,
   School,
@@ -33,7 +30,7 @@ import type { View } from './access';
 
 // The panel's navigation, built from what the signed-in admin may do and from
 // the view they are in. A school's view shows that school's work only; the
-// global view adds the installation (schools, system, Learn). Hiding an entry
+// global view adds the installation (schools, system). Hiding an entry
 // is convenience: every page's API checks the same rights again.
 
 export interface NavEntry {
@@ -83,14 +80,6 @@ const GROUPS: NavGroup[] = [
       { to: '/popups', label: 'Popups', icon: Megaphone, perms: ['popups.view'] },
       { to: '/recaps', label: 'Recaps', icon: Sparkles, perms: ['recaps.view'] },
       { to: '/subject-images', label: 'Fachbilder', icon: Image, perms: ['subjectimages.manage'], views: GLOBAL },
-    ],
-  },
-  {
-    title: 'Learn',
-    items: [
-      { to: '/learn', label: 'Learn', icon: GraduationCap, perms: ['learn.manage'], views: GLOBAL },
-      { to: '/learn/courses', label: 'Learn-Kurse', icon: BookOpen, perms: ['learn.manage'], views: GLOBAL },
-      { to: '/learn/ai', label: 'Pokyh AI', icon: Bot, perms: ['learn.manage'], views: GLOBAL },
     ],
   },
   {
@@ -147,8 +136,8 @@ export function dockFor(kind: View['kind'], can: (p: string) => boolean): NavEnt
     .map((entry) => (entry.to === '/admins' ? { ...entry, label: 'Admins' } : entry.to === '/todos-reminders' ? { ...entry, label: 'Todos' } : entry));
 }
 
-// The longest matching prefix wins, so /learn/courses lights up "Learn-Kurse"
-// alone and an unlisted child such as /learn/teams falls back to "Learn".
+// The longest matching prefix wins: an entry lights up for its own page and
+// every page below it, the most specific entry first.
 export function activeNavPath(pathname: string, items: NavEntry[] = ALL_ENTRIES): string | null {
   let best: string | null = null;
   for (const item of items) {

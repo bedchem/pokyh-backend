@@ -70,3 +70,6 @@ tmp/
 .tmp/
 .cache/
 .claude/
+CLAUDE.md
+CLAUDE.local.md
+AGENTS.md

@@ -40,17 +40,6 @@ function boundedIntEnv(key: string, fallback: number, min: number, max: number):
   return Math.max(min, Math.min(max, intEnv(key, fallback)));
 }
 
-function floatEnv(key: string, fallback: number): number {
-  const raw = process.env[key];
-  if (raw === undefined || raw.trim() === '') return fallback;
-  const n = Number.parseFloat(unwrapEnvironmentValue(raw));
-  return Number.isFinite(n) ? n : fallback;
-}
-
-function boundedFloatEnv(key: string, fallback: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, floatEnv(key, fallback)));
-}
-
 function strEnv(key: string, fallback: string): string {
   const raw = process.env[key];
   return raw === undefined || raw.trim() === '' ? fallback : unwrapEnvironmentValue(raw);
@@ -60,15 +49,6 @@ function boolEnv(key: string, fallback: boolean): boolean {
   const raw = process.env[key];
   if (raw === undefined || raw.trim() === '') return fallback;
   return unwrapEnvironmentValue(raw).toLocaleLowerCase('en-US') === 'true';
-}
-
-export function isSecurePublicUrl(value: string): boolean {
-  try {
-    const url = new URL(value);
-    return url.protocol === 'https:' && Boolean(url.hostname);
-  } catch {
-    return false;
-  }
 }
 
 // Resolve the express `trust proxy` value from TRUST_PROXY. Some deployment
@@ -117,25 +97,6 @@ if (jwtSecret.length < 32) {
 
 const nodeEnv = process.env.NODE_ENV ?? 'development';
 const isProd = nodeEnv === 'production';
-const learnLegalGateEnabled = boolEnv('LEARN_LEGAL_GATE_ENABLED', isProd);
-const learnWebUntisAuthorizationReference = strEnv('LEARN_WEBUNTIS_AUTHORIZATION_REFERENCE', '');
-const learnPrivacyNoticeUrl = strEnv('LEARN_PRIVACY_NOTICE_URL', '');
-const learnPrivacyNoticeVersion = strEnv('LEARN_PRIVACY_NOTICE_VERSION', '');
-const learnLegalGateReady = !learnLegalGateEnabled || Boolean(
-  learnWebUntisAuthorizationReference
-  && learnPrivacyNoticeVersion
-  && (isProd ? isSecurePublicUrl(learnPrivacyNoticeUrl) : Boolean(learnPrivacyNoticeUrl)),
-);
-
-// Review scheduling is a product policy rather than a browser implementation.
-// Defaults are intentionally conservative and all values can be set from the
-// deployment configuration (or narrowed in the Learn admin configuration).
-const learnReviewMinimumEase = boundedFloatEnv('LEARN_REVIEW_MINIMUM_EASE', 1.3, 1, 5);
-const learnReviewMaximumEase = Math.max(
-  learnReviewMinimumEase,
-  boundedFloatEnv('LEARN_REVIEW_MAXIMUM_EASE', 3, 1, 5),
-);
-
 export const config = {
   nodeEnv,
   port: intEnv('PORT', 4000),
@@ -155,113 +116,16 @@ export const config = {
   apiKey: requireEnv('API_KEY'),
   serverKey: requireEnv('SERVER_KEY'),
   corsOrigin: process.env.CORS_ORIGIN ?? 'http://localhost:3000',
-  // Browser-origin access to the Learn route is deliberately narrower than
-  // the general API CORS policy. Server-to-server BFF calls carry no Origin
-  // header and remain authenticated by the API key plus user bearer token.
-  learnAllowedOrigins: (process.env.LEARN_ALLOWED_ORIGINS ?? '')
-    .split(',').map((origin) => origin.trim()).filter(Boolean),
   // Optional: the only admin panel origins passkeys may be made and used
   // under (e.g. "https://api.pokyh.com"). Empty = the panel's own https origin.
   adminPasskeyOrigins: (process.env.ADMIN_PASSKEY_ORIGINS ?? '')
     .split(',').map((origin) => origin.trim().replace(/\/+$/, '')).filter(Boolean),
-  // Optional editorial lookup only. The provider never grades a quiz or writes
-  // an answer by itself; it offers a server-side suggestion for an editor to
-  // review. Keeping it disabled by default prevents unannounced content export.
-  learnDictionary: {
-    enabled: (process.env['LEARN_DICTIONARY_ENABLED'] ?? 'false') === 'true',
-    provider: strEnv('LEARN_DICTIONARY_PROVIDER', 'mymemory').toLocaleLowerCase('en-US'),
-    baseUrl: strEnv('LEARN_DICTIONARY_BASE_URL', 'https://api.mymemory.translated.net').replace(/\/$/, ''),
-    contactEmail: strEnv('LEARN_DICTIONARY_CONTACT_EMAIL', ''),
-    allowedPairs: (process.env['LEARN_DICTIONARY_ALLOWED_PAIRS'] ?? 'it:de,en:de,de:it,de:en')
-      .split(',')
-      .map((pair) => pair.trim().toLocaleLowerCase('en-US'))
-      .filter((pair) => /^[a-z]{2,3}:[a-z]{2,3}$/.test(pair)),
-    timeoutMs: intEnv('LEARN_DICTIONARY_TIMEOUT_MS', 4_000),
-    cacheTtlMs: intEnv('LEARN_DICTIONARY_CACHE_TTL_MS', 60 * 60 * 1000),
-    maxCacheEntries: intEnv('LEARN_DICTIONARY_MAX_CACHE_ENTRIES', 500),
-  },
-  // Free Dictionary is a separate lexical-validation capability. Its public
-  // documentation exposes English headwords, so it is never presented as a
-  // German or Italian dictionary. A local/manual outcome keeps authoring
-  // available when it is disabled or unavailable.
-  learnDictionaryValidation: {
-    enabled: (process.env['LEARN_DICTIONARY_VALIDATION_ENABLED'] ?? 'false') === 'true',
-    provider: strEnv('LEARN_DICTIONARY_VALIDATION_PROVIDER', 'dictionaryapi').toLocaleLowerCase('en-US'),
-    baseUrl: strEnv('LEARN_DICTIONARY_VALIDATION_BASE_URL', 'https://api.dictionaryapi.dev/api/v2').replace(/\/$/, ''),
-    timeoutMs: intEnv('LEARN_DICTIONARY_VALIDATION_TIMEOUT_MS', 4_000),
-    cacheTtlMs: intEnv('LEARN_DICTIONARY_VALIDATION_CACHE_TTL_MS', 24 * 60 * 60 * 1000),
-    maxCacheEntries: intEnv('LEARN_DICTIONARY_VALIDATION_MAX_CACHE_ENTRIES', 1_000),
-  },
-  // This is an egress policy, not editor content. It remains environment-only
-  // so an admin setting cannot turn a dictionary lookup into an arbitrary
-  // internal-network request.
-  learnDictionaryAllowedHosts: (process.env['LEARN_DICTIONARY_ALLOWED_HOSTS'] ?? 'api.dictionaryapi.dev,api.mymemory.translated.net')
-    .split(',')
-    .map((host) => host.trim().toLocaleLowerCase('en-US'))
-    .filter((host) => /^[a-z0-9.-]+$/.test(host)),
-  // Self-hosted, CPU-only Ollama vocabulary trainer ("Pokyh AI"). Disabled by default and
-  // pilot-gated (see LearnAiAccessGrant) even when enabled — this flag is a
-  // second, independent switch, not the access control itself.
-  learnAi: {
-    enabled: (process.env['LEARN_AI_ENABLED'] ?? 'false') === 'true',
-    modelName: strEnv('LEARN_AI_MODEL', 'gemma4:e4b'),
-    // Kept deliberately small: RAM for a CPU-quantized model grows sharply
-    // with context length (see docs/architecture.md).
-    contextTokens: boundedIntEnv('LEARN_AI_CONTEXT_TOKENS', 4_096, 512, 32_768),
-    numPredictFast: boundedIntEnv('LEARN_AI_NUM_PREDICT_FAST', 512, 32, 4_096),
-    rateLimitMessagesPerHour: boundedIntEnv('LEARN_AI_RATE_LIMIT_MESSAGES_PER_HOUR', 30, 1, 1_000),
-    // The vocabulary trainer accepts a class-sized number of requests while
-    // keeping a hard server-side cap in front of the local Ollama runtime.
-    maxConcurrentTrainingGenerations: boundedIntEnv('LEARN_AI_MAX_CONCURRENT_TRAINING_GENERATIONS', 10, 1, 32),
-    ollamaBaseUrl: strEnv('LEARN_AI_OLLAMA_BASE_URL', 'http://ollama:11434').replace(/\/$/, ''),
-    // 60s was measured too short for a real CPU-only cold start (loading a
-    // ~9.6GB model into memory before the first inference on an idle/just-
-    // restarted Ollama instance measured ~150s on modest hardware) — a
-    // subsequent call within OLLAMA_KEEP_ALIVE is far faster since the model
-    // stays resident, but the timeout must cover the worst case.
-    ollamaTimeoutMs: intEnv('LEARN_AI_OLLAMA_TIMEOUT_MS', 180_000),
-  },
-  // Egress policy, not editor content — stays environment-only so an admin
-  // setting can never repoint the assistant at an arbitrary external host.
-  // Defaults to the internal Docker service name only.
-  learnAiAllowedHosts: (process.env['LEARN_AI_ALLOWED_HOSTS'] ?? 'ollama')
-    .split(',')
-    .map((host) => host.trim().toLocaleLowerCase('en-US'))
-    .filter((host) => /^[a-z0-9.-]+$/.test(host)),
-  learnImport: {
-    maxCourses: intEnv('LEARN_IMPORT_MAX_COURSES', 20),
-    maxSectionsPerCourse: intEnv('LEARN_IMPORT_MAX_SECTIONS_PER_COURSE', 100),
-    maxVocabularyPerCourse: intEnv('LEARN_IMPORT_MAX_VOCABULARY_PER_COURSE', 1_000),
-  },
-  // The backend, not a device, derives every next review. A wrong answer can
-  // be returned immediately (or after an operator-selected recovery delay),
-  // while repeated success increases the interval within safe bounds.
-  learnReview: {
-    initialIntervalDays: boundedIntEnv('LEARN_REVIEW_INITIAL_INTERVAL_DAYS', 1, 1, 30),
-    maxIntervalDays: boundedIntEnv('LEARN_REVIEW_MAX_INTERVAL_DAYS', 120, 1, 3_650),
-    minimumEase: learnReviewMinimumEase,
-    maximumEase: learnReviewMaximumEase,
-    correctEaseStep: boundedFloatEnv('LEARN_REVIEW_CORRECT_EASE_STEP', 0.05, 0, 1),
-    incorrectEasePenalty: boundedFloatEnv('LEARN_REVIEW_INCORRECT_EASE_PENALTY', 0.2, 0, 1),
-    wrongDelayMinutes: boundedIntEnv('LEARN_REVIEW_WRONG_DELAY_MINUTES', 0, 0, 24 * 60),
-    // Daily aggregates are pseudonymous learning analytics. Retention is
-    // deliberately bounded and configurable instead of being indefinite.
-    analyticsRetentionDays: boundedIntEnv('LEARN_ANALYTICS_RETENTION_DAYS', 365, 30, 3_650),
-  },
-  // Redis is an optional performance layer. MySQL remains authoritative for
-  // identity, permissions, progress, answers and scheduling; a cache outage
-  // must only cause a refetch, never a lost learning action.
-  learnCache: {
-    redisUrl: strEnv('LEARN_REDIS_URL', ''),
-    keyPrefix: strEnv('LEARN_REDIS_KEY_PREFIX', 'pokyh:learn'),
-    analyticsTtlSeconds: boundedIntEnv('LEARN_ANALYTICS_CACHE_TTL_SECONDS', 60, 1, 900),
-  },
   // The shared read cache (services/cache.ts): answers that are read often
   // and change rarely. Redis is a copy only; MySQL stays authoritative and
   // the API works the same without it (entries then live in process memory).
   cache: {
     enabled: boolEnv('CACHE_ENABLED', true),
-    redisUrl: strEnv('REDIS_URL', strEnv('LEARN_REDIS_URL', '')),
+    redisUrl: strEnv('REDIS_URL', ''),
     keyPrefix: strEnv('REDIS_KEY_PREFIX', 'pokyh:cache'),
     // Entries kept in process memory while Redis is unavailable (0 = none).
     memoryEntries: boundedIntEnv('CACHE_MEMORY_ENTRIES', 2_000, 0, 100_000),
@@ -313,17 +177,6 @@ export const config = {
       .filter(Boolean),
     // Development only: offer absence reporting regardless of WebUntis' flag.
     forceAbsenceReport: boolEnv('WEBUNTIS_FORCE_ABSENCE_REPORT', false),
-  },
-  // A school/controller must authorise this independent integration before a
-  // production Learn login can process WebUntis credentials. This check does
-  // not claim to create a legal basis; it prevents accidental activation when
-  // the operator has not configured the documented approval and notice.
-  learnLegal: {
-    gateEnabled: learnLegalGateEnabled,
-    ready: learnLegalGateReady,
-    webUntisAuthorizationReference: learnWebUntisAuthorizationReference,
-    privacyNoticeUrl: learnPrivacyNoticeUrl,
-    privacyNoticeVersion: learnPrivacyNoticeVersion,
   },
   webuntisSchool: process.env.WEBUNTIS_SCHOOL ?? '',
   // ── Schools ────────────────────────────────────────────────────────────────
@@ -597,8 +450,10 @@ export const config = {
       repo: strEnv('CLUSTER_UPDATE_REPO', ''),
       branch: strEnv('CLUSTER_UPDATE_BRANCH', 'main'),
       auto: boolEnv('CLUSTER_UPDATE_AUTO', true),
-      // Only commits whose checks on GitHub passed are rolled out.
-      requireCi: boolEnv('CLUSTER_UPDATE_REQUIRE_CI', true),
+      // Only commits whose checks on GitHub passed are rolled out. Off by
+      // default: the repository runs no checks of its own; turn it on where
+      // the update branch has some.
+      requireCi: boolEnv('CLUSTER_UPDATE_REQUIRE_CI', false),
       pollMinutes: boundedIntEnv('CLUSTER_UPDATE_POLL_MINUTES', 2, 1, 24 * 60),
       // A node that stays unreachable this long is passed over in a rollout.
       skipOfflineMinutes: boundedIntEnv('CLUSTER_UPDATE_SKIP_OFFLINE_MINUTES', 10, 1, 24 * 60),
@@ -609,9 +464,6 @@ export const config = {
       // requests when checking CI; public repositories work without one.
       githubToken: strEnv('CLUSTER_UPDATE_GITHUB_TOKEN', ''),
     },
-    // Exchange Pokyh Learn (tables learn_*) with the other nodes. The same for
-    // every node; changed in the admin panel it travels with the heartbeat.
-    replicateLearn: boolEnv('CLUSTER_REPLICATE_LEARN', true),
     // Ways through this node's own web proxy on the API's address, comma
     // separated (https://api.example.org/cluster-node/a): no certificate
     // pinning there, so used by the others only when every pinned way fails.

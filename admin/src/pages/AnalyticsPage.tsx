@@ -382,7 +382,7 @@ export function AnalyticsPage() {
   // Live: every visit, ping, sign-up, comment or rating announced on the admin
   // stream refetches the figures; the timer is the fallback when the stream is
   // down and keeps "online now" current while nothing else happens.
-  useLive(['analytics', 'users', 'sessions', 'todos', 'reminders', 'comments', 'ratings', 'activity', 'learn'], timed, 3000);
+  useLive(['analytics', 'users', 'sessions', 'todos', 'reminders', 'comments', 'ratings', 'activity'], timed, 3000);
   const { refreshing } = useAutoRefresh(timed, 30_000);
   const [manual, setManual] = useState(false);
   const refreshNow = async () => {
@@ -476,8 +476,6 @@ export function AnalyticsPage() {
   if (mensa.topRated) highlights.push({ icon: UtensilsCrossed, tone: 'amber', value: mensa.topRated.name, label: `Mensa-Liebling: Ø ${de(mensa.topRated.avg, 1)} ★`, open: () => showDishes('Gerichte nach Bewertung', 'avgStars') });
   // Two columns of three beside the map; a phone shows four and the rest on request.
   const highlightLimit = phone && !allHighlights ? 4 : 6;
-
-  const learnByCourse = () => showBreakdown('Pokyh Learn nach Kurs', 'learn', 'Kurs', 'Antworten');
 
   const habits: Fact[] = hasVisits ? [
     { icon: Moon, tone: 'violet', value: percent(sumHours(22, 5), time.sessions), label: 'Nachteulen — Sitzungen zwischen 22 und 5 Uhr', open: () => show('Nachteulen (22–5 Uhr)', { hours: hourList(22, 5) }, 'visits') },
@@ -975,7 +973,6 @@ export function AnalyticsPage() {
                         { label: 'Kommentare zu Erinnerungen', value: features.reminderComments },
                         { label: 'Mensa-Bewertungen', value: features.dishRatings },
                         { label: 'Mensa-Kommentare', value: features.dishComments },
-                        { label: 'Learn-Antworten', value: features.learnAnswers },
                         { label: 'Downloads', value: features.downloads },
                       ].filter((item) => item.value > 0)}
                       empty="In diesem Zeitraum wurde noch nichts erstellt."
@@ -1008,35 +1005,16 @@ export function AnalyticsPage() {
                 </Section>
               </Pair>
 
-              <Pair>
-                <Section title="Web-Seiten" meta={`${de(features.pageViews)} Aufrufe`}>
-                  <div className="mt-8">
-                    <RankBars
-                      items={data.pages.map((p) => ({ label: p.page, value: p.views }))}
-                      onSelect={(item) => show(`Seite ${item.label}`, { page: item.label }, 'seconds')}
-                      empty="Noch keine Seitenaufrufe."
-                    />
-                  </div>
-                  <Explain>Klick auf eine Seite zeigt, wer sie aufgerufen hat.</Explain>
-                </Section>
-                <Section title="Pokyh Learn" meta={rangeLabel}>
-                  <div className="mt-8">
-                    {features.learnAnswers > 0 ? (
-                      <Ledger
-                        columns={2}
-                        items={[
-                          { label: 'Lernende', value: de(features.learnLearners), open: learnByCourse },
-                          { label: 'Antworten', value: de(features.learnAnswers), open: learnByCourse },
-                          { label: 'Davon richtig', value: percent(features.learnCorrect, features.learnAnswers), open: learnByCourse },
-                          { label: 'Lernzeit', value: `${de(features.learnMinutes)} Min.`, open: learnByCourse },
-                        ]}
-                      />
-                    ) : (
-                      <p className="text-[14px] text-ink-3">In diesem Zeitraum wurde in Pokyh Learn noch nicht gelernt.</p>
-                    )}
-                  </div>
-                </Section>
-              </Pair>
+              <Section title="Web-Seiten" meta={`${de(features.pageViews)} Aufrufe`}>
+                <div className="mt-8">
+                  <RankBars
+                    items={data.pages.map((p) => ({ label: p.page, value: p.views }))}
+                    onSelect={(item) => show(`Seite ${item.label}`, { page: item.label }, 'seconds')}
+                    empty="Noch keine Seitenaufrufe."
+                  />
+                </div>
+                <Explain>Klick auf eine Seite zeigt, wer sie aufgerufen hat.</Explain>
+              </Section>
             </div>
           )}
 
@@ -1091,7 +1069,6 @@ export function AnalyticsPage() {
                         ...(accounts.noRole > 0 ? [{ label: 'Ohne Rolle', value: de(accounts.noRole) }] : []),
                         { label: 'Mit WebUntis', value: de(accounts.untis) },
                         { label: 'Push aktiv', value: percent(accounts.withPush, accounts.total) },
-                        { label: 'Learn-Profile', value: de(accounts.withLearn) },
                         { label: 'Admins', value: de(accounts.admins) },
                       ]}
                     />
@@ -1149,7 +1126,6 @@ const FEATURE_POPUPS: Record<string, (open: Openers) => void> = {
   'Kommentare zu Erinnerungen': ({ showBreakdown }) => showBreakdown('Kommentare nach Klasse', 'reminderComments', 'Klasse', 'Kommentare'),
   'Mensa-Bewertungen': ({ showDishes }) => showDishes('Bewertete Gerichte', 'ratings'),
   'Mensa-Kommentare': ({ showDishes }) => showDishes('Kommentierte Gerichte', 'comments'),
-  'Learn-Antworten': ({ showBreakdown }) => showBreakdown('Pokyh Learn nach Kurs', 'learn', 'Kurs', 'Antworten'),
   'Downloads': ({ showBreakdown }) => showBreakdown('Downloads nach Datei', 'downloads', 'Datei', 'Downloads'),
 };
 

@@ -108,8 +108,8 @@ function newRefreshToken() {
 type Found = { id: string; revokedAt: Date | null } | null;
 
 // The session this device had: the one of the refresh token it holds, else
-// the latest of its device id, else — for clients without one (older apps,
-// the Learn BFF) — the latest of the same kind of client and system.
+// the latest of its device id, else — for clients without one (older apps)
+// — the latest of the same kind of client and system.
 async function findDeviceSession(stableUid: string, ctx: SignInContext): Promise<Found> {
   const select = { id: true, revokedAt: true } as const;
   const idle = idleCutoff();

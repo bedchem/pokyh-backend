@@ -169,7 +169,6 @@ export interface InstallRequest {
   // Optional: the new server's domain (it then serves HTTPS itself) or IP;
   // empty: its public IP is taken from where its setup comes from.
   address: string;
-  withAi: boolean;
   acmeEmail: string;
   // This node's public address, as the administrator's browser shows it.
   origin: string;
@@ -246,7 +245,6 @@ export async function createInstall(input: InstallRequest): Promise<CreatedInsta
       // The new server's domain or IP as entered (empty: detected).
       domain: address,
       name,
-      withAi: input.withAi,
       acmeEmail,
       options: JSON.stringify(options),
       expiresAt,
@@ -281,7 +279,6 @@ export async function listInstalls() {
     status: row.status,
     address: row.domain,
     name: row.name,
-    withAi: row.withAi,
     web: storedOptions(row.options)?.web ?? (row.domain && isIP(row.domain) === 0 ? 'domain' : 'none'),
     failures: row.failures,
     expiresAt: row.expiresAt.toISOString(),
@@ -450,7 +447,6 @@ export async function handleProvision(req: Request, res: Response): Promise<void
       name: row.name,
       domain,
       address: ip,
-      withAi: row.withAi,
       acmeEmail: row.acmeEmail,
       // Installs created before the options existed: as then.
       ...(storedOptions(row.options) ?? { web: domain ? 'domain' : 'none', apiPort: 0, apiBind: '', apiFrom: [], clusterPort: config.cluster.mtlsPort, clusterBind: '', clusterFrom: [] }),

@@ -7,7 +7,6 @@ import {
   CheckSquare,
   Clock,
   DatabaseBackup,
-  GraduationCap,
   KeyRound,
   MessageCircle,
   MonitorSmartphone,
@@ -72,7 +71,6 @@ function relativeTime(dateStr: string): string {
 
 function endpointIcon(path: string): LucideIcon {
   if (/auth|login|session|token/.test(path)) return KeyRound;
-  if (/learn|course|vocab/.test(path)) return GraduationCap;
   if (/comment/.test(path)) return MessageCircle;
   if (/dish|menu|rating/.test(path)) return UtensilsCrossed;
   if (/todo|reminder/.test(path)) return CheckSquare;

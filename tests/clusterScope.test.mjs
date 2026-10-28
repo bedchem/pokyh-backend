@@ -5,7 +5,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { loadTs } from './helpers/loadTs.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const rules = await loadTs('src/cluster/scopeRules.ts');
+const { fingerprintOf } = await loadTs('src/cluster/fingerprint.ts');
 const endpoints = await loadTs('src/cluster/endpoints.ts');
 const snippets = await loadTs('src/cluster/proxySnippets.ts');
 const options = await loadTs('src/cluster/installOptions.ts');
@@ -14,48 +14,11 @@ const updater = await import(pathToFileURL(path.join(REPO, 'deploy/node/updater.
 
 // ─── What is exchanged ───────────────────────────────────────────────────────
 
-test('Pokyh Learn is a group of tables that can be left out of the exchange', () => {
-  assert.equal(rules.isLearnTable('learn_courses'), true);
-  assert.equal(rules.isLearnTable('LEARN_PROFILES'), true);
-  assert.equal(rules.isLearnTable('users'), false);
-  assert.equal(rules.isLearnTable('relearn'), false);
-  const off = rules.exchangedIn({ learn: false });
-  assert.equal(off('learn_vocabulary_entries'), false);
-  assert.equal(off('todos'), true);
-  assert.equal(off('popups'), true);
-  assert.equal(rules.exchangedIn({ learn: true })('learn_vocabulary_entries'), true);
-});
-
-test('the newest setting wins everywhere; equal ages are settled the same way on every node', () => {
-  const scope = (learn, version, by) => ({ learn, version, by, actor: null });
-  assert.equal(rules.supersedes(scope(false, 2000, 'a'), scope(true, 1000, 'b')), true, 'newer');
-  assert.equal(rules.supersedes(scope(false, 1000, 'b'), scope(true, 2000, 'a')), false, 'older');
-  // Two defaults (version 0) that differ: the higher node id decides, from
-  // both sides alike — so both end up with the same value.
-  const a = scope(true, 0, 'a');
-  const b = scope(false, 0, 'b');
-  assert.equal(rules.supersedes(b, a), true);
-  assert.equal(rules.supersedes(a, b), false);
-  // Saying the same thing again changes nothing.
-  assert.equal(rules.supersedes(scope(true, 0, 'z'), scope(true, 0, 'a')), false);
-});
-
-test('a restricted catalog keeps its order and fingerprints only what is exchanged', () => {
-  const table = (name, rank) => ({ name, rank });
-  const lines = ['c|users|id|varchar(36)|NO', 'c|learn_courses|id|varchar(36)|NO', 'u|learn_courses|PRIMARY|id', 'c|todos|id|varchar(36)|NO'];
-  const full = {
-    ordered: [table('users', 0), table('learn_courses', 1), table('todos', 1)],
-    tables: new Map([['users', table('users', 0)], ['learn_courses', table('learn_courses', 1)], ['todos', table('todos', 1)]]),
-    signature: lines,
-    fingerprint: rules.fingerprintOf(lines),
-  };
-  assert.equal(rules.restrictCatalog(full, () => true), full, 'nothing left out: the same catalog');
-  const core = rules.restrictCatalog(full, rules.exchangedIn({ learn: false }));
-  assert.deepEqual(core.ordered.map((entry) => entry.name), ['users', 'todos']);
-  assert.equal(core.tables.has('learn_courses'), false);
-  assert.notEqual(core.fingerprint, full.fingerprint, 'nodes that exchange different things do not match');
-  assert.equal(core.fingerprint, rules.fingerprintOf(['c|todos|id|varchar(36)|NO', 'c|users|id|varchar(36)|NO']));
-  assert.equal(rules.fingerprintOf(['b', 'a']), rules.fingerprintOf(['a', 'b']), 'order does not matter');
+test('the schema fingerprint covers the signature lines, in any order', () => {
+  const lines = ['c|users|id|varchar(36)|NO', 'u|users|PRIMARY|id', 'c|todos|id|varchar(36)|NO'];
+  assert.equal(fingerprintOf(lines), fingerprintOf([...lines].reverse()), 'order does not matter');
+  assert.match(fingerprintOf(lines), /^[0-9a-f]{32}$/);
+  assert.notEqual(fingerprintOf(lines), fingerprintOf(lines.slice(1)), 'a different schema, a different fingerprint');
 });
 
 // ─── Ways through the web proxy ──────────────────────────────────────────────
@@ -132,7 +95,7 @@ const token = { url: 'https://node1.example.org:4100', nodeId: 'n', pin: 'p' };
 function payloadWith(node) {
   return {
     v: 1, t: Date.now(),
-    node: { name: 'Homelab', domain: '', address: '203.0.113.20', withAi: false, acmeEmail: '', web: 'none', apiPort: 0, apiBind: '', apiFrom: [], clusterPort: 4100, clusterBind: '', clusterFrom: [], ...node },
+    node: { name: 'Homelab', domain: '', address: '203.0.113.20', acmeEmail: '', web: 'none', apiPort: 0, apiBind: '', apiFrom: [], clusterPort: 4100, clusterBind: '', clusterFrom: [], ...node },
     env: {}, bundle: { sha256: 'a'.repeat(64), bytes: 1 },
     cluster: { url: token.url, nodeId: token.nodeId, name: 'Graz', cert: '', pairingUntil: 1 },
   };
@@ -144,7 +107,7 @@ test('behind the administrator\'s proxy: the API on the chosen port, the proxy t
     .split('\n').filter((line) => /^[A-Z]/.test(line)).map((line) => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)]));
   assert.equal(env.CLUSTER_MTLS_URL, 'https://203.0.113.20:4200', 'the chosen cluster port');
   assert.equal(env.TRUST_PROXY, 'uniquelocal,10.8.0.1');
-  const composeEnv = bootstrap.renderComposeEnv({ ai: { enabled: false }, node: payload.node });
+  const composeEnv = bootstrap.renderComposeEnv({ node: payload.node });
   assert.match(composeEnv, /^COMPOSE_PROFILES=blue,gateway$/m);
   assert.match(composeEnv, /^POKYH_API_PORT=8081$/m);
   assert.match(composeEnv, /^POKYH_API_BIND=10\.8\.0\.5$/m);
@@ -154,7 +117,7 @@ test('behind the administrator\'s proxy: the API on the chosen port, the proxy t
   assert.match(caddy, /trusted_proxies static private_ranges 10\.8\.0\.1/);
   assert.match(caddy, new RegExp(`^:${bootstrap.GATEWAY_PORT} \\{$`, 'm'));
   assert.match(caddy, /health_uri \/readyz/);
-  const none = bootstrap.renderComposeEnv({ ai: { enabled: false }, node: payloadWith({}).node });
+  const none = bootstrap.renderComposeEnv({ node: payloadWith({}).node });
   assert.match(none, /^COMPOSE_PROFILES=blue$/m);
   assert.match(none, /^POKYH_CLUSTER_BIND=0\.0\.0\.0$/m);
   assert.doesNotMatch(none, /POKYH_API_PORT/);

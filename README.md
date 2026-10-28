@@ -30,7 +30,6 @@ Node.js 22 · Express 5 · TypeScript · Prisma · MySQL 8.4 · Redis · Server-
 - [Data](#data)
 - [Admin panel](#admin-panel)
 - [Schools](#schools)
-- [Pokyh Learn](#pokyh-learn)
 - [Cluster](#cluster)
 - [Deployment](#deployment)
 - [Testing](#testing)
@@ -45,8 +44,8 @@ Node.js 22 · Express 5 · TypeScript · Prisma · MySQL 8.4 · Redis · Server-
 ## Overview
 
 POKYH adds a social and organisational layer on top of [WebUntis](https://www.untis.at/): class
-reminders, personal to-dos, the school canteen with ratings and comments, announcement popups,
-notifications and the separate learning product **Pokyh Learn**. This backend is:
+reminders, personal to-dos, the school canteen with ratings and comments, announcement popups and
+notifications. This backend is:
 
 - **the single source of truth** for everything that is not WebUntis data;
 - **the WebUntis gateway of the website**: the static [web frontend](../pokyh-frontend) signs in
@@ -66,15 +65,15 @@ and each school's data is kept apart.
 ## Architecture
 
 ```
-┌──────────────┐   ┌──────────────┐   ┌──────────────────┐
-│ Web (static) │   │     Apps     │   │  Learn web app   │
-└──────┬───────┘   └──────┬───────┘   └────────┬─────────┘
+┌──────────────┐   ┌──────────────┐
+│ Web (static) │   │     Apps     │
+└──────┬───────┘   └──────┬───────┘
        │  X-API-Key · Bearer JWT · sealed session cookies (web) · X-Server-Key (app login)
-       ▼                  ▼                    ▼
+       ▼                  ▼
 ┌──────────────────────────────────────────────────────────┐
 │                    POKYH Backend (node)                  │──► WebUntis of each school
 │  Express 5 · JWT · rate limits · REST + SSE + Web Push   │    (the person's own session)
-│  /webuntis/* · /admin/ (React SPA) · /learn/* · /cluster │
+│  /webuntis/* · /admin/ (React SPA) · /cluster            │
 └──────────┬──────────────────┬───────────────┬────────────┘
            │                  │               │ mutual TLS, pinned certificates
      ┌─────▼─────┐     ┌──────▼─────┐   ┌─────▼────────────────┐
@@ -133,7 +132,6 @@ hashes) arrive unchanged. Use another file with
 | `mysql` | MySQL 8.4, the source of truth |
 | `redis` | Read cache, never a source of truth (internal network only, protected mode off) |
 | `db-archiver` | Binary-log archive for point-in-time recovery |
-| `ollama` | Optional, CPU-only AI vocabulary trainer for Pokyh Learn (internal network only) |
 
 ### First start
 
@@ -171,7 +169,6 @@ npx web-push generate-vapid-keys   # VAPID key pair for Web Push
 | Canteen | `MENSA_IMPORT_URL` | Menu source for the dish import |
 | Analytics and retention | `ANALYTICS_TIMEZONE` · `USAGE_ANALYTICS_RETENTION_DAYS` · `ACCOUNT_ACTIVITY_SCHOOL_YEAR` · `REQUEST_LOG_RETENTION_DAYS` · `LOG_FILE_RETENTION_DAYS` | Usage statistics (anonymous, named only with consent) and finite retention |
 | School year | rollover settings | Date of the yearly archive and fresh start (default 1 August) |
-| Learn | `LEARN_*` · `OLLAMA_*` | See [Pokyh Learn](#pokyh-learn) |
 | Cluster | `CLUSTER_*` · `POKYH_*` | See [docs/cluster.md](docs/cluster.md#cluster-settings) |
 
 > A request with a valid `X-Server-Key` skips the per-address login limiter: every app login is
@@ -280,7 +277,6 @@ All times are ISO-8601 UTC. Mount points:
 | Usage and privacy | `/usage/ping` · `/privacy` | Usage statistics; privacy notice record and consent |
 | Client errors | `/client-errors` | Validated, scrubbed error reports of the web app and the apps |
 | Activity log | `/activity-log` | Frontend telemetry |
-| Learn | `/learn/*` · `/learn/ai/*` · `/auth/learn-login` | Pokyh Learn, with its own origins and gates |
 | Admin | `/api/admin/*` | Administrator JWT only |
 | Cluster | `/api/admin/cluster/*` · `/cluster/v1/*` · `/setup` | Cluster admin, node-to-node channel, one-line installer (404 unless an install is open) |
 | First-run setup | `/api/setup` | Only while no administrator exists |
@@ -339,7 +335,6 @@ Prisma is the schema's single source ([`prisma/schema.prisma`](prisma/schema.pri
 | Privacy and usage | `PrivacyConsent`, `UsageSession`, `UsageDaySalt`, `UsageClassDay`, `UsageSchoolClassDay`, `WebVisit`, `RequestAccountDay` |
 | Telemetry | `RequestLog`, `FrontendActivityLog`, `ClientErrorLog` (node-local) |
 | Operations | `BackupConfig`, `AppMigration` |
-| Pokyh Learn | every `Learn*` model (tables `learn_*`) |
 | Cluster | `ClusterNode`, `ClusterPeer`, `ClusterInstall`, `ClusterRowState`, `ClusterDeferred`, `Relay`, `UpdateSettings` |
 
 ```bash
@@ -377,7 +372,7 @@ are described in [`docs/database.md`](docs/database.md). Encrypted backups are o
 A React + Vite single-page app built into the image and served at **`/admin/`** (same origin,
 JWT-protected): dashboard, analytics, users, classes, sessions, dishes and images, comments, to-dos
 and reminders, popups, school years, requests, frontend and backend logs, audit, admins and rights,
-schools, privacy overview, API keys, backups, Pokyh Learn and the cluster. Press `/` to search the
+schools, privacy overview, API keys, backups and the cluster. Press `/` to search the
 panel.
 
 **Popups** are announcements in the apps and on the website, with a live preview: for all
@@ -400,25 +395,6 @@ hold rights per school or globally, and the panel switches between the global vi
 Canteen plans are assigned to schools; a school without one shows no canteen.
 `WEBUNTIS_SCHOOL_ALLOWLIST` optionally limits sign-in to approved schools. Details:
 [`docs/multi-school.md`](docs/multi-school.md).
-
----
-
-## Pokyh Learn
-
-The additive `/learn` router serves the separate Pokyh Learn product; it changes no existing POKYH
-route or data, and the admin panel's **Learn** area manages it separately from school records.
-
-- Only accounts whose login was confirmed against WebUntis are accepted. In production the Learn
-  sign-in stays closed until a non-secret authorisation reference and a versioned HTTPS privacy
-  notice are configured (`LEARN_LEGAL_*`).
-- Course content, access, teams, quiz grading, review state, progress and imports are MySQL-backed
-  server decisions. Personal export and import cover only the caller's own content.
-- An optional dictionary adapter (`LEARN_DICTIONARY_*`) only suggests; it never decides an answer.
-- The optional, self-hosted, CPU-only AI vocabulary trainer (Ollama) is off until
-  `LEARN_AI_ENABLED=true`, then usable only with a person or team grant
-  (`npm run grant-ai-access <username>`, `npm run grant-ai-access-team <team>`). It runs on an
-  internal network without a host port; size `OLLAMA_MEM_LIMIT` and `OLLAMA_CPUS` to the host.
-- The optional Redis cache holds only already-authorised, course-specific analytics.
 
 ---
 
@@ -492,7 +468,6 @@ migration of existing admins. The cluster and updater suites are described in
 | `npm run reset-admin-2fa` | Reset an admin's authenticator app |
 | `npm run create-user` | Create a local (non-WebUntis) user |
 | `npm run decrypt-backup` | Decrypt an encrypted backup |
-| `npm run grant-ai-access` · `revoke-ai-access` (`-team`) | Pokyh Learn AI trainer grants |
 
 More commands, including test data, MySQL and the cluster, are in [`COMMANDS.md`](COMMANDS.md).
 
@@ -504,12 +479,12 @@ More commands, including test data, MySQL and the cluster, are in [`COMMANDS.md`
 src/
 ├── index.ts            bootstrap, middleware, CORS, database start-up, background jobs
 ├── config.ts           every environment setting (fail-fast on required secrets)
-├── routes/             auth, webuntis, users, to-dos, classes, reminders, dishes, popups, learn, admin, ...
+├── routes/             auth, webuntis, users, to-dos, classes, reminders, dishes, popups, admin, ...
 ├── webuntis/           WebUntis client, sessions and sealing, schools, app data, absences, messages
 ├── security/           admin login, second factor, permissions, API key policy, error scrubbing
-├── services/           SSE, push, archiver, school year, backups, cache, analytics, Learn, ...
+├── services/           SSE, push, archiver, school year, backups, cache, analytics, ...
 ├── middleware/         API key, JWT auth, rate limits, admin, request id and logging
-├── cluster/            pairing, channel (mTLS), replication, ways, relays, installer, updates, scope
+├── cluster/            pairing, channel (mTLS), replication, ways, relays, installer, updates
 └── utils/              cache, errors, logger, ids, revoked tokens, ...
 prisma/schema.prisma    database schema (source of truth)
 admin/                  React + Vite admin panel (built into admin/dist)

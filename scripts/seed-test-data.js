@@ -371,7 +371,7 @@ async function seed() {
 
   const given = Boolean(fromFlag || process.env.SEED_TEST_PASSWORD);
   console.log(`\n── Anmeldungen (Admin-Panel /admin) — Passwort: ${given ? 'wie angegeben' : PASSWORD} ──\n`);
-  if (PERSONAL) console.log(`  ${PERSONAL.padEnd(20)}${OWNERS.includes(PERSONAL) ? 'Server-Owner (ADMIN_USERNAMES)' : 'Global-Admin'}: alle Schulen, System, Learn`);
+  if (PERSONAL) console.log(`  ${PERSONAL.padEnd(20)}${OWNERS.includes(PERSONAL) ? 'Server-Owner (ADMIN_USERNAMES)' : 'Global-Admin'}: alle Schulen, System`);
   for (const spec of ADMINS) console.log(`  ${spec.username.padEnd(20)}${spec.note}`);
   console.log(`\n  Schulen: ${a.name} (Standard, Mensaplan), ${b.name} (eigener Mensaplan), ${c.name} (kein Mensaplan)`);
   console.log(`  App-Konten: test.a.* / test.b.* / test.c.* (WebUntis-Konten, keine Passwörter)`);
@@ -398,7 +398,7 @@ async function seedHistory(schools, people) {
   const accountDays = [];
   const logs = [];
   const now = Date.now();
-  const paths = ['/dishes', '/users/me', '/classes/mine', '/dish-ratings/batch', '/auth/refresh', '/popups/active', '/learn/catalog'];
+  const paths = ['/dishes', '/users/me', '/classes/mine', '/dish-ratings/batch', '/auth/refresh', '/popups/active'];
   const uas = ['Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1', 'okhttp/4.12.0', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0 Safari/537.36'];
   for (let day = 13; day >= 1; day--) {
     for (const key of keys) {

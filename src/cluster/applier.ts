@@ -465,10 +465,7 @@ interface Repair {
   scope: string[];
 }
 
-const REPAIRS: Record<string, Repair[]> = {
-  learn_course_sections: [{ index: ['course_id', 'sort_order'], column: 'sort_order', kind: 'position', scope: ['course_id'] }],
-  learn_courses: [{ index: ['slug'], column: 'slug', kind: 'suffix', scope: [] }],
-};
+const REPAIRS: Record<string, Repair[]> = {};
 
 function sameColumns(a: string[], b: string[]): boolean {
   return a.length === b.length && [...a].sort().join(',') === [...b].sort().join(',');

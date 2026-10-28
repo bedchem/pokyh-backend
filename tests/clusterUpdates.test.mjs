@@ -271,7 +271,6 @@ function goodConfig() {
       edge: { ...hardened, volumes: [bind(`${HOME}/runtime/edge.mjs`, '/edge/edge.mjs')], ports: [{ target: 4100, published: '4100' }] },
       caddy: { ...hardened, cap_add: ['NET_BIND_SERVICE'], volumes: [bind(`${HOME}/Caddyfile`, '/etc/caddy/Caddyfile')], ports: [{ target: 80, published: '80' }, { target: 443, published: '443' }] },
       updater: { image: 'pokyh-updater:local', security_opt: ['no-new-privileges:true'], network_mode: 'bridge', volumes: [bind('/var/run/docker.sock', '/var/run/docker.sock'), bind(HOME, HOME)] },
-      ollama: { ...hardened },
     },
   };
 }

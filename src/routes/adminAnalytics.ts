@@ -346,7 +346,6 @@ interface AnalyticsResponse {
     local: number;
     newInRange: number;
     withPush: number;
-    withLearn: number;
     admins: number;
     classes: number;
     oldestDays: number;
@@ -364,10 +363,6 @@ interface AnalyticsResponse {
     dishComments: number;
     dishRatings: number;
     avgStars: number | null;
-    learnAnswers: number;
-    learnCorrect: number;
-    learnMinutes: number;
-    learnLearners: number;
     pageViews: number;
     downloads: number;
   };
@@ -589,12 +584,9 @@ async function buildAnalytics(period: Period, fresh: boolean, schoolId: string |
     activeDayRows,
     users,
     pushRows,
-    learnProfiles,
     adminRows,
     classCount,
     features,
-    learnAgg,
-    learnLearners,
     eventRows,
     topRatedRows,
     mostRatedRows,
@@ -676,7 +668,6 @@ async function buildAnalytics(period: Period, fresh: boolean, schoolId: string |
     schoolId
       ? prisma.$queryRaw<CountRow[]>`SELECT COUNT(DISTINCT p.stable_uid) AS n FROM push_subscriptions p JOIN users u ON u.stable_uid = p.stable_uid WHERE u.school_id = ${schoolId}`
       : prisma.$queryRaw<CountRow[]>`SELECT COUNT(DISTINCT stable_uid) AS n FROM push_subscriptions`,
-    prisma.learnProfile.count({ where: userOfSchool }),
     prisma.admin.findMany({ select: { stableUid: true } }),
     prisma.class.count({ where: ofSchool }),
     Promise.all([
@@ -687,15 +678,6 @@ async function buildAnalytics(period: Period, fresh: boolean, schoolId: string |
       prisma.dishComment.count({ where: { createdAt: { gte: since, lt: until }, ...ofSchool } }),
       prisma.dishRating.count({ where: { updatedAt: { gte: since, lt: until }, ...ofSchool } }),
     ]),
-    prisma.learnActivityDaily.aggregate({
-      where: { dayKey: { gte: fromKey, lte: toKey }, ...userOfSchool },
-      _sum: { answerCount: true, correctCount: true, durationMs: true },
-    }),
-    schoolId
-      ? prisma.$queryRaw<CountRow[]>`
-          SELECT COUNT(DISTINCT a.stable_uid) AS n FROM learn_activity_daily a JOIN users u ON u.stable_uid = a.stable_uid
-          WHERE a.day_key >= ${fromKey} AND a.day_key <= ${toKey} AND u.school_id = ${schoolId}`
-      : prisma.$queryRaw<CountRow[]>`SELECT COUNT(DISTINCT stable_uid) AS n FROM learn_activity_daily WHERE day_key >= ${fromKey} AND day_key <= ${toKey}`,
     prisma.$queryRaw<Array<{ event: string; n: bigint }>>`
       SELECT event, COUNT(*) AS n FROM frontend_activity_logs
       WHERE created_at >= ${since} AND created_at < ${until}${S} GROUP BY event`,
@@ -1089,7 +1071,6 @@ async function buildAnalytics(period: Period, fresh: boolean, schoolId: string |
       local: users.length - untis,
       newInRange,
       withPush: num(pushRows[0]?.n),
-      withLearn: learnProfiles,
       admins: adminUids.size,
       classes: classCount,
       oldestDays: users.length > 0 ? Math.floor((now.getTime() - oldest) / 86_400_000) : 0,
@@ -1105,10 +1086,6 @@ async function buildAnalytics(period: Period, fresh: boolean, schoolId: string |
       dishComments,
       dishRatings,
       avgStars: avgStarsAgg._avg.stars === null ? null : round(avgStarsAgg._avg.stars, 2),
-      learnAnswers: num(learnAgg._sum.answerCount),
-      learnCorrect: num(learnAgg._sum.correctCount),
-      learnMinutes: Math.round(num(learnAgg._sum.durationMs) / 60_000),
-      learnLearners: num(learnLearners[0]?.n),
       pageViews: events.get('page_view') ?? 0,
       downloads: events.get('download') ?? 0,
     },
@@ -1500,10 +1477,9 @@ router.get('/people', requireAdmin, requirePermission('analytics.view'), async (
 
 // ─── GET /api/admin/analytics/breakdown?kind=…&days=30 ───────────────────────
 // What a "created in the range" figure is made of, without naming anyone:
-// todos and reminders by class, comments by class, downloads by file, Pokyh
-// Learn by course.
+// todos and reminders by class, comments by class, downloads by file.
 
-const BREAKDOWN_KINDS = ['todos', 'reminders', 'reminderComments', 'downloads', 'learn'] as const;
+const BREAKDOWN_KINDS = ['todos', 'reminders', 'reminderComments', 'downloads'] as const;
 type BreakdownKind = typeof BREAKDOWN_KINDS[number];
 
 router.get('/breakdown', requireAdmin, requirePermission('analytics.view'), async (req: Request, res: Response): Promise<void> => {
@@ -1523,7 +1499,7 @@ router.get('/breakdown', requireAdmin, requirePermission('analytics.view'), asyn
     }
     throw err;
   }
-  const { fromKey, toKey, since, until } = period;
+  const { since, until } = period;
   const days = period.axis.length;
 
   type Row = { label: string | null; value: bigint; a: unknown; b: unknown; c: unknown };
@@ -1558,15 +1534,6 @@ router.get('/breakdown', requireAdmin, requirePermission('analytics.view'), asyn
         WHERE event = 'download' AND created_at >= ${since} AND created_at < ${until}${inSchool(schoolId)}
         GROUP BY detail`;
       break;
-    case 'learn':
-      rows = await prisma.$queryRaw<Row[]>`
-        SELECT c.title AS label, SUM(a.answer_count) AS value, SUM(a.correct_count) AS a,
-               COUNT(DISTINCT a.stable_uid) AS b, SUM(a.duration_ms) AS c
-        FROM learn_activity_daily a JOIN learn_courses c ON c.id = a.course_id
-        ${schoolId ? Prisma.sql`JOIN users u ON u.stable_uid = a.stable_uid` : Prisma.empty}
-        WHERE a.day_key >= ${fromKey} AND a.day_key <= ${toKey}${inSchool(schoolId, 'u.school_id')}
-        GROUP BY c.id, c.title`;
-      break;
   }
 
   const items = rows
@@ -1574,12 +1541,10 @@ router.get('/breakdown', requireAdmin, requirePermission('analytics.view'), asyn
       const value = num(row.value);
       const a = num(row.a);
       const b = num(row.b);
-      const c = num(row.c);
       let note = '';
       if (kind === 'todos') note = `${b} ${b === 1 ? 'Konto' : 'Konten'} · ${value > 0 ? Math.round((a / value) * 100) : 0} % erledigt`;
       else if (kind === 'reminderComments') note = `zu ${a} ${a === 1 ? 'Erinnerung' : 'Erinnerungen'}`;
       else if (kind === 'downloads') note = `${a} ${a === 1 ? 'Konto' : 'Konten'}`;
-      else if (kind === 'learn') note = `${b} Lernende · ${value > 0 ? Math.round((a / value) * 100) : 0} % richtig · ${Math.round(c / 60_000)} Min.`;
       return { label: row.label?.trim() || '(ohne Namen)', value, note };
     })
     .filter((item) => item.value > 0)

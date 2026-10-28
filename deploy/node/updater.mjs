@@ -47,7 +47,7 @@ const SHA256 = /^[0-9a-f]{64}$/;
 
 // ─── Policy for compose files shipped with an update ─────────────────────────
 
-const ALLOWED_SERVICES = new Set(['mysql', 'redis', 'app-blue', 'app-green', 'edge', 'caddy', 'gateway', 'updater', 'ollama']);
+const ALLOWED_SERVICES = new Set(['mysql', 'redis', 'app-blue', 'app-green', 'edge', 'caddy', 'gateway', 'updater']);
 // Host files each service may mount, relative to the installation directory.
 const ALLOWED_BINDS = {
   mysql: ['.env'],
@@ -63,7 +63,7 @@ const ALLOWED_CAPS = {
   caddy: ['NET_BIND_SERVICE'],
 };
 const PUBLISHED = { edge: [4100], caddy: [80, 443], gateway: [8080] };
-const NO_NEW_PRIVILEGES = new Set(['app-blue', 'app-green', 'edge', 'caddy', 'gateway', 'redis', 'ollama', 'updater']);
+const NO_NEW_PRIVILEGES = new Set(['app-blue', 'app-green', 'edge', 'caddy', 'gateway', 'redis', 'updater']);
 
 // `config` is the output of `docker compose config --format json`. Returns
 // the list of violations (empty: acceptable).
@@ -362,7 +362,7 @@ export async function carryOut(request, { healthTimeoutMs }) {
   // The rest of the stack follows a changed definition (never the updater
   // itself here: it is replaced by a helper, below).
   if (runtime.composeChanged) {
-    const byProfile = { web: 'caddy', gateway: 'gateway', ai: 'ollama' };
+    const byProfile = { web: 'caddy', gateway: 'gateway' };
     const others = ['mysql', 'redis', 'edge', ...(readEnvFile(fs.readFileSync(envFile, 'utf8')).get('COMPOSE_PROFILES') ?? '').split(',').map((item) => byProfile[item.trim()]).filter(Boolean)];
     await compose(['up', '-d', '--no-deps', ...others], { timeoutMs: 10 * 60_000 }).catch((err) => { note = `stack: ${err.message.slice(0, 200)}`; });
   } else if (runtime.edgeChanged) {

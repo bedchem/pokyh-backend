@@ -72,8 +72,7 @@ async function ensureBackupUser(database: string): Promise<void> {
   await ensureBackupUserOnce;
 }
 
-// ─── Configuration (DB-backed, env-default fallback — same pattern as
-// src/services/learnConfig.ts) ────────────────────────────────────────────────
+// ─── Configuration (DB-backed, env-default fallback) ─────────────────────────
 
 export interface BackupConfigValues {
   enabled: boolean;

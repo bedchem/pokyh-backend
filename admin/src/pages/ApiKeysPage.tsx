@@ -10,9 +10,6 @@ const availableScopes = [
   { value: 'core:read', label: 'POKYH lesen' },
   { value: 'core:write', label: 'POKYH schreiben' },
   { value: 'auth:session', label: 'Sitzungen' },
-  { value: 'learn:catalog', label: 'Learn-Katalog' },
-  { value: 'learn:read', label: 'Learn lesen' },
-  { value: 'learn:write', label: 'Learn schreiben' },
 ] as const;
 
 type KeyState = 'active' | 'expired' | 'revoked';

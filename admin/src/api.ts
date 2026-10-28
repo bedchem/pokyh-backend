@@ -1,4 +1,4 @@
-import type { AdminStats, AdminClass, AdminSessionsResponse, AdminLoginEvent, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish, AdminDishFull, AdminDishImportResult, AdminDishShiftResult, AdminDishRotateResult, AdminDishResetResult, AdminDishAnchorResult, DishPlan, AdminCommentsResponse, FileLogFile, FileLogResponse, FileLogEntry, FrontendActivityLogsResponse, FrontendActivityStats, AllTodosResponse, AllRemindersResponse, SchoolYearsResponse, ArchivedUsersResponse, ArchivedClass, ArchivedTodosResponse, ArchivedRemindersResponse, RolloverResult, RollbackResult, AdminApiKey, CreatedApiKey, LearnConfigValues, LearnAiConfigValues, LearnAiGrant, LearnAiTeamGrant, AdminLearnTeam, LearnTeamAssignableRole, AdminLearnCoursesResponse, AdminLearnCourseAccessResponse, AdminLearnCourse, AdminLearnCourseAccess, LearnCoursePermission, LearnCourseStatus, LearnCourseVisibility, AdminLearnCourseVocabularyResponse, AdminLearnVocabularyImportResponse, BackupsResponse, AdminPopup, PopupInput, ClusterStatus, ClusterInstall, CreatedClusterInstall, ClusterReach, ReachEntry, AdminAnalytics, AnalyticsRange, AnalyticsPeople, PeopleFilters, AnalyticsBreakdown, BreakdownKind, AnalyticsDishes, AnalyticsVisitors, AnalyticsVisitorIp, AnalyticsPersonDetail, VisitSource, ClusterUpdates, ClusterUpdateSettings, PopupTargetUser, PopupTargetClass, ClusterScope, WayTestResult, ReachKind, LoginResult, PasskeyChallenge, AdminSecurityStatus, TotpSetup, AdminPasskey, AccountRole, FactorKind, PermissionPreset, PresetDraft } from './types';
+import type { AdminStats, AdminClass, AdminSessionsResponse, AdminLoginEvent, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish, AdminDishFull, AdminDishImportResult, AdminDishShiftResult, AdminDishRotateResult, AdminDishResetResult, AdminDishAnchorResult, DishPlan, AdminCommentsResponse, FileLogFile, FileLogResponse, FileLogEntry, FrontendActivityLogsResponse, FrontendActivityStats, AllTodosResponse, AllRemindersResponse, SchoolYearsResponse, ArchivedUsersResponse, ArchivedClass, ArchivedTodosResponse, ArchivedRemindersResponse, RolloverResult, RollbackResult, AdminApiKey, CreatedApiKey, BackupsResponse, AdminPopup, PopupInput, ClusterStatus, ClusterInstall, CreatedClusterInstall, ClusterReach, ReachEntry, AdminAnalytics, AnalyticsRange, AnalyticsPeople, PeopleFilters, AnalyticsBreakdown, BreakdownKind, AnalyticsDishes, AnalyticsVisitors, AnalyticsVisitorIp, AnalyticsPersonDetail, VisitSource, ClusterUpdates, ClusterUpdateSettings, PopupTargetUser, PopupTargetClass, WayTestResult, ReachKind, LoginResult, PasskeyChallenge, AdminSecurityStatus, TotpSetup, AdminPasskey, AccountRole, FactorKind, PermissionPreset, PresetDraft } from './types';
 import type { SearchKind, SearchResponse } from './types';
 import type { AdminRecap, RecapInput, RecapTargets } from './types';
 import type { AdminMe, AccessCatalog, AdminSchool, MensaMenu, AdminAccount, AdminGrantView, GrantInput, AuditEventsResponse, RequestScopeChoice, RequestsSummary, PerformanceReport, SystemHealth, SystemLogsResponse, ClientErrorGroup, ClientErrorOccurrence, PrivacyOverview, DishCommentGroupsResponse, DishCommentsResponse, ReminderCommentGroup, ReminderCommentItem } from './types';
@@ -433,7 +433,7 @@ export const adminApi = {
     username?: string;
     from?: string;
     to?: string;
-    scope?: 'learn' | 'core' | 'admin';
+    scope?: 'core' | 'admin';
   }): Promise<LogsResponse> => {
     const p = new URLSearchParams();
     if (params?.page) p.set('page', String(params.page));
@@ -644,136 +644,6 @@ export const adminApi = {
   revokeApiKey: (id: string): Promise<{ ok: boolean }> =>
     request<{ ok: boolean }>('PATCH', `/api/admin/api-keys/${id}/revoke`),
 
-  // ── Learn configuration ───────────────────────────────────────────────────
-  getLearnConfig: (): Promise<LearnConfigValues> =>
-    request<LearnConfigValues>('GET', '/api/admin/learn-config'),
-
-  updateLearnConfig: (data: Partial<LearnConfigValues> & { webUntisAuthorizationReference?: string }): Promise<{ ok: boolean }> =>
-    request<{ ok: boolean }>('PATCH', '/api/admin/learn-config', data),
-
-  // ── Learn AI vocabulary trainer ────────────────────────────────────────────────
-  getLearnAiConfig: (): Promise<LearnAiConfigValues> =>
-    request<LearnAiConfigValues>('GET', '/api/admin/learn-ai/config'),
-
-  updateLearnAiConfig: (data: Partial<LearnAiConfigValues>): Promise<{ ok: boolean }> =>
-    request<{ ok: boolean }>('PATCH', '/api/admin/learn-ai/config', data),
-
-  getLearnAiGrants: (): Promise<{ grants: LearnAiGrant[] }> =>
-    request<{ grants: LearnAiGrant[] }>('GET', '/api/admin/learn-ai/grants'),
-
-  grantLearnAi: (username: string, note?: string): Promise<{ ok: boolean }> =>
-    request<{ ok: boolean }>('POST', '/api/admin/learn-ai/grants', { username, note }),
-
-  revokeLearnAi: (stableUid: string): Promise<{ ok: boolean }> =>
-    request<{ ok: boolean }>('DELETE', `/api/admin/learn-ai/grants/${stableUid}`),
-
-  getLearnAiTeamGrants: (): Promise<{ grants: LearnAiTeamGrant[] }> =>
-    request<{ grants: LearnAiTeamGrant[] }>('GET', '/api/admin/learn-ai/team-grants'),
-
-  grantLearnAiTeam: (teamId: string, note?: string): Promise<{ ok: boolean }> =>
-    request<{ ok: boolean }>('POST', '/api/admin/learn-ai/team-grants', { teamId, note }),
-
-  revokeLearnAiTeam: (teamId: string): Promise<{ ok: boolean }> =>
-    request<{ ok: boolean }>('DELETE', `/api/admin/learn-ai/team-grants/${teamId}`),
-
-  // ── Learn groups and access ──────────────────────────────────────────────
-  // Group administration remains in the canonical admin authority. The
-  // response deliberately contains only group metadata, verified member
-  // identity and aggregate course counts — never course contents or secrets.
-  listLearnTeams: (): Promise<{ teams: AdminLearnTeam[] }> =>
-    request<{ teams: AdminLearnTeam[] }>('GET', '/api/admin/learn/teams'),
-
-  createLearnTeam: (data: { name: string; description?: string }): Promise<{ team: AdminLearnTeam }> =>
-    request<{ team: AdminLearnTeam }>('POST', '/api/admin/learn/teams', data),
-
-  updateLearnTeam: (teamId: string, data: { name?: string; description?: string }): Promise<{ team: AdminLearnTeam }> =>
-    request<{ team: AdminLearnTeam }>('PATCH', `/api/admin/learn/teams/${teamId}`, data),
-
-  saveLearnTeamMember: (teamId: string, data: { userId: string; role: LearnTeamAssignableRole }): Promise<{ member: { stableUid: string; username: string; role: LearnTeamAssignableRole; joinedAt: string } }> =>
-    request<{ member: { stableUid: string; username: string; role: LearnTeamAssignableRole; joinedAt: string } }>('POST', `/api/admin/learn/teams/${teamId}/members`, data),
-
-  removeLearnTeamMember: (teamId: string, stableUid: string): Promise<void> =>
-    request<void>('DELETE', `/api/admin/learn/teams/${teamId}/members/${encodeURIComponent(stableUid)}`),
-
-  addLearnTeamOwner: (teamId: string, stableUid: string): Promise<{ ok: true }> =>
-    request<{ ok: true }>('POST', `/api/admin/learn/teams/${teamId}/owner`, { stableUid }),
-
-  seedLearnTeamVocabCourses: (teamId: string): Promise<{ created: number }> =>
-    request<{ created: number }>('POST', `/api/admin/learn/teams/${teamId}/seed-vocab-courses`),
-
-  deleteLearnTeam: (teamId: string, confirmName: string): Promise<void> =>
-    request<void>('DELETE', `/api/admin/learn/teams/${teamId}`, { confirmName }),
-
-  // ── Learn course lifecycle and direct access ─────────────────────────────
-  // Metadata/grant operations are deliberately separate from authored Learn
-  // content. The browser never receives learner answers through this client.
-  listLearnCourses: (params?: {
-    page?: number;
-    limit?: number;
-    q?: string;
-    status?: LearnCourseStatus;
-    visibility?: LearnCourseVisibility;
-    teamId?: string;
-  }): Promise<AdminLearnCoursesResponse> => {
-    const query = new URLSearchParams();
-    if (params?.page) query.set('page', String(params.page));
-    if (params?.limit) query.set('limit', String(params.limit));
-    if (params?.q) query.set('q', params.q);
-    if (params?.status) query.set('status', params.status);
-    if (params?.visibility) query.set('visibility', params.visibility);
-    if (params?.teamId) query.set('teamId', params.teamId);
-    const suffix = query.size > 0 ? `?${query.toString()}` : '';
-    return request<AdminLearnCoursesResponse>('GET', `/api/admin/learn/courses${suffix}`);
-  },
-
-  getLearnCourseAccess: (courseId: string, page = 1, limit = 50): Promise<AdminLearnCourseAccessResponse> =>
-    request<AdminLearnCourseAccessResponse>('GET', `/api/admin/learn/courses/${courseId}/access?page=${page}&limit=${limit}`),
-
-  updateLearnCourseLifecycle: (courseId: string, status: LearnCourseStatus): Promise<{ course: AdminLearnCourse }> =>
-    request<{ course: AdminLearnCourse }>('PATCH', `/api/admin/learn/courses/${courseId}/lifecycle`, { status }),
-
-  saveLearnCourseAccess: (courseId: string, data: { userId: string; permission: LearnCoursePermission }): Promise<{ access: AdminLearnCourseAccess }> =>
-    request<{ access: AdminLearnCourseAccess }>('POST', `/api/admin/learn/courses/${courseId}/access`, data),
-
-  revokeLearnCourseAccess: (courseId: string, stableUid: string): Promise<void> =>
-    request<void>('DELETE', `/api/admin/learn/courses/${courseId}/access/${encodeURIComponent(stableUid)}`),
-
-  deleteLearnCourse: (courseId: string, confirmation: string): Promise<void> =>
-    request<void>('DELETE', `/api/admin/learn/courses/${courseId}`, { confirmation }),
-
-  // ── Learn vocabulary list administration ─────────────────────────────────
-  // A "vocabulary list" is a Learn course's vocabulary entries.
-  getLearnCourseVocabulary: (courseId: string, params?: { page?: number; limit?: number; q?: string }): Promise<AdminLearnCourseVocabularyResponse> => {
-    const query = new URLSearchParams();
-    if (params?.page) query.set('page', String(params.page));
-    if (params?.limit) query.set('limit', String(params.limit));
-    if (params?.q) query.set('q', params.q);
-    const suffix = query.size > 0 ? `?${query.toString()}` : '';
-    return request<AdminLearnCourseVocabularyResponse>('GET', `/api/admin/learn/courses/${courseId}/vocabulary${suffix}`);
-  },
-
-  // Requires the Bearer token, so fetch as a blob and trigger a client-side
-  // download, same pattern as exportDatabase() above.
-  exportLearnCourseVocabulary: async (courseId: string, courseSlug: string): Promise<void> => {
-    const token = getToken();
-    const res = await fetch(`/api/admin/learn/courses/${courseId}/vocabulary/export`, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    });
-    if (!res.ok) throw new Error(`Export fehlgeschlagen (HTTP ${res.status})`);
-    const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `pokyh-learn-vocab-${courseSlug}-${new Date().toISOString().slice(0, 10)}.json`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-  },
-
-  importLearnCourseVocabulary: (courseId: string, payload: unknown): Promise<AdminLearnVocabularyImportResponse> =>
-    request<AdminLearnVocabularyImportResponse>('POST', `/api/admin/learn/courses/${courseId}/vocabulary/import`, payload),
-
   // ── Database backups ──────────────────────────────────────────────────────
   getBackups: (): Promise<BackupsResponse> =>
     request<BackupsResponse>('GET', '/api/admin/backups'),
@@ -884,7 +754,7 @@ export const adminApi = {
 
   // One-line node install: the command is returned once and never again.
   createClusterInstall: (data: {
-    name: string; address?: string; withAi?: boolean; acmeEmail?: string; origin: string;
+    name: string; address?: string; acmeEmail?: string; origin: string;
     web?: 'none' | 'domain' | 'proxy'; apiPort?: number; apiBind?: string; apiFrom?: string;
     clusterPort?: number; clusterBind?: string; clusterFrom?: string;
   }): Promise<CreatedClusterInstall> =>
@@ -969,10 +839,6 @@ export const adminApi = {
 
   rollBackClusterNode: (): Promise<{ ok: boolean }> =>
     request<{ ok: boolean }>('POST', '/api/admin/cluster/updates/rollback'),
-
-  // What the cluster exchanges (Pokyh Learn yes/no) — the same on every node.
-  setClusterScope: (learn: boolean): Promise<ClusterScope> =>
-    request<ClusterScope>('PUT', '/api/admin/cluster/scope', { learn }),
 
   // Does this way arrive at this node? (through proxy, relay, VPN …)
   testClusterWay: (kind: ReachKind, endpoint: string): Promise<WayTestResult> =>

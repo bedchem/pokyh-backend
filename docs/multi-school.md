@@ -29,8 +29,7 @@ in).
 
 The school of `WEBUNTIS_SCHOOL` exists from the first start (every account from
 before schools existed belongs to it). A request without `school` lands there,
-as every client did before. Pokyh Learn and local password accounts belong to
-it as well.
+as every client did before. Local password accounts belong to it as well.
 
 In the panel (global view, **Schulen**) a global admin renames a school, gives
 it a short name and identifier, assigns a Mensa plan, or **deactivates** it — a

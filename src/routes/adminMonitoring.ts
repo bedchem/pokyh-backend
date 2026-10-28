@@ -25,13 +25,13 @@ import { likeText } from '../utils/like';
 const router = Router();
 
 // Request scopes a view can ask for. "app" is everything the apps send
-// (core + learn), the default; "admin" and "all" include the panel's own
+// (core), the default; "admin" and "all" include the panel's own
 // traffic and are for the global view of who monitors the system.
-type ScopeChoice = 'app' | 'core' | 'learn' | 'admin' | 'all';
+type ScopeChoice = 'app' | 'core' | 'admin' | 'all';
 
 function scopeChoice(req: Request): ScopeChoice | null {
   const raw = String(req.query['scope'] ?? 'app');
-  const choice: ScopeChoice = raw === 'core' || raw === 'learn' || raw === 'admin' || raw === 'all' ? raw : 'app';
+  const choice: ScopeChoice = raw === 'core' || raw === 'admin' || raw === 'all' ? raw : 'app';
   if ((choice === 'admin' || choice === 'all') && !(scopeSchool(req) === null && can(req.adminAccess!, 'system.monitoring.view', null))) {
     return null;
   }

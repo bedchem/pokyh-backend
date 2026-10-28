@@ -18,7 +18,6 @@ import type { RequestLog, RequestScopeChoice, RequestsSummary } from '../types';
 const SCOPES: Array<{ value: RequestScopeChoice; label: string; global?: boolean }> = [
   { value: 'app', label: 'Apps' },
   { value: 'core', label: 'Pokyh' },
-  { value: 'learn', label: 'Learn' },
   { value: 'admin', label: 'Admin-Panel', global: true },
   { value: 'all', label: 'Alle', global: true },
 ];
@@ -263,7 +262,7 @@ function RequestList({ day, scope, onError }: { day: string; scope: RequestScope
       page, limit, from, to,
       ...(status ? { status: Number(status) } : {}),
       ...(debounced ? { path: debounced } : {}),
-      ...(scope === 'core' || scope === 'learn' || scope === 'admin' ? { scope } : {}),
+      ...(scope === 'core' || scope === 'admin' ? { scope } : {}),
     })
       .then((res) => { if (!cancelled) { setLogs(res.logs); setTotal(res.total); } })
       .catch((err) => { if (!cancelled) onError(err instanceof Error ? err.message : 'Anfragen konnten nicht geladen werden'); })

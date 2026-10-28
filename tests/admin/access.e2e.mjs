@@ -193,7 +193,7 @@ test('global administration is closed to school admins', async () => {
   for (const [method, url] of [
     ['GET', '/api/admin/cluster'], ['GET', '/api/admin/backups'], ['GET', '/api/admin/api-keys'],
     ['GET', '/api/admin/system-logs'], ['GET', '/api/admin/monitoring/performance'], ['GET', '/api/admin/schools'],
-    ['GET', '/api/admin/school-years'], ['GET', '/api/admin/learn-config'], ['GET', '/api/admin/file-logs'],
+    ['GET', '/api/admin/school-years'], ['GET', '/api/admin/file-logs'],
     ['GET', '/api/admin/export'],
   ]) {
     const res = await api(method, url, { token: adminA.token, school: schoolA.id, body: method === 'POST' ? { name: 'X' } : undefined });

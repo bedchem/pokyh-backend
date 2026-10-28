@@ -24,7 +24,7 @@
 #   5. builds and starts the stack in /opt/pokyh: MySQL, Redis, the backend
 #      (blue/green, for updates without downtime), the cluster channel's
 #      forwarder, the updater, and — with a domain — Caddy (HTTPS, Let's
-#      Encrypt); optionally Ollama;
+#      Encrypt);
 #   6. waits until the node has paired with the cluster over the mutually
 #      authenticated channel and received the cluster's data.
 #
@@ -174,7 +174,7 @@ POKYH_BOOTSTRAP_END
     --network bridge \
     --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER \
     --security-opt no-new-privileges \
-    -e POKYH_MEM_KB="$MEM_KB" -e POKYH_CPUS="$CPUS" -e POKYH_APP_UID="$APP_UID" \
+    -e POKYH_APP_UID="$APP_UID" \
     -e POKYH_TLS_INTERNAL="${POKYH_TLS_INTERNAL:-}" -e POKYH_HOME_ON_HOST="$POKYH_HOME" \
     -v "$POKYH_HOME:/out" -v "$POKYH_HOME/state/bootstrap:/boot:ro" \
     "$NODE_IMAGE" node /boot/bootstrap.mjs \
@@ -183,7 +183,6 @@ POKYH_BOOTSTRAP_END
   ADDRESS=$(sed -n 's/^address=//p' "$POKYH_HOME/state/summary")
   NODE_NAME=$(sed -n 's/^name=//p' "$POKYH_HOME/state/summary")
   PEER_NAME=$(sed -n 's/^peer=//p' "$POKYH_HOME/state/summary")
-  WITH_AI=$(sed -n 's/^ai=//p' "$POKYH_HOME/state/summary")
   # How this server is reached, as chosen when the command was made.
   WEB=$(sed -n 's/^web=//p' "$POKYH_HOME/state/summary")
   CLUSTER_PORT=$(sed -n 's/^cluster_port=//p' "$POKYH_HOME/state/summary")
@@ -363,7 +362,6 @@ finish() {
     info "Web:           none of its own — clients reach the cluster through your other nodes or your proxy"
   fi
   info "Cluster:       ${DOMAIN:-${ADDRESS:-via relay}}:$CLUSTER_PORT (mutual TLS)${pin:+, certificate pin sha256//$pin}"
-  info "AI runtime:    ${WITH_AI:-no}"
   info "Updates:       automatic, without downtime (admin panel → Cluster → Updates)"
   info "Manage:        $POKYH_HOME/pokyh ps | logs -f app-blue | logs -f updater"
   info "Configuration: $POKYH_HOME/.env (keep it private)"

@@ -87,7 +87,6 @@ const SPECS = {
   'schools.manage': { group: 'global', scope: 'global', action: 'admin', label: 'Schulen verwalten', description: 'Schulen anlegen, ändern, deaktivieren; Mensapläne zuweisen.' },
   'admins.global.manage': { group: 'global', scope: 'global', action: 'admin', label: 'Globale Admins verwalten', description: 'Globale Rechte vergeben und entziehen.' },
   'privacy.view': { group: 'global', scope: 'global', action: 'read', label: 'Datenschutz-Übersicht', description: 'Welche Daten wie lange gespeichert werden, Einwilligungen.' },
-  'learn.manage': { group: 'global', scope: 'global', action: 'admin', label: 'Pokyh Learn verwalten', description: 'Learn-Konfiguration, Kurse, Teams und Pokyh AI.' },
   'subjectimages.manage': { group: 'global', scope: 'global', action: 'update', label: 'Fachbilder verwalten', description: 'Bilder der Fächer (für alle Schulen gleich).' },
 
   'system.logs.view': { group: 'system', scope: 'global', action: 'read', label: 'Backend-Logs ansehen', description: 'Server-Fehler, Ereignisse und Logdateien.' },

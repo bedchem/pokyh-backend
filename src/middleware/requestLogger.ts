@@ -19,11 +19,10 @@ export function clientIp(req: Request): string {
 // Feature areas of the request log. "admin" is the admin panel's own API
 // traffic: it is shown on the Anfragen page apart from the apps' requests and
 // never counted as app activity.
-export type RequestScope = 'admin' | 'learn' | 'core';
+export type RequestScope = 'admin' | 'core';
 
 export function requestScopeOf(path: string): RequestScope {
   if (path === '/api/admin' || path.startsWith('/api/admin/')) return 'admin';
-  if (path === '/learn' || path.startsWith('/learn/')) return 'learn';
   return 'core';
 }
 

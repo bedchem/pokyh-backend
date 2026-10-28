@@ -123,8 +123,6 @@ async function startServer(databaseUrl) {
     BACKUP_ENABLED: 'false',
     BACKUP_DIR: path.join(dir, 'backups'),
     SCHOOL_YEAR_ROLLOVER_AUTO: 'false',
-    LEARN_LEGAL_GATE_ENABLED: 'false',
-    LEARN_AI_ENABLED: 'false',
     MENSA_IMPORT_URL: 'http://127.0.0.1:9/unreachable.json',
     RATE_LIMIT_GLOBAL_MAX: '1000000',
     RATE_LIMIT_WRITE_MAX: '1000000',

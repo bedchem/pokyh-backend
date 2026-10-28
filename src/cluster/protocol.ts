@@ -113,14 +113,6 @@ export const updateAdvertSchema = z.object({
 });
 export type UpdateAdvert = z.infer<typeof updateAdvertSchema>;
 
-// The cluster-wide replication scope as the sender has it (scopeRules.ts).
-export const scopeAdvertSchema = z.object({
-  learn: z.boolean(),
-  v: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
-  by: z.string().max(36),
-  actor: z.string().max(100).nullable(),
-});
-
 export const heartbeatSchema = z.object({
   t: z.number(),
   name: nodeName,
@@ -146,8 +138,6 @@ export const heartbeatSchema = z.object({
   via: z.string().max(300).nullable().optional(),
   // Version and update state (older nodes send none).
   upd: updateAdvertSchema.nullable().optional(),
-  // What the sender exchanges (older nodes send none: everything).
-  scope: scopeAdvertSchema.optional(),
 });
 export type Heartbeat = z.infer<typeof heartbeatSchema>;
 

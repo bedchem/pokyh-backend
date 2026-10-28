@@ -86,7 +86,7 @@ test('unsafe identifiers and node ids never reach SQL text', () => {
   assert.throws(() => sql.triggerDefinitions(todos, "x' OR '1'='1"), /unsafe/);
   assert.throws(() => sql.triggerDefinitions({ ...todos, pk: [] }, NODE), /primary key/);
   assert.throws(() => sql.backfillSql({ ...todos, name: 'a;b' }, 'history'), /unsafe/);
-  assert.equal(sql.isSafeIdentifier('learn_course_sections'), true);
+  assert.equal(sql.isSafeIdentifier('class_members'), true);
   assert.equal(sql.isSafeIdentifier('x'.repeat(65)), false);
 });
 
