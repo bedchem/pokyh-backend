@@ -624,6 +624,21 @@ function startBackgroundJobs() {
   startJob('off-site backups', () => startOffsiteSync());
 }
 
+// Every WebUntis sign-in needs this server to reach WebUntis. A container
+// without a way out — e.g. a Docker network setup that gives it its default
+// route from an internal network — is said once, plainly, at the start,
+// with the network's own reason (ENETUNREACH, ENOTFOUND, …).
+async function checkWebUntisReachable(): Promise<void> {
+  try {
+    await fetch(config.webuntisBase, { method: 'HEAD', redirect: 'manual', signal: AbortSignal.timeout(10_000) });
+  } catch (err) {
+    const cause = (err as { cause?: { code?: unknown } } | null)?.cause?.code;
+    logger.error('WebUntis is not reachable from this server: no WebUntis sign-in can work. Check the container\'s network (its way out to the internet).', {
+      action: 'webuntis_unreachable', cause: typeof cause === 'string' ? cause : err instanceof Error ? err.message.split('\n')[0] : String(err),
+    });
+  }
+}
+
 // Create the database (if missing) and apply the schema via `prisma db push`.
 // Idempotent and additive — safe to run on every boot. Returns true on success.
 function pushSchema(): Promise<boolean> {
@@ -786,6 +801,7 @@ function start() {
     if (!config.adminPasswordHash) {
       logger.info('No admin password set — open /admin/ to complete setup');
     }
+    void checkWebUntisReachable();
 
     // Connect to the DB and start background jobs in the background (non-blocking).
     void connectDatabaseWithRetry();

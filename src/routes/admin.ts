@@ -1867,13 +1867,13 @@ router.post('/dishes/import-url', requireAdmin, requirePermission('mensa.manage'
   try {
     raw = await fetchUrl(url, { publicOnly: !importMayReachInternal(req, url) });
   } catch (err) {
-    res.status(502).json({ error: err instanceof BlockedAddressError ? err.message : 'Failed to fetch external URL' });
+    res.status(503).json({ error: err instanceof BlockedAddressError ? err.message : 'Failed to fetch external URL' });
     return;
   }
 
   let parsed: unknown;
   try { parsed = JSON.parse(raw); } catch {
-    res.status(502).json({ error: 'Invalid JSON from external URL' });
+    res.status(503).json({ error: 'Invalid JSON from external URL' });
     return;
   }
 
@@ -1994,13 +1994,13 @@ router.post('/dishes/reset', requireAdmin, requirePermission('mensa.manage'), as
   try {
     raw = await fetchUrl(url, { publicOnly: !importMayReachInternal(req, url) });
   } catch (err) {
-    res.status(502).json({ error: err instanceof BlockedAddressError ? err.message : 'Failed to fetch external URL' });
+    res.status(503).json({ error: err instanceof BlockedAddressError ? err.message : 'Failed to fetch external URL' });
     return;
   }
 
   let parsed: unknown;
   try { parsed = JSON.parse(raw); } catch {
-    res.status(502).json({ error: 'Invalid JSON from external URL' });
+    res.status(503).json({ error: 'Invalid JSON from external URL' });
     return;
   }
 
@@ -3571,7 +3571,7 @@ router.post('/backups/run', requireAdmin, requirePermission('backups.manage'), w
     logger.info('Admin action: manual backup created', { action: 'backup_manual_run', adminUsername, filename: result.filename, sizeBytes: result.sizeBytes });
     res.status(201).json(result);
   } catch (err) {
-    res.status(502).json({ error: err instanceof Error ? err.message : 'Backup failed' });
+    res.status(503).json({ error: err instanceof Error ? err.message : 'Backup failed' });
   }
 });
 
@@ -3613,7 +3613,7 @@ router.post('/backups/:filename/restore', requireAdmin, requirePermission('backu
   try {
     await restoreBackup(filename);
   } catch (err) {
-    res.status(502).json({ error: err instanceof Error ? err.message : 'Restore failed' });
+    res.status(503).json({ error: err instanceof Error ? err.message : 'Restore failed' });
     return;
   }
   logger.info('Admin action: backup restored', { action: 'backup_restored', adminUsername, filename });

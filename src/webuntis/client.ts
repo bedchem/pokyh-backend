@@ -35,6 +35,8 @@ export interface UntisSession {
   accountKind?: AccountKind;
   /** The class rules version that worked the account out conclusively (CLASS_CHECK_VERSION); a renewal of any other session looks it up again. */
   classCheck?: number;
+  /** The class rules version the session was signed in under; a session from before is renewed at its next request. */
+  rules?: number;
 }
 
 /** `https://<server>/WebUntis` of the session's school. */

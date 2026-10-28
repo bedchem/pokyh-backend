@@ -66,8 +66,14 @@ x-app: &app
     retries: 6
     start_period: 120s
   networks:
-    - edge
-    - database
+    # First and with the highest priority: the container's way out (WebUntis,
+    # push services, updates). It must never come from `database`, which is
+    # internal: a container whose default route Docker takes from an internal
+    # network reaches nothing outside, and every WebUntis sign-in fails.
+    app-egress:
+      priority: 1000
+    edge:
+    database:
 
 services:
   mysql:
@@ -276,6 +282,10 @@ volumes:
   caddy_config:
 
 networks:
+  # The app's own way out to the internet; nothing else is on it. Named to sort
+  # first: Docker versions that pick the default route by network name then
+  # still take it from here.
+  app-egress:
   edge:
   database:
     internal: true

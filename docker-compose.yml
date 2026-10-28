@@ -164,8 +164,14 @@ services:
       retries: 8
       start_period: 90s
     networks:
-      - edge
-      - database
+      # First and with the highest priority: the container's way out (WebUntis,
+      # push services, updates). It must never come from `database`, which is
+      # internal: a container whose default route Docker takes from an internal
+      # network reaches nothing outside, and every WebUntis sign-in fails.
+      app-egress:
+        priority: 1000
+      edge:
+      database:
 
   # Point-in-time recovery: a consistent base dump every few hours plus every
   # closed binary log, in the backups volume (pitr/), from where the API keeps
@@ -223,6 +229,10 @@ volumes:
   backups:
 
 networks:
+  # The app's own way out to the internet (WebUntis, push services, updates);
+  # nothing else is on it. Named to sort first: Docker versions that pick the
+  # default route by network name then still take it from here.
+  app-egress:
   # Allows the app to reach the configured public integrations/tunnel while
   # keeping MySQL and Redis unavailable from the host and external network.
   edge:

@@ -98,6 +98,11 @@ import { isSessionRevoked } from '../utils/revokedTokens';
 // also needs the API key header, which no browser sends to another site
 // without asking first (CORS preflight against the allowed origins).
 
+// When WebUntis fails (unreachable, an unexpected answer), the answer is 503,
+// never 502 or 504: Cloudflare in front of the API replaces those two with a
+// page of its own that carries no CORS headers, and the website would see a
+// blocked request instead of the message.
+
 const router = Router();
 
 function writesNeedApiKey(req: Request, res: Response, next: NextFunction): void {
@@ -147,6 +152,22 @@ const loginByAddress = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Zu viele Versuche. Bitte warte 5 Minuten.', code: 'rate_limited' },
+  // The one renewal that brings a session from before the current class rules
+  // up to date (classRecheck below): after an update every open session of a
+  // school does it at once, which must not use up the school's budget for
+  // sign-ins. It signs in with the sealed renewal, so it guesses nothing, and
+  // has a limit of its own.
+  skip: (req) => isClassRecheck(req),
+});
+
+const classRecheckBySession = rateLimit({
+  windowMs: 15 * 60_000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Zu viele Versuche. Bitte warte 15 Minuten.', code: 'rate_limited' },
+  skip: (req) => !isClassRecheck(req),
+  keyGenerator: (req) => `class-recheck:${readSession(req)?.sessionId ?? 'none'}`,
 });
 
 const loginByAccount = rateLimit({
@@ -205,6 +226,13 @@ const messageLimiter = rateLimit({
 
 const isoDay = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 
+// A renewal of a session sealed before the current class rules.
+function isClassRecheck(req: Request): boolean {
+  if (req.body?.renewal !== true) return false;
+  const previous = readSession(req);
+  return previous !== null && previous.rules !== CLASS_CHECK_VERSION;
+}
+
 // Whether a renewal may keep what its session worked out: conclusive (a
 // student with a class, a guardian, another kind of account) and under the
 // current class rules (../utils/accountClass.ts CLASS_CHECK_VERSION).
@@ -234,7 +262,7 @@ const TWO_FACTOR_ANSWERS: Record<string, { status: number; error: string }> = {
   two_factor_invalid: { status: 401, error: 'Der Code stimmt nicht oder ist abgelaufen. Versuche es mit dem neuen Code.' },
   bad_credentials: { status: 401, error: 'Benutzername oder Passwort ist falsch.' },
   refused: { status: 401, error: 'WebUntis hat die Anmeldung abgelehnt.' },
-  unavailable: { status: 502, error: 'WebUntis ist gerade nicht erreichbar. Bitte versuche es später erneut.' },
+  unavailable: { status: 503, error: 'WebUntis ist gerade nicht erreichbar. Bitte versuche es später erneut.' },
 };
 
 // The sign-in form's way (../webuntis/webLogin.ts): for accounts with
@@ -273,7 +301,7 @@ async function authenticate(base: string, school: UntisSchool, username: string,
     const error = rpcRes.status >= 500
       ? 'WebUntis ist gerade nicht erreichbar. Bitte versuche es später erneut.'
       : 'Die Verbindung zu WebUntis ist fehlgeschlagen.';
-    return { ok: false, status: 502, error, code: 'unavailable' };
+    return { ok: false, status: 503, error, code: 'unavailable' };
   }
 
   const sessionId = (rpcRes.headers.get('set-cookie') ?? '').match(/JSESSIONID=([^;]+)/)?.[1] ?? '';
@@ -281,7 +309,7 @@ async function authenticate(base: string, school: UntisSchool, username: string,
     result?: { personId?: unknown; klasseId?: unknown; personType?: number };
     error?: { code?: number };
   } | null;
-  if (!rpcJson) return { ok: false, status: 502, error: 'WebUntis hat unerwartet geantwortet.', code: 'unavailable' };
+  if (!rpcJson) return { ok: false, status: 503, error: 'WebUntis hat unerwartet geantwortet.', code: 'unavailable' };
   if (rpcJson.error || !rpcJson.result) {
     // An account with two-factor authentication cannot sign in through the
     // JSON-RPC interface; the sign-in form tells whether that is why (and then
@@ -298,14 +326,14 @@ async function authenticate(base: string, school: UntisSchool, username: string,
     }
     return { ok: false, status: 401, error: 'WebUntis hat die Anmeldung abgelehnt.', code: 'refused' };
   }
-  if (!sessionId) return { ok: false, status: 502, error: 'WebUntis hat unerwartet geantwortet.', code: 'unavailable' };
+  if (!sessionId) return { ok: false, status: 503, error: 'WebUntis hat unerwartet geantwortet.', code: 'unavailable' };
 
   if (withKey) return { ok: true, sessionId, ...readAppKeyAccount(rpcJson.result) };
   const { personId, klasseId, personType } = rpcJson.result;
   return { ok: true, sessionId, personId: positiveId(personId), klasseId: positiveId(klasseId), personType };
 }
 
-router.post('/login', loginByAddress, loginByAccount, async (req: Request, res: Response) => {
+router.post('/login', loginByAddress, loginByAccount, classRecheckBySession, async (req: Request, res: Response) => {
   const body = (req.body && typeof req.body === 'object' ? req.body : {}) as LoginBody;
 
   // The website renewing an expired session by itself, not the person signing
@@ -487,6 +515,7 @@ async function signInWebsite(req: Request, res: Response, input: WebsiteSignIn):
       sessionId, school, bearerToken: bearer, studentId: account.studentId, klasseId: untisClass.klasseId, klasseName: untisClass.klasseName,
       username, personType, isParent: account.isParent, imageUrl: account.imageUrl, loginAt,
       accountKind: account.kind,
+      rules: CLASS_CHECK_VERSION,
       ...(conclusive ? { classCheck: CLASS_CHECK_VERSION } : {}),
       pokyhSid: pokyh?.sessionId ?? previous?.pokyhSid,
     };
@@ -525,8 +554,11 @@ async function signInWebsite(req: Request, res: Response, input: WebsiteSignIn):
       ...(pokyh ? { token: pokyh.token } : {}),
     });
   } catch (e) {
-    logger.error('[webuntis login] failed', { message: errorText(e, 'unknown').split('\n')[0] });
-    res.status(502).json({ error: 'WebUntis ist gerade nicht erreichbar. Bitte versuche es später erneut.', code: 'unavailable' });
+    // The network's own reason (ENETUNREACH, ENOTFOUND, …) tells a server
+    // that cannot reach WebUntis from a WebUntis that is down.
+    const cause = (e as { cause?: { code?: unknown } } | null)?.cause?.code;
+    logger.error('[webuntis login] failed', { message: errorText(e, 'unknown').split('\n')[0], ...(typeof cause === 'string' ? { cause } : {}) });
+    res.status(503).json({ error: 'WebUntis ist gerade nicht erreichbar. Bitte versuche es später erneut.', code: 'unavailable' });
   }
 }
 
@@ -538,9 +570,9 @@ async function signInWebsite(req: Request, res: Response, input: WebsiteSignIn):
 
 const RESET_MESSAGES: Record<string, { status: number; error: string }> = {
   INVALID_USER_DATA: { status: 400, error: 'Benutzername und E-Mail-Adresse passen zu keinem Konto.' },
-  SEND_EMAIL_FAILURE: { status: 502, error: 'WebUntis konnte die E-Mail gerade nicht senden.' },
+  SEND_EMAIL_FAILURE: { status: 503, error: 'WebUntis konnte die E-Mail gerade nicht senden.' },
   PW_RESET_NOT_ALLOWED: { status: 403, error: 'Das Zurücksetzen des Passworts ist an deiner Schule nicht freigegeben. Wende dich an das Sekretariat.' },
-  INTERNAL_ERROR: { status: 502, error: 'WebUntis hat einen internen Fehler gemeldet.' },
+  INTERNAL_ERROR: { status: 503, error: 'WebUntis hat einen internen Fehler gemeldet.' },
 };
 
 router.post('/password-reset', passwordResetLimiter, async (req: Request, res: Response) => {
@@ -566,7 +598,7 @@ router.post('/password-reset', passwordResetLimiter, async (req: Request, res: R
     const sessionId = (page.headers.get('set-cookie') ?? '').match(/JSESSIONID=([^;]+)/)?.[1];
     const pageConfig = readPageConfig(await page.text());
     if (!sessionId || !pageConfig.csrf) {
-      res.status(502).json({ error: 'WebUntis ist gerade nicht erreichbar.', code: 'unavailable' });
+      res.status(503).json({ error: 'WebUntis ist gerade nicht erreichbar.', code: 'unavailable' });
       return;
     }
 
@@ -595,7 +627,7 @@ router.post('/password-reset', passwordResetLimiter, async (req: Request, res: R
     logger.warn('[webuntis password-reset] WebUntis rejected the request', { status: r.status, code: code ?? '' });
     res.status(mapped?.status ?? 502).json({ error: mapped?.error ?? 'Das Zurücksetzen konnte nicht gestartet werden.', code: code ?? 'reset_failed' });
   } catch {
-    res.status(502).json({ error: 'WebUntis ist gerade nicht erreichbar.', code: 'unavailable' });
+    res.status(503).json({ error: 'WebUntis ist gerade nicht erreichbar.', code: 'unavailable' });
   }
 });
 
@@ -628,7 +660,7 @@ router.get('/login-options', schoolSearchLimiter, async (req: Request, res: Resp
   }
   const options = await schoolLoginOptions(school);
   if (!options) {
-    res.status(502).json({ reason: 'unavailable' });
+    res.status(503).json({ reason: 'unavailable' });
     return;
   }
   res.setHeader('Cache-Control', 'public, max-age=600, s-maxage=3600');
@@ -983,6 +1015,16 @@ router.delete('/login/passkey', passkeyLimiter, async (req: Request, res: Respon
 
 router.use(requireUntisSession);
 
+// A session from before the current class rules is renewed once, at its next
+// request: the website renews it by itself (with the sealed renewal), and
+// the renewal asks WebUntis for the account's class at once instead of after
+// the session's natural renewal, hours later. Every session sealed since
+// carries the version, so this happens once per session.
+router.use((req: Request, res: Response, next: NextFunction) => {
+  if (session(req).rules === CLASS_CHECK_VERSION) return next();
+  res.status(401).json({ error: 'session_expired', code: 'class_recheck' });
+});
+
 // A WebUntis JSON answer passed on as it came: an object or a list is not
 // parsed and serialised again on the way (time and memory for a large
 // timetable); anything else is checked as before.
@@ -1006,7 +1048,7 @@ async function relayGet(req: Request, res: Response, path: string, failure: stri
       return;
     }
     if (!r.ok) {
-      res.status(502).json({ error: failure });
+      res.status(503).json({ error: failure });
       return;
     }
     sendJsonText(res, r.text);
@@ -1136,12 +1178,12 @@ router.get('/timetable/filters', async (req: Request, res: Response) => {
       return;
     }
     if (!r.ok) {
-      res.status(502).json({ error: 'Die Stundenpläne konnten gerade nicht geladen werden.' });
+      res.status(503).json({ error: 'Die Stundenpläne konnten gerade nicht geladen werden.' });
       return;
     }
     res.json({ type, items: readTimetableFilter(r.json) });
   } catch {
-    res.status(502).json({ error: 'Die Stundenpläne konnten gerade nicht geladen werden.' });
+    res.status(503).json({ error: 'Die Stundenpläne konnten gerade nicht geladen werden.' });
   }
 });
 
@@ -1243,7 +1285,7 @@ router.get('/grades', async (req: Request, res: Response) => {
       return;
     }
     if (!list.ok) {
-      res.status(502).json({ error: 'Die Noten konnten gerade nicht geladen werden.' });
+      res.status(503).json({ error: 'Die Noten konnten gerade nicht geladen werden.' });
       return;
     }
     const listData = JSON.parse(list.text) as { data?: { lessons?: unknown; lesson?: unknown } };
@@ -1365,7 +1407,7 @@ router.get('/absences', async (req: Request, res: Response) => {
     if (!list.ok) {
       if (list.reason === 'expired') sessionExpired(res);
       else if (list.reason === 'refused') await refused(req, res, list.path ?? '');
-      else res.status(502).json({ error: 'Die Abwesenheiten konnten gerade nicht geladen werden.' });
+      else res.status(503).json({ error: 'Die Abwesenheiten konnten gerade nicht geladen werden.' });
       return;
     }
     res.json({ data: { absences: list.absences, count: list.absences.length } });
@@ -1408,7 +1450,7 @@ router.get('/absence-reasons', async (req: Request, res: Response) => {
     const result = await firstWorkingGet(s, candidates, (json) => parseReasons(json).length > 0);
     if (!result.ok) {
       if (result.reason === 'expired') sessionExpired(res);
-      else res.status(502).json({ error: 'Abwesenheitsgründe konnten gerade nicht geladen werden.' });
+      else res.status(503).json({ error: 'Abwesenheitsgründe konnten gerade nicht geladen werden.' });
       return;
     }
     res.json({ reasons: parseReasons(result.json) });
@@ -1434,7 +1476,7 @@ router.get('/absences/meta', async (req: Request, res: Response) => {
       return;
     }
     if (!r.ok) {
-      res.status(502).json({ error: 'Abwesenheitsgründe konnten nicht geladen werden.' });
+      res.status(503).json({ error: 'Abwesenheitsgründe konnten nicht geladen werden.' });
       return;
     }
     const root = (r.json ?? {}) as Record<string, unknown>;
@@ -1449,7 +1491,7 @@ router.get('/absences/meta', async (req: Request, res: Response) => {
       defaultEndTime: typeof d.defaultEndTime === 'number' ? d.defaultEndTime : null,
     });
   } catch {
-    res.status(502).json({ error: 'Abwesenheitsgründe konnten nicht geladen werden.' });
+    res.status(503).json({ error: 'Abwesenheitsgründe konnten nicht geladen werden.' });
   }
 });
 
@@ -1508,9 +1550,9 @@ router.post('/absences/create', async (req: Request, res: Response) => {
       return;
     }
     logger.warn('[webuntis absences/create] WebUntis rejected the request', { status: r.status, code: outcome.code ?? '' });
-    res.status(502).json({ error: outcome.error ?? 'Die Abwesenheit konnte nicht gemeldet werden.', code: outcome.code ?? 'create_failed' });
+    res.status(503).json({ error: outcome.error ?? 'Die Abwesenheit konnte nicht gemeldet werden.', code: outcome.code ?? 'create_failed' });
   } catch {
-    res.status(502).json({ error: 'Die Abwesenheit konnte nicht gemeldet werden.', code: 'create_failed' });
+    res.status(503).json({ error: 'Die Abwesenheit konnte nicht gemeldet werden.', code: 'create_failed' });
   }
 });
 
@@ -1536,9 +1578,9 @@ router.post('/absences/delete', async (req: Request, res: Response) => {
       return;
     }
     logger.warn('[webuntis absences/delete] WebUntis rejected the request', { status: r.status });
-    res.status(502).json({ error: untisError(r.json) ?? 'Die Abwesenheit konnte nicht gelöscht werden.', code: 'delete_failed' });
+    res.status(503).json({ error: untisError(r.json) ?? 'Die Abwesenheit konnte nicht gelöscht werden.', code: 'delete_failed' });
   } catch {
-    res.status(502).json({ error: 'Die Abwesenheit konnte nicht gelöscht werden.', code: 'delete_failed' });
+    res.status(503).json({ error: 'Die Abwesenheit konnte nicht gelöscht werden.', code: 'delete_failed' });
   }
 });
 
@@ -1748,7 +1790,7 @@ router.get('/absences/excuses', async (req: Request, res: Response) => {
       return;
     }
     if (!r.ok) {
-      res.status(502).json({ error: 'Die gesendeten Nachrichten konnten gerade nicht geladen werden.' });
+      res.status(503).json({ error: 'Die gesendeten Nachrichten konnten gerade nicht geladen werden.' });
       return;
     }
     const root = (r.json ?? {}) as Record<string, unknown>;
@@ -1772,7 +1814,7 @@ router.get('/absences/excuses', async (req: Request, res: Response) => {
     }
     res.json({ excuses: [...bySpan.values()] });
   } catch {
-    res.status(502).json({ error: 'Die gesendeten Nachrichten konnten gerade nicht geladen werden.' });
+    res.status(503).json({ error: 'Die gesendeten Nachrichten konnten gerade nicht geladen werden.' });
   }
 });
 
@@ -1825,7 +1867,7 @@ router.get('/absences/excuse-letter', async (req: Request, res: Response) => {
     }
     const data = (job.json as { data?: { finished?: boolean; messageId?: unknown; reportParams?: unknown } } | null)?.data;
     if (!job.ok || !data) {
-      res.status(502).json({ error: 'Das Entschuldigungsschreiben konnte nicht erstellt werden.' });
+      res.status(503).json({ error: 'Das Entschuldigungsschreiben konnte nicht erstellt werden.' });
       return;
     }
     if (!data.finished) {
@@ -1838,7 +1880,7 @@ router.get('/absences/excuse-letter', async (req: Request, res: Response) => {
     });
     const type = file.headers.get('content-type') ?? '';
     if (!file.ok || type.includes('text/html') || type.includes('application/json')) {
-      res.status(502).json({ error: 'Das Entschuldigungsschreiben konnte nicht geladen werden.' });
+      res.status(503).json({ error: 'Das Entschuldigungsschreiben konnte nicht geladen werden.' });
       return;
     }
     const sent = await streamFile(file, res, () => {
@@ -1846,9 +1888,9 @@ router.get('/absences/excuse-letter', async (req: Request, res: Response) => {
       res.setHeader('Content-Type', type || 'application/pdf');
       res.setHeader('Content-Disposition', `inline; filename="Entschuldigung-${start}.pdf"`);
     });
-    if (!sent) res.status(502).json({ error: 'Das Entschuldigungsschreiben konnte nicht geladen werden.' });
+    if (!sent) res.status(503).json({ error: 'Das Entschuldigungsschreiben konnte nicht geladen werden.' });
   } catch {
-    if (!res.headersSent) res.status(502).json({ error: 'Das Entschuldigungsschreiben konnte nicht erstellt werden.' });
+    if (!res.headersSent) res.status(503).json({ error: 'Das Entschuldigungsschreiben konnte nicht erstellt werden.' });
   }
 });
 
@@ -1926,7 +1968,7 @@ router.get('/profile-image', async (req: Request, res: Response) => {
     });
     if (!sent) noPicture();
   } catch {
-    if (!res.headersSent) res.status(502).json({ error: 'Profilbild nicht ladbar.' });
+    if (!res.headersSent) res.status(503).json({ error: 'Profilbild nicht ladbar.' });
   }
 });
 
@@ -1970,7 +2012,7 @@ router.post('/password', passwordChangeLimiter, async (req: Request, res: Respon
       code: untisErrorCode(r.json) ?? 'change_failed',
     });
   } catch {
-    res.status(502).json({ error: 'Das Passwort konnte nicht geändert werden.', code: 'change_failed' });
+    res.status(503).json({ error: 'Das Passwort konnte nicht geändert werden.', code: 'change_failed' });
   }
 });
 
@@ -2024,7 +2066,7 @@ router.get('/account', async (req: Request, res: Response) => {
     const read = profileOf(general.json);
     if (!read) {
       if (general.status === 403) await refused(req, res, '/api/profile/general');
-      else res.status(502).json({ error: 'Dein WebUntis-Konto konnte gerade nicht geladen werden.' });
+      else res.status(503).json({ error: 'Dein WebUntis-Konto konnte gerade nicht geladen werden.' });
       return;
     }
     const { profile, pwChangeAllowed } = read;
@@ -2055,7 +2097,7 @@ router.get('/account', async (req: Request, res: Response) => {
       },
     });
   } catch {
-    res.status(502).json({ error: 'Dein WebUntis-Konto konnte gerade nicht geladen werden.' });
+    res.status(503).json({ error: 'Dein WebUntis-Konto konnte gerade nicht geladen werden.' });
   }
 });
 
@@ -2088,7 +2130,7 @@ router.put('/account', accountLimiter, async (req: Request, res: Response) => {
     }
     const read = profileOf(current.json);
     if (!read) {
-      res.status(502).json({ error: 'Deine Einstellungen konnten nicht gespeichert werden.' });
+      res.status(503).json({ error: 'Deine Einstellungen konnten nicht gespeichert werden.' });
       return;
     }
     const p = read.profile;
@@ -2117,7 +2159,7 @@ router.put('/account', accountLimiter, async (req: Request, res: Response) => {
       code: untisErrorCode(r.json) ?? 'save_failed',
     });
   } catch {
-    res.status(502).json({ error: 'Deine Einstellungen konnten nicht gespeichert werden.' });
+    res.status(503).json({ error: 'Deine Einstellungen konnten nicht gespeichert werden.' });
   }
 });
 
@@ -2143,7 +2185,7 @@ router.post('/account/two-factor/setup', accountLimiter, async (req: Request, re
     const qrSvg = qrText ? await QRCode.toString(qrText, { type: 'svg', margin: 1, errorCorrectionLevel: 'M' }) : null;
     res.json({ secret, qrSvg, account: textOf(totp?.user) });
   } catch {
-    res.status(502).json({ error: 'Die Einrichtung konnte nicht gestartet werden.', code: 'setup_failed' });
+    res.status(503).json({ error: 'Die Einrichtung konnte nicht gestartet werden.', code: 'setup_failed' });
   }
 });
 
@@ -2177,7 +2219,7 @@ router.post('/account/two-factor', accountLimiter, async (req: Request, res: Res
     }
     res.status(400).json({ error: 'Der Code stimmt nicht. Prüfe die Uhrzeit deines Handys und nimm den neuen Code.', code: 'two_factor_invalid' });
   } catch {
-    res.status(502).json({ error: 'Die Zwei-Faktor-Anmeldung konnte nicht eingeschaltet werden.', code: 'enable_failed' });
+    res.status(503).json({ error: 'Die Zwei-Faktor-Anmeldung konnte nicht eingeschaltet werden.', code: 'enable_failed' });
   }
 });
 
@@ -2196,7 +2238,7 @@ router.delete('/account/two-factor', accountLimiter, async (req: Request, res: R
     }
     res.status(r.status === 403 ? 403 : 502).json({ error: untisError(r.json) ?? 'Die Zwei-Faktor-Anmeldung konnte nicht ausgeschaltet werden.', code: 'disable_failed' });
   } catch {
-    res.status(502).json({ error: 'Die Zwei-Faktor-Anmeldung konnte nicht ausgeschaltet werden.', code: 'disable_failed' });
+    res.status(503).json({ error: 'Die Zwei-Faktor-Anmeldung konnte nicht ausgeschaltet werden.', code: 'disable_failed' });
   }
 });
 
@@ -2225,12 +2267,12 @@ router.get('/absences/times', async (req: Request, res: Response) => {
     }
     const times = r.ok ? readAbsenceTimes(r.json) : null;
     if (!times) {
-      res.status(502).json({ error: 'Die Fehlzeiten konnten gerade nicht geladen werden.' });
+      res.status(503).json({ error: 'Die Fehlzeiten konnten gerade nicht geladen werden.' });
       return;
     }
     res.json({ startDate, endDate, totals: absenceTotals(times), bySubject: absenceBySubject(times), lessons: times });
   } catch {
-    res.status(502).json({ error: 'Die Fehlzeiten konnten gerade nicht geladen werden.' });
+    res.status(503).json({ error: 'Die Fehlzeiten konnten gerade nicht geladen werden.' });
   }
 });
 
@@ -2242,12 +2284,12 @@ router.get('/holidays', async (req: Request, res: Response) => {
     const r = await rpc<unknown>(s, 'getHolidays');
     if (!r.ok) {
       if (r.expired) sessionExpired(res);
-      else res.status(502).json({ error: 'Die Ferien konnten gerade nicht geladen werden.' });
+      else res.status(503).json({ error: 'Die Ferien konnten gerade nicht geladen werden.' });
       return;
     }
     res.json({ holidays: readHolidays(r.result, isoDay(from)) });
   } catch {
-    res.status(502).json({ error: 'Die Ferien konnten gerade nicht geladen werden.' });
+    res.status(503).json({ error: 'Die Ferien konnten gerade nicht geladen werden.' });
   }
 });
 
@@ -2293,7 +2335,7 @@ router.get('/messages', async (req: Request, res: Response) => {
       return;
     }
     if (!r.ok) {
-      res.status(502).json({ error: 'Die Nachrichten konnten gerade nicht geladen werden.' });
+      res.status(503).json({ error: 'Die Nachrichten konnten gerade nicht geladen werden.' });
       return;
     }
     // Attachment lists ride along in the message detail.
@@ -2307,7 +2349,7 @@ router.get('/messages', async (req: Request, res: Response) => {
     if (/^\s*[[{]/.test(r.text)) sendJsonText(res, r.text);
     else res.json(null);
   } catch {
-    res.status(502).json({ error: 'Die Nachrichten konnten gerade nicht geladen werden.' });
+    res.status(503).json({ error: 'Die Nachrichten konnten gerade nicht geladen werden.' });
   }
 });
 
@@ -2327,7 +2369,7 @@ router.post('/messages', async (req: Request, res: Response) => {
     }
     res.json({ ok: r.ok });
   } catch {
-    res.status(502).json({ ok: false });
+    res.status(503).json({ ok: false });
   }
 });
 
@@ -2355,7 +2397,7 @@ router.post('/messages/confirm-read', async (req: Request, res: Response) => {
     }
     res.json({ ok: true, requestConfirmation: r.json ?? null });
   } catch {
-    res.status(502).json({ error: 'Die Lesebestätigung konnte nicht gesendet werden.' });
+    res.status(503).json({ error: 'Die Lesebestätigung konnte nicht gesendet werden.' });
   }
 });
 
@@ -2395,7 +2437,7 @@ router.get('/messages/read-status', async (req: Request, res: Response) => {
     });
     res.json({ recipients });
   } catch {
-    res.status(502).json({ error: 'Die Lesebestätigungen konnten gerade nicht geladen werden.' });
+    res.status(503).json({ error: 'Die Lesebestätigungen konnten gerade nicht geladen werden.' });
   }
 });
 
@@ -2419,7 +2461,7 @@ router.post('/messages/revoke', async (req: Request, res: Response) => {
     }
     res.json({ ok: true });
   } catch {
-    res.status(502).json({ error: 'Die Nachricht konnte nicht zurückgezogen werden.' });
+    res.status(503).json({ error: 'Die Nachricht konnte nicht zurückgezogen werden.' });
   }
 });
 
@@ -2461,7 +2503,7 @@ router.delete('/messages', async (req: Request, res: Response) => {
     }
     res.json({ ok: failed.length === 0, deleted, failed });
   } catch {
-    res.status(502).json({ error: 'Die Nachrichten konnten nicht gelöscht werden.' });
+    res.status(503).json({ error: 'Die Nachrichten konnten nicht gelöscht werden.' });
   }
 });
 
@@ -2525,7 +2567,7 @@ router.get('/messages/recipients', async (req: Request, res: Response) => {
       return;
     }
     if (!r.ok) {
-      res.status(502).json({ error: 'Empfänger konnten nicht geladen werden.' });
+      res.status(503).json({ error: 'Empfänger konnten nicht geladen werden.' });
       return;
     }
     // With the TEACHER option WebUntis takes exactly one recipient per message.
@@ -2538,7 +2580,7 @@ router.get('/messages/recipients', async (req: Request, res: Response) => {
       maxFileSize: perms.maxFileSize,
     });
   } catch {
-    res.status(502).json({ error: 'Empfänger konnten nicht geladen werden.' });
+    res.status(503).json({ error: 'Empfänger konnten nicht geladen werden.' });
   }
 });
 
@@ -2579,7 +2621,7 @@ router.get('/messages/draft', async (req: Request, res: Response) => {
     }
     res.json(parseDraft(r.json));
   } catch {
-    res.status(502).json({ error: 'Entwurf konnte nicht geladen werden.' });
+    res.status(503).json({ error: 'Entwurf konnte nicht geladen werden.' });
   }
 });
 
@@ -2596,9 +2638,9 @@ router.delete('/messages/draft', async (req: Request, res: Response) => {
       return;
     }
     if (r.ok) res.json({ ok: true });
-    else res.status(502).json({ error: 'Entwurf konnte nicht gelöscht werden.' });
+    else res.status(503).json({ error: 'Entwurf konnte nicht gelöscht werden.' });
   } catch {
-    res.status(502).json({ error: 'Entwurf konnte nicht gelöscht werden.' });
+    res.status(503).json({ error: 'Entwurf konnte nicht gelöscht werden.' });
   }
 });
 
@@ -2758,7 +2800,7 @@ router.post('/messages/send', messageLimiter, async (req: Request, res: Response
     }
     logger.warn('[webuntis messages/send] WebUntis rejected the request', { status: r.status });
     const code = isDraft ? 'draft_failed' : 'send_failed';
-    res.status(502).json({ error: untisError(r.json) ?? SEND_MESSAGES[code], code, status: r.status });
+    res.status(503).json({ error: untisError(r.json) ?? SEND_MESSAGES[code], code, status: r.status });
   } catch (e) {
     logger.warn('[webuntis messages/send] failed', { message: errorText(e, 'unknown').split('\n')[0] });
     sendFail(res, isDraft ? 'draft_failed' : 'send_failed', 502);
@@ -2791,7 +2833,7 @@ router.get('/messages/reply', async (req: Request, res: Response) => {
       recipient: form.recipient ? { name: String(form.recipient.displayName ?? ''), id: Number(form.recipient.userId ?? form.recipient.id) || null } : null,
     });
   } catch {
-    res.status(502).json({ error: 'Antwort konnte nicht vorbereitet werden.', code: 'reply_unavailable' });
+    res.status(503).json({ error: 'Antwort konnte nicht vorbereitet werden.', code: 'reply_unavailable' });
   }
 });
 
@@ -2851,9 +2893,9 @@ router.post('/messages/reply', messageLimiter, async (req: Request, res: Respons
       return;
     }
     logger.warn('[webuntis messages/reply] WebUntis rejected the request', { status: r.status });
-    res.status(502).json({ error: untisError(r.json) ?? 'Die Antwort konnte nicht gesendet werden.', code: 'send_failed' });
+    res.status(503).json({ error: untisError(r.json) ?? 'Die Antwort konnte nicht gesendet werden.', code: 'send_failed' });
   } catch {
-    res.status(502).json({ error: 'Die Antwort konnte nicht gesendet werden.', code: 'send_failed' });
+    res.status(503).json({ error: 'Die Antwort konnte nicht gesendet werden.', code: 'send_failed' });
   }
 });
 
