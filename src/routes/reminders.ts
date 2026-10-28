@@ -124,4 +124,51 @@ router.delete('/:reminderId', writeLimiter, requireAuth, async (req: Request, re
   res.status(204).send();
 });
 
+// PATCH /classes/:classId/reminders/:reminderId — the creator (or an admin)
+// changes the title, text or time; the whole class sees it at once (SSE).
+const updateReminderSchema = z.object({
+  title: z.string().min(1).max(500).optional(),
+  body: z.string().max(5000).optional(),
+  remindAt: z.string().datetime().optional(),
+});
+
+router.patch('/:reminderId', writeLimiter, requireAuth, async (req: Request, res: Response) => {
+  const classId = req.params['classId'] as string;
+  const reminderId = req.params['reminderId'] as string;
+  const { stableUid } = req.user!;
+
+  assertNotParent(req);
+
+  const isMember = await checkMembership(classId, stableUid);
+  if (!isMember) {
+    throw new ForbiddenError('You are not a member of this class');
+  }
+
+  const reminder = await prisma.reminder.findUnique({ where: { id: reminderId } });
+  if (!reminder || reminder.classId !== classId) {
+    throw new NotFoundError('Reminder not found');
+  }
+
+  const isCreator = reminder.createdBy === stableUid;
+  const admin = await prisma.admin.findUnique({ where: { stableUid } });
+  if (!isCreator && admin === null) {
+    throw new ForbiddenError('Only the creator or an admin can edit this reminder');
+  }
+
+  const body = updateReminderSchema.parse(req.body);
+  const updated = await prisma.reminder.update({
+    where: { id: reminderId },
+    data: {
+      ...(body.title !== undefined && { title: body.title }),
+      ...(body.body !== undefined && { body: body.body }),
+      ...(body.remindAt !== undefined && { remindAt: new Date(body.remindAt) }),
+    },
+  });
+
+  const reminders = await getRemindersForClass(classId);
+  broadcastReminders(classId, reminders);
+
+  res.json(updated);
+});
+
 export { router as remindersRouter };
