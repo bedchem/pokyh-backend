@@ -11,7 +11,7 @@ import { logger } from '../utils/logger';
 import { apiKeyMiddleware } from '../middleware/apiKey';
 import { requireAuth } from '../middleware/auth';
 import { clientIp } from '../middleware/requestLogger';
-import { completeWebUntisLogin, loginSchool, signInLocalAccount } from './auth';
+import { accountFromWebUntis, completeWebUntisLogin, loginSchool, signInLocalAccount } from './auth';
 import { finishQrLogin, pollQrLogin, qrText, startQrLogin } from '../services/qrLogin';
 import {
   devicePasskey,
@@ -46,9 +46,7 @@ import {
 } from '../webuntis/client';
 import {
   canReportAbsence,
-  detectParent,
   extractAbsenceSubjectName,
-  extractChildStudentId,
   extractImageUrl,
   extractLoginName,
   extractPersonId,
@@ -63,14 +61,9 @@ import { absenceBySubject, absenceTotals, readAbsenceTimes } from '../webuntis/a
 import { readHolidays } from '../webuntis/holidays';
 import { readTimetableFilter } from '../webuntis/timetableFilter';
 import QRCode from 'qrcode';
-import {
-  accountClassForRole,
-  findStudentClassIdInData,
-  positiveId,
-  resolveOwnStudentClassId,
-  studentClassId,
-  type WebUntisStudentClass,
-} from '../webuntis/accountClass';
+import { accountClassForRole, positiveId } from '../webuntis/accountClass';
+import { resolveAccount, type ResolvedAccount } from '../webuntis/accountResolver';
+import { CLASS_CHECK_VERSION } from '../utils/accountClass';
 import { absenceWriteOutcome, conflictTexts, hmNumber, ymdNumber } from '../webuntis/absences';
 import { absenceSpan, composeExcuse, excuseLocale, parseExcuseSubject, type ExcuseAbsence, type ExcuseSpan } from '../webuntis/excuseMessage';
 import { fetchMessagePermissions, htmlToText, plainTextToHtml } from '../webuntis/messages';
@@ -210,196 +203,17 @@ const messageLimiter = rateLimit({
 
 // ─── Sign-in ───────────────────────────────────────────────────────────────────
 
-type Klasse = { id: number; name: string };
-
 const isoDay = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 
-// The class element (type === "CLASS") of a REST timetable response
-// (days[].gridEntries[].position1..7[].current): the class short name or null.
-function classNameFromTimetable(json: unknown): string | null {
-  const days = (json as { days?: unknown }).days;
-  if (!Array.isArray(days)) return null;
-  const POSITIONS = ['position1', 'position2', 'position3', 'position4', 'position5', 'position6', 'position7'];
-  for (const day of days) {
-    const entries = (day as { gridEntries?: unknown })?.gridEntries;
-    if (!Array.isArray(entries)) continue;
-    for (const ge of entries) {
-      for (const key of POSITIONS) {
-        const arr = (ge as Record<string, unknown>)?.[key];
-        if (!Array.isArray(arr)) continue;
-        for (const el of arr) {
-          const cur = (el as { current?: { type?: string; shortName?: string; displayName?: string } })?.current;
-          if (cur?.type === 'CLASS') {
-            const name = cur.shortName ?? cur.displayName;
-            if (typeof name === 'string' && name.trim()) return name.trim();
-          }
-        }
-      }
-    }
-  }
-  return null;
-}
-
-// A student's class id from their timetable. `getStudents` has no class for
-// guardian logins, and at block-teaching schools whole weeks are free, so the
-// current week and mid-month points across the school year are sampled; the
-// first of them, in that order, whose lessons show the CLASS element wins.
-// Best effort → 0.
-async function klasseIdFromTimetable(base: string, headers: Record<string, string>, studentId: number, klassen: Klasse[]): Promise<number> {
-  if (studentId <= 0 || klassen.length === 0) return 0;
-  const now = new Date();
-  // The school year is archived on August 1, so August already samples the
-  // coming September instead of reassigning last year's class.
-  const startYear = now.getMonth() >= 7 ? now.getFullYear() : now.getFullYear() - 1;
-  const samples: Date[] = [new Date()];
-  for (const m of [9, 10, 11, 12]) samples.push(new Date(startYear, m - 1, 15));
-  for (const m of [1, 2, 3, 4, 5, 6]) samples.push(new Date(startYear + 1, m - 1, 15));
-
-  const classOf = async (day: Date): Promise<number> => {
-    const start = isoDay(day);
-    const end = isoDay(new Date(day.getFullYear(), day.getMonth(), day.getDate() + 5));
-    const url = `${base}/api/rest/view/v1/timetable/entries?start=${start}&end=${end}&format=1&resourceType=STUDENT&resources=${studentId}&periodTypes=&timetableType=MY_TIMETABLE&layout=START_TIME`;
-    try {
-      const r = await readFetch(url, { headers, signal: AbortSignal.timeout(8_000) });
-      if (!r.ok) return 0;
-      const text = await r.text();
-      if (text.startsWith('<')) return 0;
-      const name = classNameFromTimetable(JSON.parse(text));
-      return name ? positiveId(klassen.find((k) => k.name?.toLowerCase() === name.toLowerCase())?.id) : 0;
-    } catch {
-      return 0;
-    }
-  };
-
-  // The current week alone first; the weeks across the year then all at once.
-  const current = await classOf(samples[0]);
-  if (current > 0) return current;
-  for (const pending of samples.slice(1).map(classOf)) {
-    const id = await pending;
-    if (id > 0) return id;
-  }
-  return 0;
-}
-
-interface ResolvedAccount {
-  studentId: number;
-  klasseId: number;
-  klasseName: string;
-  isParent: boolean;
-  imageUrl?: string;
-}
-
-interface FreshSignIn {
-  base: string;
-  school: UntisSchool;
-  sessionId: string;
-  cookie: string;
-  username: string;
-  /** What `authenticate` answered. */
-  studentId: number;
-  klasseId: number;
-  personType?: number;
-  /** The bearer token being minted for the session ('' when it failed). */
-  bearer: Promise<string>;
-}
-
-// Whom a new sign-in acts for: for a student login the person itself; guardian
-// and other logins need the app-data to find the child. With the class and the
-// profile picture.
-async function resolveAccount(signIn: FreshSignIn): Promise<ResolvedAccount> {
-  const { base, school, sessionId, cookie, username, klasseId, personType } = signIn;
-  const rpcUrl = `${base}/jsonrpc.do?school=${encodeURIComponent(school.loginName)}`;
-
-  // Classes, the accessible students and the app-data, in parallel (the
-  // app-data as soon as the bearer token is there). The app-data is read here
-  // where the WebUntis session is freshest (also the most reliable moment for
-  // the profile-picture URL); capped at 5 seconds so a slow answer never
-  // stalls the sign-in.
-  const [bearer, klassen, students, appData] = await Promise.all([
-    signIn.bearer,
-    readFetch(rpcUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Cookie: cookie },
-      body: JSON.stringify({ id: 'pokyh-klassen', method: 'getKlassen', params: {}, jsonrpc: '2.0' }),
-      signal: AbortSignal.timeout(10_000),
-    })
-      .then((r) => r.json() as Promise<{ result?: unknown }>)
-      .then((kj) => (Array.isArray(kj.result) ? (kj.result as Klasse[]) : []))
-      .catch(() => [] as Klasse[]),
-    readFetch(rpcUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Cookie: cookie },
-      body: JSON.stringify({ id: 'pokyh-students', method: 'getStudents', params: {}, jsonrpc: '2.0' }),
-      signal: AbortSignal.timeout(10_000),
-    })
-      .then((r) => r.json() as Promise<{ result?: unknown }>)
-      .then((sj) => (Array.isArray(sj.result) ? (sj.result as WebUntisStudentClass[]) : []))
-      .catch(() => [] as WebUntisStudentClass[]),
-    signIn.bearer.then((bearerToken) => Promise.race([
-      fetchAppData({ sessionId, school, bearerToken, studentId: signIn.studentId, klasseId, klasseName: '', username }),
-      new Promise<{ ok: false; status: number }>((resolve) => setTimeout(() => resolve({ ok: false, status: 0 }), 5_000)),
-    ])),
-  ]);
-
-  const appJson = appData.ok ? appData.json : null;
-  // The person the sign-in answered with; when it named nobody (an app-key
-  // sign-in may leave the person out), the app-data's.
-  const studentId = signIn.studentId > 0 ? signIn.studentId : appJson ? extractPersonId(appJson) : 0;
-  let klasseName = klassen.find((k) => positiveId(k.id) === klasseId)?.name ?? '';
-  let resolvedStudentId = studentId;
-  let resolvedKlasseId = resolveOwnStudentClassId(klasseId, studentId, students);
-  let isParent = false;
-  const isStudentSelf = students.some((student) => positiveId(student.id) === studentId);
-
-  // Parent detection must not depend on getStudents: some WebUntis answers
-  // contain an id collision that makes a guardian look like the student.
-  if (appJson) isParent = detectParent(appJson);
-
-  if (isParent) {
-    const childId = appJson ? extractChildStudentId(appJson, studentId) : null;
-    const child = students.find((entry) => positiveId(entry.id) === childId)
-      ?? students.find((entry) => positiveId(entry.id) !== studentId)
-      ?? students[0];
-    if (childId) resolvedStudentId = childId;
-    else if (child) resolvedStudentId = positiveId(child.id);
-    const childKlasseId = studentClassId(child);
-    if (childKlasseId > 0) resolvedKlasseId = childKlasseId;
-  } else if (!isStudentSelf && students.length) {
-    const accessible = students[0];
-    resolvedStudentId = positiveId(accessible.id);
-    const accessibleKlasseId = studentClassId(accessible);
-    if (accessibleKlasseId > 0) resolvedKlasseId = accessibleKlasseId;
-  }
-
-  if (resolvedKlasseId <= 0 && appJson) {
-    const fromAppData = findStudentClassIdInData(appJson, resolvedStudentId);
-    if (fromAppData > 0) resolvedKlasseId = fromAppData;
-  }
-
-  // Guardians (and students whose `authenticate` returned klasseId 0): the
-  // class comes from the (child's) timetable.
-  if (resolvedKlasseId <= 0 && resolvedStudentId > 0) {
-    const headers: Record<string, string> = { Cookie: cookie, Accept: 'application/json', ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}) };
-    const derived = await klasseIdFromTimetable(base, headers, resolvedStudentId, klassen);
-    if (derived > 0) resolvedKlasseId = derived;
-  }
-
-  klasseName = klassen.find((k) => positiveId(k.id) === resolvedKlasseId)?.name ?? klasseName;
-
-  // Diagnostic without personal data: how the class was resolved.
-  logger.info('[webuntis login] resolved', {
-    school: school.loginName, personType, isStudentSelf, studentsLen: students.length, isParent,
-    hasStudent: resolvedStudentId > 0, hasClass: resolvedKlasseId > 0,
-  });
-
-  return {
-    studentId: resolvedStudentId,
-    klasseId: resolvedKlasseId,
-    klasseName,
-    isParent,
-    // '' when the app-data shows no picture: the avatar then needs no lookup.
-    imageUrl: appJson ? (extractImageUrl(appJson, isParent) ?? '') : undefined,
-  };
+// Whether a renewal may keep what its session worked out: conclusive (a
+// student with a class, a guardian, another kind of account) and under the
+// current class rules (../utils/accountClass.ts CLASS_CHECK_VERSION).
+// Anything else is looked up again, so every session from before the rules
+// changed has its account's class checked once more at its next renewal.
+function reusableResolution(previous: UntisSession): boolean {
+  if (previous.classCheck !== CLASS_CHECK_VERSION || previous.studentId <= 0) return false;
+  if (previous.accountKind === 'student') return previous.klasseId > 0;
+  return previous.accountKind === 'parent' || previous.accountKind === 'other';
 }
 
 interface LoginBody {
@@ -600,26 +414,33 @@ async function signInWebsite(req: Request, res: Response, input: WebsiteSignIn):
       .then((tok) => ((tok.match(/\./g) ?? []).length === 2 ? tok.trim() : ''))
       .catch(() => '');
 
-    // 2. Whom the sign-in acts for. A renewal keeps what was worked out for
-    // the session it renews (same account and school, at most 4 hours old:
-    // openRenewal), so WebUntis only has to sign in again; a new sign-in
-    // looks it all up.
+    // 2. Whom the sign-in acts for and the account's class. A renewal keeps
+    // what was worked out conclusively for the session it renews (same
+    // account and school, at most 4 hours old: openRenewal) under the current
+    // class rules, so WebUntis only has to sign in again; a new sign-in, and
+    // a session from before the current rules, looks it all up.
     const previous = input.renewing ? readSession(req) : null;
-    const account: ResolvedAccount = previous && previous.studentId > 0 && previous.klasseId > 0
+    const account: ResolvedAccount = previous && reusableResolution(previous)
       ? {
+        kind: previous.accountKind!,
         studentId: previous.studentId,
-        klasseId: previous.klasseId,
-        klasseName: previous.klasseName ?? '',
-        isParent: previous.isParent === true,
+        evidence: previous.accountKind === 'student'
+          ? { kind: 'class', klasseId: previous.klasseId, klasseName: previous.klasseName ?? '' }
+          : { kind: 'none' },
+        isParent: previous.accountKind === 'parent',
         imageUrl: previous.imageUrl,
+        loginName: '',
       }
       : await resolveAccount({
         base: BASE, school, sessionId, cookie, username,
         studentId: signedIn.personId, klasseId: signedIn.klasseId, personType, bearer: bearerRequest,
       });
-    // The sealed WebUntis session keeps a child's class (its endpoints need
-    // it); the guardian's account itself has and stores no class.
-    const { klasseId: accountKlasseId, klasseName: accountKlasseName } = accountClassForRole(account.isParent, account.klasseId, account.klasseName);
+    // What WebUntis said about the student's own class (a guardian's session
+    // keeps none); what the account gets is decided with the POKYH session.
+    const untisClass = account.evidence.kind === 'class'
+      ? { klasseId: account.evidence.klasseId, klasseName: account.evidence.klasseName }
+      : { klasseId: 0, klasseName: '' };
+    const conclusive = account.kind === 'parent' || account.kind === 'other' || (account.kind === 'student' && untisClass.klasseId > 0);
 
     // 3. The POKYH session, alongside the bearer token. On a renewal the
     // WebUntis data keeps working without it; pokyhSynced tells the website
@@ -628,11 +449,11 @@ async function signInWebsite(req: Request, res: Response, input: WebsiteSignIn):
     let pokyhError: unknown = null;
     const pokyhSession = (async () => {
       try {
-        // Guardians are never assigned to their child's class; completeWebUntisLogin
-        // repeats this normalisation as the authoritative safeguard.
+        // Only a confirmed student gets a class; guardians and every other
+        // account none (completeWebUntisLogin decides, authoritatively).
         const schoolId = await schoolIdRequest;
         return await completeWebUntisLogin({
-          username, klasseId: accountKlasseId, klasseName: accountKlasseName, role: account.isParent ? 'parent' : 'student', schoolId,
+          username, schoolId, ...accountFromWebUntis(account),
           // This browser as a device: it keeps its device session across renewals.
           context: signInContext(req, { renewal, deviceId: webDeviceId(req, res), currentToken: readRefreshCookie(req) }),
           method: input.method,
@@ -663,10 +484,17 @@ async function signInWebsite(req: Request, res: Response, input: WebsiteSignIn):
 
     const loginAt = Date.now();
     const sessionData: UntisSession = {
-      sessionId, school, bearerToken: bearer, studentId: account.studentId, klasseId: account.klasseId, klasseName: account.klasseName,
+      sessionId, school, bearerToken: bearer, studentId: account.studentId, klasseId: untisClass.klasseId, klasseName: untisClass.klasseName,
       username, personType, isParent: account.isParent, imageUrl: account.imageUrl, loginAt,
+      accountKind: account.kind,
+      ...(conclusive ? { classCheck: CLASS_CHECK_VERSION } : {}),
       pokyhSid: pokyh?.sessionId ?? previous?.pokyhSid,
     };
+    // The account's class as POKYH keeps it; without the POKYH session (a
+    // renewal whose POKYH part failed) what WebUntis just said.
+    const { klasseId: accountKlasseId, klasseName: accountKlasseName } = pokyh
+      ? { klasseId: pokyh.user.webuntisKlasseId, klasseName: pokyh.user.webuntisKlasseName }
+      : accountClassForRole(account.kind !== 'student', untisClass.klasseId, untisClass.klasseName);
     // What the website shows; no token, no password.
     const user = {
       username, studentId: account.studentId, klasseId: accountKlasseId, klasseName: accountKlasseName, personType, isParent: account.isParent,

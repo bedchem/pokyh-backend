@@ -4,6 +4,10 @@ export interface WebUntisResult {
   studentId: number;
   klasseId: number;
   klasseName: string;
+  /** What `authenticate` says the person is (5 student, 12 guardian, …). */
+  personType?: number;
+  /** The WebUntis session the credentials opened (webuntis/accountResolver.ts asks it whom it belongs to). */
+  sessionId: string;
 }
 
 export async function validateWebUntis(
@@ -35,7 +39,7 @@ export async function validateWebUntis(
   const sessionId = sessionMatch?.[1] ?? '';
 
   const rpcJson = (await rpcRes.json()) as {
-    result?: { personId: number; klasseId: number };
+    result?: { personId: number; klasseId: number; personType?: number };
     error?: { message: string };
   };
 
@@ -47,7 +51,7 @@ export async function validateWebUntis(
     throw new Error('WebUntis returned no result');
   }
 
-  const { personId: studentId, klasseId } = rpcJson.result;
+  const { personId: studentId, klasseId, personType } = rpcJson.result;
   // schoolname cookie is "_" + base64(school) — derived from config, not hardcoded.
   const schoolCookie = '_' + Buffer.from(school).toString('base64');
   const cookie = `JSESSIONID=${sessionId}; schoolname="${schoolCookie}"`;
@@ -74,5 +78,5 @@ export async function validateWebUntis(
       klassenJson.result?.find((k) => k.id === klasseId)?.name ?? '';
   }
 
-  return { studentId, klasseId, klasseName };
+  return { studentId, klasseId, klasseName, personType, sessionId };
 }

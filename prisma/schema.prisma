@@ -17,6 +17,13 @@ model User {
   username           String   @unique
   webuntisKlasseId   Int      @default(0) @map("webuntis_klasse_id")
   webuntisKlasseName String   @default("") @map("webuntis_klasse_name")
+  // The class rules version (CLASS_CHECK_VERSION, src/utils/accountClass.ts)
+  // under which WebUntis last confirmed the class above, or that the account
+  // has none; 0 = never. A WebUntis account below the current version has no
+  // class until a sign-in confirms one (src/services/classCheck.ts).
+  classCheckVersion  Int       @default(0) @map("class_check_version")
+  // When WebUntis last confirmed it.
+  classCheckedAt     DateTime? @map("class_checked_at")
   passwordHash       String?  @map("password_hash") @db.VarChar(100)
   isUntisUser        Boolean  @default(true) @map("is_untis_user")
   // Account role: "student" (default) or "parent". Parents have their own todos,

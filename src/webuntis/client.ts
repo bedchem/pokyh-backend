@@ -1,3 +1,4 @@
+import type { AccountKind } from './accountClass';
 import { createSessionMemo } from './memo';
 import { schoolBase, schoolCookieValue, schoolLoginName, type UntisSchool } from './schools';
 
@@ -18,6 +19,7 @@ export interface UntisSession {
   school?: UntisSchool;
   bearerToken: string;
   studentId: number;
+  /** The signed-in student's own class as WebUntis named it; 0 for every other account. */
   klasseId: number;
   klasseName: string;
   username: string;
@@ -29,6 +31,10 @@ export interface UntisSession {
   loginAt?: number;
   /** The browser's POKYH device session (services/sessions.ts): signing it out ends this WebUntis session too. */
   pokyhSid?: string;
+  /** What the sign-in is (./accountResolver.ts); missing in sessions from before it was kept. */
+  accountKind?: AccountKind;
+  /** The class rules version that worked the account out conclusively (CLASS_CHECK_VERSION); a renewal of any other session looks it up again. */
+  classCheck?: number;
 }
 
 /** `https://<server>/WebUntis` of the session's school. */

@@ -129,6 +129,8 @@ schools the admin opens most (learnt in their browser only), then all.
 - **Sign-in** (`POST /auth/login`, server key): send `school` (WebUntis login
   name), `schoolName` and `schoolServer` from the school search, and validate
   the credentials at `https://<server>/WebUntis/jsonrpc.do?school=<loginName>`.
+  Send `untisSessionId` (the app's WebUntis JSESSIONID) as well: the class
+  comes only from WebUntis, never from `klasseId` ([class-assignment.md](class-assignment.md)).
   Handle `403` (school deactivated) and `409` (name belongs to another school).
 - **Mensa**: `GET /dishes` (signed in: always the account's own school; guests:
   `?school=<identifier>`). `available: false` → hide the Mensa.

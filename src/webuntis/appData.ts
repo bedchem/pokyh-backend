@@ -1,10 +1,10 @@
 import { config } from '../config';
-import { containsParentRoleTag } from './accountClass';
 import { firstWorkingGet, untisGetText, type UntisSession } from './client';
 
 // What WebUntis tells about the signed-in account itself: its app-data (person,
 // guardian's children, permissions, profile picture) and whether it may
-// report absences. Which class a sign-in belongs to: ./accountClass.ts.
+// report absences. Whether it is a guardian's and which class it belongs to:
+// ./accountClass.ts, ./accountResolver.ts.
 //
 // The underlying WebUntis endpoints are internal and differ per instance;
 // every path can be overridden in the environment (config.webuntis.paths).
@@ -20,12 +20,6 @@ const APPDATA_CANDIDATES = [
 type AppDataResult =
   | { ok: true; json: unknown }
   | { ok: false; expired?: boolean; status: number };
-
-// ── Guardians ───────────────────────────────────────────────────────────────
-
-export function detectParent(json: unknown): boolean {
-  return containsParentRoleTag(json, config.webuntis.parentRoles);
-}
 
 type Json = Record<string, unknown>;
 

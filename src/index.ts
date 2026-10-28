@@ -50,6 +50,7 @@ import { RELAY_SCRIPT_PATH, handleRelayScript } from './cluster/relaySetup';
 import { SETUP_PATH, createSetupRouter } from './cluster/provision';
 import { startCluster, stopCluster } from './cluster';
 import { migrateLegacyAdmins, migrateNewPermissions, migrateToSchools } from './services/multiSchool';
+import { recheckClassesOnce } from './services/classCheck';
 import { backfillAccountDays } from './services/accountDays';
 import { activityCutoffDay } from './services/accountActivity';
 import { BELL_MARK_RETENTION_DAYS, deleteExpiredBellMarks } from './services/bellMarks';
@@ -772,6 +773,12 @@ async function connectDatabaseWithRetry() {
       // HTTP at once, but takes over background work and the cluster only
       // once the updater has stopped the previous one and named this one.
       await waitForActivation();
+      // Once per version of the class rules — after the previous container
+      // stopped, so none of its sign-ins slips past: every WebUntis account's
+      // class waits for its next sign-in to be confirmed (services/classCheck.ts).
+      try { await recheckClassesOnce(); } catch (err) {
+        logger.warn(`class check reset failed (non-fatal, retried next start): ${err instanceof Error ? err.message.split('\n')[0] : String(err)}`);
+      }
       // Before the background jobs: they ask the cluster layer whether this
       // node is the one that should run them. Never throws.
       await startCluster();

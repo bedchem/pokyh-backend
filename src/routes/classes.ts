@@ -5,7 +5,7 @@ import { requireAuth } from '../middleware/auth';
 import { readLimiter, writeLimiter } from '../middleware/rateLimiter';
 import { ForbiddenError, NotFoundError, ConflictError } from '../utils/errors';
 import { generateClassCode, generateClassId } from '../utils/uid';
-import { mayJoinClass } from '../utils/accountClass';
+import { CLASS_CHECK_VERSION, mayJoinClass } from '../utils/accountClass';
 import { defaultSchoolId, schoolOfUser } from '../services/schools';
 import { loadAccess } from '../services/adminAccess';
 import { can } from '../security/permissions';
@@ -14,13 +14,15 @@ const router = Router();
 
 // GET /classes/mine — get user's class
 router.get('/mine', readLimiter, requireAuth, async (req: Request, res: Response) => {
-  const { stableUid, klasseId, role } = req.user!;
+  const { stableUid, role } = req.user!;
+  // The account's class as stored now, not as the access token remembers it:
+  // a class a sign-in has since taken away is gone at once.
   const currentUser = await prisma.user.findUnique({
     where: { stableUid },
-    select: { role: true },
+    select: { role: true, webuntisKlasseId: true },
   });
 
-  if (!mayJoinClass(role) || !currentUser || !mayJoinClass(currentUser.role)) {
+  if (!mayJoinClass(role) || !currentUser || !mayJoinClass(currentUser.role) || currentUser.webuntisKlasseId <= 0) {
     res.json(null);
     return;
   }
@@ -29,7 +31,7 @@ router.get('/mine', readLimiter, requireAuth, async (req: Request, res: Response
   const membership = await prisma.classMember.findFirst({
     where: {
       stableUid,
-      class: { webuntisKlasseId: klasseId, schoolId },
+      class: { webuntisKlasseId: currentUser.webuntisKlasseId, schoolId },
     },
     include: {
       class: {
@@ -147,7 +149,7 @@ router.post('/join', writeLimiter, requireAuth, async (req: Request, res: Respon
   const body = joinSchema.parse(req.body);
   const currentUser = await prisma.user.findUnique({
     where: { stableUid },
-    select: { role: true },
+    select: { role: true, isUntisUser: true, webuntisKlasseId: true, classCheckVersion: true },
   });
 
   // Consult the persisted role as well as the JWT so a token issued before an
@@ -160,6 +162,14 @@ router.post('/join', writeLimiter, requireAuth, async (req: Request, res: Respon
   // A code only opens a class of the account's own school.
   if (!cls || (cls.schoolId ?? defaultSchoolId()) !== (await schoolOfUser(stableUid))) {
     throw new NotFoundError('Class not found with that code');
+  }
+
+  // A WebUntis account belongs to the one class WebUntis confirmed for it,
+  // never to another one by its code.
+  const ownClass = currentUser.webuntisKlasseId > 0 && currentUser.classCheckVersion === CLASS_CHECK_VERSION
+    && cls.webuntisKlasseId === currentUser.webuntisKlasseId;
+  if (currentUser.isUntisUser && !ownClass) {
+    throw new ForbiddenError('Du kannst nur deiner eigenen Klasse beitreten');
   }
 
   // Already a member?

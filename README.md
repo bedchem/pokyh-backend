@@ -234,7 +234,8 @@ Partial delivery is reported (`sentTo` / `failed`); every refusal carries a `cod
 
 1. **API key**: every non-admin route requires `X-API-Key`.
 2. **App login**: `POST /auth/login` with `X-Server-Key` after the app's own WebUntis login yields a
-   short-lived **JWT access token** and a long-lived, hashed **refresh token**.
+   short-lived **JWT access token** and a long-lived, hashed **refresh token**. The class comes from
+   WebUntis through the app's session (`untisSessionId`), never from the app ([docs/class-assignment.md](docs/class-assignment.md)).
 3. **Website**: `/webuntis/login` (see above); the POKYH tokens are renewed at `/auth/web/refresh`
    with the httpOnly refresh cookie. POKYH-only accounts use `/auth/web/local-login`.
 
@@ -269,7 +270,7 @@ All times are ISO-8601 UTC. Mount points:
 | WebUntis (website) | `/webuntis/*` | See [WebUntis gateway](#webuntis-gateway) |
 | Users | `/users/:username` · `/users/me/bell` | Profile; seen and cleared notifications of the bell |
 | To-dos | `/users/:username/todos` | Per user, CRUD + SSE |
-| Classes | `/classes` · `/classes/mine` · `/classes/:id` | Joined or created by WebUntis class; students only |
+| Classes | `/classes` · `/classes/mine` · `/classes/:id` | The class WebUntis confirms for a student ([docs/class-assignment.md](docs/class-assignment.md)) |
 | Reminders | `/classes/:classId/reminders` (+ `/comments`) | Class-wide, CRUD + SSE |
 | Dishes | `/dishes` | Public, read-only menu per school |
 | Dish ratings and comments | `/dish-ratings` · `/dish-comments/:dishId` | Stars and comments + SSE |
