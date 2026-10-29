@@ -32,8 +32,9 @@ import { writeLimiter } from '../middleware/rateLimiter';
 import { issuedApiKeyScopes, parseApiKeyScopes, serializeApiKeyScopes } from '../security/apiKeyPolicy';
 import {
   rotatePastWeeks, normalizePlanAroundAnchor,
-  lastFutureMondayIso, firstMondayIso, otherPlan, snapForwardToSeason, isoAddDays,
+  lastFutureMondayIso, firstMondayIso, otherPlan, isoAddDays,
 } from '../utils/mensaRotate';
+import { snapForwardToSeason } from '../utils/mensaSeason';
 import { slugifyDishName } from '../utils/dishKey';
 import { ForbiddenError, NotFoundError, ValidationError } from '../utils/errors';
 import { intQueryParam } from '../utils/duration';
@@ -2130,7 +2131,7 @@ router.post('/dishes/cascade-shift', requireAdmin, requirePermission('mensa.mana
 //   1. NORMALIZE the chosen plan so every week i is at target + (i - anchorIdx) * 7,
 //      preserving each dish's weekday. Also fixes irregular gaps in one call.
 //   2. ROTATE past weeks to end (season-aware — they snap into their own season
-//      so summer weeks never land in Nov–Mar and vice versa).
+//      so summer weeks never land in winter time and vice versa).
 //   3. HANDOFF (default on): align the OTHER plan's first week to right after
 //      this plan's last future week, snapped into the other plan's season. So
 //      the two plans together form a seamless rolling schedule.

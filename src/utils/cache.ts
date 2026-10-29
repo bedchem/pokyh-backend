@@ -43,7 +43,7 @@ export class TtlCache<V> {
 }
 
 // Shared cache for the public dish catalog (GET /dishes), one entry per menu
-// and season. Invalidated by admin dish writes so the menu is always fresh
+// and week. Invalidated by admin dish writes so the menu is always fresh
 // after an edit/import.
 export const dishesCache = new TtlCache<unknown>();
 
@@ -51,12 +51,7 @@ export function invalidateDishesCache(): void {
   dishesCache.clear();
 }
 
-// Summer runs April 1 – October 31; winter is the rest.
-export function currentSeason(now: Date = new Date()): 'summer' | 'winter' {
-  const m = now.getMonth() + 1;
-  return m >= 4 && m <= 10 ? 'summer' : 'winter';
-}
-
-export function dishesCacheKey(menuId: string, season: 'summer' | 'winter'): string {
-  return `dishes:${menuId}:${season}`;
+// A new week is a new entry, so past weeks are rotated on its first request.
+export function dishesCacheKey(menuId: string, weekMondayIso: string): string {
+  return `dishes:${menuId}:${weekMondayIso}`;
 }

@@ -1,10 +1,11 @@
 import { Router, Request, Response } from 'express';
 import { prisma } from '../db';
 import { readLimiter } from '../middleware/rateLimiter';
-import { currentSeason, dishesCacheKey } from '../utils/cache';
+import { dishesCacheKey } from '../utils/cache';
 import { cached } from '../services/cache';
 import { config } from '../config';
-import { rotatePastWeeks } from '../utils/mensaRotate';
+import { currentWeekMondayIso, rotatePastWeeks } from '../utils/mensaRotate';
+import { servedDishes } from '../utils/mensaSeason';
 import { slugifyDishName } from '../utils/dishKey';
 import { logger } from '../utils/logger';
 import { optionalAuth } from '../middleware/auth';
@@ -66,10 +67,13 @@ function dishToJson(d: {
 // The menu of one school: a signed-in account's own, a guest's ?school=
 // (id or slug), or the default school's — what every client got before
 // schools existed. A school without a menu gets an empty one.
-// Automatically serves the season-appropriate plan: April–October = summer,
-// otherwise winter. On cache miss we also opportunistically rotate any past
-// weeks to the end of the plan so the menu is always "rolling" without any
-// admin action. The rotate is idempotent and no-op when nothing has expired.
+// Every week is served from the plan of its season (utils/mensaSeason): summer
+// from the switch to summer time, winter from the switch to winter time, so in
+// the week before a switch "next week" already shows the other plan. A week
+// the season's plan has no dishes for is served from the other plan. On cache
+// miss we also opportunistically rotate any past weeks of both plans to their
+// end so the menu is always "rolling" without any admin action. The rotate is
+// idempotent and no-op when nothing has expired.
 router.get('/', readLimiter, optionalAuth, async (req: Request, res: Response): Promise<void> => {
   const { menuId } = await menuContext(req);
   // `available: false`: this school has no menu — the app shows no Mensa at
@@ -78,24 +82,25 @@ router.get('/', readLimiter, optionalAuth, async (req: Request, res: Response): 
     res.json({ available: false, menu: { dishes: [] } });
     return;
   }
-  const season = currentSeason();
   // Shared through Redis (services/cache.ts); any dish write drops it, the
   // TTL makes sure past weeks are rotated even when nobody writes.
-  const payload = await cached(dishesCacheKey(menuId, season), ['Dish', 'DishImage'], Math.max(1, Math.round(config.cacheTtlMs / 1000)), async () => {
-    try {
-      await rotatePastWeeks(menuId, season);
-    } catch (err) {
-      // Rotation failure must not block serving the (possibly stale) menu.
-      logger.warn('opportunistic rotate failed', {
-        season, error: err instanceof Error ? err.message : String(err),
-      });
+  const payload = await cached(dishesCacheKey(menuId, currentWeekMondayIso()), ['Dish', 'DishImage'], Math.max(1, Math.round(config.cacheTtlMs / 1000)), async () => {
+    for (const season of ['summer', 'winter'] as const) {
+      try {
+        await rotatePastWeeks(menuId, season);
+      } catch (err) {
+        // Rotation failure must not block serving the (possibly stale) menu.
+        logger.warn('opportunistic rotate failed', {
+          season, error: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
 
     const dishes = await prisma.dish.findMany({
-      where: { menuId, plan: season },
+      where: { menuId },
       orderBy: [{ date: 'asc' }, { sortOrder: 'asc' }, { nameDe: 'asc' }],
     });
-    return { available: true, menu: { dishes: dishes.map(dishToJson) } };
+    return { available: true, menu: { dishes: servedDishes(dishes).map(dishToJson) } };
   });
   res.json(payload);
 });

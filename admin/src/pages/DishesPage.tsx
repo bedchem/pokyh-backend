@@ -125,10 +125,16 @@ function emptyDish(defaultDate?: string, plan: DishPlan = 'summer'): Omit<AdminD
   };
 }
 
-// Summer runs April 1 – October 31; winter is the rest. Mirrors backend logic.
-function currentSeason(now: Date = new Date()): DishPlan {
-  const m = now.getMonth() + 1;
-  return m >= 4 && m <= 10 ? 'summer' : 'winter';
+// The last Sunday of `month` (0-based) in `year`, the day the clocks change.
+function lastSundayIso(year: number, month: number): string {
+  const last = new Date(year, month + 1, 0);
+  last.setDate(last.getDate() - last.getDay());
+  return toLocalIso(last);
+}
+
+// The season of this week, i.e. the plan the public /dishes endpoint serves now.
+function currentSeason(): DishPlan {
+  return seasonOfIsoDate(currentMondayIso());
 }
 
 // Mirror of the backend slugifyDishName. Used as a fallback so rating/comment
@@ -152,11 +158,16 @@ function dishKeyOf(dish: { stableKey?: string; nameDe: string }): string {
   return dish.stableKey && dish.stableKey.length > 0 ? dish.stableKey : slugifyDishName(dish.nameDe);
 }
 
-// Which season the given ISO date logically belongs to. Used to warn the user
-// when a week of the active plan has drifted into the other season's window —
-// on that Monday the public /dishes endpoint will switch to the other plan.
+// Which season the given ISO date's week belongs to: summer from the switch to
+// summer time (last Sunday of March) up to the switch to winter time (last
+// Sunday of October), the other plan taking over on the Monday after a switch.
+// Mirrors backend utils/mensaSeason. Used to warn the user when a week of the
+// active plan has drifted into the other season's window — that week the
+// public /dishes endpoint serves the other plan.
 function seasonOfIsoDate(iso: string): DishPlan {
-  return currentSeason(new Date(iso + 'T00:00:00'));
+  const mon = weekKey(iso);
+  const year = Number(mon.slice(0, 4));
+  return mon > lastSundayIso(year, 2) && mon < lastSundayIso(year, 9) ? 'summer' : 'winter';
 }
 
 
@@ -1348,8 +1359,8 @@ function MenuPlan({ note, handed }: { note?: ReactNode; handed: Partial<HandedDi
           value={activePlan}
           onChange={setActivePlan}
           options={[
-            { value: 'summer', label: <><Sun size={14} /> Sommer <span className="text-[11.5px] opacity-60">Apr–Okt</span></> },
-            { value: 'winter', label: <><Snowflake size={14} /> Winter <span className="text-[11.5px] opacity-60">Nov–Mär</span></> },
+            { value: 'summer', label: <><Sun size={14} /> Sommer <span className="text-[11.5px] opacity-60">ab Sommerzeit</span></> },
+            { value: 'winter', label: <><Snowflake size={14} /> Winter <span className="text-[11.5px] opacity-60">ab Winterzeit</span></> },
           ]}
         />
         <SearchField value={search} onChange={setSearch} placeholder="Suche nach Name, Kategorie, Datum" className="min-w-[240px] flex-1" />

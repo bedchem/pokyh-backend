@@ -1,42 +1,18 @@
 import { prisma } from '../db';
 import { logger } from './logger';
 import type { Prisma } from '@prisma/client';
+import { snapForwardToSeason, toUtcIso, utcMondayOf, type Plan } from './mensaSeason';
 
 type PrismaLike = Prisma.TransactionClient | typeof prisma;
-type Plan = 'summer' | 'winter';
 
 // ─── date helpers (UTC, because Prisma reads DATE as UTC-midnight) ───────────
+// The season of a week and the Monday helpers live in ./mensaSeason.
 
-function utcMondayOf(d: Date): Date {
-  const wd = d.getUTCDay() || 7;
-  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - wd + 1));
-}
 function utcDow(d: Date): number { return d.getUTCDay() || 7; }
-function toUtcIso(d: Date): string { return d.toISOString().split('T')[0]!; }
 function addDays(d: Date, days: number): Date {
   const r = new Date(d.getTime());
   r.setUTCDate(r.getUTCDate() + days);
   return r;
-}
-
-// Season definition mirrors utils/cache.currentSeason: summer = April..October.
-export function isInSeason(date: Date, plan: Plan): boolean {
-  const m = date.getUTCMonth() + 1;
-  const summer = m >= 4 && m <= 10;
-  return plan === 'summer' ? summer : !summer;
-}
-
-// Snap the given Monday forward in 7-day steps until it lands inside `plan`'s
-// season window. Used so past weeks never accidentally land in the other
-// plan's territory when rotated. Safety-bounded to two years so a bad plan
-// value can't hang the request.
-export function snapForwardToSeason(monday: Date, plan: Plan): Date {
-  const d = new Date(monday.getTime());
-  for (let i = 0; i < 110; i++) { // ≈ two full years of weeks
-    if (isInSeason(d, plan)) return d;
-    d.setUTCDate(d.getUTCDate() + 7);
-  }
-  return monday;
 }
 
 function currentLocalMonday(): Date {
@@ -47,6 +23,9 @@ function currentLocalMonday(): Date {
   const local = new Date(today.getFullYear(), today.getMonth(), today.getDate() - wd + 1);
   return new Date(Date.UTC(local.getFullYear(), local.getMonth(), local.getDate()));
 }
+
+// This week's Monday (YYYY-MM-DD): the week the public menu is served for.
+export function currentWeekMondayIso(): string { return toUtcIso(currentLocalMonday()); }
 
 // ─── plan queries ────────────────────────────────────────────────────────────
 // Every operation works on one menu's summer or winter plan: menus of

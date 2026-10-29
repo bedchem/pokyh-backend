@@ -154,6 +154,58 @@ test('a popup meant for chosen users and classes reaches exactly them — on eve
   assert.ok([401, 403].includes((await cluster.request(a, 'GET', '/api/admin/popups/targets', { token: s1.token })).status));
 });
 
+// ─── Mensa: summer and winter plan ───────────────────────────────────────────
+
+// YYYY-MM-DD of a UTC date `days` after the last Sunday of `month` (0-based).
+function afterLastSunday(year, month, days) {
+  const last = new Date(Date.UTC(year, month + 1, 0));
+  return new Date(Date.UTC(year, month, last.getUTCDate() - last.getUTCDay() + days)).toISOString().slice(0, 10);
+}
+
+test('the public menu serves every week from the plan of its season, switching with the clocks — on every node', async () => {
+  // Next year, so no week is in the past and rotated away.
+  const year = new Date().getUTCFullYear() + 1;
+  const lastSummerWeek = afterLastSunday(year, 9, -6); // Monday before the switch to winter time
+  const firstWinterWeek = afterLastSunday(year, 9, 1); // Monday after it
+  const lastWinterWeek = afterLastSunday(year, 2, -6); // Monday before the switch to summer time
+  const firstSummerWeek = afterLastSunday(year, 2, 1); // Monday after it
+  const december = `${year}-12-07`;
+
+  const dishes = [
+    ['Winter vor der Sommerzeit', 'winter', lastWinterWeek],
+    ['Sommer vor der Sommerzeit', 'summer', lastWinterWeek],
+    ['Sommer ab der Sommerzeit', 'summer', firstSummerWeek],
+    ['Winter ab der Sommerzeit', 'winter', firstSummerWeek],
+    ['Sommer vor der Winterzeit', 'summer', lastSummerWeek],
+    ['Winter vor der Winterzeit', 'winter', lastSummerWeek],
+    ['Winter ab der Winterzeit', 'winter', firstWinterWeek],
+    ['Sommer ab der Winterzeit', 'summer', firstWinterWeek],
+    // A winter week the winter plan has nothing for: the summer plan fills it.
+    ['Sommer statt leerer Winterwoche', 'summer', december],
+  ];
+  for (const [nameDe, plan, date] of dishes) {
+    const res = await cluster.admin(a, 'POST', '/dishes', { nameDe, plan, date });
+    assert.equal(res.status, 201, res.text);
+  }
+
+  const served = async (node) => {
+    const res = await cluster.request(node, 'GET', '/dishes');
+    assert.equal(res.status, 200, res.text);
+    return res.json.menu.dishes
+      .filter((d) => dishes.some(([name]) => name === d.name.de))
+      .map((d) => `${d.date} ${d.name.de}`);
+  };
+  const expected = [
+    `${lastWinterWeek} Winter vor der Sommerzeit`,
+    `${firstSummerWeek} Sommer ab der Sommerzeit`,
+    `${lastSummerWeek} Sommer vor der Winterzeit`,
+    `${firstWinterWeek} Winter ab der Winterzeit`,
+    `${december} Sommer statt leerer Winterwoche`,
+  ];
+  assert.deepEqual(await served(a), expected);
+  await waitFor(async () => JSON.stringify(await served(b)) === JSON.stringify(expected), { timeoutMs: 30_000, label: 'the menu to reach B' });
+});
+
 // ─── A way through the web proxy ─────────────────────────────────────────────
 
 let proxy;
