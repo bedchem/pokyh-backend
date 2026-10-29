@@ -12,7 +12,9 @@ import type { AdminPopup, PopupAudience, PopupInput, PopupMode, PopupPlatform, P
 
 const dimText = { color: 'rgb(var(--ink-rgb) / 0.62)' };
 
-const PLATFORM_LABEL: Record<PopupPlatform, string> = { all: 'Alle', android: 'Android', web: 'Website' };
+const PLATFORM_LABEL: Record<PopupPlatform, string> = { all: 'Alle', android: 'Android', ios: 'iOS', web: 'Website' };
+// The apps: always signed in, previewed as a phone.
+const isApp = (platform: PopupPlatform) => platform === 'android' || platform === 'ios';
 const AUDIENCE_LABEL: Record<PopupAudience, string> = { all: 'Alle Besucher', users: 'Eingeloggt', guests: 'Gäste' };
 const STATUS: Record<PopupStatus, { label: string; color: string }> = {
   active: { label: 'Aktiv', color: 'var(--mint-deep)' },
@@ -131,7 +133,7 @@ export function PopupsPage() {
     setHtml(p.contentHtml);
     setEditingId(p.id);
     if (p.platform === 'web') setPreviewTarget('web');
-    else if (p.platform === 'android') setPreviewTarget('android');
+    else if (isApp(p.platform)) setPreviewTarget('android');
     requestAnimationFrame(() => document.getElementById('popup-editor')?.scrollIntoView({ behavior: 'smooth' }));
   }
 
@@ -179,11 +181,11 @@ export function PopupsPage() {
     }
     setSaving(true);
     try {
-      // Android has no guests, so its audience is irrelevant — store the neutral value.
+      // The apps have no guests, so their audience is irrelevant — store the neutral value.
       const payload: PopupInput = {
         ...form,
         // Chosen recipients are signed in by definition.
-        audience: targeted ? 'users' : form.platform === 'android' ? 'all' : form.audience,
+        audience: targeted ? 'users' : isApp(form.platform) ? 'all' : form.audience,
         showCount: form.mode === 'once' ? 1 : form.showCount,
         targetUsers: targeted ? recipients.map((user) => user.stableUid) : [],
         targetClasses: targeted ? form.targetClasses : [],
@@ -259,10 +261,11 @@ export function PopupsPage() {
                 <label className="text-[12px] block mb-1.5" style={dimText}>Anzeigen auf</label>
                 <Segmented
                   value={form.platform}
-                  onChange={(v) => { set('platform', v); if (v !== 'all') setPreviewTarget(v); }}
+                  onChange={(v) => { set('platform', v); if (v !== 'all') setPreviewTarget(isApp(v) ? 'android' : 'web'); }}
                   options={[
                     { value: 'all', label: 'Alle', icon: <Layers size={14} /> },
                     { value: 'android', label: 'Android', icon: <Smartphone size={14} /> },
+                    { value: 'ios', label: 'iOS', icon: <Smartphone size={14} /> },
                     { value: 'web', label: 'Website', icon: <Globe size={14} /> },
                   ]}
                 />
@@ -298,7 +301,7 @@ export function PopupsPage() {
                 )}
               </div>
 
-              {form.platform !== 'android' && !targeted && (
+              {!isApp(form.platform) && !targeted && (
                 <div>
                   <label className="text-[12px] block mb-1.5" style={dimText}>Zielgruppe (Website)</label>
                   <Segmented
@@ -442,7 +445,7 @@ export function PopupsPage() {
                   ]}
                 />
               </div>
-              {form.platform !== 'all' && form.platform !== previewTarget && (
+              {form.platform !== 'all' && (isApp(form.platform) ? 'android' : 'web') !== previewTarget && (
                 <p className="text-[12px] mb-2" style={{ color: 'var(--amber-deep)' }}>
                   Hinweis: Dieses Popup wird nur auf {PLATFORM_LABEL[form.platform]} angezeigt.
                 </p>
@@ -473,7 +476,7 @@ export function PopupsPage() {
                     <span className="truncate text-[14.5px] font-medium">{p.title}</span>
                     <Badge color={STATUS[p.status].color}>{STATUS[p.status].label}</Badge>
                     <Badge color="var(--violet-deep)">
-                      {p.platform === 'android' ? <Smartphone size={11} /> : p.platform === 'web' ? <Globe size={11} /> : <Layers size={11} />}
+                      {isApp(p.platform) ? <Smartphone size={11} /> : p.platform === 'web' ? <Globe size={11} /> : <Layers size={11} />}
                       {PLATFORM_LABEL[p.platform]}
                     </Badge>
                     {(p.targetUsers.length > 0 || p.targetClasses.length > 0) && (
@@ -482,7 +485,7 @@ export function PopupsPage() {
                         {recipientSummary(p)}
                       </Badge>
                     )}
-                    {p.platform !== 'android' && p.audience !== 'all' && p.targetUsers.length === 0 && p.targetClasses.length === 0 && (
+                    {!isApp(p.platform) && p.audience !== 'all' && p.targetUsers.length === 0 && p.targetClasses.length === 0 && (
                       <Badge color="var(--teal-deep)">
                         {p.audience === 'guests' ? <LogIn size={11} /> : <UserRound size={11} />}
                         {AUDIENCE_LABEL[p.audience]}

@@ -579,7 +579,7 @@ export interface BackupsResponse {
   files: BackupFile[];
 }
 
-export type PopupPlatform = 'all' | 'web' | 'android';
+export type PopupPlatform = 'all' | 'web' | 'android' | 'ios';
 export type PopupAudience = 'all' | 'users' | 'guests';
 export type PopupMode = 'once' | 'recurring';
 export type PopupStatus = 'disabled' | 'scheduled' | 'active' | 'expired';

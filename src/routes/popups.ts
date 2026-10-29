@@ -24,7 +24,7 @@ import { cached } from '../services/cache';
 // caller's own session, and never hands a targeted popup to a request
 // without a valid user session.
 
-const PLATFORMS = ['all', 'web', 'android'] as const;
+const PLATFORMS = ['all', 'web', 'android', 'ios'] as const;
 const AUDIENCES = ['all', 'users', 'guests'] as const;
 type PopupStatus = 'disabled' | 'scheduled' | 'active' | 'expired';
 const MAX_TARGET_USERS = 500;
@@ -304,13 +304,13 @@ admin.delete('/:id', requireAdmin, requirePermission('popups.manage'), writeLimi
 
 const client = Router();
 
-// GET /popups/active?platform=web|android&audience=user|guest
+// GET /popups/active?platform=web|android|ios&audience=user|guest
 // Every popup currently inside its window for this platform and audience
 // (default: signed-in user). Whether this device already saw it in the
 // current slot is decided client-side. Popups meant for chosen users or
 // classes are included only with a valid user session of one of them.
 client.get('/active', optionalAuth, async (req: Request, res: Response): Promise<void> => {
-  const platform = z.enum(['web', 'android']).parse(req.query['platform']);
+  const platform = z.enum(['web', 'android', 'ios']).parse(req.query['platform']);
   const audience = z.enum(['user', 'guest']).default('user').parse(req.query['audience']);
   const now = new Date();
   const user = audience === 'user' ? req.user : undefined;
