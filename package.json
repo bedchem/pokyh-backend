@@ -6,6 +6,7 @@
     "test:cluster": "npm run build && node --test --test-timeout=1500000 --test-concurrency=1 tests/cluster/e2e.mjs tests/cluster/install.e2e.mjs tests/cluster/relay.e2e.mjs tests/cluster/update.e2e.mjs tests/cluster/features.e2e.mjs",
     "test:updater": "node --test --test-timeout=900000 tests/deploy/updater.docker.mjs",
     "test:admin": "npm run build && node --test --test-timeout=900000 --test-concurrency=1 tests/admin/access.e2e.mjs",
+    "test:push": "npm run build && node --test --test-timeout=600000 --test-concurrency=1 tests/push/apns.e2e.mjs",
     "bench": "npm run build && node tests/perf/bench.mjs",
     "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
     "build": "prisma generate && tsc && node scripts/build-info.js",

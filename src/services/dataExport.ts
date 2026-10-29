@@ -23,7 +23,7 @@ export async function exportAccountData(stableUid: string) {
 
   const [
     school, admin, memberships, todos, archivedTodos, reminders, comments, dishRatings, dishComments,
-    push, consent, bellMarks, accountDays, usageSessions, webVisits, requestLogs, pageLogs,
+    push, apnsDevices, consent, bellMarks, accountDays, usageSessions, webVisits, requestLogs, pageLogs,
     archivedUsers, archivedActivity, popups, recapViews, sessions, logins, webPasskeys,
   ] = await Promise.all([
     user.schoolId ? prisma.school.findUnique({ where: { id: user.schoolId }, select: { name: true, webuntisSchool: true } }) : null,
@@ -36,6 +36,7 @@ export async function exportAccountData(stableUid: string) {
     prisma.dishRating.findMany({ where: { stableUid }, orderBy: { createdAt: 'asc' } }),
     prisma.dishComment.findMany({ where: { stableUid }, orderBy: { createdAt: 'asc' } }),
     prisma.pushSubscription.findMany({ where: { stableUid }, select: { endpoint: true, createdAt: true, updatedAt: true } }),
+    prisma.apnsDevice.findMany({ where: { stableUid }, select: { environment: true, createdAt: true, updatedAt: true } }),
     prisma.privacyConsent.findUnique({ where: { stableUid } }),
     prisma.bellMark.findMany({ where: { stableUid } }),
     prisma.requestAccountDay.findMany({ where: { stableUid }, orderBy: { dayKey: 'asc' } }),
@@ -90,6 +91,7 @@ export async function exportAccountData(stableUid: string) {
     mensa: { ratings: dishRatings, comments: dishComments },
     notifications: {
       pushSubscriptions: push.map((p) => ({ service: hostOf(p.endpoint), createdAt: iso(p.createdAt), updatedAt: iso(p.updatedAt) })),
+      apnsDevices: apnsDevices.map((d) => ({ environment: d.environment, createdAt: iso(d.createdAt), updatedAt: iso(d.updatedAt) })),
       bellMarks,
       popupsShownTo: popups.map((p) => p.popupId),
       recapsOpened: recapViews.map((v) => ({ recapId: v.recapId, openedAt: iso(v.openedAt), finishedAt: iso(v.finishedAt) })),

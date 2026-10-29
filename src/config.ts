@@ -245,6 +245,21 @@ export const config = {
   vapidPublicKey: process.env.VAPID_PUBLIC_KEY ?? '',
   vapidPrivateKey: process.env.VAPID_PRIVATE_KEY ?? '',
   vapidEmail: process.env.VAPID_EMAIL ?? 'contact@pokyh.com',
+  // APNs token auth (iOS app). Off unless key id, team id, key and topic are all set.
+  // APNS_KEY is the .p8 text (literal \n allowed), or APNS_KEY_PATH points at the file.
+  apnsKeyId: process.env.APNS_KEY_ID ?? '',
+  apnsTeamId: process.env.APNS_TEAM_ID ?? '',
+  apnsKey: (process.env.APNS_KEY ?? '').replace(/\\n/g, '\n'),
+  apnsKeyPath: process.env.APNS_KEY_PATH ?? '',
+  // The iOS app's bundle id.
+  apnsTopic: process.env.APNS_TOPIC ?? '',
+  // Apple's gateways; overridable for tests or a proxy.
+  apnsHostSandbox: strEnv('APNS_HOST_SANDBOX', 'https://api.sandbox.push.apple.com'),
+  apnsHostProduction: strEnv('APNS_HOST_PRODUCTION', 'https://api.push.apple.com'),
+  apnsTimeoutMs: boundedIntEnv('APNS_TIMEOUT_MS', 10 * 1000, 1000, 60 * 1000),
+  // Apple refuses provider tokens older than an hour and throttles renewals
+  // more often than every 20 minutes, hence the bounds.
+  apnsTokenTtlMs: boundedIntEnv('APNS_TOKEN_TTL_MS', 50 * 60 * 1000, 20 * 60 * 1000, 59 * 60 * 1000),
   webuntisBase: process.env.WEBUNTIS_BASE ?? 'https://lbs-brixen.webuntis.com/WebUntis',
 
   // ── Rate limiting (per-limiter, env-overridable) ───────────────────────────

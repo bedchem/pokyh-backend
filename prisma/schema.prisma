@@ -41,6 +41,7 @@ model User {
   refreshTokens     RefreshToken[]
   loginEvents       LoginEvent[]
   pushSubscriptions PushSubscription[]
+  apnsDevices       ApnsDevice[]
   usageSessions     UsageSession[]
   webVisits         WebVisit[]
   privacyConsent    PrivacyConsent?
@@ -70,6 +71,29 @@ model PushSubscription {
   user User @relation(fields: [stableUid], references: [stableUid], onDelete: Cascade)
 
   @@map("push_subscriptions")
+}
+
+// An iPhone that gets APNs pushes. Same idea as PushSubscription (it carries
+// the WebUntis session the message poll uses), keyed by the device token.
+// Tied to the device session it registered from: signing that out ends it.
+model ApnsDevice {
+  id          String   @id @default(uuid())
+  stableUid   String   @map("stable_uid")
+  token       String   @unique @db.VarChar(200)
+  // "sandbox" for debug builds, "production" for TestFlight and the App Store.
+  environment String   @default("production") @db.VarChar(16)
+  sessionId   String?  @map("session_id")
+  jsessionid  String   @default("") @db.VarChar(100)
+  bearerToken String   @default("") @map("bearer_token") @db.VarChar(1000)
+  knownUnread Int      @default(-1) @map("known_unread")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  user    User          @relation(fields: [stableUid], references: [stableUid], onDelete: Cascade)
+  session RefreshToken? @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([stableUid])
+  @@map("apns_devices")
 }
 
 // The bell in the website's top bar: which of its notifications an account
@@ -402,6 +426,8 @@ model RefreshToken {
   lastUsedAt DateTime  @default(now()) @map("last_used_at")
 
   user User @relation(fields: [stableUid], references: [stableUid], onDelete: Cascade)
+
+  apnsDevices ApnsDevice[]
 
   @@index([stableUid, deviceId])
   @@map("refresh_tokens")

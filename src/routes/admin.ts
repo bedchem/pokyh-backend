@@ -3113,7 +3113,7 @@ router.get('/archive/reminders', requireAdmin, requirePermission('todos.view'), 
 router.get('/export', requireAdmin, requirePermission('backups.manage'), async (req: Request, res: Response): Promise<void> => {
   const [
     users, admins, classes, classMembers, todos, reminders, comments,
-    dishComments, dishes, dishRatings, refreshTokens, pushSubscriptions,
+    dishComments, dishes, dishRatings, refreshTokens, pushSubscriptions, apnsDevices,
     knownSubjects, subjectImages, dishImages, apiKeys, requestLogs, frontendActivityLogs,
   ] = await Promise.all([
     prisma.user.findMany(),
@@ -3128,6 +3128,7 @@ router.get('/export', requireAdmin, requirePermission('backups.manage'), async (
     prisma.dishRating.findMany(),
     prisma.refreshToken.findMany(),
     prisma.pushSubscription.findMany(),
+    prisma.apnsDevice.findMany(),
     prisma.knownSubject.findMany(),
     prisma.subjectImage.findMany(),
     prisma.dishImage.findMany(),
@@ -3156,7 +3157,7 @@ router.get('/export', requireAdmin, requirePermission('backups.manage'), async (
     exportedAt: new Date().toISOString(),
     data: {
       users, admins, classes, classMembers, todos, reminders, comments,
-      dishComments, dishes, dishRatings, refreshTokens, pushSubscriptions,
+      dishComments, dishes, dishRatings, refreshTokens, pushSubscriptions, apnsDevices,
       knownSubjects, subjectImages: subjectImagesJson, dishImages: dishImagesJson,
       apiKeys, requestLogs, frontendActivityLogs,
     },
@@ -3219,6 +3220,7 @@ router.post('/import', requireAdmin, requirePermission('backups.manage'), async 
       await tx.classMember.deleteMany();
       await tx.reminder.deleteMany();
       await tx.todo.deleteMany();
+      await tx.apnsDevice.deleteMany();
       await tx.refreshToken.deleteMany();
       await tx.pushSubscription.deleteMany();
       await tx.dishRating.deleteMany();
@@ -3247,6 +3249,7 @@ router.post('/import', requireAdmin, requirePermission('backups.manage'), async 
       await ins(d['comments'], (data) => tx.comment.createMany({ data: data as never, skipDuplicates: true }));
       await ins(d['pushSubscriptions'], (data) => tx.pushSubscription.createMany({ data: data as never, skipDuplicates: true }));
       await ins(d['refreshTokens'], (data) => tx.refreshToken.createMany({ data: data as never, skipDuplicates: true }));
+      await ins(d['apnsDevices'], (data) => tx.apnsDevice.createMany({ data: data as never, skipDuplicates: true }));
       await ins(d['dishes'], (data) => tx.dish.createMany({ data: data as never, skipDuplicates: true }));
       if (dishImages.length) await tx.dishImage.createMany({ data: dishImages as never, skipDuplicates: true });
       await ins(d['dishComments'], (data) => tx.dishComment.createMany({ data: data as never, skipDuplicates: true }));

@@ -610,7 +610,7 @@ function startBackgroundJobs() {
   // Archive expired todos/reminders (>24h) — server-only, admin-viewable.
   startJob('archiver', () => startArchiver(() => mayRunExclusiveJob('archiver')));
 
-  // Push notification poller (no-op if VAPID keys not configured)
+  // Push notification poller (no-op without VAPID keys or an APNs key)
   startJob('push poller', () => startPushPoller(ownsClusterWork));
 
   // School year rollover: on August 1st, snapshot non-admin users/classes/todos/reminders

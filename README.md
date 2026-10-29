@@ -4,7 +4,7 @@
 
 **The API, WebUntis gateway, realtime layer and admin panel behind POKYH.**
 
-Node.js 22 · Express 5 · TypeScript · Prisma · MySQL 8.4 · Redis · Server-Sent Events · Web Push · Docker
+Node.js 22 · Express 5 · TypeScript · Prisma · MySQL 8.4 · Redis · Server-Sent Events · Web Push · APNs · Docker
 
 [Getting started](#getting-started) · [Configuration](#configuration) · [WebUntis gateway](#webuntis-gateway) · [API](#api-overview) · [Admin panel](#admin-panel) · [Deployment](#deployment) · [Cluster](docs/cluster.md)
 
@@ -165,7 +165,7 @@ npx web-push generate-vapid-keys   # VAPID key pair for Web Push
 | Admin security | `ADMIN_REQUIRE_SECOND_FACTOR` · `ADMIN_REQUIRE_PASSKEY` · `ADMIN_USERNAMES` | Authenticator app for every admin (default on); default passkey requirement; server owners |
 | Read cache | `REDIS_URL` | Optional; without it entries live in process memory |
 | Backups | `BACKUP_*` | Schedule, retention, encryption and encrypted off-site copies |
-| Push | `VAPID_*` | Web Push key pair and contact address |
+| Push | `VAPID_*` · `APNS_*` | Web Push key pair and contact address; APNs .p8 key, key/team id, topic (iOS app) |
 | Canteen | `MENSA_IMPORT_URL` | Menu source for the dish import |
 | Analytics and retention | `ANALYTICS_TIMEZONE` · `USAGE_ANALYTICS_RETENTION_DAYS` · `ACCOUNT_ACTIVITY_SCHOOL_YEAR` · `REQUEST_LOG_RETENTION_DAYS` · `LOG_FILE_RETENTION_DAYS` | Usage statistics (anonymous, named only with consent) and finite retention |
 | School year | rollover settings | Date of the yearly archive and fresh start (default 1 August) |
@@ -273,7 +273,7 @@ All times are ISO-8601 UTC. Mount points:
 | Dish ratings and comments | `/dish-ratings` · `/dish-comments/:dishId` | Stars and comments + SSE |
 | Subject images | `/subject-images` | Icon catalogue (read public, write admin) |
 | Popups | `/popups/active?platform=web\|android&audience=user\|guest` | Active announcements, targeted ones only to their users |
-| Push | `/push` | Web Push subscription |
+| Push | `/push` | Web Push subscription; `POST/DELETE /push/apns` for the iOS app |
 | Usage and privacy | `/usage/ping` · `/privacy` | Usage statistics; privacy notice record and consent |
 | Client errors | `/client-errors` | Validated, scrubbed error reports of the web app and the apps |
 | Activity log | `/activity-log` | Frontend telemetry |
@@ -293,8 +293,14 @@ connected to one node also receives changes made through another.
 
 **Web Push** (VAPID) delivers due reminders and to-dos and new WebUntis messages. For the messages,
 a subscription keeps the WebUntis session id and token it was registered with, so the poller can
-check the inbox; `DELETE /push/unsubscribe` removes them. Without VAPID keys the push poller does
-nothing.
+check the inbox; `DELETE /push/unsubscribe` removes them.
+
+**APNs** does the same for the iOS app. The app registers its device token with `POST /push/apns`
+on every launch (with its WebUntis session, if it has one) and removes it with `DELETE /push/apns`.
+Alerts go out as string keys, so the phone shows them in its own language. A device belongs to the
+device session it registered from: signing that session out stops its pushes, and a token Apple
+reports as gone is deleted. The poller runs when at least one channel is configured (`VAPID_*` or
+`APNS_*`).
 
 ---
 

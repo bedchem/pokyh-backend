@@ -4,6 +4,7 @@ import { prisma } from '../db';
 import { requireAuth } from '../middleware/auth';
 import { writeLimiter } from '../middleware/rateLimiter';
 import { readSession as readUntisSession } from '../webuntis/session';
+import { isDeviceToken } from '../services/apns';
 
 const router = Router();
 
@@ -48,6 +49,50 @@ router.post('/register', writeLimiter, requireAuth, async (req: Request, res: Re
       bearerToken,
     },
   });
+
+  res.status(204).send();
+});
+
+const apnsSchema = z.object({
+  token: z.string().refine(isDeviceToken, 'not an APNs device token'),
+  environment: z.enum(['sandbox', 'production']),
+  jsessionid: z.string().max(100).optional(),
+  bearerToken: z.string().max(1000).optional(),
+});
+
+// POST /push/apns — the iOS app sends this on every launch, so the WebUntis
+// session the message poll needs stays fresh. Without one (POKYH-only
+// accounts) the device still gets to-dos and reminders.
+router.post('/apns', writeLimiter, requireAuth, async (req: Request, res: Response) => {
+  const { stableUid, sid } = req.user!;
+  const body = apnsSchema.parse(req.body);
+  const session = {
+    sessionId: sid ?? null,
+    jsessionid: body.jsessionid ?? '',
+    bearerToken: body.bearerToken ?? '',
+  };
+
+  // A token that moves to another account (sign out, sign in as someone
+  // else) starts counting unread messages from scratch; the same account
+  // keeps its count, or every launch would swallow the next new message.
+  const existing = await prisma.apnsDevice.findUnique({ where: { token: body.token }, select: { stableUid: true } });
+  const sameAccount = existing?.stableUid === stableUid;
+
+  await prisma.apnsDevice.upsert({
+    where: { token: body.token },
+    update: { stableUid, environment: body.environment, ...session, ...(sameAccount ? {} : { knownUnread: -1 }) },
+    create: { stableUid, token: body.token, environment: body.environment, ...session },
+  });
+
+  res.status(204).send();
+});
+
+// DELETE /push/apns — sign out on the phone, or notifications turned off.
+router.delete('/apns', writeLimiter, requireAuth, async (req: Request, res: Response) => {
+  const { stableUid } = req.user!;
+  const { token } = z.object({ token: z.string().max(200) }).parse(req.body);
+
+  await prisma.apnsDevice.deleteMany({ where: { stableUid, token } });
 
   res.status(204).send();
 });
