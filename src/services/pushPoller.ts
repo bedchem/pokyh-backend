@@ -6,7 +6,7 @@ import { config } from '../config';
 import { schoolById, schoolOfUser } from './schools';
 import { schoolLoginName } from '../webuntis/schools';
 import { ApnsClient, isEnvironment } from './apns';
-import { newMessagesNotice, reminderNotice, todoDueNotice, type PushNotice, type WebPushPayload } from './pushNotices';
+import { newMessagesNotice, reminderNotice, todoDueNotice, wantsKind, type PushNotice, type WebPushPayload } from './pushNotices';
 
 const POLL_INTERVAL_MS = config.pushPollIntervalMs;
 const DUE_CHECK_INTERVAL_MS = config.pushDueCheckIntervalMs;
@@ -14,6 +14,11 @@ const DUE_CHECK_INTERVAL_MS = config.pushDueCheckIntervalMs;
 // Set by startPushPoller: web push needs VAPID keys, APNs its .p8 key.
 let webEnabled = false;
 let apns: ApnsClient | null = null;
+
+// False until the poller has a working key. The app relies on this: see POST /push/apns.
+export function apnsActive(): boolean {
+  return apns !== null;
+}
 
 interface PushSub {
   id: string;
@@ -159,7 +164,7 @@ async function pollAll(owns: Owns) {
     ? (await prisma.pushSubscription.findMany()).filter((sub) => owns(`push-sub:${sub.id}`))
     : [];
   const devices = apns
-    ? (await liveApnsDevices()).filter((device) => owns(`apns:${device.id}`))
+    ? (await liveApnsDevices()).filter((device) => owns(`apns:${device.id}`) && wantsKind(device.kinds, 'messages'))
     : [];
   if (subs.length === 0 && devices.length === 0) return;
   logger.debug(`[push] Polling ${subs.length} web subscriptions, ${devices.length} APNs devices`);
@@ -184,7 +189,7 @@ async function sendPushToUser(stableUid: string, notice: PushNotice) {
   ]);
   await Promise.allSettled([
     ...subs.map((sub) => sendWebPush(sub, notice.web)),
-    ...devices.map((device) => sendApns(device, notice)),
+    ...devices.filter((device) => wantsKind(device.kinds, notice.kind)).map((device) => sendApns(device, notice)),
   ]);
 }
 

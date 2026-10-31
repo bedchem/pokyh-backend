@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { loadTs } from './helpers/loadTs.mjs';
 
-const { newMessagesNotice, reminderNotice, todoDueNotice } = await loadTs('src/services/pushNotices.ts');
+const { newMessagesNotice, reminderNotice, todoDueNotice, wantsKind } = await loadTs('src/services/pushNotices.ts');
 
 test('the website keeps its German texts', () => {
   assert.deepEqual(newMessagesNotice(1).web, { title: 'Neue Mitteilung', body: 'Tippe um sie zu sehen', url: '/messages' });
@@ -36,4 +36,13 @@ test("a reminder's own text is sent as written", () => {
   assert.equal(reminder.apns.body, 'Jause mitnehmen');
   assert.equal(reminder.apns.bodyKey, undefined);
   assert.equal(reminder.web.body, 'Jause mitnehmen');
+});
+
+test('every notice says what kind it is, and devices choose by kind', () => {
+  assert.equal(newMessagesNotice(1).kind, 'messages');
+  assert.equal(todoDueNotice({ id: 't', title: 'x' }).kind, 'todos');
+  assert.equal(reminderNotice({ id: 'r', title: 'x' }).kind, 'reminders');
+  assert.ok(wantsKind('messages,todos,reminders', 'todos'));
+  assert.equal(wantsKind('messages,reminders', 'todos'), false);
+  assert.equal(wantsKind('', 'messages'), false);
 });

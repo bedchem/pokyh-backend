@@ -4,6 +4,14 @@ import type { ApnsAlert } from './apns';
 // The web texts stay German as they always were; the app gets string keys
 // (Localizable.xcstrings in POKYH_IOS) and shows them in the phone's language.
 
+export const PUSH_KINDS = ['messages', 'todos', 'reminders'] as const;
+export type PushKind = (typeof PUSH_KINDS)[number];
+
+// A device row keeps its kinds comma-separated.
+export function wantsKind(stored: string, kind: PushKind): boolean {
+  return stored.split(',').includes(kind);
+}
+
 export interface WebPushPayload {
   title: string;
   body: string;
@@ -11,6 +19,7 @@ export interface WebPushPayload {
 }
 
 export interface PushNotice {
+  kind: PushKind;
   web: WebPushPayload;
   apns: ApnsAlert;
   // Same id replaces the earlier notification on the phone instead of stacking.
@@ -21,6 +30,7 @@ export function newMessagesNotice(count: number): PushNotice {
   const title = count === 1 ? 'Neue Mitteilung' : `${count} neue Mitteilungen`;
   const body = 'Tippe um sie zu sehen';
   return {
+    kind: 'messages',
     web: { title, body, url: '/messages' },
     apns: {
       title,
@@ -38,6 +48,7 @@ export function newMessagesNotice(count: number): PushNotice {
 export function todoDueNotice(todo: { id: string; title: string }): PushNotice {
   const body = 'Tippe um es zu sehen';
   return {
+    kind: 'todos',
     web: { title: `Todo fällig: ${todo.title}`, body, url: '/todos' },
     apns: {
       title: `Todo fällig: ${todo.title}`,
@@ -56,6 +67,7 @@ export function reminderNotice(reminder: { id: string; title: string; body?: str
   const text = reminder.body?.trim() || '';
   const body = text || 'Tippe um sie zu sehen';
   return {
+    kind: 'reminders',
     web: { title: `Erinnerung: ${reminder.title}`, body, url: '/reminders' },
     apns: {
       title: `Erinnerung: ${reminder.title}`,

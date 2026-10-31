@@ -82,6 +82,8 @@ model ApnsDevice {
   token       String   @unique @db.VarChar(200)
   // "sandbox" for debug builds, "production" for TestFlight and the App Store.
   environment String   @default("production") @db.VarChar(16)
+  // What this phone wants from the server, comma-separated (services/pushNotices.ts).
+  kinds       String   @default("messages,todos,reminders") @db.VarChar(64)
   sessionId   String?  @map("session_id")
   jsessionid  String   @default("") @db.VarChar(100)
   bearerToken String   @default("") @map("bearer_token") @db.VarChar(1000)

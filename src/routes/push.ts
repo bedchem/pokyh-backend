@@ -5,6 +5,8 @@ import { requireAuth } from '../middleware/auth';
 import { writeLimiter } from '../middleware/rateLimiter';
 import { readSession as readUntisSession } from '../webuntis/session';
 import { isDeviceToken } from '../services/apns';
+import { apnsActive } from '../services/pushPoller';
+import { PUSH_KINDS, wantsKind } from '../services/pushNotices';
 
 const router = Router();
 
@@ -56,6 +58,8 @@ router.post('/register', writeLimiter, requireAuth, async (req: Request, res: Re
 const apnsSchema = z.object({
   token: z.string().refine(isDeviceToken, 'not an APNs device token'),
   environment: z.enum(['sandbox', 'production']),
+  // What the phone wants from here; the rest it checks for itself. All of it when left out.
+  kinds: z.array(z.enum(PUSH_KINDS)).max(PUSH_KINDS.length).optional(),
   jsessionid: z.string().max(100).optional(),
   bearerToken: z.string().max(1000).optional(),
 });
@@ -66,17 +70,25 @@ const apnsSchema = z.object({
 router.post('/apns', writeLimiter, requireAuth, async (req: Request, res: Response) => {
   const { stableUid, sid } = req.user!;
   const body = apnsSchema.parse(req.body);
+  // No key, no pushes. The app stops its own checks once registered, so accepting the token here
+  // would leave it with no notifications at all; a refusal keeps it checking for itself.
+  if (!apnsActive()) {
+    res.status(503).json({ error: 'Push notifications are not set up on this server.', code: 'apns_off' });
+    return;
+  }
   const session = {
+    kinds: (body.kinds ?? PUSH_KINDS).join(','),
     sessionId: sid ?? null,
     jsessionid: body.jsessionid ?? '',
     bearerToken: body.bearerToken ?? '',
   };
 
   // A token that moves to another account (sign out, sign in as someone
-  // else) starts counting unread messages from scratch; the same account
-  // keeps its count, or every launch would swallow the next new message.
-  const existing = await prisma.apnsDevice.findUnique({ where: { token: body.token }, select: { stableUid: true } });
-  const sameAccount = existing?.stableUid === stableUid;
+  // else) starts counting unread messages from scratch, and so does one that
+  // only now asks for messages; otherwise the count stays, or every launch
+  // would swallow the next new message.
+  const existing = await prisma.apnsDevice.findUnique({ where: { token: body.token }, select: { stableUid: true, kinds: true } });
+  const sameAccount = existing?.stableUid === stableUid && wantsKind(existing.kinds, 'messages');
 
   await prisma.apnsDevice.upsert({
     where: { token: body.token },

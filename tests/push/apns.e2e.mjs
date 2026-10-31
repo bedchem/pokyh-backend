@@ -52,6 +52,7 @@ const webuntis = http.createServer((req, res) => {
 
 const cluster = new Cluster();
 let node;
+let noKeyNode;
 
 const deviceToken = (n) => n.toString(16).padStart(2, '0').repeat(32);
 const pushesTo = (token) => pushes.filter((p) => p.token === token);
@@ -98,6 +99,9 @@ before(async () => {
     WEBUNTIS_BASE: `http://127.0.0.1:${webuntis.address().port}/WebUntis`,
   });
   await cluster.start(node, { waitForCluster: false });
+  // Same backend, nobody filled in the APNs block yet.
+  noKeyNode = await cluster.addNode('nokey');
+  await cluster.start(noKeyNode, { waitForCluster: false });
 });
 
 after(async () => {
@@ -256,4 +260,46 @@ test('a full backup keeps the phones and a restore brings them back', async () =
   const device = await node.db.apnsDevice.findUnique({ where: { token: deviceToken(12) } });
   assert.equal(device?.environment, 'production');
   assert.equal(device?.sessionId, saved.sessionId);
+});
+
+test('without an APNs key the phone is told, so it keeps checking by itself', async () => {
+  const { token } = await cluster.login(noKeyNode, 'lena.apns');
+  const res = await cluster.request(noKeyNode, 'POST', '/push/apns', {
+    token,
+    body: { token: deviceToken(13), environment: 'production' },
+  });
+  assert.equal(res.status, 503, res.text);
+  assert.equal(res.json.code, 'apns_off');
+  assert.equal(await noKeyNode.db.apnsDevice.count(), 0);
+});
+
+test('a phone only gets the kinds it asked for', async () => {
+  const { token, user } = await signIn('mona.apns');
+  assert.equal((await register(deviceToken(14), token, 'sandbox', { kinds: ['reminders'] })).status, 204);
+  await dueTodo(user.username, token, 'Nicht pushen');
+  await sleep(1200);
+  assert.equal(pushesTo(deviceToken(14)).length, 0, 'to-dos are off on this phone');
+
+  assert.equal((await register(deviceToken(14), token, 'sandbox', { kinds: ['todos'] })).status, 204);
+  await dueTodo(user.username, token, 'Jetzt schon');
+  await waitFor(() => pushesTo(deviceToken(14)).length === 1, { label: 'the to-do push' });
+  assert.deepEqual(pushesTo(deviceToken(14))[0].payload.aps.alert['title-loc-args'], ['Jetzt schon']);
+});
+
+test('messages stay quiet unless asked for, and turning them on counts from then', async () => {
+  const { token } = await signIn('nora.apns');
+  inbox.set('jsession-nora', 1);
+  const extra = { kinds: ['todos'], jsessionid: 'jsession-nora' };
+  assert.equal((await register(deviceToken(15), token, 'sandbox', extra)).status, 204);
+  await sleep(800);
+  inbox.set('jsession-nora', 3);
+  await sleep(800);
+  assert.equal(pushesTo(deviceToken(15)).length, 0, 'messages are off on this phone');
+
+  // On again: what piled up meanwhile is the new starting point, not a push.
+  assert.equal((await register(deviceToken(15), token, 'sandbox', { ...extra, kinds: ['messages'] })).status, 204);
+  await waitFor(async () => (await node.db.apnsDevice.findUnique({ where: { token: deviceToken(15) } })).knownUnread === 3, { label: 'the fresh count' });
+  assert.equal(pushesTo(deviceToken(15)).length, 0);
+  inbox.set('jsession-nora', 4);
+  await waitFor(() => pushesTo(deviceToken(15)).length === 1, { label: 'the message push' });
 });
