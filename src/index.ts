@@ -39,6 +39,7 @@ import { cleanupQrLogins } from './services/qrLogin';
 import { cleanupWebPasskeys } from './services/webPasskeys';
 import { UNLOCK_MAX_AGE_MS } from './webuntis/session';
 import { mayRunExclusiveJob, ownsClusterWork } from './cluster/hooks';
+import { startMensaPull } from './services/mensaSource';
 import { CLUSTER_PATH } from './cluster/protocol';
 import { createClusterRouter } from './cluster/router';
 import { startClusterListener, stopClusterListener } from './cluster/listener';
@@ -619,6 +620,7 @@ function startBackgroundJobs() {
   // Scheduled full-database backups (mysqldump, gzip), retained for the
   // configured number of days and pruned automatically after each run.
   startJob('backup scheduler', () => startBackupScheduler());
+  startJob('mensa pull', () => startMensaPull());
 
   // Encrypted copies of the backups in an S3-compatible bucket, when set up.
   startJob('off-site backups', () => startOffsiteSync());

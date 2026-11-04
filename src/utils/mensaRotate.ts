@@ -1,7 +1,8 @@
 import { prisma } from '../db';
 import { logger } from './logger';
-import type { Prisma } from '@prisma/client';
-import { snapForwardToSeason, toUtcIso, utcMondayOf, type Plan } from './mensaSeason';
+import { Prisma } from '@prisma/client';
+import { CLOCK, snapForwardToSeason, toUtcIso, utcMondayOf, type Plan, type SeasonRule } from './mensaSeason';
+import { planMoves, type DayOffOf } from './mensaSchedule';
 
 type PrismaLike = Prisma.TransactionClient | typeof prisma;
 
@@ -90,7 +91,7 @@ export async function normalizePlanAroundAnchor(
 // and snapping each landing Monday into the plan's season window. Robust
 // against weeks that are far in the past (multi-cycle) — each past Monday
 // lands right after the current latest one.
-export async function rotatePastWeeks(menuId: string, plan: Plan, tx?: PrismaLike): Promise<number> {
+export async function rotatePastWeeks(menuId: string, plan: Plan, tx?: PrismaLike, rule: SeasonRule = CLOCK): Promise<number> {
   const db: PrismaLike = tx ?? prisma;
   const currentMonday = currentLocalMonday();
 
@@ -115,7 +116,7 @@ export async function rotatePastWeeks(menuId: string, plan: Plan, tx?: PrismaLik
       const monEnd = addDays(monStart, 7);
       // Next available slot in this plan's season.
       const rawNext = addDays(lastAnchor, 7);
-      const newMon = snapForwardToSeason(rawNext, plan);
+      const newMon = snapForwardToSeason(rawNext, plan, rule);
       const shiftDays = Math.round((newMon.getTime() - monStart.getTime()) / 86400000);
       if (shiftDays === 0) { lastAnchor = newMon; continue; }
       const r = await client.$executeRaw`UPDATE dishes SET date = DATE_ADD(date, INTERVAL ${shiftDays} DAY) WHERE menu_id = ${menuId} AND plan = ${plan} AND date >= ${monStart} AND date < ${monEnd}`;
@@ -128,6 +129,29 @@ export async function rotatePastWeeks(menuId: string, plan: Plan, tx?: PrismaLik
   const rotated = tx ? await run(tx) : await prisma.$transaction((inner) => run(inner));
   if (rotated > 0) logger.info('mensa rotate', { menuId, plan, rotated, pastWeeks: past.length });
   return rotated;
+}
+
+// Puts both plans of a menu where planMoves says, the school weeks of their
+// seasons, in one transaction. The dishes are named by id: a week may move
+// onto the dates of one that has yet to move.
+export async function layoutMenu(menuId: string, dayOffOf: DayOffOf, tx?: PrismaLike, rule: SeasonRule = CLOCK): Promise<number> {
+  const db: PrismaLike = tx ?? prisma;
+  const dishes = await db.dish.findMany({ where: { menuId }, select: { id: true, plan: true, date: true } });
+  const moves = planMoves(dishes, currentWeekMondayIso(), dayOffOf, rule);
+  if (moves.length === 0) return 0;
+
+  async function run(client: PrismaLike): Promise<number> {
+    let n = 0;
+    for (const move of moves) {
+      const r = await client.$executeRaw`UPDATE dishes SET date = DATE_ADD(date, INTERVAL ${move.shiftDays} DAY) WHERE id IN (${Prisma.join(move.ids)})`;
+      n += Number(r) || 0;
+    }
+    return n;
+  }
+
+  const moved = tx ? await run(tx) : await prisma.$transaction((inner) => run(inner));
+  if (moved > 0) logger.info('mensa layout', { menuId, moved, weeks: moves.length });
+  return moved;
 }
 
 export function otherPlan(p: Plan): Plan { return p === 'summer' ? 'winter' : 'summer'; }

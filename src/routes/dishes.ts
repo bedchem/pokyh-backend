@@ -4,14 +4,19 @@ import { readLimiter } from '../middleware/rateLimiter';
 import { dishesCacheKey } from '../utils/cache';
 import { cached } from '../services/cache';
 import { config } from '../config';
-import { currentWeekMondayIso, rotatePastWeeks } from '../utils/mensaRotate';
+import { currentWeekMondayIso, isoAddDays } from '../utils/mensaRotate';
 import { servedDishes } from '../utils/mensaSeason';
+import { menuBreaks, publicDishes } from '../utils/mensaSchedule';
+import { arrangeMenu, menuSchedule } from '../services/mensaSchedule';
 import { slugifyDishName } from '../utils/dishKey';
 import { logger } from '../utils/logger';
 import { optionalAuth } from '../middleware/auth';
 import { menuContext } from '../services/schools';
 
 const router = Router();
+
+// How far ahead a client is told about breaks: past the end of any plan cycle.
+const BREAKS_AHEAD_DAYS = 200;
 
 function dishToJson(d: {
   id: string;
@@ -48,7 +53,10 @@ function dishToJson(d: {
     internalId: d.id,
     name: { de: d.nameDe, it: d.nameIt || d.nameDe, en: d.nameEn || d.nameDe },
     description: { de: d.descDe, it: d.descIt, en: d.descEn },
-    imageUrl: d.imageUrl,
+    // An uploaded picture is stored by its path until PUBLIC_BASE_URL says on
+    // which address clients reach it; it is POKYH's own, not from another site.
+    imageUrl: d.imageUrl.startsWith('/') ? `${config.publicBaseUrl}${d.imageUrl}` : d.imageUrl,
+    ownImage: d.imageUrl.includes(`/dishes/${d.id}/image`),
     category: d.category,
     tags: Array.from(normalizedTags.values()),
     prepTime: d.prepTime,
@@ -70,10 +78,12 @@ function dishToJson(d: {
 // Every week is served from the plan of its season (utils/mensaSeason): summer
 // from the switch to summer time, winter from the switch to winter time, so in
 // the week before a switch "next week" already shows the other plan. A week
-// the season's plan has no dishes for is served from the other plan. On cache
-// miss we also opportunistically rotate any past weeks of both plans to their
-// end so the menu is always "rolling" without any admin action. The rotate is
-// idempotent and no-op when nothing has expired.
+// the season's plan has no dishes for is served from the other plan.
+// On cache miss the menu is also brought up to date without any admin action
+// (services/mensaSchedule): by default its plans run on school weeks only and
+// wait out the holidays, which are named in `breaks`; a menu set to manual
+// keeps its dates and only has past weeks rolled to the end of their plan.
+// Idempotent and no write when nothing has changed.
 router.get('/', readLimiter, optionalAuth, async (req: Request, res: Response): Promise<void> => {
   const { menuId } = await menuContext(req);
   // `available: false`: this school has no menu — the app shows no Mensa at
@@ -82,28 +92,55 @@ router.get('/', readLimiter, optionalAuth, async (req: Request, res: Response): 
     res.json({ available: false, menu: { dishes: [] } });
     return;
   }
-  // Shared through Redis (services/cache.ts); any dish write drops it, the
-  // TTL makes sure past weeks are rotated even when nobody writes.
-  const payload = await cached(dishesCacheKey(menuId, currentWeekMondayIso()), ['Dish', 'DishImage'], Math.max(1, Math.round(config.cacheTtlMs / 1000)), async () => {
-    for (const season of ['summer', 'winter'] as const) {
-      try {
-        await rotatePastWeeks(menuId, season);
-      } catch (err) {
-        // Rotation failure must not block serving the (possibly stale) menu.
-        logger.warn('opportunistic rotate failed', {
-          season, error: err instanceof Error ? err.message : String(err),
-        });
-      }
+  // Shared through Redis (services/cache.ts); any write to what it is built
+  // from drops it, the TTL makes sure past weeks move on even when nobody writes.
+  const currentMonday = currentWeekMondayIso();
+  const payload = await cached(dishesCacheKey(menuId, currentMonday), ['Dish', 'DishImage', 'MensaMenu', 'MensaMenuSchool', 'SchoolHolidays'], Math.max(1, Math.round(config.cacheTtlMs / 1000)), async () => {
+    const schedule = await menuSchedule(menuId);
+    try {
+      await arrangeMenu(menuId, schedule);
+    } catch (err) {
+      // Moving weeks must not block serving the (possibly stale) menu.
+      logger.warn('opportunistic menu arrangement failed', {
+        mode: schedule.mode, error: err instanceof Error ? err.message : String(err),
+      });
     }
 
     const dishes = await prisma.dish.findMany({
       where: { menuId },
       orderBy: [{ date: 'asc' }, { sortOrder: 'asc' }, { nameDe: 'asc' }],
     });
-    return { available: true, menu: { dishes: servedDishes(dishes).map(dishToJson) } };
+    if (schedule.mode === 'manual') {
+      return { available: true, menu: { dishes: oncePerDay(servedDishes(dishes, schedule.season).map(dishToJson)) }, breaks: [] };
+    }
+    return {
+      available: true,
+      menu: { dishes: oncePerDay(publicDishes(dishes, currentMonday, schedule.dayOffOf, schedule.season).map(dishToJson)) },
+      breaks: menuBreaks(schedule.dayOffOf, currentMonday, isoAddDays(currentMonday, BREAKS_AHEAD_DAYS)),
+    };
   });
   res.json(payload);
 });
+
+// The vegetarian menu sometimes has the main dish itself: a dish is served once
+// a day, vegetarian when either of them is.
+type DishJson = ReturnType<typeof dishToJson>;
+function oncePerDay(list: DishJson[]): DishJson[] {
+  const kept = new Map<string, DishJson>();
+  for (const d of list) {
+    const key = `${d.date}|${d.id}`;
+    const first = kept.get(key);
+    if (!first) {
+      kept.set(key, d);
+      continue;
+    }
+    if (d.isVegetarian && !first.isVegetarian) {
+      first.isVegetarian = true;
+      if (!first.tags.some((t) => t.toLowerCase() === 'vegetarisch')) first.tags.push('Vegetarisch');
+    }
+  }
+  return [...kept.values()];
+}
 
 // GET /dishes/:id/image — serve an uploaded dish image (public, cacheable)
 router.get('/:id/image', readLimiter, async (req: Request, res: Response): Promise<void> => {

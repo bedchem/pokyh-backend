@@ -166,7 +166,7 @@ npx web-push generate-vapid-keys   # VAPID key pair for Web Push
 | Read cache | `REDIS_URL` | Optional; without it entries live in process memory |
 | Backups | `BACKUP_*` | Schedule, retention, encryption and encrypted off-site copies |
 | Push | `VAPID_*` · `APNS_*` | Web Push key pair and contact address; APNs .p8 key, key/team id, topic (iOS app) |
-| Canteen | `MENSA_IMPORT_URL` | Menu source for the dish import |
+| Canteen | `MENSA_IMPORT_URL`, `MENSA_PULL_INTERVAL_HOURS` | Menu source for the dish import and the default menu's automatic pull; how often menus pull by themselves (hours, 0 = never) |
 | Analytics and retention | `ANALYTICS_TIMEZONE` · `USAGE_ANALYTICS_RETENTION_DAYS` · `ACCOUNT_ACTIVITY_SCHOOL_YEAR` · `REQUEST_LOG_RETENTION_DAYS` · `LOG_FILE_RETENTION_DAYS` | Usage statistics (anonymous, named only with consent) and finite retention |
 | School year | rollover settings | Date of the yearly archive and fresh start (default 1 August) |
 | Cluster | `CLUSTER_*` · `POKYH_*` | See [docs/cluster.md](docs/cluster.md#cluster-settings) |
@@ -335,7 +335,7 @@ Prisma is the schema's single source ([`prisma/schema.prisma`](prisma/schema.pri
 | Administration | `Admin`, `AdminTotp`, `AdminPasskey`, `AdminSecurity`, `AdminGrant`, `AdminPreset`, `AdminAuditEvent` |
 | Schools and classes | `School`, `Class`, `ClassMember` (students only; guardians are never assigned) |
 | Content | `Todo`, `Reminder`, `Comment`, `DishComment`, `Popup`, `PopupTargetUser`, `PopupTargetClass`, `BellMark`, `PushSubscription` |
-| Canteen | `Dish`, `DishImage`, `DishRating`, `MensaMenu`, `MensaMenuSchool` |
+| Canteen | `Dish`, `DishImage`, `DishRating`, `MensaMenu`, `MensaMenuSchool`, `MensaMenuSource`, `SchoolHolidays` |
 | Subjects | `KnownSubject`, `SubjectImage` |
 | School-year archive | `SchoolYear`, `ArchivedUser`, `ArchivedClass`, `ArchivedTodo`, `ArchivedReminder`, `ArchivedActivity` |
 | Privacy and usage | `PrivacyConsent`, `UsageSession`, `UsageDaySalt`, `UsageClassDay`, `UsageSchoolClassDay`, `WebVisit`, `RequestAccountDay` |
@@ -401,6 +401,21 @@ hold rights per school or globally, and the panel switches between the global vi
 Canteen plans are assigned to schools; a school without one shows no canteen.
 `WEBUNTIS_SCHOOL_ALLOWLIST` optionally limits sign-in to approved schools. Details:
 [`docs/multi-school.md`](docs/multi-school.md).
+
+A plan runs by itself unless it is switched to manual on the admin panel's dish
+page. Then the server lays its weeks on the school weeks: holidays are waited
+out and the next week follows after them; the summer and the winter plan take
+over in the week whose Monday reaches the dates the canteen's plan names (1 April
+and 1 November by default), or after the clocks change. The days off come from the school
+calendar of South Tyrol (`src/utils/schoolCalendarSuedtirol.ts`, computed from
+the provincial rules, and optional for schools elsewhere), the WebUntis holidays
+of the plan's schools, and days entered per plan. A plan can also be pulled from
+a source, by itself or by hand: a `mensa.json`, the plan's PDF, or a page that
+links the canteen's PDFs (the Gemeinde Brixen's), where the current summer and
+winter plans and their vegetarian menus are found anew at each pull. Only what
+the source has changed is taken over, a plan's position, uploaded pictures and
+edits stay, and a file that looks wrong changes nothing and is reported on the
+same page. PDFs are read as text only, in a worker thread limited in memory and time.
 
 ---
 

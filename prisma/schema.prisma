@@ -353,6 +353,9 @@ model Dish {
   // anchor/rotate. The UI labels weeks by this ordinal, so Woche 1's content
   // keeps being Woche 1 even after rotation puts it later in the calendar.
   weekOrdinal  Int      @default(0) @map("week_ordinal")
+  // What the source last said about this dish (utils/mensaSource.ts): a pull
+  // only touches a dish when this changes, so edits made here stay until then.
+  sourceHash   String   @default("") @map("source_hash") @db.VarChar(64)
   // The menu (mensa_menus) this dish is part of. A school sees the dishes of
   // the one menu assigned to it, and nothing when none is.
   menuId       String?  @map("menu_id") @db.VarChar(36)
@@ -956,13 +959,58 @@ model School {
 model MensaMenu {
   id        String   @id @db.VarChar(36)
   name      String   @db.VarChar(120)
+  // "auto": the server lays the plans' weeks on school weeks and waits out
+  // holidays (services/mensaSchedule.ts). "manual": the dates stay as an
+  // administrator sets them; past weeks only roll to the end of their plan.
+  mode      String   @default("auto") @db.VarChar(10)
+  // What "auto" waits out: "suedtirol" (the official calendar of South Tyrol
+  // plus the schools' WebUntis holidays) or "webuntis" (only those).
+  calendar  String   @default("suedtirol") @db.VarChar(20)
+  // Corrections to that calendar, JSON [{ start, end, open }]: days the Mensa
+  // is closed although it is school, or open although it is not.
+  dayOverrides String @default("[]") @map("day_overrides") @db.VarChar(4000)
+  // When summer and winter plan change (utils/mensaSeason.ts): "dates", from
+  // summerFrom and winterFrom (MM-DD, the canteen's own, read from its plan),
+  // or "clock", with the switch to summer and winter time.
+  seasonRule String  @default("dates") @map("season_rule") @db.VarChar(10)
+  summerFrom String  @default("04-01") @map("summer_from") @db.VarChar(5)
+  winterFrom String  @default("11-01") @map("winter_from") @db.VarChar(5)
+  // A page that links the canteen's plans as PDFs, and the canteen's name on
+  // it ("Mensa St. Michael"): the plans are found there anew at each pull.
+  sourcePage    String @default("") @map("source_page") @db.VarChar(1000)
+  sourceCanteen String @default("") @map("source_canteen") @db.VarChar(120)
+  // "auto": the plans are pulled from their sources regularly; "manual": only
+  // when an administrator asks (services/mensaSource.ts).
+  pullMode  String   @default("auto") @map("pull_mode") @db.VarChar(10)
   createdBy String?  @map("created_by") @db.VarChar(191)
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
   schools MensaMenuSchool[]
+  sources MensaMenuSource[]
 
   @@map("mensa_menus")
+}
+
+// Where one plan of a menu is pulled from, and how the last pull went. `plan`
+// is a line of it: "summer", "winter", or their vegetarian menu "summer-veg",
+// "winter-veg".
+model MensaMenuSource {
+  menuId    String    @map("menu_id") @db.VarChar(36)
+  plan      String    @db.VarChar(10)
+  url       String    @default("") @db.VarChar(1000)
+  // SHA-256 of the file last taken over: the same file again is nothing to do.
+  lastHash  String    @default("") @map("last_hash") @db.VarChar(64)
+  // "ok", "held" (waiting for an administrator's decision) or "error".
+  status    String    @default("") @db.VarChar(10)
+  message   String    @default("") @db.VarChar(300)
+  checkedAt DateTime? @map("checked_at")
+  changedAt DateTime? @map("changed_at")
+
+  menu MensaMenu @relation(fields: [menuId], references: [id], onDelete: Cascade)
+
+  @@id([menuId, plan])
+  @@map("mensa_menu_sources")
 }
 
 model MensaMenuSchool {
@@ -976,6 +1024,19 @@ model MensaMenuSchool {
 
   @@id([menuId, schoolId])
   @@map("mensa_menu_schools")
+}
+
+// A school's holidays as its WebUntis lists them, kept so its menu can wait
+// them out without anyone being signed in. Refreshed through a session of
+// that school while it is used (services/mensaSchedule.ts). The school's
+// calendar, nothing personal.
+model SchoolHolidays {
+  schoolId  String   @id @map("school_id") @db.VarChar(36)
+  // JSON: [{ start, end, names }] (webuntis/holidays.ts)
+  holidays  String   @db.Text
+  fetchedAt DateTime @map("fetched_at")
+
+  @@map("school_holidays")
 }
 
 // What an administrator may do in one scope: "global" or a school id. Keyed

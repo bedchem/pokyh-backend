@@ -59,6 +59,7 @@ import { webFormLogin } from '../webuntis/webLogin';
 import { twoFactorCode } from '../webuntis/webLoginState';
 import { absenceBySubject, absenceTotals, readAbsenceTimes } from '../webuntis/absenceTimes';
 import { readHolidays } from '../webuntis/holidays';
+import { refreshSchoolHolidays } from '../services/mensaSchedule';
 import { readTimetableFilter } from '../webuntis/timetableFilter';
 import QRCode from 'qrcode';
 import { accountClassForRole, positiveId } from '../webuntis/accountClass';
@@ -1023,6 +1024,12 @@ router.use(requireUntisSession);
 router.use((req: Request, res: Response, next: NextFunction) => {
   if (session(req).rules === CLASS_CHECK_VERSION) return next();
   res.status(401).json({ error: 'session_expired', code: 'class_recheck' });
+});
+
+// The school's holidays for its menu (services/mensaSchedule.ts), on the way.
+router.use((req: Request, _res: Response, next: NextFunction) => {
+  refreshSchoolHolidays(session(req));
+  next();
 });
 
 // A WebUntis JSON answer passed on as it came: an object or a list is not

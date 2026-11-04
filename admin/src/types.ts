@@ -276,6 +276,8 @@ export interface AdminDishFull {
   plan: DishPlan;
   stableKey?: string;
   weekOrdinal?: number;
+  // Where it comes from ("w1_mo", "veg:w1_mo" for the vegetarian menu); null when made here.
+  sourceId?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -307,6 +309,67 @@ export interface AdminDishAnchorResult {
   otherAligned: number;
   otherAnchorDate: string | null;
   otherRotated: number;
+  laidOut: number;
+}
+
+export type MenuMode = 'auto' | 'manual';
+export type MenuCalendar = 'suedtirol' | 'webuntis';
+export type MenuBreakReason = 'summer' | 'allSaints' | 'christmas' | 'winter' | 'easter' | 'holiday' | 'bridge' | 'school' | 'closed';
+export type MenuPullMode = 'auto' | 'manual';
+
+// A menu's own correction of the calendar.
+export interface MenuDayOverride {
+  start: string;
+  end: string;
+  // Open although it is not school, or closed although it is.
+  open: boolean;
+}
+
+// Where one plan is pulled from, and how the last pull went.
+export interface MenuSourceInfo {
+  plan: DishPlan | 'summer-veg' | 'winter-veg';
+  url: string;
+  // No address of its own: the server's configured source is in use.
+  usesServerSource: boolean;
+  status: '' | 'ok' | 'held' | 'error';
+  message: string;
+  checkedAt: string | null;
+  changedAt: string | null;
+}
+
+export interface MenuPullResult {
+  plan: DishPlan | 'summer-veg' | 'winter-veg';
+  status: 'ok' | 'held' | 'error' | 'none';
+  message: string;
+  created: number;
+  updated: number;
+  adopted: number;
+  removed: number;
+}
+
+// How a menu moves along the calendar (GET/PUT /api/admin/dishes/schedule).
+// When the plans change: on the canteen's dates (MM-DD) or with the clocks.
+export interface MenuSeasonRule {
+  kind: 'dates' | 'clock';
+  summerFrom: string;
+  winterFrom: string;
+}
+
+export interface MenuScheduleInfo {
+  mode: MenuMode;
+  season: MenuSeasonRule;
+  calendar: MenuCalendar;
+  overrides: MenuDayOverride[];
+  breaks: Array<{ start: string; end: string; reason: MenuBreakReason }>;
+  // Whether each school's WebUntis holidays have come in yet.
+  schools: Array<{ id: string; name: string; breaks: number; fetchedAt: string | null }>;
+  pictureBaseMissing: boolean;
+  pullMode: MenuPullMode;
+  // A page that links the canteen's PDFs, and the canteen's name on it.
+  sourcePage: string;
+  sourceCanteen: string;
+  sources: MenuSourceInfo[];
+  moved?: number;
 }
 
 export interface AdminDishRatingEntry {

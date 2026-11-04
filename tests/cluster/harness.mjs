@@ -359,7 +359,8 @@ child.on('exit', (code) => process.exit(code === null ? 1 : code));
     const rows = await node.db.$queryRawUnsafe(
       "SELECT TABLE_NAME AS name FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_TYPE = 'BASE TABLE'",
     );
-    const local = new Set(['request_logs', 'frontend_activity_logs', 'backup_config', '_prisma_migrations']);
+    // The node-local tables of src/cluster/catalog.ts: never replicated, so never compared.
+    const local = new Set(['request_logs', 'frontend_activity_logs', 'client_error_logs', 'request_account_days', 'backup_config', '_prisma_migrations']);
     return rows.map((row) => row.name).filter((name) => !name.startsWith('cluster_') && !local.has(name)).sort();
   }
 

@@ -41,6 +41,7 @@
     "jsonwebtoken": "^9.0.2",
     "marked": "^15.0.12",
     "morgan": "^1.12.1",
+    "pdfjs-dist": "6.4.299",
     "prisma": "^5.22.0",
     "qrcode": "^1.5.4",
     "redis": "^6.2.1",

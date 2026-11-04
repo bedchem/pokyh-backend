@@ -546,6 +546,10 @@ export const config = {
   sseHeartbeatMs: intEnv('SSE_HEARTBEAT_MS', 30 * 1000),
   // The menu source (a mensa.json) for the dish import; no built-in default.
   mensaImportUrl: strEnv('MENSA_IMPORT_URL', ''),
+  // How often a menu set to pull by itself asks its sources; 0 = never by itself.
+  mensaPullIntervalHours: intEnv('MENSA_PULL_INTERVAL_HOURS', 6),
+  mensaPullCheckIntervalMs: intEnv('MENSA_PULL_CHECK_INTERVAL_MS', 15 * 60 * 1000),
+  mensaPullStartDelayMs: intEnv('MENSA_PULL_START_DELAY_MS', 60 * 1000),
   // Absolute base for self-hosted asset URLs (e.g. uploaded dish images). When
   // empty, a relative path is stored instead. No hardcoded domain.
   publicBaseUrl: (process.env['PUBLIC_BASE_URL'] ?? '').replace(/\/$/, ''),

@@ -5,10 +5,6 @@ import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import { v4 as uuidv4 } from 'uuid';
 import { rateLimit } from 'express-rate-limit';
-import https from 'https';
-import http from 'http';
-import dns from 'dns';
-import net from 'net';
 import fs from 'fs/promises';
 import path from 'path';
 import sharp from 'sharp';
@@ -32,9 +28,14 @@ import { writeLimiter } from '../middleware/rateLimiter';
 import { issuedApiKeyScopes, parseApiKeyScopes, serializeApiKeyScopes } from '../security/apiKeyPolicy';
 import {
   rotatePastWeeks, normalizePlanAroundAnchor,
-  lastFutureMondayIso, firstMondayIso, otherPlan, isoAddDays,
+  lastFutureMondayIso, firstMondayIso, otherPlan, isoAddDays, layoutMenu, currentWeekMondayIso,
 } from '../utils/mensaRotate';
 import { snapForwardToSeason } from '../utils/mensaSeason';
+import { menuBreaks } from '../utils/mensaSchedule';
+import { dishFingerprint, sourceUrlProblem } from '../utils/mensaSource';
+import { isInternalUrl } from '../utils/safeFetch';
+import { arrangeMenu, menuSchedule, type MenuSchedule } from '../services/mensaSchedule';
+import { PLANS, PULL_LINES, dishImageUrl, effectiveSourceUrl, failureText, lineFilter, pullPlan, readSource, sourceFile, storedPageProblem } from '../services/mensaSource';
 import { slugifyDishName } from '../utils/dishKey';
 import { ForbiddenError, NotFoundError, ValidationError } from '../utils/errors';
 import { intQueryParam } from '../utils/duration';
@@ -78,7 +79,7 @@ function dishRow(d: {
   prepTime: number; calories: number; price: number;
   protein: number; fat: number; allergens: string;
   isVegetarian: boolean; isVegan: boolean; date: Date; sortOrder: number;
-  plan: string; stableKey: string; weekOrdinal: number;
+  plan: string; stableKey: string; weekOrdinal: number; sourceId?: string | null;
   createdAt: Date; updatedAt: Date;
 }) {
   return {
@@ -101,6 +102,8 @@ function dishRow(d: {
     plan: d.plan === 'winter' ? 'winter' : 'summer',
     stableKey: d.stableKey || slugifyDishName(d.nameDe),
     weekOrdinal: d.weekOrdinal || 0,
+    // Where it comes from ("w1_mo", "veg:w1_mo" for the vegetarian menu), null when made here.
+    sourceId: d.sourceId ?? null,
     createdAt: d.createdAt.toISOString(),
     updatedAt: d.updatedAt.toISOString(),
   };
@@ -110,110 +113,12 @@ function parsePlan(v: unknown, fallback: 'summer' | 'winter' = 'summer'): 'summe
   return v === 'winter' ? 'winter' : v === 'summer' ? 'summer' : fallback;
 }
 
-// Try to pull the intrinsic week number out of the source id of the menu
-// source, formatted as "w1_mo", "w2_tu", … "w6_su".
-// Falls back to 0 (unknown) when the id doesn't match the pattern.
-function weekOrdinalFromSourceId(sourceId: string | null | undefined): number {
-  if (!sourceId) return 0;
-  const m = /^w(\d+)[_-]/i.exec(sourceId);
-  if (!m) return 0;
-  const n = parseInt(m[1]!, 10);
-  return Number.isFinite(n) && n > 0 && n < 1000 ? n : 0;
-}
-
-// Fetches an operator-supplied JSON source. Bounded in time and size and
-// limited to plain web URLs, so a slow, endless or mistyped source can only
-// fail the one admin request that asked for it.
-const FETCH_TIMEOUT_MS = 10_000;
-const FETCH_MAX_BYTES = 5 * 1024 * 1024;
-
-class BlockedAddressError extends Error {}
-
-// Loopback, private, link-local (cloud metadata), carrier-grade NAT and
-// multicast ranges: what a server can reach but the internet cannot.
-function isInternalAddress(address: string): boolean {
-  if (net.isIPv4(address)) {
-    const [a = 0, b = 0] = address.split('.').map(Number);
-    return a === 0 || a === 10 || a === 127 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31)
-      || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127) || a >= 224;
-  }
-  const v6 = address.toLowerCase();
-  if (v6.startsWith('::ffff:')) return isInternalAddress(v6.slice(7));
-  return v6 === '::' || v6 === '::1' || v6.startsWith('fc') || v6.startsWith('fd') || v6.startsWith('fe8') || v6.startsWith('fe9')
-    || v6.startsWith('fea') || v6.startsWith('feb') || v6.startsWith('ff');
-}
-
-const BLOCKED = 'Diese Adresse zeigt ins interne Netz und ist für den Import nicht erlaubt';
-
-// Resolves like the default lookup, but refuses a name that leads to an
-// internal address. Used for the connection itself, so a name that changes
-// its answer between a check and the request (DNS rebinding) is caught too.
-const publicLookup: net.LookupFunction = (hostname, options, callback) => {
-  dns.lookup(hostname, { ...options, all: true }, (err, addresses) => {
-    if (err) {
-      callback(err, '', 0);
-      return;
-    }
-    const list = addresses as unknown as dns.LookupAddress[];
-    if (list.length === 0 || list.some((a) => isInternalAddress(a.address))) {
-      callback(new BlockedAddressError(BLOCKED), '', 0);
-      return;
-    }
-    if (options.all) (callback as unknown as (e: null, all: dns.LookupAddress[]) => void)(null, list);
-    else callback(null, list[0]!.address, list[0]!.family);
-  });
-};
-
 // Whoever may change the Mensa of every school, or the operator's own
 // MENSA_IMPORT_URL, may fetch from anywhere — as before schools existed. A
 // school's Mensa manager only from the public internet: the server must not
 // become their way into the internal network (SSRF).
 function importMayReachInternal(req: Request, url: string): boolean {
   return can(req.adminAccess!, 'mensa.manage', null) || (config.mensaImportUrl !== '' && url === config.mensaImportUrl);
-}
-
-function fetchUrl(url: string, { publicOnly = false }: { publicOnly?: boolean } = {}): Promise<string> {
-  return new Promise((resolve, reject) => {
-    let parsed: URL;
-    try {
-      parsed = new URL(url);
-    } catch {
-      reject(new Error('invalid URL'));
-      return;
-    }
-    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
-      reject(new Error('unsupported URL scheme'));
-      return;
-    }
-    const literal = parsed.hostname.replace(/^\[|\]$/g, '');
-    if (publicOnly && (parsed.hostname === 'localhost' || (net.isIP(literal) && isInternalAddress(literal)))) {
-      reject(new BlockedAddressError(BLOCKED));
-      return;
-    }
-    const lib = parsed.protocol === 'https:' ? https : http;
-    const req = lib.get(parsed, { headers: { 'User-Agent': 'pokyh-backend/1.0' }, ...(publicOnly ? { lookup: publicLookup } : {}) }, (res) => {
-      const status = res.statusCode ?? 0;
-      if (status < 200 || status >= 300) {
-        res.resume();
-        reject(new Error(`unexpected HTTP status ${status}`));
-        return;
-      }
-      const chunks: Buffer[] = [];
-      let received = 0;
-      res.on('data', (c: Buffer) => {
-        received += c.length;
-        if (received > FETCH_MAX_BYTES) {
-          req.destroy(new Error('response too large'));
-          return;
-        }
-        chunks.push(c);
-      });
-      res.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
-      res.on('error', reject);
-    });
-    req.on('error', reject);
-    req.setTimeout(FETCH_TIMEOUT_MS, () => { req.destroy(new Error('fetch timeout')); });
-  });
 }
 
 const router = Router();
@@ -1864,118 +1769,23 @@ router.post('/dishes/import-url', requireAdmin, requirePermission('mensa.manage'
   }
   const menuId = await editableMenu(req, req.body?.menuId);
 
-  let raw: string;
-  try {
-    raw = await fetchUrl(url, { publicOnly: !importMayReachInternal(req, url) });
-  } catch (err) {
-    res.status(503).json({ error: err instanceof BlockedAddressError ? err.message : 'Failed to fetch external URL' });
+  // An administrator's decision, so the source wins; a dish it does not name
+  // stays, and so do the weeks of a menu laid out by the server and uploaded
+  // pictures (services/mensaSource.ts).
+  const result = await pullPlan(menuId, plan, { url, force: true, removeMissing: false, mayReachInternal: importMayReachInternal(req, url) });
+  if (result.status !== 'ok') {
+    res.status(503).json({ error: result.message });
     return;
   }
 
-  let parsed: unknown;
-  try { parsed = JSON.parse(raw); } catch {
-    res.status(503).json({ error: 'Invalid JSON from external URL' });
-    return;
-  }
-
-  type RawDish = Record<string, unknown>;
-  const menu = (parsed as Record<string, unknown>)['menu'] as Record<string, unknown> | undefined;
-  const list = (menu?.['dishes'] ?? []) as RawDish[];
-
-  if (!Array.isArray(list) || list.length === 0) {
+  const total = result.created + result.updated;
+  if (total === 0) {
     res.status(422).json({ error: 'No dishes found in response' });
     return;
   }
-
-  function parseName(v: unknown): { de: string; it: string; en: string } {
-    if (typeof v === 'string') return { de: v, it: v, en: v };
-    if (v && typeof v === 'object') {
-      const m = v as Record<string, string>;
-      const de = m['de'] ?? m['it'] ?? m['en'] ?? Object.values(m)[0] ?? '';
-      return { de, it: m['it'] ?? de, en: m['en'] ?? de };
-    }
-    return { de: '', it: '', en: '' };
-  }
-
-  let imported = 0;
-  let updated = 0;
-
-  // Fallback ordinal source: sort JSON entries by date and number the distinct
-  // Mondays 1..N so dishes whose sourceId doesn't encode a week still get a
-  // stable position.
-  const dateToOrdinalFallback = new Map<string, number>();
-  {
-    const dates = new Set<string>();
-    for (const d of list) if (d['date']) dates.add(String(d['date']));
-    const sortedDates = [...dates].sort();
-    const mondayToOrdinal = new Map<string, number>();
-    for (const iso of sortedDates) {
-      const dt = new Date(iso + 'T00:00:00Z');
-      const wd = dt.getUTCDay() || 7;
-      const mon = new Date(Date.UTC(dt.getUTCFullYear(), dt.getUTCMonth(), dt.getUTCDate() - wd + 1));
-      const monIso = mon.toISOString().split('T')[0]!;
-      if (!mondayToOrdinal.has(monIso)) mondayToOrdinal.set(monIso, mondayToOrdinal.size + 1);
-      dateToOrdinalFallback.set(iso, mondayToOrdinal.get(monIso)!);
-    }
-  }
-
-  for (const d of list) {
-    const rawId = d['id'];
-    const sourceId = rawId ? String(rawId) : null;
-    const name = parseName(d['name']);
-    const desc = parseName(d['description'] ?? '');
-    const dateRaw = d['date'] ? String(d['date']) : null;
-    if (!name.de.trim() || !dateRaw) continue;
-
-    const data = {
-      nameDe: name.de.trim(),
-      nameIt: name.it.trim(),
-      nameEn: name.en.trim(),
-      descDe: desc.de,
-      descIt: desc.it,
-      descEn: desc.en,
-      imageUrl: d['imageUrl'] ? String(d['imageUrl']) : '',
-      category: d['category'] ? String(d['category']) : '',
-      tags: JSON.stringify(Array.isArray(d['tags']) ? d['tags'] : []),
-      prepTime: typeof d['prepTime'] === 'number' ? d['prepTime'] : 0,
-      calories: typeof d['calories'] === 'number' ? d['calories'] : 0,
-      price: typeof d['price'] === 'number' ? d['price'] : 0,
-      protein: typeof d['protein'] === 'number' ? d['protein'] : 0,
-      fat: typeof d['fat'] === 'number' ? d['fat'] : 0,
-      allergens: JSON.stringify(Array.isArray(d['allergens']) ? d['allergens'] : []),
-      isVegetarian: d['isVegetarian'] === true,
-      isVegan: d['isVegan'] === true,
-      date: new Date(dateRaw),
-      plan,
-      menuId,
-      sourceId,
-      stableKey: slugifyDishName(name.de.trim()),
-      weekOrdinal: weekOrdinalFromSourceId(sourceId) || dateToOrdinalFallback.get(dateRaw) || 0,
-    };
-
-    // Match by (menu, plan, sourceId) so the same source JSON can populate
-    // BOTH plans — and several menus — independently. Fall back to plain id
-    // for legacy rows that were imported before sourceId existed.
-    let existing = sourceId
-      ? await prisma.dish.findFirst({ where: { menuId, plan, sourceId } })
-      : null;
-    if (!existing && sourceId) {
-      const legacy = await prisma.dish.findUnique({ where: { id: sourceId } });
-      if (legacy && legacy.plan === plan && legacy.menuId === menuId) existing = legacy;
-    }
-
-    if (existing) {
-      await prisma.dish.update({ where: { id: existing.id }, data });
-      updated++;
-    } else {
-      await prisma.dish.create({ data: { id: uuidv4(), ...data } });
-      imported++;
-    }
-  }
-
   invalidateDishesCache();
-  audit(req, 'mensa.import', { type: 'menu', id: menuId }, { plan, imported, updated });
-  res.json({ imported, updated, total: imported + updated, plan });
+  audit(req, 'mensa.import', { type: 'menu', id: menuId }, { plan, imported: result.created, updated: result.updated });
+  res.json({ imported: result.created, updated: result.updated, total, plan });
 });
 
 // ─── POST /api/admin/dishes/reset ────────────────────────────────────────────
@@ -1984,107 +1794,81 @@ router.post('/dishes/import-url', requireAdmin, requirePermission('mensa.manage'
 
 router.post('/dishes/reset', requireAdmin, requirePermission('mensa.manage'), async (req: Request, res: Response): Promise<void> => {
   const plan = parsePlan(req.body?.plan);
-  const url = String(req.body?.url || config.mensaImportUrl);
-  if (!url) {
-    res.status(400).json({ error: 'Enter the address of the menu (mensa.json) or set MENSA_IMPORT_URL' });
-    return;
-  }
   const menuId = await editableMenu(req, req.body?.menuId);
+  const stored = await prisma.mensaMenuSource.findUnique({ where: { menuId_plan: { menuId, plan } } });
+  const url = req.body?.url ? String(req.body.url) : undefined;
 
-  let raw: string;
+  // The plan's own source (a mensa.json, a PDF or the canteen's page), or the
+  // address given; its vegetarian menu stays.
+  let dishes;
   try {
-    raw = await fetchUrl(url, { publicOnly: !importMayReachInternal(req, url) });
+    const fetched = await sourceFile(menuId, plan, stored?.url ?? '', url ? { url, mayReachInternal: importMayReachInternal(req, url) } : {});
+    if (!fetched) {
+      res.status(400).json({ error: 'Enter the address of the menu (mensa.json) or set MENSA_IMPORT_URL' });
+      return;
+    }
+    dishes = (await readSource(menuId, plan, fetched.bytes)).dishes;
   } catch (err) {
-    res.status(503).json({ error: err instanceof BlockedAddressError ? err.message : 'Failed to fetch external URL' });
+    res.status(503).json({ error: failureText(err) });
     return;
   }
-
-  let parsed: unknown;
-  try { parsed = JSON.parse(raw); } catch {
-    res.status(503).json({ error: 'Invalid JSON from external URL' });
-    return;
-  }
-
-  type RawDish = Record<string, unknown>;
-  const menu = (parsed as Record<string, unknown>)['menu'] as Record<string, unknown> | undefined;
-  const list = (menu?.['dishes'] ?? []) as RawDish[];
-  if (!Array.isArray(list) || list.length === 0) {
+  if (dishes.length === 0) {
     res.status(422).json({ error: 'No dishes found in response' });
     return;
   }
 
-  function parseName(v: unknown): { de: string; it: string; en: string } {
-    if (typeof v === 'string') return { de: v, it: v, en: v };
-    if (v && typeof v === 'object') {
-      const m = v as Record<string, string>;
-      const de = m['de'] ?? m['it'] ?? m['en'] ?? Object.values(m)[0] ?? '';
-      return { de, it: m['it'] ?? de, en: m['en'] ?? de };
-    }
-    return { de: '', it: '', en: '' };
-  }
-
-  // Fallback ordinal: number distinct Mondays 1..N by date order.
-  const dateToOrdinalFallback = new Map<string, number>();
-  {
-    const dates = new Set<string>();
-    for (const d of list) if (d['date']) dates.add(String(d['date']));
-    const sortedDates = [...dates].sort();
-    const mondayToOrdinal = new Map<string, number>();
-    for (const iso of sortedDates) {
-      const dt = new Date(iso + 'T00:00:00Z');
-      const wd = dt.getUTCDay() || 7;
-      const mon = new Date(Date.UTC(dt.getUTCFullYear(), dt.getUTCMonth(), dt.getUTCDate() - wd + 1));
-      const monIso = mon.toISOString().split('T')[0]!;
-      if (!mondayToOrdinal.has(monIso)) mondayToOrdinal.set(monIso, mondayToOrdinal.size + 1);
-      dateToOrdinalFallback.set(iso, mondayToOrdinal.get(monIso)!);
-    }
-  }
-
   const result = await prisma.$transaction(async (tx) => {
-    const deleted = await tx.dish.deleteMany({ where: { menuId, plan } });
-    let imported = 0;
-    for (const d of list) {
-      const rawId = d['id'];
-      const sourceId = rawId ? String(rawId) : null;
-      const name = parseName(d['name']);
-      const desc = parseName(d['description'] ?? '');
-      const dateRaw = d['date'] ? String(d['date']) : null;
-      if (!name.de.trim() || !dateRaw) continue;
+    // An uploaded picture belongs to the dish, not to its row: it comes back
+    // on the new one of the same name.
+    const old = await tx.dish.findMany({ where: { menuId, plan, ...lineFilter(plan) }, select: { id: true, stableKey: true } });
+    const images = await tx.dishImage.findMany({ where: { dishId: { in: old.map((d) => d.id) } } });
+    const imageOf = new Map(images.map((i) => [old.find((d) => d.id === i.dishId)?.stableKey ?? '', i]));
+    await tx.dishImage.deleteMany({ where: { dishId: { in: old.map((d) => d.id) } } });
+    const deleted = await tx.dish.deleteMany({ where: { id: { in: old.map((d) => d.id) } } });
 
+    let imported = 0;
+    for (const d of dishes) {
+      // Fresh UUIDs so a source id can live in BOTH plans simultaneously.
+      const id = uuidv4();
+      const stableKey = slugifyDishName(d.nameDe);
+      const image = imageOf.get(stableKey);
       await tx.dish.create({
         data: {
-          // Fresh UUIDs so a source id can live in BOTH plans simultaneously.
-          id: uuidv4(),
-          nameDe: name.de.trim(),
-          nameIt: name.it.trim(),
-          nameEn: name.en.trim(),
-          descDe: desc.de,
-          descIt: desc.it,
-          descEn: desc.en,
-          imageUrl: d['imageUrl'] ? String(d['imageUrl']) : '',
-          category: d['category'] ? String(d['category']) : '',
-          tags: JSON.stringify(Array.isArray(d['tags']) ? d['tags'] : []),
-          prepTime: typeof d['prepTime'] === 'number' ? d['prepTime'] : 0,
-          calories: typeof d['calories'] === 'number' ? d['calories'] : 0,
-          price: typeof d['price'] === 'number' ? d['price'] : 0,
-          protein: typeof d['protein'] === 'number' ? d['protein'] : 0,
-          fat: typeof d['fat'] === 'number' ? d['fat'] : 0,
-          allergens: JSON.stringify(Array.isArray(d['allergens']) ? d['allergens'] : []),
-          isVegetarian: d['isVegetarian'] === true,
-          isVegan: d['isVegan'] === true,
-          date: new Date(dateRaw),
+          id,
+          nameDe: d.nameDe,
+          nameIt: d.nameIt,
+          nameEn: d.nameEn,
+          descDe: d.descDe,
+          descIt: d.descIt,
+          descEn: d.descEn,
+          imageUrl: image ? dishImageUrl(id) : d.imageUrl,
+          category: d.category,
+          tags: d.tags,
+          prepTime: d.prepTime,
+          calories: d.calories,
+          price: d.price,
+          protein: d.protein,
+          fat: d.fat,
+          allergens: d.allergens,
+          isVegetarian: d.isVegetarian,
+          isVegan: d.isVegan,
+          date: new Date(`${d.date}T00:00:00Z`),
           plan,
           menuId,
-          sourceId,
-          stableKey: slugifyDishName(name.de.trim()),
-          weekOrdinal: weekOrdinalFromSourceId(sourceId) || dateToOrdinalFallback.get(dateRaw) || 0,
+          sourceId: d.sourceId,
+          sourceHash: dishFingerprint(d),
+          stableKey,
+          weekOrdinal: d.weekOrdinal,
         },
       });
+      if (image) await tx.dishImage.create({ data: { dishId: id, data: image.data, mimeType: image.mimeType } });
       imported++;
     }
     return { deleted: deleted.count, imported };
   });
 
+  // A plan from a PDF knows its weeks but not their dates: they are laid out now.
+  await arrangeMenu(menuId, await menuSchedule(menuId)).catch(() => 0);
   invalidateDishesCache();
   audit(req, 'mensa.reset', { type: 'menu', id: menuId }, { plan, ...result });
   res.json({ ...result, plan });
@@ -2136,23 +1920,27 @@ router.post('/dishes/cascade-shift', requireAdmin, requirePermission('mensa.mana
 //      this plan's last future week, snapped into the other plan's season. So
 //      the two plans together form a seamless rolling schedule.
 //
+// A menu laid out by the server ("auto") has no handoff: its plans are laid
+// out on their school weeks right after, so what this sets there is the order,
+// i.e. which week of the plan comes when.
+//
 // All in one transaction so the client never sees a torn state.
 
 router.post('/dishes/anchor-week', requireAdmin, requirePermission('mensa.manage'), async (req: Request, res: Response): Promise<void> => {
   const plan = parsePlan(req.body?.plan);
   const chosenRaw = req.body?.chosenWeek ? String(req.body.chosenWeek) : '';
   const targetRaw = req.body?.targetMonday ? String(req.body.targetMonday) : '';
-  const alignOther = req.body?.alignOtherPlan !== false; // default true
-
   if (!/^\d{4}-\d{2}-\d{2}$/.test(chosenRaw) || !/^\d{4}-\d{2}-\d{2}$/.test(targetRaw)) {
     res.status(400).json({ error: 'chosenWeek and targetMonday must be YYYY-MM-DD' });
     return;
   }
 
   const menuId = await editableMenu(req, req.body?.menuId);
+  const schedule = await menuSchedule(menuId);
+  const alignOther = schedule.mode === 'manual' && req.body?.alignOtherPlan !== false; // default true
   const result = await prisma.$transaction(async (tx) => {
     const normalized = await normalizePlanAroundAnchor(tx, menuId, plan, chosenRaw, targetRaw);
-    const rotated = await rotatePastWeeks(menuId, plan, tx);
+    const rotated = await rotatePastWeeks(menuId, plan, tx, schedule.season);
 
     let otherAligned = 0;
     let otherAnchorDate: string | null = null;
@@ -2164,14 +1952,16 @@ router.post('/dishes/anchor-week', requireAdmin, requirePermission('mensa.manage
         // First Monday after this plan's end, then snap into the other plan's
         // season (in case this plan ends deep inside its own season).
         const rawStart = isoAddDays(lastMon, 7);
-        const snapped = snapForwardToSeason(new Date(rawStart + 'T00:00:00Z'), otherPlan(plan));
+        const snapped = snapForwardToSeason(new Date(rawStart + 'T00:00:00Z'), otherPlan(plan), schedule.season);
         otherAnchorDate = snapped.toISOString().split('T')[0]!;
         otherAligned = await normalizePlanAroundAnchor(tx, menuId, otherPlan(plan), otherFirst, otherAnchorDate);
-        otherRotated = await rotatePastWeeks(menuId, otherPlan(plan), tx);
+        otherRotated = await rotatePastWeeks(menuId, otherPlan(plan), tx, schedule.season);
       }
     }
 
-    return { normalized, rotated, otherAligned, otherAnchorDate, otherRotated };
+    const laidOut = schedule.mode === 'auto' ? await layoutMenu(menuId, schedule.dayOffOf, tx, schedule.season) : 0;
+
+    return { normalized, rotated, otherAligned, otherAnchorDate, otherRotated, laidOut };
   });
 
   invalidateDishesCache();
@@ -2179,14 +1969,152 @@ router.post('/dishes/anchor-week', requireAdmin, requirePermission('mensa.manage
 });
 
 // ─── POST /api/admin/dishes/auto-rotate ──────────────────────────────────────
-// Delegates to the shared rotate helper. Cheap to call repeatedly.
+// Brings the plan up to date the way the menu's mode says. Cheap to call
+// repeatedly.
 
 router.post('/dishes/auto-rotate', requireAdmin, requirePermission('mensa.manage'), async (req: Request, res: Response): Promise<void> => {
   const plan = parsePlan(req.body?.plan);
   const menuId = await editableMenu(req, req.body?.menuId);
-  const rotated = await rotatePastWeeks(menuId, plan);
+  const schedule = await menuSchedule(menuId);
+  const rotated = schedule.mode === 'auto' ? await layoutMenu(menuId, schedule.dayOffOf, undefined, schedule.season) : await rotatePastWeeks(menuId, plan, undefined, schedule.season);
   if (rotated > 0) invalidateDishesCache();
   res.json({ rotated });
+});
+
+// ─── /api/admin/dishes/schedule ──────────────────────────────────────────────
+// Whether a menu runs by itself or as set by hand, the calendar it waits out,
+// and what that calendar says for the coming year.
+
+// A year and a bit: the next summer holidays are always in it.
+const SCHEDULE_AHEAD_DAYS = 400;
+
+async function scheduleJson(menuId: string, schedule: MenuSchedule) {
+  const today = currentWeekMondayIso();
+  const [schoolIds, schools, menu] = await Promise.all([
+    schoolsOfMenu(menuId),
+    listSchools(),
+    prisma.mensaMenu.findUnique({ where: { id: menuId }, select: { pullMode: true, sources: true, sourcePage: true, sourceCanteen: true } }),
+  ]);
+  const onRecord = new Map(schedule.schools.map((s) => [s.schoolId, s]));
+  return {
+    mode: schedule.mode,
+    season: schedule.season,
+    calendar: schedule.calendar,
+    overrides: schedule.overrides,
+    breaks: menuBreaks(schedule.dayOffOf, today, isoAddDays(today, SCHEDULE_AHEAD_DAYS)),
+    // Whether each school's WebUntis holidays have come in yet.
+    schools: schoolIds.map((id) => ({
+      id,
+      name: schools.find((s) => s.id === id)?.name ?? id,
+      breaks: onRecord.get(id)?.holidays.length ?? 0,
+      fetchedAt: onRecord.get(id)?.fetchedAt.toISOString() ?? null,
+    })),
+    // Without it the apps do not know where an uploaded picture lies.
+    pictureBaseMissing: config.publicBaseUrl === '',
+    pullMode: menu?.pullMode === 'manual' ? 'manual' : 'auto',
+    sourcePage: menu?.sourcePage ?? '',
+    sourceCanteen: menu?.sourceCanteen ?? '',
+    // The operator's address is theirs: only that one is in use, not which it is.
+    sources: PULL_LINES.map((plan) => {
+      const row = menu?.sources.find((s) => s.plan === plan);
+      return {
+        plan,
+        url: row?.url ?? '',
+        usesServerSource: !plan.endsWith('-veg') && !menu?.sourcePage && !row?.url && effectiveSourceUrl(menuId, row?.url) !== '',
+        status: row?.status ?? '',
+        message: row?.message ?? '',
+        checkedAt: row?.checkedAt?.toISOString() ?? null,
+        changedAt: row?.changedAt?.toISOString() ?? null,
+      };
+    }),
+  };
+}
+
+router.get('/dishes/schedule', requireAdmin, requirePermission('mensa.view'), async (req: Request, res: Response): Promise<void> => {
+  const menuId = await menuFor(req, req.query['menuId']);
+  if (!menuId) throw new NotFoundError('Mensaplan nicht gefunden');
+  res.json(await scheduleJson(menuId, await menuSchedule(menuId)));
+});
+
+const dayKey = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((v) => !Number.isNaN(Date.parse(`${v}T00:00:00Z`)));
+const menuScheduleSchema = z.object({
+  mode: z.enum(['auto', 'manual']),
+  calendar: z.enum(['suedtirol', 'webuntis']),
+  overrides: z.array(z.object({ start: dayKey, end: dayKey, open: z.boolean() }).refine((o) => o.end >= o.start)).max(60).optional(),
+  seasonRule: z.enum(['dates', 'clock']).optional(),
+});
+
+router.put('/dishes/schedule', requireAdmin, requirePermission('mensa.manage'), writeLimiter, async (req: Request, res: Response): Promise<void> => {
+  const { mode, calendar, overrides, seasonRule } = menuScheduleSchema.parse(req.body);
+  const menuId = await editableMenu(req, req.body?.menuId);
+  await prisma.mensaMenu.update({ where: { id: menuId }, data: { mode, calendar, ...(seasonRule ? { seasonRule } : {}), ...(overrides ? { dayOverrides: JSON.stringify(overrides) } : {}) } });
+  const schedule = await menuSchedule(menuId);
+  const moved = await arrangeMenu(menuId, schedule);
+  invalidateDishesCache();
+  audit(req, 'mensa.schedule', { type: 'menu', id: menuId }, { mode, calendar, seasonRule, overrides: overrides?.length, moved });
+  res.json({ ...(await scheduleJson(menuId, schedule)), moved });
+});
+
+// ─── /api/admin/dishes/source ────────────────────────────────────────────────
+// Where the plans come from, and whether they are pulled by themselves.
+
+const menuSourceSchema = z.object({
+  pullMode: z.enum(['auto', 'manual']),
+  summerUrl: z.string().trim().max(1000),
+  winterUrl: z.string().trim().max(1000),
+  // A page that links the canteen's PDFs, and the canteen's name on it.
+  sourcePage: z.string().trim().max(1000).optional(),
+  sourceCanteen: z.string().trim().max(120).optional(),
+});
+
+// Stored for pulling later with nobody watching, so an address is only taken
+// when it could be fetched from the public side, whoever enters it.
+function storedSourceProblem(url: string): string | null {
+  if (!url) return null;
+  const problem = sourceUrlProblem(url);
+  if (problem) return problem;
+  if (url !== config.mensaImportUrl && isInternalUrl(new URL(url))) return 'Diese Adresse zeigt ins interne Netz und ist als Quelle nicht erlaubt';
+  return null;
+}
+
+router.put('/dishes/source', requireAdmin, requirePermission('mensa.manage'), writeLimiter, async (req: Request, res: Response): Promise<void> => {
+  const { pullMode, summerUrl, winterUrl, sourcePage = '', sourceCanteen = '' } = menuSourceSchema.parse(req.body);
+  const problem = storedSourceProblem(summerUrl) ?? storedSourceProblem(winterUrl)
+    ?? (sourcePage ? sourceUrlProblem(sourcePage) ?? storedPageProblem(sourcePage) : null)
+    ?? (sourcePage && !sourceCanteen ? 'Gib den Namen der Mensa an, wie er auf der Seite steht' : null);
+  if (problem) {
+    res.status(422).json({ error: problem });
+    return;
+  }
+  const menuId = await editableMenu(req, req.body?.menuId);
+  const urls = { summer: summerUrl, winter: winterUrl };
+  const before = await prisma.mensaMenu.findUnique({ where: { id: menuId }, select: { sourcePage: true, sourceCanteen: true } });
+  await prisma.mensaMenu.update({ where: { id: menuId }, data: { pullMode, sourcePage, sourceCanteen } });
+  // Another page or canteen: every line's file has to be looked at anew.
+  if (before?.sourcePage !== sourcePage || before?.sourceCanteen !== sourceCanteen) {
+    await prisma.mensaMenuSource.updateMany({ where: { menuId }, data: { lastHash: '', status: '', message: '' } });
+  }
+  for (const plan of PLANS) {
+    const url = urls[plan];
+    const row = await prisma.mensaMenuSource.findUnique({ where: { menuId_plan: { menuId, plan } } });
+    if (row?.url === url) continue;
+    // Another address starts over: its file has not been looked at yet.
+    const fresh = { url, lastHash: '', status: '', message: '', checkedAt: null, changedAt: null };
+    await prisma.mensaMenuSource.upsert({ where: { menuId_plan: { menuId, plan } }, create: { menuId, plan, ...fresh }, update: fresh });
+  }
+  audit(req, 'mensa.source', { type: 'menu', id: menuId }, { pullMode, summerUrl, winterUrl, sourcePage, sourceCanteen });
+  res.json(await scheduleJson(menuId, await menuSchedule(menuId)));
+});
+
+const menuPullSchema = z.object({ plan: z.enum(['summer', 'winter', 'summer-veg', 'winter-veg']).optional(), force: z.boolean().optional() });
+
+router.post('/dishes/source/pull', requireAdmin, requirePermission('mensa.manage'), writeLimiter, async (req: Request, res: Response): Promise<void> => {
+  const { plan, force } = menuPullSchema.parse(req.body);
+  const menuId = await editableMenu(req, req.body?.menuId);
+  const results = [];
+  for (const p of plan ? [plan] : PULL_LINES) results.push(await pullPlan(menuId, p, { force }));
+  audit(req, 'mensa.pull', { type: 'menu', id: menuId }, { force: force === true, results: results.map((r) => ({ plan: r.plan, status: r.status, created: r.created, updated: r.updated, removed: r.removed })) });
+  res.json({ results, schedule: await scheduleJson(menuId, await menuSchedule(menuId)) });
 });
 
 // ─── GET /api/admin/dish-ratings ─────────────────────────────────────────────
@@ -2691,6 +2619,7 @@ router.get('/file-logs/:date', requireAdmin, requirePermission('system.logs.view
 // ─── Subject Images (admin) ───────────────────────────────────────────────────
 
 const ALLOWED_MIME = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
+const ALLOWED_FORMATS = new Set(['jpeg', 'png', 'webp', 'gif']);
 const MAX_IMG_BYTES = 3 * 1024 * 1024;
 
 function normalizeSubjectKey(s: string): string {
@@ -2754,6 +2683,11 @@ router.put('/subject-images/:subject', requireAdmin, requirePermission('subjecti
   if (buf.length > MAX_IMG_BYTES) {
     res.status(413).json({ error: 'Image too large (max 3 MB)' }); return;
   }
+  // sharp goes by what the bytes are: an SVG declared as PNG would be rendered.
+  const format = await sharp(buf).metadata().then((m) => m.format, () => undefined);
+  if (!format || !ALLOWED_FORMATS.has(format)) {
+    res.status(422).json({ error: 'Das ist kein gültiges Bild' }); return;
+  }
 
   let mimeType = body.mimeType;
   if (body.crop) {
@@ -2783,52 +2717,81 @@ router.delete('/subject-images/:subject', requireAdmin, requirePermission('subje
 });
 
 // ─── Dish images (admin upload) ───────────────────────────────────────────────
-// Builds the public URL a client uses to load a dish image (absolute when
-// PUBLIC_BASE_URL is set, otherwise relative). Cache-busted on every upload.
-function dishImageUrl(dishId: string): string {
-  return `${config.publicBaseUrl}/dishes/${encodeURIComponent(dishId)}/image?v=${Date.now()}`;
-}
-
 // PUT /api/admin/dishes/:id/image — upload/replace a dish image (optional crop).
 // Stored as WebP in the DB; the dish's imageUrl is pointed at the served route.
+// A dish's picture goes with its name, like its ratings: on every day and in
+// both plans of the menu that serve the same dish.
+async function sameDishIn(dish: { id: string; menuId: string | null; stableKey: string }): Promise<string[]> {
+  if (!dish.menuId || !dish.stableKey) return [dish.id];
+  const rows = await prisma.dish.findMany({ where: { menuId: dish.menuId, stableKey: dish.stableKey }, select: { id: true } });
+  return rows.map((r) => r.id);
+}
+
+// The side a stored dish picture is at most: phones send far more than any
+// screen shows, and all of it would sit in the database.
+const DISH_IMAGE_MAX_SIDE = 1600;
+// A small file can unpack to an enormous picture: more than any phone takes is
+// refused before it is decoded into memory.
+const DISH_IMAGE_MAX_PIXELS = 50_000_000;
+
 router.put('/dishes/:id/image', requireAdmin, requirePermission('mensa.manage'), async (req: Request, res: Response): Promise<void> => {
   const id = String(req.params['id']);
-  await editableDish(req, id);
+  const dish = await editableDish(req, id);
 
   const body = subjectImageUploadSchema.parse(req.body);
   if (!ALLOWED_MIME.has(body.mimeType)) {
     res.status(422).json({ error: 'Unsupported image type' }); return;
   }
-  let buf = Buffer.from(body.data, 'base64');
-  if (buf.length > MAX_IMG_BYTES) {
+  const upload = Buffer.from(body.data, 'base64');
+  if (upload.length > MAX_IMG_BYTES) {
     res.status(413).json({ error: 'Image too large (max 3 MB)' }); return;
   }
 
-  buf = body.crop
-    ? Buffer.from(await sharp(buf)
-        .extract({ left: body.crop.left, top: body.crop.top, width: body.crop.width, height: body.crop.height })
-        .webp({ quality: 85 }).toBuffer())
-    : Buffer.from(await sharp(buf).webp({ quality: 85 }).toBuffer());
+  // sharp goes by what the bytes are, not by what was declared: only the
+  // formats allowed above get through (an SVG would be rendered otherwise).
+  let buf: Buffer;
+  try {
+    const { format, width = 0, height = 0 } = await sharp(upload).metadata();
+    if (!format || !ALLOWED_FORMATS.has(format) || width * height > DISH_IMAGE_MAX_PIXELS) throw new Error('format');
+    // rotate(): phones store a picture sideways with a note; the note goes.
+    const picture = sharp(upload, { limitInputPixels: DISH_IMAGE_MAX_PIXELS }).rotate();
+    if (body.crop) picture.extract({ left: body.crop.left, top: body.crop.top, width: body.crop.width, height: body.crop.height });
+    buf = Buffer.from(await picture
+      .resize({ width: DISH_IMAGE_MAX_SIDE, height: DISH_IMAGE_MAX_SIDE, fit: 'inside', withoutEnlargement: true })
+      .webp({ quality: 85 }).toBuffer());
+  } catch {
+    res.status(422).json({ error: 'Das ist kein gültiges Bild' }); return;
+  }
 
-  await prisma.dishImage.upsert({
-    where: { dishId: id },
-    create: { dishId: id, data: buf, mimeType: 'image/webp' },
-    update: { data: buf, mimeType: 'image/webp' },
-  });
+  const ids = await sameDishIn(dish);
   const imageUrl = dishImageUrl(id);
-  await prisma.dish.update({ where: { id }, data: { imageUrl } });
+  await prisma.$transaction(async (tx) => {
+    for (const dishId of ids) {
+      await tx.dishImage.upsert({
+        where: { dishId },
+        create: { dishId, data: buf, mimeType: 'image/webp' },
+        update: { data: buf, mimeType: 'image/webp' },
+      });
+      await tx.dish.update({ where: { id: dishId }, data: { imageUrl: dishId === id ? imageUrl : dishImageUrl(dishId) } });
+    }
+  });
   invalidateDishesCache();
+  audit(req, 'mensa.dish.image', { type: 'dish', id }, { name: dish.nameDe, menuId: dish.menuId, dishes: ids.length });
 
-  res.json({ ok: true, imageUrl });
+  res.json({ ok: true, imageUrl, dishes: ids.length });
 });
 
 // DELETE /api/admin/dishes/:id/image — remove the uploaded image
 router.delete('/dishes/:id/image', requireAdmin, requirePermission('mensa.manage'), async (req: Request, res: Response): Promise<void> => {
   const id = String(req.params['id']);
-  await editableDish(req, id);
-  await prisma.dishImage.delete({ where: { dishId: id } }).catch(() => null);
-  await prisma.dish.update({ where: { id }, data: { imageUrl: '' } }).catch(() => null);
+  const dish = await editableDish(req, id);
+  const ids = await sameDishIn(dish);
+  await prisma.$transaction([
+    prisma.dishImage.deleteMany({ where: { dishId: { in: ids } } }),
+    prisma.dish.updateMany({ where: { id: { in: ids } }, data: { imageUrl: '' } }),
+  ]);
   invalidateDishesCache();
+  audit(req, 'mensa.dish.image.delete', { type: 'dish', id }, { name: dish.nameDe, menuId: dish.menuId, dishes: ids.length });
   res.status(204).send();
 });
 

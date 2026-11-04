@@ -42,6 +42,7 @@ const SHARED_KEYS = new Set([
   'CACHE_TTL_MS',
   'SSE_HEARTBEAT_MS',
   'MENSA_IMPORT_URL',
+  'MENSA_PULL_INTERVAL_HOURS',
   // Cluster behaviour that every node should apply alike.
   'CLUSTER_AUTO_MESH',
   'CLUSTER_HEARTBEAT_INTERVAL_MS',

@@ -58,3 +58,27 @@ export function readHolidays(result: unknown, fromIso: string): Holiday[] {
   }
   return merged;
 }
+
+// What is kept of a school's holidays for its menu, from WebUntis' answer. A
+// broken or absurd entry must not close the Mensa for good, nor swallow the
+// real breaks it overlaps, so a "break" longer than any real one (the summer
+// holidays are about 12 weeks) goes before anything is merged, and the sizes
+// are capped.
+const MAX_BREAK_DAYS = 120;
+const MAX_BREAKS = 200;
+
+const lengthInDays = (start: string, end: string) => (Date.parse(`${end}T12:00:00Z`) - Date.parse(`${start}T12:00:00Z`)) / 86_400_000;
+
+export function storableHolidays(result: unknown, fromIso: string): Holiday[] {
+  if (!Array.isArray(result)) return [];
+  const believable = result.filter((item) => {
+    const r = (item ?? {}) as { startDate?: unknown; endDate?: unknown };
+    const start = ymd(Number(r.startDate));
+    const end = ymd(Number(r.endDate));
+    return start !== null && end !== null && lengthInDays(start, end) < MAX_BREAK_DAYS;
+  });
+  return readHolidays(believable, fromIso)
+    .filter((h) => lengthInDays(h.start, h.end) < MAX_BREAK_DAYS)
+    .slice(0, MAX_BREAKS)
+    .map((h) => ({ start: h.start, end: h.end, names: h.names.slice(0, 5).map((n) => n.slice(0, 80)) }));
+}

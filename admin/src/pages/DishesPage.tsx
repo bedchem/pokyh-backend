@@ -3,13 +3,14 @@ import { createPortal } from 'react-dom';
 import { useHanded } from '../useHanded';
 import {
   UtensilsCrossed, Plus, Pencil, Trash2, Download, X, ChevronDown, ChevronUp, Leaf, Sprout, Star,
-  GripVertical, CalendarPlus, Sun, Snowflake, RotateCcw, School,
+  GripVertical, CalendarPlus, Sun, Snowflake, RotateCcw, School, CalendarDays, ImagePlus, CloudDownload,
 } from 'lucide-react';
 import { adminApi, setMenuContext } from '../api';
 import { useAccess } from '../access';
+import { relative } from '../components/format';
 import { useSwitchView } from '../useSwitchView';
 import { MenuDeleteDialog, MenuNameDialog, MenuSchoolsDialog } from '../components/MenuDialogs';
-import type { AdminDishFull, AdminDish, AdminDishRatingEntry, DishPlan, MensaMenu } from '../types';
+import type { AdminDishFull, AdminDish, AdminDishRatingEntry, DishPlan, MensaMenu, MenuBreakReason, MenuCalendar, MenuDayOverride, MenuMode, MenuPullMode, MenuScheduleInfo } from '../types';
 import { useToast } from '../components/Toast';
 import { useLive } from '../live';
 import { Collapse, Delta, Figures, IconButton, Notice, PageHeader, SearchField, Segmented, Spinner, Tag } from '../components/kit';
@@ -132,6 +133,9 @@ function lastSundayIso(year: number, month: number): string {
   return toLocalIso(last);
 }
 
+// The menu's rule (GET /dishes/schedule); until it is known, the canteens' usual dates.
+let seasonRule: { kind: 'dates' | 'clock'; summerFrom: string; winterFrom: string } = { kind: 'dates', summerFrom: '04-01', winterFrom: '11-01' };
+
 // The season of this week, i.e. the plan the public /dishes endpoint serves now.
 function currentSeason(): DishPlan {
   return seasonOfIsoDate(currentMondayIso());
@@ -158,14 +162,19 @@ function dishKeyOf(dish: { stableKey?: string; nameDe: string }): string {
   return dish.stableKey && dish.stableKey.length > 0 ? dish.stableKey : slugifyDishName(dish.nameDe);
 }
 
-// Which season the given ISO date's week belongs to: summer from the switch to
-// summer time (last Sunday of March) up to the switch to winter time (last
-// Sunday of October), the other plan taking over on the Monday after a switch.
-// Mirrors backend utils/mensaSeason. Used to warn the user when a week of the
+// Which season the given ISO date's week belongs to, by its Monday: on the
+// canteen's dates, or with the clocks (summer from the switch to summer time,
+// the last Sunday of March, to the switch to winter time, the last Sunday of
+// October). Mirrors backend utils/mensaSeason. Used to warn the user when a week of the
 // active plan has drifted into the other season's window — that week the
 // public /dishes endpoint serves the other plan.
 function seasonOfIsoDate(iso: string): DishPlan {
   const mon = weekKey(iso);
+  if (seasonRule.kind === 'dates') {
+    const day = mon.slice(5);
+    const { summerFrom: from, winterFrom: to } = seasonRule;
+    return (from < to ? day >= from && day < to : day >= from || day < to) ? 'summer' : 'winter';
+  }
   const year = Number(mon.slice(0, 4));
   return mon > lastSundayIso(year, 2) && mon < lastSundayIso(year, 9) ? 'summer' : 'winter';
 }
@@ -344,6 +353,42 @@ function DishForm({ dish, ratingData, initialDate, activePlan, onSaved, onClose,
   );
   const [saving, setSaving] = useState(false);
   const [tab, setTab] = useState<'basic' | 'nutrition' | 'ratings'>('basic');
+  const [uploading, setUploading] = useState(false);
+  // A new dish has no id yet: its picture goes up right after it is saved.
+  const [pendingImage, setPendingImage] = useState<{ data: string; mimeType: string; preview: string } | null>(null);
+  const uploadedHere = isEdit && dish.imageUrl.includes(`/dishes/${dish.id}/image`);
+
+  async function chooseImage(file: File | undefined) {
+    if (!file) return;
+    setUploading(true);
+    try {
+      const image = await imageForUpload(file);
+      if (isEdit) {
+        const res = await adminApi.uploadDishImage(dish.id, image.data, image.mimeType);
+        set('imageUrl', res.imageUrl);
+        showToast(res.dishes > 1 ? `Bild gespeichert, gilt für ${res.dishes} Tage mit diesem Gericht` : 'Bild gespeichert', 'success');
+      } else {
+        setPendingImage({ ...image, preview: `data:${image.mimeType};base64,${image.data}` });
+      }
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Das Bild konnte nicht hochgeladen werden', 'error');
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  async function removeImage() {
+    setPendingImage(null);
+    if (isEdit && (uploadedHere || form.imageUrl.includes(`/dishes/${dish.id}/image`))) {
+      try {
+        await adminApi.deleteDishImage(dish.id);
+      } catch (err) {
+        showToast(err instanceof Error ? err.message : 'Das Bild konnte nicht entfernt werden', 'error');
+        return;
+      }
+    }
+    set('imageUrl', '');
+  }
 
   function set<K extends keyof typeof form>(k: K, v: typeof form[K]) {
     setForm((p) => ({ ...p, [k]: v }));
@@ -376,9 +421,13 @@ function DishForm({ dish, ratingData, initialDate, activePlan, onSaved, onClose,
         sortOrder: Number(form.sortOrder) || 0,
         plan: form.plan,
       };
-      const saved = isEdit
+      let saved = isEdit
         ? await adminApi.updateDish(dish!.id, payload)
         : await adminApi.createDish(payload);
+      if (pendingImage) {
+        const res = await adminApi.uploadDishImage(saved.id, pendingImage.data, pendingImage.mimeType);
+        saved = { ...saved, imageUrl: res.imageUrl };
+      }
       onSaved(saved);
       showToast(isEdit ? 'Gericht gespeichert' : 'Gericht erstellt', 'success');
     } catch (err) {
@@ -457,13 +506,31 @@ function DishForm({ dish, ratingData, initialDate, activePlan, onSaved, onClose,
 
           {tab === 'basic' && (
             <>
-              {form.imageUrl && (
+              {(pendingImage || form.imageUrl) && (
                 <div className="w-full h-36 rounded-[14px] overflow-hidden flex-shrink-0"
                   style={{ border: '1px solid rgb(var(--ink-rgb) / calc(0.087 * var(--veil)))' }}>
-                  <img src={form.imageUrl} alt="" className="w-full h-full object-cover"
+                  <img src={pendingImage?.preview ?? form.imageUrl} alt="" className="w-full h-full object-cover"
                     onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }} />
                 </div>
               )}
+
+              <div className="flex flex-wrap items-center gap-2">
+                <label className="btn btn-quiet btn-sm cursor-pointer">
+                  <ImagePlus size={15} strokeWidth={1.7} />
+                  {uploading ? 'Lädt…' : 'Bild hochladen'}
+                  <input
+                    type="file"
+                    accept={IMAGE_TYPES.join(',')}
+                    className="sr-only"
+                    disabled={uploading}
+                    onChange={(e) => { void chooseImage(e.target.files?.[0]); e.target.value = ''; }}
+                  />
+                </label>
+                {(pendingImage || form.imageUrl) && (
+                  <button type="button" className="btn btn-quiet btn-sm" disabled={uploading} onClick={() => void removeImage()}>Bild entfernen</button>
+                )}
+                <span className="text-[12px] text-ink-4">JPG, PNG, WebP oder GIF. Gilt für alle Tage mit diesem Gericht.</span>
+              </div>
 
               <div>
                 <label style={lblStyle} className={lbl}>Name (Deutsch) *</label>
@@ -918,6 +985,333 @@ function WeekDropzone({
 
 interface HandedDish { menuId: string; search: string; plan: DishPlan }
 
+// ─── A dish's picture ───────────────────────────────────────────────────────
+
+const IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+// The server takes 3 MB at most; a larger picture is made smaller here first.
+const IMAGE_MAX_BYTES = 2.5 * 1024 * 1024;
+const IMAGE_MAX_SIDE = 1600;
+
+async function smallerImage(file: File): Promise<Blob> {
+  const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
+  const scale = Math.min(1, IMAGE_MAX_SIDE / Math.max(bitmap.width, bitmap.height));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(bitmap.width * scale);
+  canvas.height = Math.round(bitmap.height * scale);
+  canvas.getContext('2d')!.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  bitmap.close();
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error('Das Bild konnte nicht verkleinert werden'))), 'image/jpeg', 0.85);
+  });
+}
+
+// What the upload route takes: base64 without the "data:…" in front.
+async function imageForUpload(file: File): Promise<{ data: string; mimeType: string }> {
+  if (!IMAGE_TYPES.includes(file.type)) throw new Error('Nur JPG, PNG, WebP oder GIF');
+  const blob = file.size > IMAGE_MAX_BYTES ? await smallerImage(file) : file;
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(new Error('Das Bild konnte nicht gelesen werden'));
+    reader.readAsDataURL(blob);
+  });
+  return { data: dataUrl.slice(dataUrl.indexOf(',') + 1), mimeType: blob.type };
+}
+
+// ─── How the menu moves along the calendar ──────────────────────────────────
+
+const BREAK_NAMES: Record<MenuBreakReason, string> = {
+  summer: 'Sommerferien',
+  allSaints: 'Allerheiligenferien',
+  christmas: 'Weihnachtsferien',
+  winter: 'Faschingsferien',
+  easter: 'Osterferien',
+  holiday: 'Feiertag',
+  bridge: 'Fenstertag',
+  school: 'Schulfrei',
+  closed: 'Mensa zu',
+};
+
+function breakRange(start: string, end: string): string {
+  const day = (iso: string) => new Date(`${iso}T00:00:00`).toLocaleDateString('de-AT', { day: 'numeric', month: 'numeric' });
+  return start === end ? day(start) : `${day(start)}–${day(end)}`;
+}
+
+// A whole school week (Monday to Friday) within breaks.
+function weekInBreak(monIso: string, schedule: MenuScheduleInfo): boolean {
+  return [1, 2, 3, 4, 5].every((dow) => {
+    const day = dateForWeekAndDow(monIso, dow);
+    return schedule.breaks.some((b) => b.start <= day && day <= b.end);
+  });
+}
+
+const fieldStyle = { background: 'rgb(var(--ink-rgb) / calc(0.05 * var(--veil)))', color: 'rgb(var(--ink-rgb) / 0.9)' };
+const fieldClass = 'rounded-[10px] px-3 py-2 text-[13.5px] outline-none';
+
+function OverridesEditor({ overrides, canEdit, onChange }: {
+  overrides: MenuDayOverride[];
+  canEdit: boolean;
+  onChange: (next: MenuDayOverride[]) => void;
+}) {
+  const [start, setStart] = useState('');
+  const [end, setEnd] = useState('');
+  const [open, setOpen] = useState(false);
+  const add = () => {
+    onChange([...overrides, { start, end: end && end >= start ? end : start, open }]);
+    setStart('');
+    setEnd('');
+  };
+  return (
+    <div className="mt-4">
+      <div className="text-[12.5px] font-medium text-ink-3">Eigene Tage</div>
+      {overrides.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-2">
+          {overrides.map((o, i) => (
+            <span key={`${o.start}-${i}`} className="inline-flex items-center gap-1.5">
+              <Tag tone={o.open ? 'mint' : 'amber'}>{o.open ? 'Offen' : 'Zu'} · {breakRange(o.start, o.end)}</Tag>
+              {canEdit && (
+                <button type="button" aria-label="Eintrag entfernen" className="text-ink-4 hover:text-ink" onClick={() => onChange(overrides.filter((_, n) => n !== i))}>
+                  <X size={13} />
+                </button>
+              )}
+            </span>
+          ))}
+        </div>
+      )}
+      {canEdit && overrides.length < 60 && (
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <input type="date" aria-label="Von" className={fieldClass} style={fieldStyle} value={start} onChange={(e) => setStart(e.target.value)} />
+          <input type="date" aria-label="Bis (optional)" className={fieldClass} style={fieldStyle} value={end} min={start || undefined} onChange={(e) => setEnd(e.target.value)} />
+          <Segmented<'closed' | 'open'>
+            label="Mensa an diesen Tagen"
+            value={open ? 'open' : 'closed'}
+            onChange={(v) => setOpen(v === 'open')}
+            options={[{ value: 'closed', label: 'Zu' }, { value: 'open', label: 'Offen' }]}
+          />
+          <button type="button" className="btn btn-quiet btn-sm" disabled={!start} onClick={add}>Hinzufügen</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const LINE_NAMES: Record<string, string> = { summer: 'Sommerplan', winter: 'Winterplan', 'summer-veg': 'Sommer vegetarisch', 'winter-veg': 'Winter vegetarisch' };
+
+function SourceEditor({ schedule, canEdit, onSaved, onPulled }: {
+  schedule: MenuScheduleInfo;
+  canEdit: boolean;
+  onSaved: (next: MenuScheduleInfo) => void;
+  onPulled: () => void;
+}) {
+  const { showToast } = useToast();
+  const urlOf = (plan: DishPlan) => schedule.sources.find((s) => s.plan === plan)?.url ?? '';
+  const [summerUrl, setSummerUrl] = useState(urlOf('summer'));
+  const [winterUrl, setWinterUrl] = useState(urlOf('winter'));
+  const [page, setPage] = useState(schedule.sourcePage);
+  const [canteen, setCanteen] = useState(schedule.sourceCanteen);
+  const [busy, setBusy] = useState(false);
+  const usable = schedule.sourcePage !== '' || schedule.sources.some((s) => s.url || s.usesServerSource);
+  const changed = summerUrl.trim() !== urlOf('summer') || winterUrl.trim() !== urlOf('winter') || page.trim() !== schedule.sourcePage || canteen.trim() !== schedule.sourceCanteen;
+
+  async function save(pullMode: MenuPullMode) {
+    setBusy(true);
+    try {
+      onSaved(await adminApi.setMenuSource({ pullMode, summerUrl: summerUrl.trim(), winterUrl: winterUrl.trim(), sourcePage: page.trim(), sourceCanteen: canteen.trim() }));
+      showToast('Quelle gespeichert', 'success');
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Die Quelle konnte nicht gespeichert werden', 'error');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function pull(force: boolean) {
+    setBusy(true);
+    try {
+      const { results, schedule: next } = await adminApi.pullMenuSource(force);
+      onSaved(next);
+      onPulled();
+      const failed = results.find((r) => r.status === 'error' || r.status === 'held');
+      if (failed) showToast(`${LINE_NAMES[failed.plan] ?? failed.plan}: ${failed.message}`, 'error');
+      else {
+        const sum = (key: 'created' | 'updated' | 'removed') => results.reduce((n, r) => n + r[key], 0);
+        showToast(`Geholt · ${sum('created')} neu, ${sum('updated')} geändert, ${sum('removed')} entfernt`, 'success');
+      }
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Der Plan konnte nicht geholt werden', 'error');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const held = schedule.sources.filter((s) => s.status === 'held');
+  const failed = schedule.sources.filter((s) => s.status === 'error');
+  return (
+    <div className="mt-5 pt-4" style={{ borderTop: '1px solid rgb(var(--ink-rgb) / calc(0.07 * var(--veil)))' }}>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
+        <span className="flex items-center gap-2 text-[14.5px] font-medium text-ink"><CloudDownload size={16} strokeWidth={1.7} /> Quelle</span>
+        {canEdit ? (
+          <Segmented<MenuPullMode>
+            label="Plan holen"
+            value={schedule.pullMode}
+            onChange={(mode) => void save(mode)}
+            options={[{ value: 'auto', label: 'Automatisch' }, { value: 'manual', label: 'Nur von Hand' }]}
+          />
+        ) : (
+          <Tag>{schedule.pullMode === 'auto' ? 'Automatisch' : 'Nur von Hand'}</Tag>
+        )}
+        {canEdit && (
+          <button type="button" className="btn btn-quiet btn-sm" disabled={busy || !usable || changed} onClick={() => void pull(false)}>
+            <CloudDownload size={15} strokeWidth={1.7} /> Jetzt holen
+          </button>
+        )}
+      </div>
+      <p className="mt-3 max-w-[78ch] text-[13.5px] leading-relaxed text-ink-3">
+        {schedule.pullMode === 'auto'
+          ? 'POKYH holt den Plan regelmäßig von der Quelle und übernimmt nur, was sich dort geändert hat. Die Position im Plan, hochgeladene Bilder und deine Änderungen bleiben; aus einem PDF kommen bei einem gleichen Gericht nur die Allergene. Eine fehlerhafte Datei ändert nichts.'
+          : 'Der Plan wird nur geholt, wenn du es hier auslöst.'}
+      </p>
+      {canEdit && (
+        <>
+          <div className="mt-3 grid gap-2 sm:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
+            <label className="block text-[12.5px] text-ink-3">
+              Seite mit den Menüplänen (PDF)
+              <input type="url" className={`${fieldClass} mt-1 w-full`} style={fieldStyle} value={page} onChange={(e) => setPage(e.target.value)} placeholder="https://www.gemeinde.brixen.bz.it/Dienste/…" />
+            </label>
+            <label className="block text-[12.5px] text-ink-3">
+              Name der Mensa dort
+              <input className={`${fieldClass} mt-1 w-full`} style={fieldStyle} value={canteen} onChange={(e) => setCanteen(e.target.value)} placeholder="Mensa St. Michael" />
+            </label>
+          </div>
+          <p className="mt-1 text-[12px] text-ink-4">Mit einer Seite werden Sommer, Winter und die vegetarischen Menüs bei jedem Holen dort neu gesucht. Ohne Seite gelten die Adressen darunter (mensa.json oder PDF).</p>
+          {!page.trim() && (
+            <div className="mt-2 grid gap-2 sm:grid-cols-2">
+              {([['summer', 'Sommerplan', summerUrl, setSummerUrl], ['winter', 'Winterplan', winterUrl, setWinterUrl]] as const).map(([plan, label, value, set]) => (
+                <label key={plan} className="block text-[12.5px] text-ink-3">
+                  {label}
+                  <input
+                    type="url"
+                    className={`${fieldClass} mt-1 w-full`}
+                    style={fieldStyle}
+                    value={value}
+                    onChange={(e) => set(e.target.value)}
+                    placeholder={schedule.sources.find((s) => s.plan === plan)?.usesServerSource ? 'Quelle des Servers' : 'https://…/mensa.json oder …pdf'}
+                  />
+                </label>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+      {canEdit && changed && (
+        <button type="button" className="btn btn-primary btn-sm mt-2" disabled={busy} onClick={() => void save(schedule.pullMode)}>Quelle speichern</button>
+      )}
+      <ul className="mt-3 space-y-1 text-[12.5px] text-ink-3">
+        {schedule.sources.filter((s) => s.checkedAt).map((s) => (
+          <li key={s.plan}>
+            {LINE_NAMES[s.plan] ?? s.plan}: zuletzt geprüft {relative(s.checkedAt)}{s.changedAt ? `, zuletzt geändert ${relative(s.changedAt)}` : ''}{s.status === 'ok' && s.message ? ` · ${s.message}` : ''}
+          </li>
+        ))}
+      </ul>
+      {failed.map((s) => (
+        <div key={s.plan} className="mt-3"><Notice tone="rose" icon={CloudDownload}>{LINE_NAMES[s.plan] ?? s.plan}: {s.message}. Der Plan bleibt, wie er ist.</Notice></div>
+      ))}
+      {held.map((s) => (
+        <div key={s.plan} className="mt-3">
+          <Notice tone="amber" icon={CloudDownload}>
+            {LINE_NAMES[s.plan] ?? s.plan} zurückgehalten: {s.message}. Der Plan bleibt, bis du entscheidest.{' '}
+            {canEdit && <button type="button" className="font-medium underline underline-offset-2" disabled={busy} onClick={() => void pull(true)}>Trotzdem übernehmen</button>}
+          </Notice>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+const dayMonth = (md: string) => `${Number(md.slice(3))}.${Number(md.slice(0, 2))}.`;
+
+function SchedulePanel({ schedule, canEdit, onChange, onSourceSaved, onPulled }: {
+  schedule: MenuScheduleInfo;
+  canEdit: boolean;
+  onChange: (mode: MenuMode, calendar: MenuCalendar, overrides: MenuDayOverride[], seasonRule?: 'dates' | 'clock') => void;
+  onSourceSaved: (next: MenuScheduleInfo) => void;
+  onPulled: () => void;
+}) {
+  const auto = schedule.mode === 'auto';
+  // The named breaks: single holidays are simply days without a menu.
+  const breaks = schedule.breaks.filter((b) => b.reason !== 'holiday' && b.reason !== 'bridge' && b.reason !== 'closed').slice(0, 6);
+  return (
+    <section className="mt-8 rounded-[20px] p-5" style={{ background: 'rgb(var(--ink-rgb) / calc(0.032 * var(--veil)))' }} aria-label="Ablauf des Speiseplans">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
+        <span className="flex items-center gap-2 text-[14.5px] font-medium text-ink"><CalendarDays size={16} strokeWidth={1.7} /> Ablauf</span>
+        {canEdit ? (
+          <Segmented<MenuMode>
+            label="Ablauf"
+            value={schedule.mode}
+            onChange={(mode) => onChange(mode, schedule.calendar, schedule.overrides)}
+            options={[{ value: 'auto', label: 'Autonom' }, { value: 'manual', label: 'Manuell' }]}
+          />
+        ) : (
+          <Tag tone={auto ? 'mint' : 'amber'}>{auto ? 'Autonom' : 'Manuell'}</Tag>
+        )}
+        {auto && canEdit && (
+          <Segmented<MenuCalendar>
+            label="Ferienkalender"
+            value={schedule.calendar}
+            onChange={(calendar) => onChange(schedule.mode, calendar, schedule.overrides)}
+            options={[{ value: 'suedtirol', label: 'Südtirol + WebUntis' }, { value: 'webuntis', label: 'Nur WebUntis' }]}
+          />
+        )}
+      </div>
+      <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-3">
+        <span className="text-[13.5px] text-ink-3">Planwechsel</span>
+        {canEdit ? (
+          <Segmented<'dates' | 'clock'>
+            label="Planwechsel"
+            value={schedule.season.kind}
+            onChange={(rule) => onChange(schedule.mode, schedule.calendar, schedule.overrides, rule)}
+            options={[
+              { value: 'dates', label: schedule.season.kind === 'dates' ? `Wie die Mensa (${dayMonth(schedule.season.summerFrom)} / ${dayMonth(schedule.season.winterFrom)})` : 'Wie die Mensa' },
+              { value: 'clock', label: 'Zeitumstellung' },
+            ]}
+          />
+        ) : (
+          <Tag>{schedule.season.kind === 'dates' ? `Sommer ab ${dayMonth(schedule.season.summerFrom)}, Winter ab ${dayMonth(schedule.season.winterFrom)}` : 'Mit der Zeitumstellung'}</Tag>
+        )}
+      </div>
+      <p className="mt-3 max-w-[78ch] text-[13.5px] leading-relaxed text-ink-3">
+        {auto
+          ? `POKYH legt die Wochen selbst auf die Schulwochen: Ferien werden abgewartet, danach geht es mit der nächsten Planwoche weiter. Sommer- und Winterplan wechseln ${schedule.season.kind === 'dates' ? 'in der Woche, deren Montag auf den Tag fällt, den der Plan der Mensa nennt' : 'mit der Zeitumstellung'}. Über das Datum einer Woche legst du fest, welche Planwoche wann dran ist.`
+          : 'Die Daten bleiben, wie du sie setzt. Ferien werden nicht beachtet; vergangene Wochen rollen nur ans Ende ihres Plans.'}
+      </p>
+      {auto && breaks.length > 0 && (
+        <div className="mt-3 flex flex-wrap gap-2">
+          {breaks.map((b) => <Tag key={b.start}>{BREAK_NAMES[b.reason]} · {breakRange(b.start, b.end)}</Tag>)}
+        </div>
+      )}
+      {auto && schedule.schools.length > 0 && (
+        <ul className="mt-3 space-y-1 text-[12.5px] text-ink-3">
+          {schedule.schools.map((sc) => (
+            <li key={sc.id}>
+              {sc.name}: {sc.fetchedAt
+                ? `${sc.breaks} ${sc.breaks === 1 ? 'Eintrag' : 'Einträge'} aus WebUntis, zuletzt ${relative(sc.fetchedAt)}`
+                : 'noch keine Ferien aus WebUntis, sie kommen mit der nächsten Anmeldung eines Schülers'}
+            </li>
+          ))}
+        </ul>
+      )}
+      {auto && schedule.calendar === 'webuntis' && schedule.schools.every((sc) => !sc.fetchedAt) && (
+        <div className="mt-3"><Notice tone="amber" icon={CalendarDays}>Noch keine Ferien bekannt: Bis welche aus WebUntis kommen, läuft der Plan durch.</Notice></div>
+      )}
+      {auto && <OverridesEditor overrides={schedule.overrides} canEdit={canEdit} onChange={(next) => onChange(schedule.mode, schedule.calendar, next)} />}
+      <SourceEditor schedule={schedule} canEdit={canEdit} onSaved={onSourceSaved} onPulled={onPulled} />
+      {schedule.pictureBaseMissing && (
+        <div className="mt-3"><Notice tone="amber" icon={ImagePlus}>PUBLIC_BASE_URL ist auf dem Server nicht gesetzt: Die Website findet hochgeladene Bilder trotzdem, die Apps erst, wenn die Adresse der API dort eingetragen ist.</Notice></div>
+      )}
+    </section>
+  );
+}
+
 function MenuPlan({ note, handed }: { note?: ReactNode; handed: Partial<HandedDish> }) {
   const { showToast } = useToast();
   const rights = useContext(MensaRights);
@@ -957,6 +1351,8 @@ function MenuPlan({ note, handed }: { note?: ReactNode; handed: Partial<HandedDi
   // hammer the server every time the user flips tabs.
   const rotatedPlans = useRef<Set<DishPlan>>(new Set());
 
+  const [schedule, setSchedule] = useState<MenuScheduleInfo | null>(null);
+
   const loadRatings = useCallback(async () => {
     try {
       const ratingData = await adminApi.dishRatings();
@@ -978,9 +1374,31 @@ function MenuPlan({ note, handed }: { note?: ReactNode; handed: Partial<HandedDi
     }
   }, [showToast]);
 
+  const loadSchedule = useCallback(async () => {
+    try {
+      const next = await adminApi.menuSchedule();
+      seasonRule = next.season;
+      setSchedule(next);
+    } catch { /* the panel just stays away */ }
+  }, []);
+
   useEffect(() => { loadRatings(); }, [loadRatings]);
+  useEffect(() => { loadSchedule(); }, [loadSchedule]);
   useLive(['ratings'], () => { void loadRatings(); });
-  useLive(['dishes'], () => { void loadDishes(activePlan); });
+  useLive(['dishes'], () => { void loadDishes(activePlan); void loadSchedule(); });
+
+  async function changeSchedule(mode: MenuMode, calendar: MenuCalendar, overrides: MenuDayOverride[], rule?: 'dates' | 'clock') {
+    try {
+      const res = await adminApi.setMenuSchedule(mode, calendar, overrides, rule ?? schedule?.season.kind ?? 'dates');
+      seasonRule = res.season;
+      setSchedule(res);
+      const what = mode === 'auto' ? 'Autonom' : 'Manuell';
+      showToast(res.moved ? `Ablauf: ${what} · ${res.moved} Gerichte neu gelegt` : `Ablauf: ${what}`, 'success');
+      await loadDishes(activePlan);
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Der Ablauf konnte nicht geändert werden', 'error');
+    }
+  }
 
   // Load dishes for the active plan. First time we visit a plan this session,
   // also ask the server to rotate any past weeks to the end so the plan stays
@@ -1161,6 +1579,7 @@ function MenuPlan({ note, handed }: { note?: ReactNode; handed: Partial<HandedDi
       const parts: string[] = [];
       if (res.normalized > 0) parts.push(`${res.normalized} normalisiert`);
       if (res.rotated > 0) parts.push(`${res.rotated} weitergerollt`);
+      if (res.laidOut > 0) parts.push(`${res.laidOut} auf Schulwochen gelegt`);
       if (res.otherAligned > 0 && res.otherAnchorDate) {
         const otherName = activePlan === 'summer' ? 'Winter' : 'Sommer';
         parts.push(`${otherName}plan → ${formatDate(res.otherAnchorDate)}`);
@@ -1308,10 +1727,10 @@ function MenuPlan({ note, handed }: { note?: ReactNode; handed: Partial<HandedDi
             type="button"
             onClick={() => setConfirmingReset(true)}
             className="btn btn-quiet"
-            title="Diesen Plan auf den Stand der JSON zurücksetzen"
+            title="Diesen Plan auf den Stand der Quelle zurücksetzen (das vegetarische Menü bleibt)"
           >
             <RotateCcw size={16} strokeWidth={1.7} />
-            Reset auf JSON
+            Reset auf Quelle
           </button>
         )}
         </>}
@@ -1338,6 +1757,8 @@ function MenuPlan({ note, handed }: { note?: ReactNode; handed: Partial<HandedDi
 
       {note && <div className="mt-8">{note}</div>}
 
+      {schedule && <SchedulePanel schedule={schedule} canEdit={rights.edit} onChange={changeSchedule} onSourceSaved={setSchedule} onPulled={() => void loadDishes(activePlan)} />}
+
       <Figures
         className="mt-10"
         items={[
@@ -1359,8 +1780,8 @@ function MenuPlan({ note, handed }: { note?: ReactNode; handed: Partial<HandedDi
           value={activePlan}
           onChange={setActivePlan}
           options={[
-            { value: 'summer', label: <><Sun size={14} /> Sommer <span className="text-[11.5px] opacity-60">ab Sommerzeit</span></> },
-            { value: 'winter', label: <><Snowflake size={14} /> Winter <span className="text-[11.5px] opacity-60">ab Winterzeit</span></> },
+            { value: 'summer', label: <><Sun size={14} /> Sommer <span className="text-[11.5px] opacity-60">{schedule?.season.kind === 'dates' ? `ab ${dayMonth(schedule.season.summerFrom)}` : 'ab Sommerzeit'}</span></> },
+            { value: 'winter', label: <><Snowflake size={14} /> Winter <span className="text-[11.5px] opacity-60">{schedule?.season.kind === 'dates' ? `ab ${dayMonth(schedule.season.winterFrom)}` : 'ab Winterzeit'}</span></> },
           ]}
         />
         <SearchField value={search} onChange={setSearch} placeholder="Suche nach Name, Kategorie, Datum" className="min-w-[240px] flex-1" />
@@ -1534,6 +1955,11 @@ function MenuPlan({ note, handed }: { note?: ReactNode; handed: Partial<HandedDi
                           <span className="text-[13.5px] text-ink-3">{formatWeekRange(wk)}&nbsp;&middot;&nbsp;{wDishes.length} {wDishes.length === 1 ? 'Gericht' : 'Gerichte'}</span>
                         </span>
                       </button>
+                    )}
+
+                    {/* Set by hand, a week can lie in the holidays. */}
+                    {editingWeekKey !== wk && schedule?.mode === 'manual' && weekInBreak(wk, schedule) && (
+                      <span className="flex-shrink-0"><Tag tone="amber">In den Ferien</Tag></span>
                     )}
 
                     {/* Season boundary badge — this week's Monday falls in the
