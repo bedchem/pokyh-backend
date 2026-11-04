@@ -8,6 +8,8 @@ import { defaultSchoolId, schoolOfUser } from '../services/schools';
 import { loadAccountActivity } from '../services/accountActivity';
 import { BELL_MARK_BATCH, addBellMarks, bellMarksOf } from '../services/bellMarks';
 import { exportAccountData } from '../services/dataExport';
+import { deleteOwnAccount } from '../services/accountDeletion';
+import { audit } from '../services/audit';
 import { logger } from '../utils/logger';
 import { rateLimit } from 'express-rate-limit';
 
@@ -66,6 +68,22 @@ router.get('/me/export', readLimiter, requireAuth, exportLimiter, async (req: Re
   res.set('Cache-Control', 'private, no-store');
   res.set('Content-Disposition', `attachment; filename="pokyh-daten-${day}.json"`);
   res.type('application/json').send(JSON.stringify(data, null, 2));
+});
+
+// DELETE /users/me — the account deletes itself and what POKYH keeps about it
+// (services/accountDeletion.ts). Asking twice is fine: gone is gone. A new
+// sign-in later starts a new, empty account. The WebUntis account isn't touched.
+router.delete('/me', writeLimiter, requireAuth, async (req: Request, res: Response) => {
+  const { stableUid, username } = req.user!;
+  const deleted = await deleteOwnAccount(stableUid, username);
+  if (deleted) {
+    // By id only: the audit trail outlives the account, its name must not.
+    logger.info('Account deleted by its account', { action: 'account_self_delete', targetUid: stableUid });
+    audit(req, 'user.self_delete', { type: 'user', id: stableUid }, {}, deleted.schoolId, 'account');
+  }
+  // Keeps this request out of the account's logs, which were just emptied.
+  req.user = undefined;
+  res.status(204).send();
 });
 
 // GET /users/me/bell — which of the bell's notifications the account has seen
