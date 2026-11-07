@@ -19,12 +19,12 @@ import { LEGACY_TABLES, LEGACY_TRIGGER_PREFIX, STATE_TABLE, TRIGGER_NAME, TRIGGE
 // Trigger DDL cannot be sent through the prepared-statement protocol the
 // Prisma client uses for raw queries, so it goes through the Prisma CLI — the
 // same mechanism this server already relies on for `db push` at start-up. The
-// connection settings are read from DATABASE_URL in the environment and never
-// appear on the command line.
+// connection settings are read from DATABASE_URL in the environment (through
+// prisma.config.ts) and never appear on the command line.
 function runSqlScript(script: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const child = spawnPrismaCli(
-      ['db', 'execute', '--stdin', '--schema', 'prisma/schema.prisma'],
+      ['db', 'execute', '--stdin'],
       { cwd: process.cwd(), env: process.env, stdio: ['pipe', 'pipe', 'pipe'] },
     );
     let output = '';

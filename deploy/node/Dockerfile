@@ -4,10 +4,10 @@
 # compiled server and admin panel are copied as they are, so the new node runs
 # exactly the inviting node's version (nodes with different schemas pause
 # replication). Mirrors the runner stage of the repository's Dockerfile.
-FROM node:22-alpine
+FROM node:22.23.4-alpine
 WORKDIR /app
 
-# openssl for Prisma's Alpine engine, su-exec for the unprivileged hand-off in
+# openssl for Prisma's schema engine, su-exec for the unprivileged hand-off in
 # entrypoint.sh, mariadb-client for the backup service (dbBackup.ts).
 RUN apk add --no-cache openssl su-exec mariadb-client && \
     addgroup -S -g 10001 pokyh; \
@@ -22,6 +22,7 @@ RUN npm ci --omit=dev
 COPY --chown=pokyh:pokyh dist ./dist
 COPY --chown=pokyh:pokyh admin/dist ./admin/dist
 COPY --chown=pokyh:pokyh prisma ./prisma
+COPY --chown=pokyh:pokyh prisma.config.ts ./
 RUN npx prisma generate
 
 COPY --chown=pokyh:pokyh scripts ./scripts

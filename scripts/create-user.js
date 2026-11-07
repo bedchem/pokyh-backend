@@ -2,12 +2,12 @@
 // Usage: npm run create-user
 require('dotenv').config({ quiet: true });
 const readline = require('readline');
-const { PrismaClient } = require('@prisma/client');
-const { v4: uuidv4 } = require('uuid');
+const { createPrisma } = require('./_db');
+const { randomUUID: uuidv4 } = require('crypto');
 const { askNewPassword } = require('./_auth');
 const { grantGlobalAdmin } = require('./_grants');
 
-const prisma = new PrismaClient();
+const prisma = createPrisma();
 
 function makeRl() {
   return readline.createInterface({ input: process.stdin, output: process.stdout });

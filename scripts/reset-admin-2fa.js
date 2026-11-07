@@ -7,9 +7,9 @@
 // and, where one is required, a passkey. A phone that still works moves to a
 // new one in the panel instead (Sicherheit → Auf neues Gerät umziehen).
 require('dotenv').config({ quiet: true });
-const { PrismaClient } = require('@prisma/client');
+const { createPrisma } = require('./_db');
 
-const prisma = new PrismaClient();
+const prisma = createPrisma();
 
 async function main() {
   const username = process.argv[2];

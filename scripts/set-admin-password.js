@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 // Usage: npm run set-admin-password <username>
 require('dotenv').config({ quiet: true });
-const { PrismaClient } = require('@prisma/client');
+const { createPrisma } = require('./_db');
 const { askNewPassword } = require('./_auth');
 
-const prisma = new PrismaClient();
+const prisma = createPrisma();
 
 async function main() {
   const username = process.argv[2];

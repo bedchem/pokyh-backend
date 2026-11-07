@@ -1,6 +1,7 @@
 import { randomInt } from 'crypto';
 import { Prisma, PrismaClient } from '@prisma/client';
 import { prisma } from '../db';
+import { mysqlAdapter, mysqlErrorNumber } from '../dbAdapter';
 import { config } from '../config';
 import { logger } from '../utils/logger';
 import type { TableInfo, UniqueIndex } from './catalog';
@@ -59,11 +60,9 @@ function getApplyClient(): PrismaClient {
   if (!applyClient) {
     // Exactly one connection: the session flag below is then guaranteed to be
     // set on the connection that executes the transaction.
-    const url = new URL(config.databaseUrl);
-    url.searchParams.set('connection_limit', '1');
     // Every failure here is expected and handled (a package falls back to
     // the careful path, a row is set aside); none needs a log line of its own.
-    applyClient = new PrismaClient({ datasources: { db: { url: url.toString() } }, log: [] });
+    applyClient = new PrismaClient({ adapter: mysqlAdapter(config.databaseUrl, 1), log: [] });
   }
   return applyClient;
 }
@@ -86,11 +85,7 @@ function applyTx<T>(fn: (tx: Tx) => Promise<T>, lockWaitSeconds = 50): Promise<T
 }
 
 function mysqlErrorCode(err: unknown): number | null {
-  if (err instanceof Prisma.PrismaClientKnownRequestError && err.meta && typeof err.meta === 'object') {
-    const code = Number((err.meta as { code?: unknown }).code);
-    return Number.isFinite(code) ? code : null;
-  }
-  return null;
+  return err instanceof Prisma.PrismaClientKnownRequestError ? mysqlErrorNumber(err) : null;
 }
 
 function firstLine(err: unknown): string {

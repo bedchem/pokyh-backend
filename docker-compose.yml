@@ -2,7 +2,7 @@ services:
   mysql:
     # MySQL 8.4 LTS (supported until 2032; 8.0 reached its end of life in
     # April 2026). See docs/database.md for the upgrade and the way back.
-    image: mysql:8.4.10
+    image: mysql:8.4.13
     restart: unless-stopped
     # A clean shutdown matters: MySQL upgrades a data directory only after one.
     stop_grace_period: 2m
@@ -70,7 +70,7 @@ services:
     # authoritative, so losing Redis loses nothing. Bounded in memory; only
     # entries with a lifetime are evicted, never the table versions that keep
     # the cache correct.
-    image: redis:7.4.1-alpine
+    image: redis:7.4.12-alpine
     restart: unless-stopped
     # Protected mode stays off: with it on and no password, Redis refuses every
     # client that is not on its own loopback, the API included, and the cache
@@ -180,7 +180,7 @@ services:
   # files only) and never writes to the database. deploy/db/archiver.sh;
   # restoring a moment: deploy/db/pitr-restore.sh, see docs/database.md.
   db-archiver:
-    image: mysql:8.4.10
+    image: mysql:8.4.13
     restart: unless-stopped
     depends_on:
       mysql:

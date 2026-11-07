@@ -1,14 +1,15 @@
 import { Prisma } from '@prisma/client';
+import { mysqlErrorNumber } from '../dbAdapter';
 
 // MySQL resolves a lock cycle between two transactions by rolling one of them
 // back. That is not a fault of either transaction: the one that was rolled
-// back simply has to run again. Prisma reports it as P2034 (or, for a raw
-// statement, as MySQL error 1213; 1205 is a lock wait that timed out).
+// back simply has to run again. Prisma reports it as P2034, or with MySQL's
+// error 1213 underneath (1205 is a lock wait that timed out).
 function isWriteConflict(err: unknown): boolean {
   if (!(err instanceof Prisma.PrismaClientKnownRequestError)) return false;
   if (err.code === 'P2034') return true;
-  const code = String((err.meta as { code?: unknown } | undefined)?.code ?? '');
-  return err.code === 'P2010' && (code === '1213' || code === '1205');
+  const code = mysqlErrorNumber(err);
+  return code === 1213 || code === 1205;
 }
 
 // Runs `work` and repeats it when the database rolled it back because of a

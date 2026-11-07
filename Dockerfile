@@ -6,8 +6,8 @@ WORKDIR /app
 # during `npm run build`'s `prisma generate` step below — cosmetic only,
 # since this stage's node_modules/generated client is never copied into the
 # runner image (only dist/ is); the runner stage already installs openssl
-# and does its own separate `prisma generate` that actually matters at
-# runtime. Added anyway so the build log stays clean.
+# and does its own separate `prisma generate`. Added anyway so the build log
+# stays clean.
 RUN apk add --no-cache openssl
 
 # Backend deps + build
@@ -15,6 +15,7 @@ COPY package*.json ./
 RUN npm ci
 
 COPY prisma ./prisma
+COPY prisma.config.ts ./
 COPY src ./src
 COPY tsconfig.json ./
 # The commit this image is built from, recorded in dist/build-info.json for
@@ -35,11 +36,11 @@ RUN cd admin && npm run build
 FROM node:22.23.4-alpine AS runner
 WORKDIR /app
 
-# openssl is required by Prisma's Alpine engine. `su-exec` lets the short
-# bootstrap entrypoint hand the application to a non-root account. mariadb-
-# client provides `mysqldump`/`mysql` for the scheduled/manual DB backup and
-# restore service (dbBackup.ts) — it talks to the `mysql` Compose service
-# over the network, not a local socket.
+# openssl is required by Prisma's schema engine (`db push` at start).
+# `su-exec` lets the short bootstrap entrypoint hand the application to a
+# non-root account. mariadb-client provides `mysqldump`/`mysql` for the
+# scheduled/manual DB backup and restore service (dbBackup.ts) — it talks to
+# the `mysql` Compose service over the network, not a local socket.
 RUN apk add --no-cache openssl su-exec mariadb-client && \
     addgroup -S -g 10001 pokyh; \
     adduser -S -D -H -u 10001 -G pokyh pokyh; \
@@ -54,8 +55,9 @@ RUN npm ci --omit=dev
 COPY --chown=pokyh:pokyh --from=builder /app/dist ./dist
 COPY --chown=pokyh:pokyh --from=builder /app/admin/dist ./admin/dist
 COPY --chown=pokyh:pokyh prisma ./prisma
+COPY --chown=pokyh:pokyh prisma.config.ts ./
 
-# Generate Prisma client for this OS/arch (cannot copy from builder — native binaries differ)
+# Generate the Prisma client into this stage's node_modules
 RUN npx prisma generate
 
 # Admin scripts (make-admin, create-user, etc.)

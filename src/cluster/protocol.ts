@@ -16,7 +16,7 @@ function fixedBytes(length: number) {
   return z.string().max(128).transform((value, ctx) => {
     const bytes = Buffer.from(value, 'base64url');
     if (bytes.length !== length) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'unexpected length' });
+      ctx.addIssue({ code: 'custom', message: 'unexpected length' });
       return z.NEVER;
     }
     return bytes;

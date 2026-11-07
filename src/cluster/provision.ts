@@ -62,11 +62,12 @@ import { normalizeInstallOptions, type InstallOptions, type InstallOptionsInput 
 const APP_ROOT = path.resolve(__dirname, '..', '..');
 const BUNDLE_PREFIX = 'pokyh-app';
 // deploy/relay too: an installed node can set up relays in turn.
-const BUNDLE_ENTRIES = ['dist', 'admin/dist', 'prisma/schema.prisma', 'package.json', 'package-lock.json', 'scripts', 'entrypoint.sh', 'deploy/node', 'deploy/relay'];
+const BUNDLE_ENTRIES = ['dist', 'admin/dist', 'prisma/schema.prisma', 'prisma.config.ts', 'package.json', 'package-lock.json', 'scripts', 'entrypoint.sh', 'deploy/node', 'deploy/relay'];
 const REQUIRED_FILES = [
   'dist/index.js',
   'admin/dist/index.html',
   'prisma/schema.prisma',
+  'prisma.config.ts',
   'package.json',
   'package-lock.json',
   'entrypoint.sh',

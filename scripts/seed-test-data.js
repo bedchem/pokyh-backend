@@ -21,7 +21,8 @@
 
 const jwt = require('jsonwebtoken');
 const { randomUUID, createHash, randomBytes } = require('crypto');
-const { PrismaClient } = require('@prisma/client');
+// Read from stdin: paths are the app's, as for dist/config below.
+const { createPrisma } = require(`${process.cwd()}/scripts/_db`);
 
 const args = process.argv.slice(1);
 const REMOVE = args.includes('--remove');
@@ -48,7 +49,7 @@ if (!OWNER || !JWT_SECRET || !API_KEY || !SERVER_KEY) {
   process.exit(1);
 }
 
-const prisma = new PrismaClient();
+const prisma = createPrisma();
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const ownerToken = jwt.sign({ role: 'admin', sub: 'admin-panel', username: OWNER }, JWT_SECRET, { expiresIn: '1h' });
 // The app's own session token for an account (same claims as routes/auth.ts).

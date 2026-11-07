@@ -23,8 +23,9 @@ function generateDiffSql(): Promise<string> {
     const child = spawnPrismaCli(
       [
         'migrate', 'diff',
-        '--from-url', config.databaseUrl,
-        '--to-schema-datamodel', 'prisma/schema.prisma',
+        // The live database, from DATABASE_URL through prisma.config.ts.
+        '--from-config-datasource',
+        '--to-schema', 'prisma/schema.prisma',
         '--script',
       ],
       { cwd: process.cwd(), env: process.env, stdio: ['ignore', 'pipe', 'pipe'] },

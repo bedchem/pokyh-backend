@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 // Usage: npm run make-admin <username>
 require('dotenv').config({ quiet: true });
-const { PrismaClient } = require('@prisma/client');
-const { v4: uuidv4 } = require('uuid');
+const { createPrisma } = require('./_db');
+const { randomUUID: uuidv4 } = require('crypto');
 const { askNewPassword } = require('./_auth');
 const { grantGlobalAdmin } = require('./_grants');
 
-const prisma = new PrismaClient();
+const prisma = createPrisma();
 
 async function main() {
   const username = process.argv[2];

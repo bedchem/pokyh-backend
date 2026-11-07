@@ -102,7 +102,7 @@ npm test
 npm run test:cluster
 
 # The updater's blue/green switch against real Docker (stand-in images; needs
-# node:22-alpine, mysql:8.0.40 and redis:7.4.1-alpine locally)
+# node:22.23.4-alpine, mysql:8.4.13 and redis:7.4.12-alpine locally)
 npm run test:updater
 
 # Schools, permissions and the admin API against a throw-away MySQL (needs Docker)
@@ -187,7 +187,7 @@ Key variables:
 - `JWT_SECRET` — secret for user JWTs
 - `REFRESH_TOKEN_SECRET` — secret for refresh tokens
 - `API_KEY` — required header `X-API-Key` for all non-admin API routes
-- `SERVER_KEY` — `X-Server-Key` header required by `/auth/login` (used by Next.js backend)
+- `SERVER_KEY` — `X-Server-Key` header of the apps' `/auth/login` (ships in the apps: no secret; the app's WebUntis session proves who signs in)
 - `CORS_ORIGIN` — comma-separated allowed CORS origins
 - `ADMIN_USERNAME` — admin panel login username
 - `ADMIN_PASSWORD_HASH` — bcrypt hash of admin password (set with `npm run set-admin-password`)

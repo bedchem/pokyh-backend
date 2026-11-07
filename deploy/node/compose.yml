@@ -80,7 +80,7 @@ services:
     # MySQL 8.4 LTS. Its data lives in a volume of its own; on the first start
     # the 8.0 data is copied over from the old volume (mounted read-only, never
     # written to) and upgraded in place. See docs/database.md.
-    image: mysql:8.4.10
+    image: mysql:8.4.13
     restart: unless-stopped
     # A clean shutdown matters: MySQL upgrades a data directory only after one.
     stop_grace_period: 2m
@@ -133,7 +133,7 @@ services:
       - database
 
   redis:
-    image: redis:7.4.1-alpine
+    image: redis:7.4.12-alpine
     restart: unless-stopped
     # Bounded; only entries with a lifetime are evicted, never the table
     # versions that keep the API's read cache correct.
@@ -180,7 +180,7 @@ services:
   # Owns the cluster channel port and passes every connection on, unchanged
   # (TLS stays end to end), to whichever app container accepts it.
   edge:
-    image: node:22-alpine
+    image: node:22.23.4-alpine
     restart: unless-stopped
     command: ["node", "/edge/edge.mjs"]
     user: "10003:10003"
@@ -203,7 +203,7 @@ services:
   # HTTPS for this server's domain (profile "web"). The certificate (Let's
   # Encrypt) is obtained and renewed automatically; 80 and 443 must be open.
   caddy:
-    image: caddy:2.8.4-alpine
+    image: caddy:2.11.9-alpine
     profiles: ["web"]
     restart: unless-stopped
     logging:
@@ -250,7 +250,7 @@ services:
   # the chosen port and address, passed to whichever colour is healthy. The
   # proxy does TLS; the firewall lets only its addresses in.
   gateway:
-    image: caddy:2.8.4-alpine
+    image: caddy:2.11.9-alpine
     profiles: ["gateway"]
     restart: unless-stopped
     logging:
