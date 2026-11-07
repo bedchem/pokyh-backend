@@ -1,3 +1,4 @@
+import { readFileSync } from 'fs';
 import { PrismaMariaDb } from '@prisma/adapter-mariadb';
 
 // Prisma runs its queries through the MariaDB driver, which owns the
@@ -5,17 +6,28 @@ import { PrismaMariaDb } from '@prisma/adapter-mariadb';
 // (`connection_limit`, `pool_timeout`, `connect_timeout`, see config.ts),
 // which the driver itself would ignore.
 //
-// The database sits on the same private network as the server, as in every
-// shipped deployment, and is reached without TLS: MySQL 8's default sign-in
-// then needs the server's public key. A database elsewhere asks for TLS with
-// `sslaccept=strict` (certificate checked) or `sslaccept=accept_invalid_certs`.
+// TLS to the database is on, as it was with Prisma's own engine: MySQL 8
+// offers it out of the box (with a certificate of its own making, so the
+// certificate is checked only with `sslaccept=strict`, against the CA file in
+// `sslcert` when one is named). A database without TLS needs `ssl=false`; MySQL's
+// default sign-in then fetches the server's key over the open link, which
+// only a private network between the two makes acceptable.
 export function mysqlAdapter(databaseUrl: string, connections?: number): PrismaMariaDb {
   const url = new URL(databaseUrl);
   const number = (name: string): number | undefined => {
     const value = Number(url.searchParams.get(name));
     return Number.isFinite(value) && value > 0 ? value : undefined;
   };
-  const sslaccept = url.searchParams.get('sslaccept');
+  const tlsOff = /^(false|0|off|disabled?)$/i.test(url.searchParams.get('ssl') ?? '');
+  const sslcert = url.searchParams.get('sslcert');
+  const tls = tlsOff
+    ? { allowPublicKeyRetrieval: true }
+    : {
+      ssl: {
+        rejectUnauthorized: url.searchParams.get('sslaccept') === 'strict',
+        ...(sslcert ? { ca: readFileSync(sslcert, 'utf8') } : {}),
+      },
+    };
   return new PrismaMariaDb({
     host: url.hostname.replace(/^\[(.*)\]$/, '$1'),
     port: url.port ? Number(url.port) : 3306,
@@ -25,8 +37,7 @@ export function mysqlAdapter(databaseUrl: string, connections?: number): PrismaM
     connectionLimit: connections ?? number('connection_limit') ?? 10,
     acquireTimeout: (number('pool_timeout') ?? 10) * 1000,
     connectTimeout: (number('connect_timeout') ?? 5) * 1000,
-    allowPublicKeyRetrieval: true,
-    ...(sslaccept ? { ssl: { rejectUnauthorized: sslaccept !== 'accept_invalid_certs' } } : {}),
+    ...tls,
   });
 }
 

@@ -336,7 +336,8 @@ Backups and log clean-up stay per node.
 
 Prisma 7 is the schema's single source ([`prisma/schema.prisma`](prisma/schema.prisma)).
 The server queries through the MariaDB driver adapter (`src/dbAdapter.ts`,
-pool from `DATABASE_URL`); the CLI takes the connection from
+pool from `DATABASE_URL`, TLS on: `?sslaccept=strict` checks the certificate,
+`?ssl=false` is for a database without TLS); the CLI takes the connection from
 [`prisma.config.ts`](prisma.config.ts), which reads `DATABASE_URL` from the
 environment or `.env`.
 
@@ -542,6 +543,7 @@ docs/                   cluster, database, schools
 | App sign-in answers `untis_session_required` | The app is older than the session check: it has to send its WebUntis session (`untisSessionId`). Update the app. |
 | Log: *Redis cache unavailable; using process memory* | The API keeps working without the cache. Check that Redis runs and `REDIS_URL` points to it. A Redis of your own that answers `DENIED ... protected mode` refuses every client without a password: give it one (in `REDIS_URL` too) or, on an internal network, turn protected mode off as the bundled stacks do. |
 | Prisma "property does not exist" | Run `npx prisma generate` after schema changes. |
+| Log: *DB init attempt … ssl* or the database refuses TLS | The database offers no TLS: add `?ssl=false` to `DATABASE_URL` (private network only). |
 | `prisma` CLI: *The datasource.url property is required* | The CLI found no `DATABASE_URL`: set it in the environment or `.env`, and run it from the directory that holds `prisma.config.ts`. |
 | Database unreachable at boot | Not fatal; the server retries. Check `DATABASE_URL` and MySQL's health. |
 | Docker build fails at `prisma generate` | The build downloads Prisma engines and needs internet access. |
