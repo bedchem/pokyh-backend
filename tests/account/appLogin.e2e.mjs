@@ -264,6 +264,91 @@ test('a name taken by a self-made account belongs to the WebUntis account: the s
   assert.ok(events.some((e) => e.action === 'user.local_takeover'));
 });
 
+// Schools many share a WebUntis host with; their tenant is known from their
+// first verified sign-in on.
+const SECOND = { school: 'tenant-schule', schoolServer: 'tenant.webuntis.com', schoolName: 'Tenant-Schule' };
+const THIRD = { school: 'dritte-schule', schoolServer: 'dritte.webuntis.com', schoolName: 'Dritte Schule' };
+const schoolRow = (loginName) => node.db.school.findFirst({ where: { webuntisSchool: loginName } });
+
+test('a school and its accounts keep the WebUntis tenant of their first sign-in', async () => {
+  untis.account('bound.b', { klasseId: 4711, pageConfig: true, tenantId: '2000200' });
+  const first = await asApp({ username: 'bound.b', untisSessionId: untis.session('bound.b'), ...SECOND });
+  assert.equal(first.status, 200, first.text);
+  assert.equal((await userRow('bound.b')).webuntisTenantId, '2000200');
+  assert.equal((await schoolRow('tenant-schule')).webuntisTenantId, '2000200');
+
+  // The same login name in another school's tenant on the same host.
+  untis.account('bound.b', { klasseId: 4711, pageConfig: true, tenantId: '3000300' });
+  const foreign = await asApp({ username: 'bound.b', untisSessionId: untis.session('bound.b'), ...SECOND });
+  assert.equal(foreign.status, 403, foreign.text);
+  assert.equal(foreign.json.code, 'tenant_mismatch');
+  // Nor a new account of that tenant (its class ids are another school's).
+  untis.account('neu.fremd', { klasseId: 4711, pageConfig: true, tenantId: '3000300' });
+  assert.equal((await asApp({ username: 'neu.fremd', untisSessionId: untis.session('neu.fremd'), ...SECOND })).status, 403);
+  assert.equal(await userRow('neu.fremd'), null);
+  assert.equal((await schoolRow('tenant-schule')).webuntisTenantId, '2000200');
+  assert.equal((await userRow('bound.b')).webuntisTenantId, '2000200');
+
+  // The pupil's own sessions go on working.
+  untis.account('bound.b', { klasseId: 4711, pageConfig: true, tenantId: '2000200' });
+  assert.equal((await asApp({ username: 'bound.b', untisSessionId: untis.session('bound.b'), ...SECOND })).status, 200);
+});
+
+test('a self-made account is taken over only by its own school\'s WebUntis account', async () => {
+  const school = await schoolRow('lbs-brixen');
+  await node.db.user.create({
+    data: {
+      stableUid: 'selfmade-uid-0002', username: 'mia.self', isUntisUser: false, localOrigin: 'register',
+      passwordHash: await bcrypt.hash('Selfmade-Pass-1', 4), schoolId: school.id,
+    },
+  });
+  untis.account('mia.self', { klasseId: 4711, pageConfig: true, tenantId: '2000200' });
+  const elsewhere = await asApp({ username: 'mia.self', untisSessionId: untis.session('mia.self'), ...SECOND });
+  assert.equal(elsewhere.status, 409, elsewhere.text);
+  const row = await userRow('mia.self');
+  assert.equal(row.isUntisUser, false);
+  assert.ok(row.passwordHash, 'the account and its password stay');
+  assert.equal(row.schoolId, school.id);
+  assert.equal((await cluster.request(node, 'POST', '/auth/login', { body: { username: 'mia.self', password: 'Selfmade-Pass-1' } })).status, 200);
+});
+
+test('a sign-in POKYH makes with the password corrects the tenant an app recorded first, and ends that tenant\'s accounts', async () => {
+  // Sessions of another school on the same host were first, two accounts.
+  untis.account('rebind.r', { klasseId: 4711, pageConfig: true, tenantId: '3000300' });
+  untis.account('fremd.f', { klasseId: 4711, pageConfig: true, tenantId: '3000300' });
+  const first = await asApp({ username: 'rebind.r', untisSessionId: untis.session('rebind.r'), ...THIRD });
+  assert.equal(first.status, 200, first.text);
+  const stranger = await asApp({ username: 'fremd.f', untisSessionId: untis.session('fremd.f'), ...THIRD });
+  assert.equal(stranger.status, 200, stranger.text);
+  assert.equal((await schoolRow('dritte-schule')).webuntisTenantId, '3000300');
+  assert.ok((await node.db.classMember.count({ where: { stableUid: stranger.json.user.stableUid } })) > 0);
+
+  // The pupil signs in on the website with the password: the school's own word.
+  untis.account('rebind.r', { klasseId: 4711, tenantId: '2000200', password: 'Rebind-Passwort-1' });
+  const web = await cluster.request(node, 'POST', '/webuntis/login', {
+    body: { username: 'rebind.r', password: 'Rebind-Passwort-1', school: { loginName: THIRD.school, server: THIRD.schoolServer, name: THIRD.schoolName } },
+  });
+  assert.equal(web.status, 200, web.text);
+  assert.equal((await schoolRow('dritte-schule')).webuntisTenantId, '2000200');
+  assert.equal((await userRow('rebind.r')).webuntisTenantId, '2000200');
+
+  // The other tenant's sessions are over, its account has no class, and its
+  // sessions sign in no more.
+  for (const s of [first, stranger]) {
+    assert.equal((await cluster.request(node, 'GET', '/auth/me', { token: s.json.token })).status, 401);
+    assert.equal((await cluster.request(node, 'POST', '/auth/refresh', { body: { refreshToken: s.json.refreshToken } })).status, 401);
+  }
+  assert.equal((await node.db.classMember.count({ where: { stableUid: stranger.json.user.stableUid } })), 0);
+  assert.equal((await userRow('fremd.f')).webuntisKlasseId, 0);
+  untis.account('fremd.f', { klasseId: 4711, pageConfig: true, tenantId: '3000300' });
+  const again = await asApp({ username: 'fremd.f', untisSessionId: untis.session('fremd.f'), ...THIRD });
+  assert.equal(again.status, 403, again.text);
+  assert.equal(again.json.code, 'tenant_mismatch');
+  const events = (await cluster.admin(node, 'GET', '/audit-events?limit=100')).json.events;
+  assert.ok(events.some((e) => e.action === 'school.tenant_replaced'));
+  assert.ok(events.some((e) => e.action === 'user.tenant_rebound'));
+});
+
 test('an account an admin made with a password keeps it', async () => {
   const made = await cluster.admin(node, 'POST', '/users', { username: 'lehrer.local', password: 'Admin-Made-Pass-1', role: 'none' });
   assert.equal(made.status, 201, made.text);

@@ -89,23 +89,42 @@ export async function webuntisTenantOf(loginName: string): Promise<string | null
 const TENANT = /^[0-9A-Za-z-]{1,40}$/;
 
 /**
- * Records the tenant such a sign-in showed for the school, the first time
- * only: a tenant once known is never replaced by what a later sign-in says
- * (a changed tenant is an admin's matter, logged here).
+ * Records the WebUntis tenant a verified sign-in showed for the school and
+ * says what is stored now. Not known yet: the first verified sign-in's tenant
+ * (an app's too), so a school's tenant is known from its first sign-in on.
+ * Known and different: only a sign-in POKYH made itself with the password or
+ * key (`certain`, the school's own word) replaces it, and says which tenant it
+ * replaced (services/schoolTenant.ts ends that tenant's accounts here); any
+ * other sign-in changes nothing.
  */
-export async function rememberSchoolTenant(schoolId: string, tenantId: string): Promise<void> {
-  if (!TENANT.test(tenantId)) return;
+export async function rememberSchoolTenant(
+  schoolId: string,
+  tenantId: string,
+  { certain = false }: { certain?: boolean } = {},
+): Promise<{ tenant: string | null; replaced: string | null }> {
+  if (!TENANT.test(tenantId)) {
+    const school = await prisma.school.findUnique({ where: { id: schoolId }, select: { webuntisTenantId: true } });
+    return { tenant: school?.webuntisTenantId?.trim() || null, replaced: null };
+  }
   // Asked of the database itself, not the cached list: another node may
   // have recorded it a moment ago.
   const updated = await prisma.school.updateMany({ where: { id: schoolId, webuntisTenantId: null }, data: { webuntisTenantId: tenantId } });
   if (updated.count > 0) {
     invalidateSchools();
-    return;
+    return { tenant: tenantId, replaced: null };
   }
   const school = await prisma.school.findUnique({ where: { id: schoolId }, select: { webuntisTenantId: true } });
-  if (school?.webuntisTenantId && school.webuntisTenantId !== tenantId) {
-    logger.warn('WebUntis tenant of a school differs from the one recorded', { action: 'school_tenant_mismatch', schoolId });
+  const stored = school?.webuntisTenantId?.trim() || null;
+  if (!stored || stored === tenantId) return { tenant: stored ?? tenantId, replaced: null };
+  if (!certain) {
+    logger.warn('WebUntis tenant of a sign-in differs from the school\'s', { action: 'school_tenant_mismatch', schoolId });
+    return { tenant: stored, replaced: null };
   }
+  const replaced = await prisma.school.updateMany({ where: { id: schoolId, webuntisTenantId: stored }, data: { webuntisTenantId: tenantId } });
+  invalidateSchools();
+  if (replaced.count === 0) return rememberSchoolTenant(schoolId, tenantId, { certain });
+  logger.warn('WebUntis tenant of a school replaced by its own sign-in', { action: 'school_tenant_replaced', schoolId });
+  return { tenant: tenantId, replaced: stored };
 }
 
 // Creates the default school on first start; never changes an existing one

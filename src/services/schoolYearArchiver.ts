@@ -117,6 +117,8 @@ export async function performRollover(
             // (routes/auth.ts completeWebUntisLogin).
             roleLocked:         u.roleLocked,
             localOrigin:        u.localOrigin,
+            // Its tenant too: the recreated account accepts no other.
+            webuntisTenantId:   u.webuntisTenantId,
             createdAt:          u.createdAt,
           };
         }),
@@ -294,6 +296,7 @@ export async function rollbackRollover(schoolYearId: string): Promise<RollbackRe
           username:           u.username,
           role:               u.role,
           roleLocked:         u.roleLocked,
+          webuntisTenantId:   u.webuntisTenantId,
           webuntisKlasseId:   u.webuntisKlasseId,
           webuntisKlasseName: u.webuntisKlasseName,
           schoolId:           u.schoolId,

@@ -81,6 +81,8 @@ export async function exportAccountData(stableUid: string) {
       classCheckedAt: user.classCheckedAt ? iso(user.classCheckedAt) : null,
       // The WebUntis pupil record the account signs in on (its number there).
       webuntisPersonId: user.webuntisPersonId,
+      // The WebUntis tenant (school instance) the account signs in with.
+      webuntisTenantId: user.webuntisTenantId,
       school: school ? { name: school.name, webuntis: school.webuntisSchool } : null,
       isAdmin: admin !== null,
       createdAt: iso(user.createdAt),

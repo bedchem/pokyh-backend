@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { loadTs } from './helpers/loadTs.mjs';
 
-const { IDENTITY_FAILURES, claimedLoginName, normalizedLoginName, sessionIdentity } = await loadTs('src/webuntis/identity.ts');
+const { IDENTITY_FAILURES, accountTenant, claimedLoginName, normalizedLoginName, sessionIdentity } = await loadTs('src/webuntis/identity.ts');
 
 test('login names compare Unicode-normalised, trimmed and in lower case', () => {
   assert.equal(normalizedLoginName('  Max.Muster '), 'max.muster');
@@ -52,4 +52,27 @@ test('every failure has an answer: 401 for a session to renew, 403 for the wrong
   assert.equal(IDENTITY_FAILURES.tenant_mismatch.status, 403);
   assert.equal(IDENTITY_FAILURES.webuntis_unavailable.status, 503);
   for (const failure of Object.values(IDENTITY_FAILURES)) assert.ok(failure.error.length > 10);
+});
+
+test('an account keeps the WebUntis tenant it first signed in with', () => {
+  // Not bound yet: the session's tenant is stored, by any sign-in.
+  assert.deepEqual(accountTenant(null, '1000100', false), { ok: true, store: '1000100', rebound: false });
+  assert.deepEqual(accountTenant(null, '1000100', true), { ok: true, store: '1000100', rebound: false });
+  // A session that names no tenant binds nothing.
+  assert.deepEqual(accountTenant(null, '', false), { ok: true, store: null, rebound: false });
+  // Bound: the same tenant passes and stores nothing new.
+  assert.deepEqual(accountTenant('1000100', '1000100', false), { ok: true, store: null, rebound: false });
+  assert.deepEqual(accountTenant(' 1000100 ', '1000100 ', false), { ok: true, store: null, rebound: false });
+});
+
+test('an app\'s session of another tenant never acts for a bound account', () => {
+  assert.deepEqual(accountTenant('1000100', '9999900', false), { ok: false, code: 'tenant_mismatch' });
+  // Without a tenant it proves nothing for a bound account.
+  assert.deepEqual(accountTenant('1000100', '', false), { ok: false, code: 'untis_identity_unverified' });
+});
+
+test('a sign-in POKYH made with the password is the school\'s word: it corrects the binding', () => {
+  assert.deepEqual(accountTenant('9999900', '1000100', true), { ok: true, store: '1000100', rebound: true });
+  // Its token without a tenant changes nothing and is not refused.
+  assert.deepEqual(accountTenant('1000100', '', true), { ok: true, store: null, rebound: false });
 });

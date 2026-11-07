@@ -66,3 +66,32 @@ export function sessionIdentity(input: {
   if (named !== normalizedLoginName(input.username)) return { ok: false, code: 'account_mismatch' };
   return { ok: true, loginName: named };
 }
+
+export type TenantBinding =
+  | { ok: true; store: string | null; rebound: boolean }
+  | { ok: false; code: 'tenant_mismatch' | 'untis_identity_unverified' };
+
+/**
+ * Whether a sign-in may act for an account bound to the WebUntis tenant
+ * `bound` (null: not bound yet), and what to store. Many schools share a
+ * WebUntis host, and a school's own tenant is known only after a sign-in
+ * POKYH made itself; so every account keeps the tenant it first signed in
+ * with, and an app's session of any other tenant is refused for it.
+ *
+ * `certain`: a session POKYH opened itself with the account's password or key
+ * at its school. It is the school's own word: it binds an unbound account and
+ * corrects a binding that differs (the caller then ends the other sessions).
+ * `session`: the session's tenant, '' when its token names none.
+ */
+export function accountTenant(bound: string | null, session: string, certain: boolean): TenantBinding {
+  const stored = bound?.trim() || null;
+  const tenant = session.trim();
+  if (!tenant) {
+    if (stored && !certain) return { ok: false, code: 'untis_identity_unverified' };
+    return { ok: true, store: null, rebound: false };
+  }
+  if (!stored) return { ok: true, store: tenant, rebound: false };
+  if (stored === tenant) return { ok: true, store: null, rebound: false };
+  if (!certain) return { ok: false, code: 'tenant_mismatch' };
+  return { ok: true, store: tenant, rebound: true };
+}

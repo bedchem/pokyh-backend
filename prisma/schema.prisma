@@ -35,6 +35,9 @@ model User {
   // The WebUntis person (student record) the account last signed in as, for
   // spotting two accounts on one pupil's record (a parent's login on it).
   webuntisPersonId   Int?      @map("webuntis_person_id")
+  // The WebUntis tenant the account first signed in with; an app's session of
+  // another tenant is refused for it (webuntis/identity.ts accountTenant).
+  webuntisTenantId   String?   @map("webuntis_tenant_id") @db.VarChar(40)
   // Where the class came from at the last check ("authenticate", "pageconfig",
   // "timetable", …), and why an account has none ("appdata_unreadable",
   // "shared_person", …): what the panel shows (docs/class-assignment.md).
@@ -693,6 +696,8 @@ model ArchivedUser {
   // choice and a password's origin come back when the account does.
   roleLocked         Boolean  @default(false) @map("role_locked")
   localOrigin        String?  @map("local_origin") @db.VarChar(10)
+  // The account's WebUntis tenant: a recreated account accepts no other.
+  webuntisTenantId   String?  @map("webuntis_tenant_id") @db.VarChar(40)
   createdAt          DateTime @map("created_at")
 
   schoolYear SchoolYear @relation(fields: [schoolYearId], references: [id], onDelete: Cascade)

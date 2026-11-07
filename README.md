@@ -236,8 +236,8 @@ Partial delivery is reported (`sentTo` / `failed`); every refusal carries a `cod
 2. **App login**: `POST /auth/login` with `X-Server-Key` and the app's WebUntis session
    (`untisSessionId`, required) yields a short-lived **JWT access token** and a long-lived, hashed
    **refresh token**. The backend asks WebUntis whose the session is: it counts only for the account
-   WebUntis names for it, and, once the school's WebUntis tenant is known, only for that school
-   (`src/webuntis/sessionIdentity.ts`). Nothing is created before that. The class comes from WebUntis
+   WebUntis names for it, and only in the WebUntis tenant its school and the account first signed in
+   with (`src/webuntis/sessionIdentity.ts`, `src/services/schoolTenant.ts`). Nothing is created before that. The class comes from WebUntis
    through the same session, never from the app ([docs/class-assignment.md](docs/class-assignment.md)).
    Self-registration of POKYH-only accounts is off unless `SELF_REGISTRATION=true`.
 3. **Website**: `/webuntis/login` (see above); the POKYH tokens are renewed at `/auth/web/refresh`

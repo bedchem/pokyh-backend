@@ -67,8 +67,9 @@ import { readTimetableFilter } from '../webuntis/timetableFilter';
 import QRCode from 'qrcode';
 import { accountClassForRole, positiveId } from '../webuntis/accountClass';
 import { resolveAccount, type ResolvedAccount } from '../webuntis/accountResolver';
-import { verifySessionIdentity } from '../webuntis/sessionIdentity';
-import { rememberSchoolTenant, webuntisTenantOf } from '../services/schools';
+import { IDENTITY_FAILURES, verifySessionIdentity } from '../webuntis/sessionIdentity';
+import { webuntisTenantOf } from '../services/schools';
+import { settleSchoolTenant } from '../services/schoolTenant';
 import { CLASS_CHECK_VERSION } from '../utils/accountClass';
 import { absenceWriteOutcome, conflictTexts, hmNumber, ymdNumber } from '../webuntis/absences';
 import { absenceSpan, composeExcuse, excuseLocale, parseExcuseSubject, type ExcuseAbsence, type ExcuseSpan } from '../webuntis/excuseMessage';
@@ -488,17 +489,21 @@ async function signInWebsite(req: Request, res: Response, input: WebsiteSignIn):
         // Only a confirmed student gets a class; guardians and every other
         // account none (completeWebUntisLogin decides, authoritatively).
         const schoolId = await schoolIdRequest;
-        // A sign-in POKYH made itself with the password or key is certain of
-        // its school: the school's WebUntis tenant is learned from it (an
-        // app's session is then only accepted of that tenant).
-        if (!input.adopted) {
-          void bearerRequest.then((token) => {
-            const tenant = tenantIdOf(token);
-            if (tenant) return rememberSchoolTenant(schoolId, tenant);
-          }).catch(() => undefined);
+        // The session's tenant binds the school and the account (services/
+        // schoolTenant.ts, webuntis/identity.ts accountTenant). A sign-in POKYH
+        // made itself with the password or key is the school's own word and
+        // corrects what an app's session recorded; an app's handed-over
+        // session is accepted of the recorded tenant only.
+        const tenantId = tenantIdOf(await bearerRequest) ?? '';
+        if (tenantId) {
+          const schoolTenant = await settleSchoolTenant(schoolId, tenantId, !input.adopted);
+          if (schoolTenant && schoolTenant !== tenantId) {
+            const failure = IDENTITY_FAILURES.tenant_mismatch;
+            throw new AppError(failure.error, failure.status, 'tenant_mismatch');
+          }
         }
         return await completeWebUntisLogin({
-          username, schoolId,
+          username, schoolId, tenantId, certain: !input.adopted,
           // A renewal reusing what its session worked out keeps the class as
           // stored: nothing new was asked.
           found: reused ? null : accountFromWebUntis(account),

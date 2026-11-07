@@ -87,16 +87,27 @@ The key ships inside every app and proves nothing. Before anything is created
 
 - the bearer token WebUntis mints for it, and the app-data's login name
   (else the token's), which must be the account's;
-- once the school's WebUntis tenant is known (learned at a website sign-in
-  POKYH made with the password or key), the session's tenant must be that one.
+- the session's tenant must be the school's (`schools.webuntis_tenant_id`)
+  and the account's (`users.webuntis_tenant_id`). Many schools share a
+  WebUntis host and the app names its school itself, so a school and every
+  account keep the tenant of their first verified sign-in (`services/schoolTenant.ts`,
+  `accountTenant` in `src/webuntis/identity.ts`): a same-named login of another
+  school's tenant never signs in as an account, nor makes new ones whose class
+  ids (numbered per tenant) would match the school's classes. A website
+  sign-in POKYH makes with the password or key is the school's own word: it
+  corrects a tenant an app recorded first, and the accounts of the other
+  tenant lose their sessions and classes (audit `school.tenant_replaced`,
+  `user.tenant_rebound`). An account's tenant survives the school-year
+  rollover in the archive.
 
 Failures: `untis_session_required`, `school_invalid`, `untis_session_invalid`,
 `untis_identity_unverified`, `account_mismatch`, `tenant_mismatch`,
 `webuntis_unavailable` (fail closed). The QR hand-over uses the same check.
 
 A POKYH-only account that its holder registered themselves under that name is
-taken over by the WebUntis account (its password, devices, push, passkeys and
-memberships go; audit `user.local_takeover`). Accounts an admin made or gave a
+taken over by the WebUntis account of its own school (its password, devices,
+push, passkeys and memberships go; audit `user.local_takeover`); a sign-in of
+another school is refused, as for any account. Accounts an admin made or gave a
 password keep theirs. Self-registration is off unless `SELF_REGISTRATION=true`.
 
 ## Checking every assignment again

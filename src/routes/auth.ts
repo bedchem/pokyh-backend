@@ -22,6 +22,8 @@ import {
 } from '../utils/accountClass';
 import { resolveVerifiedSession, type ResolvedAccount } from '../webuntis/accountResolver';
 import { IDENTITY_FAILURES, verifySessionIdentity } from '../webuntis/sessionIdentity';
+import { accountTenant } from '../webuntis/identity';
+import { settleSchoolTenant } from '../services/schoolTenant';
 import { defaultSchoolId, forgetUserSchool, SchoolLimitError, schoolForLogin, webuntisTenantOf } from '../services/schools';
 import { isOwner } from '../services/adminAccess';
 import { revokeUserTokens } from '../utils/revokedTokens';
@@ -349,16 +351,27 @@ export interface WebUntisFindings {
  * signed-in student's own; never one a caller merely claims. `found` null:
  * the identity is proven but nothing new was asked (a renewal whose class was
  * just confirmed): role and class stay as they are.
+ *
+ * The account accepts sign-ins of the WebUntis tenant it first signed in with
+ * only (webuntis/identity.ts accountTenant); a session POKYH opened itself
+ * with the password or key (`certain`) binds it, or corrects the binding and
+ * ends every other session of the account.
  */
 export async function completeWebUntisLogin({
   username,
   found,
   claimed = 'student',
   schoolId,
+  tenantId,
+  certain,
   context = NO_CONTEXT,
   method = 'webuntis',
 }: {
   username: string;
+  /** The session's WebUntis tenant, '' when its token names none. */
+  tenantId: string;
+  /** The session was opened by POKYH itself with the account's password or key. */
+  certain: boolean;
   /** What WebUntis said at this sign-in (accountFromWebUntis); null: nothing asked. */
   found: WebUntisFindings | null;
   /** The app's own say about the account (only ever makes a new account a parent). */
@@ -380,19 +393,60 @@ export async function completeWebUntisLogin({
     throw new AppError(SCHOOL_TAKEN, 409);
   };
 
+  // The tenant the account (or, for a new one, its archived predecessor) is
+  // bound to must be this session's.
+  const bindTenant = (bound: string | null, stableUid: string | null) => {
+    const binding = accountTenant(bound, tenantId, certain);
+    if (!binding.ok) {
+      logger.warn('WebUntis login refused: the session belongs to another WebUntis tenant than the account', {
+        action: 'login_tenant_mismatch', stableUid, code: binding.code,
+      });
+      const failure = IDENTITY_FAILURES[binding.code];
+      throw new AppError(failure.error, failure.status, binding.code);
+    }
+    return binding;
+  };
+
   let user = await prisma.user.findUnique({ where: { username } });
-  if (user && isSelfRegistered(user)) user = await takeOverSelfRegistered(user, schoolId);
+  if (user && isSelfRegistered(user)) {
+    // Taken over only by its own school's WebUntis account of that name: at
+    // another school the same name is another person.
+    refuseOtherSchool(user.schoolId);
+    user = await takeOverSelfRegistered(user, schoolId);
+  }
   refuseOtherSchool(user?.schoolId ?? null);
+
+  if (user) {
+    const binding = bindTenant(user.webuntisTenantId, user.stableUid);
+    if (binding.rebound) {
+      // The school's own sign-in says the account is another tenant's than
+      // the one stored: every session opened with the other tenant ends.
+      await revokeSessions(user.stableUid);
+      revokeUserTokens(user.stableUid);
+      logger.warn('Account bound to the WebUntis tenant of its own sign-in', { action: 'account_tenant_rebound', stableUid: user.stableUid });
+      audit(null, 'user.tenant_rebound', { type: 'user', id: user.stableUid }, { from: user.webuntisTenantId, to: binding.store }, user.schoolId ?? schoolId);
+    }
+    if (binding.store) user = await prisma.user.update({ where: { stableUid: user.stableUid }, data: { webuntisTenantId: binding.store } });
+  }
 
   let created = false;
   if (!user) {
     const kind = found?.kind ?? 'unknown';
     // An admin's choice from before the school-year rollover comes back.
-    const archived = await prisma.archivedUser.findFirst({
-      where: { username, roleLocked: true },
-      orderBy: { createdAt: 'desc' },
-      select: { role: true, roleLocked: true },
-    });
+    const [archived, archivedTenant] = await Promise.all([
+      prisma.archivedUser.findFirst({
+        where: { username, roleLocked: true },
+        orderBy: { createdAt: 'desc' },
+        select: { role: true, roleLocked: true },
+      }),
+      // The tenant the account had before the rollover deleted it.
+      prisma.archivedUser.findFirst({
+        where: { username, webuntisTenantId: { not: null } },
+        orderBy: { createdAt: 'desc' },
+        select: { webuntisTenantId: true },
+      }),
+    ]);
+    const binding = bindTenant(archivedTenant?.webuntisTenantId ?? null, null);
     const { role: accountRole, note: roleNote } = decideAccountRole(archived ? { role: archived.role, roleLocked: true } : null, kind, claimed);
     const recordId = found?.studentRecordId ?? 0;
     const shared = await sharesPupilRecord(schoolId, recordId, null);
@@ -409,6 +463,7 @@ export async function completeWebUntisLogin({
           classSource: decided.classSource,
           classNote: roleNote ?? decided.classNote,
           webuntisPersonId: recordId > 0 ? recordId : null,
+          webuntisTenantId: binding.store ?? (archivedTenant?.webuntisTenantId || null),
           isUntisUser: true,
           role: accountRole,
           roleLocked: Boolean(archived),
@@ -424,6 +479,8 @@ export async function completeWebUntisLogin({
       user = await prisma.user.findUnique({ where: { username } });
       if (!user) throw err;
       refuseOtherSchool(user.schoolId);
+      // The other sign-in bound it: this one must be of the same tenant.
+      bindTenant(user.webuntisTenantId, user.stableUid);
     }
     if (created) {
       // A recreated account (rollover, rebuild) gets its earlier dish votes back.
@@ -698,6 +755,17 @@ router.post('/login', appLoginLimiters, async (req: Request, res: Response) => {
     return res.status(failure.status).json({ error: failure.error, code: verified.code });
   }
   const schoolId = await loginSchool(req, body);
+  // The school's tenant is known from its first verified sign-in on; a
+  // session of another tenant is refused (also when the list asked above was
+  // a moment old).
+  if (verified.tenantId) {
+    const schoolTenant = await settleSchoolTenant(schoolId, verified.tenantId, false);
+    if (schoolTenant && schoolTenant !== verified.tenantId) {
+      const failure = IDENTITY_FAILURES.tenant_mismatch;
+      logger.warn('App sign-in refused', { action: 'app_login_refused', code: 'tenant_mismatch', school: school.loginName });
+      return res.status(failure.status).json({ error: failure.error, code: 'tenant_mismatch' });
+    }
+  }
 
   // 2. What the account is and its class, asked with the same session; a
   // renewal of an account confirmed a moment ago skips the class.
@@ -719,6 +787,8 @@ router.post('/login', appLoginLimiters, async (req: Request, res: Response) => {
   // (`session_revoked`), and the app signs out.
   const result = await completeWebUntisLogin({
     username, found, claimed: role, schoolId,
+    // An app's session: accepted of the account's own tenant only.
+    tenantId: verified.tenantId, certain: false,
     context: signInContext(req, { renewal }), method,
   });
   if (!renewal) res.locals.signedIn = { stableUid: result.user.stableUid, username: result.user.username };
