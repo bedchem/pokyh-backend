@@ -25,6 +25,7 @@ import { GrantAdminDialog, OneTimePasswordDialog } from './GrantAdminDialog';
 import { AppointAdminDialog } from './AppointAdminDialog';
 import { PasswordInput } from './PasswordInput';
 import { roleLabel } from '../roles';
+import { classStatus } from '../classStatus';
 import { useAccess } from '../access';
 import { FactorList, LastLogin, PasskeySwitch, SecondFactorBadge } from './LoginSecurity';
 import type { AdminUserDetail, AdminTodo, AdminUserClass } from '../types';
@@ -436,6 +437,26 @@ interface UserDetailDrawerProps {
   onAdminToggled: (stableUid: string, isAdmin: boolean, adminSetupExpiresAt: string | null) => void;
 }
 
+// How WebUntis decided the account's class at its last check, and what an
+// admin should look at.
+function ClassCheck({ user }: { user: AdminUserDetail }) {
+  const status = classStatus(user);
+  const checked = user.classCheckedAt ? new Date(user.classCheckedAt).toLocaleString('de-AT', { dateStyle: 'medium', timeStyle: 'short' }) : null;
+  if (user.isUntisUser === false && !status.review) return null;
+  return (
+    <div className="mb-3 rounded-[14px] px-4 py-3 text-[12.5px] leading-relaxed" style={{ background: status.review ? 'var(--rose-wash)' : 'rgb(var(--ink-rgb) / calc(0.016 * var(--veil)))', color: status.review ? 'var(--rose-deep)' : 'rgb(var(--ink-rgb) / 0.62)' }}>
+      <div className="font-medium">{status.text}</div>
+      {status.hint && <div className="mt-0.5">{status.hint}</div>}
+      {user.sharedRecord && (
+        <div className="mt-1.5">
+          Gleicher WebUntis-Schüler wie {user.sharedRecord.others.map((o) => `${o.username} (${roleLabel(o.role)})`).join(', ')}.
+        </div>
+      )}
+      {checked && <div className="mt-1.5 opacity-80">Zuletzt bei WebUntis geprüft: {checked}</div>}
+    </div>
+  );
+}
+
 export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminToggled }: UserDetailDrawerProps) {
   const { showToast } = useToast();
   const { me, can } = useAccess();
@@ -778,7 +799,9 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
                     </div>
                     <div className="flex items-center gap-3 mt-1.5 text-[12px] flex-wrap" style={{ color: 'rgb(var(--ink-rgb) / 0.58)' }}>
                       {/* An admin without student/parent role shows as admin only. */}
-                      {(user.role !== 'none' || !user.isAdmin) && <span>{roleLabel(user.role)}</span>}
+                      {(user.role !== 'none' || !user.isAdmin) && (
+                        <span>{roleLabel(user.role)}{user.roleLocked ? ' · von Admin festgelegt' : user.isUntisUser !== false ? ' · aus WebUntis' : ''}</span>
+                      )}
                       {user.webuntisKlasseName && <span>{user.webuntisKlasseName}</span>}
                       <span>Beigetreten {relativeDate(user.createdAt)}</span>
                       <span>App-Anmeldung <LastLogin iso={user.lastSignInAt} never="keine in den Logs" /></span>
@@ -879,6 +902,7 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
                     Klassen ({user.classes.length})
                   </h3>
                 </div>
+                <ClassCheck user={user} />
                 {user.classes.length === 0 ? (
                   <div
                     className="rounded-[14px] p-4 text-center text-[13px]"
@@ -903,6 +927,7 @@ export function UserDetailDrawer({ stableUid, onClose, onUserDeleted, onAdminTog
                     style={{ color: 'rgb(var(--ink-rgb) / 0.5)' }}
                   >
                     Todos &mdash; {pendingTodos.length} offen, {doneTodos.length} erledigt
+                    {(user.todoCount ?? 0) > user.todos.length && ` · die neuesten ${user.todos.length} von ${user.todoCount}`}
                   </h3>
                   {!showCreateTodo && (
                     <button

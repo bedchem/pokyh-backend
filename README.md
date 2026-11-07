@@ -52,8 +52,8 @@ notifications. This backend is:
   here and reads and writes the person's WebUntis through `/webuntis/*`, with the person's own
   session sealed in the browser's httpOnly cookies (the server keeps a session only for push
   notifications the person turned on);
-- **the login partner of the apps**, which authenticate against WebUntis themselves and then do a
-  trusted server-to-server login (`X-Server-Key`);
+- **the login partner of the apps**, which authenticate against WebUntis themselves and then sign
+  in to POKYH with their WebUntis session, which the backend verifies with WebUntis;
 - **the admin panel** at `/admin/`;
 - optionally **one node of a leaderless cluster** that keeps several databases in step.
 
@@ -88,6 +88,8 @@ Design principles:
   website's WebUntis session lives in the browser's cookies, sealed with AES-256-GCM.
 - **Non-blocking boot.** The HTTP server starts at once; the database is created, brought to the
   schema (`prisma db push`, additive only) and connected in the background with retry and backoff.
+  `/readyz` answers ready once the start-up migrations ran: revoked sessions are known and the
+  default school and menu exist.
 - **Configuration only through the environment.** Origins, hosts, ports, limits, sources and
   WebUntis paths: nothing is hard-coded. [`.env.example`](.env.example) documents every setting.
 - **Privacy by default.** Request bodies and secrets are never logged, a person's WebUntis data
@@ -171,8 +173,9 @@ npx web-push generate-vapid-keys   # VAPID key pair for Web Push
 | School year | rollover settings | Date of the yearly archive and fresh start (default 1 August) |
 | Cluster | `CLUSTER_*` · `POKYH_*` | See [docs/cluster.md](docs/cluster.md#cluster-settings) |
 
-> A request with a valid `X-Server-Key` skips the per-address login limiter: every app login is
-> proxied through one server address, and a shared bucket would lock everyone out.
+> The app key (`SERVER_KEY`, `X-Server-Key`) ships inside every app and is no secret: it skips no
+> limiter and proves nothing about who signs in. The app's WebUntis session does
+> (`RATE_LIMIT_APP_LOGIN_*` limit app sign-ins per address and per account).
 
 ---
 
@@ -230,9 +233,13 @@ Partial delivery is reported (`sentTo` / `failed`); every refusal carries a `cod
 **Clients**
 
 1. **API key**: every non-admin route requires `X-API-Key`.
-2. **App login**: `POST /auth/login` with `X-Server-Key` after the app's own WebUntis login yields a
-   short-lived **JWT access token** and a long-lived, hashed **refresh token**. The class comes from
-   WebUntis through the app's session (`untisSessionId`), never from the app ([docs/class-assignment.md](docs/class-assignment.md)).
+2. **App login**: `POST /auth/login` with `X-Server-Key` and the app's WebUntis session
+   (`untisSessionId`, required) yields a short-lived **JWT access token** and a long-lived, hashed
+   **refresh token**. The backend asks WebUntis whose the session is: it counts only for the account
+   WebUntis names for it, and, once the school's WebUntis tenant is known, only for that school
+   (`src/webuntis/sessionIdentity.ts`). Nothing is created before that. The class comes from WebUntis
+   through the same session, never from the app ([docs/class-assignment.md](docs/class-assignment.md)).
+   Self-registration of POKYH-only accounts is off unless `SELF_REGISTRATION=true`.
 3. **Website**: `/webuntis/login` (see above); the POKYH tokens are renewed at `/auth/web/refresh`
    with the httpOnly refresh cookie. POKYH-only accounts use `/auth/web/local-login`.
 
@@ -327,7 +334,11 @@ Backups and log clean-up stay per node.
 
 ### Database
 
-Prisma is the schema's single source ([`prisma/schema.prisma`](prisma/schema.prisma)):
+Prisma 7 is the schema's single source ([`prisma/schema.prisma`](prisma/schema.prisma)).
+The server queries through the MariaDB driver adapter (`src/dbAdapter.ts`,
+pool from `DATABASE_URL`); the CLI takes the connection from
+[`prisma.config.ts`](prisma.config.ts), which reads `DATABASE_URL` from the
+environment or `.env`.
 
 | Area | Models |
 | --- | --- |
@@ -508,6 +519,7 @@ src/
 ├── cluster/            pairing, channel (mTLS), replication, ways, relays, installer, updates
 └── utils/              cache, errors, logger, ids, revoked tokens, ...
 prisma/schema.prisma    database schema (source of truth)
+prisma.config.ts        Prisma CLI configuration (schema path, DATABASE_URL)
 admin/                  React + Vite admin panel (built into admin/dist)
 deploy/db/              binary-log archiver and point-in-time restore
 deploy/node/            one-line installer, node stack, edge forwarder, updater
@@ -523,12 +535,14 @@ docs/                   cluster, database, schools
 
 | Symptom | Cause and fix |
 | --- | --- |
-| Logins fail with **429** at scale | `TRUST_PROXY` unset, so all clients share one address. Set it to your proxy topology; server-to-server logins must send `X-Server-Key`. |
+| Logins fail with **429** at scale | `TRUST_PROXY` unset, so all clients share one address. Set it to your proxy topology; app sign-ins are limited by `RATE_LIMIT_APP_LOGIN_MAX` per address and `RATE_LIMIT_APP_LOGIN_PER_ACCOUNT_MAX` per account. |
 | Browser CORS error | Add the frontend's origin to `CORS_ORIGIN`. |
 | Website: every request says `session_expired` | The browser did not send the API's cookies: the website must be on the same site as the API and listed in `CORS_ORIGIN`. |
-| `/auth/me` returns **401** right after login | The client received no token: check the server-to-server login and `X-Server-Key` / `X-API-Key`. |
+| `/auth/me` returns **401** right after login | The client received no token: check the app sign-in (`untisSessionId`, `X-Server-Key`) and `X-API-Key`. |
+| App sign-in answers `untis_session_required` | The app is older than the session check: it has to send its WebUntis session (`untisSessionId`). Update the app. |
 | Log: *Redis cache unavailable; using process memory* | The API keeps working without the cache. Check that Redis runs and `REDIS_URL` points to it. A Redis of your own that answers `DENIED ... protected mode` refuses every client without a password: give it one (in `REDIS_URL` too) or, on an internal network, turn protected mode off as the bundled stacks do. |
 | Prisma "property does not exist" | Run `npx prisma generate` after schema changes. |
+| `prisma` CLI: *The datasource.url property is required* | The CLI found no `DATABASE_URL`: set it in the environment or `.env`, and run it from the directory that holds `prisma.config.ts`. |
 | Database unreachable at boot | Not fatal; the server retries. Check `DATABASE_URL` and MySQL's health. |
 | Docker build fails at `prisma generate` | The build downloads Prisma engines and needs internet access. |
 | Excuse refused with `no_class_teacher` | The class has no class teacher in WebUntis; the school sets it there. |

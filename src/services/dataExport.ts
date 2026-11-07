@@ -70,7 +70,17 @@ export async function exportAccountData(stableUid: string) {
       role: user.role,
       webuntisAccount: user.isUntisUser,
       hasPokyhPassword: Boolean(user.passwordHash),
+      // How the POKYH-only password came about ("admin", "register"), if any.
+      passwordOrigin: user.localOrigin,
+      // The role as an admin fixed it (WebUntis no longer changes it).
+      roleSetByAdmin: user.roleLocked,
       className: user.webuntisKlasseName,
+      // Where WebUntis named the class, or why there is none, and when.
+      classSource: user.classSource,
+      classNote: user.classNote,
+      classCheckedAt: user.classCheckedAt ? iso(user.classCheckedAt) : null,
+      // The WebUntis pupil record the account signs in on (its number there).
+      webuntisPersonId: user.webuntisPersonId,
       school: school ? { name: school.name, webuntis: school.webuntisSchool } : null,
       isAdmin: admin !== null,
       createdAt: iso(user.createdAt),

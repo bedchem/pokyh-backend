@@ -1,5 +1,5 @@
 import type { AdminStats, AdminClass, AdminSessionsResponse, AdminLoginEvent, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish, AdminDishFull, AdminDishImportResult, AdminDishShiftResult, AdminDishRotateResult, AdminDishResetResult, AdminDishAnchorResult, DishPlan, AdminCommentsResponse, FileLogFile, FileLogResponse, FileLogEntry, FrontendActivityLogsResponse, FrontendActivityStats, AllTodosResponse, AllRemindersResponse, SchoolYearsResponse, ArchivedUsersResponse, ArchivedClass, ArchivedTodosResponse, ArchivedRemindersResponse, RolloverResult, RollbackResult, AdminApiKey, CreatedApiKey, BackupsResponse, AdminPopup, PopupInput, ClusterStatus, ClusterInstall, CreatedClusterInstall, ClusterReach, ReachEntry, AdminAnalytics, AnalyticsRange, AnalyticsPeople, PeopleFilters, AnalyticsBreakdown, BreakdownKind, AnalyticsDishes, AnalyticsVisitors, AnalyticsVisitorIp, AnalyticsPersonDetail, VisitSource, ClusterUpdates, ClusterUpdateSettings, PopupTargetUser, PopupTargetClass, WayTestResult, ReachKind, LoginResult, PasskeyChallenge, AdminSecurityStatus, TotpSetup, AdminPasskey, AccountRole, FactorKind, PermissionPreset, PresetDraft } from './types';
-import type { SearchKind, SearchResponse } from './types';
+import type { SearchKind, SearchResponse, UserKindFilter, UsersSummary } from './types';
 import type { AdminRecap, RecapInput, RecapTargets } from './types';
 import type { MenuCalendar, MenuDayOverride, MenuMode, MenuPullMode, MenuPullResult, MenuScheduleInfo } from './types';
 import type { AdminMe, AccessCatalog, AdminSchool, MensaMenu, AdminAccount, AdminGrantView, GrantInput, AuditEventsResponse, RequestScopeChoice, RequestsSummary, PerformanceReport, SystemHealth, SystemLogsResponse, ClientErrorGroup, ClientErrorOccurrence, PrivacyOverview, DishCommentGroupsResponse, DishCommentsResponse, ReminderCommentGroup, ReminderCommentItem } from './types';
@@ -94,6 +94,11 @@ async function request<T>(
     body: body !== undefined ? JSON.stringify(body) : undefined,
     signal,
   });
+
+  // A password or second-factor change ended the account's other sessions;
+  // this one goes on with the fresh token the server sent along.
+  const renewed = res.headers.get('X-Admin-Token');
+  if (renewed && res.ok) setToken(renewed);
 
   if (res.status === 401) {
     clearToken();
@@ -216,7 +221,9 @@ export const adminApi = {
   stats: (): Promise<AdminStats> =>
     request<AdminStats>('GET', '/api/admin/stats'),
 
-  users: (search?: string, page = 1, limit = 20, role?: AccountRole | 'admin', schoolId?: string): Promise<UsersResponse> => {
+  usersSummary: (schoolId?: string): Promise<UsersSummary> =>
+    request<UsersSummary>('GET', `/api/admin/users/summary${schoolId ? `?schoolId=${encodeURIComponent(schoolId)}` : ''}`),
+  users: (search?: string, page = 1, limit = 20, role?: UserKindFilter, schoolId?: string): Promise<UsersResponse> => {
     const params = new URLSearchParams();
     if (search) params.set('search', search);
     if (role) params.set('role', role);
@@ -233,8 +240,9 @@ export const adminApi = {
   createUser: (data: { username: string; password?: string; webuntisKlasseId?: number; webuntisKlasseName?: string; role?: AccountRole; isAdmin?: boolean; adminPassword?: string; schoolId?: string; grant?: GrantInput }): Promise<import('./types').AdminUser> =>
     request<import('./types').AdminUser>('POST', '/api/admin/users', data),
 
-  setUserRole: (stableUid: string, role: AccountRole): Promise<{ stableUid: string; role: string }> =>
-    request<{ stableUid: string; role: string }>('PATCH', `/api/admin/users/${stableUid}/role`, { role }),
+  // "auto": the role goes back to WebUntis (unlocked).
+  setUserRole: (stableUid: string, role: AccountRole | 'auto'): Promise<{ stableUid: string; role: AccountRole; roleLocked: boolean }> =>
+    request<{ stableUid: string; role: AccountRole; roleLocked: boolean }>('PATCH', `/api/admin/users/${stableUid}/role`, { role }),
 
   // Full DB backup: requires the Bearer token, so we fetch as a blob and trigger
   // a client-side download (a plain <a href> can't send the Authorization header).
@@ -482,8 +490,9 @@ export const adminApi = {
   classTodos: (classId: string): Promise<AdminClassTodo[]> =>
     request<AdminClassTodo[]>('GET', `/api/admin/classes/${classId}/todos`),
 
-  dishRatings: (): Promise<AdminDish[]> =>
-    request<AdminDish[]>('GET', '/api/admin/dish-ratings'),
+  // `summary`: averages and counts only; `dishKey`: one dish with every vote.
+  dishRatings: (opts: { summary?: boolean; dishKey?: string } = {}): Promise<AdminDish[]> =>
+    request<AdminDish[]>('GET', `/api/admin/dish-ratings${opts.summary ? '?summary=1' : opts.dishKey ? `?dishKey=${encodeURIComponent(opts.dishKey)}` : ''}`),
 
   updateDishRating: (dishId: string, stableUid: string, stars: number): Promise<void> =>
     request<void>('PATCH', `/api/admin/dish-ratings/${encodeURIComponent(dishId)}/${stableUid}`, { stars }),
@@ -516,6 +525,9 @@ export const adminApi = {
 
   setMenuSchedule: (mode: MenuMode, calendar: MenuCalendar, overrides: MenuDayOverride[], seasonRule: 'dates' | 'clock'): Promise<MenuScheduleInfo> =>
     request<MenuScheduleInfo>('PUT', '/api/admin/dishes/schedule', { mode, calendar, overrides, seasonRule }),
+  // How many dishes that change would move (null: none, manual mode); nothing is stored.
+  previewMenuSchedule: (mode: MenuMode, calendar: MenuCalendar, overrides: MenuDayOverride[], seasonRule: 'dates' | 'clock'): Promise<{ preview: { moved: number | null } }> =>
+    request<{ preview: { moved: number | null } }>('PUT', '/api/admin/dishes/schedule', { mode, calendar, overrides, seasonRule, dryRun: true }),
 
   setMenuSource: (source: { pullMode: MenuPullMode; summerUrl: string; winterUrl: string; sourcePage: string; sourceCanteen: string }): Promise<MenuScheduleInfo> =>
     request<MenuScheduleInfo>('PUT', '/api/admin/dishes/source', source),

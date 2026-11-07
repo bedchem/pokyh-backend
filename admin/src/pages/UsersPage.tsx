@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { Shield, ScrollText, Users, RefreshCw, UserPlus, Trash2, Download, Upload, GraduationCap, UserCog, ShieldCheck, KeyRound } from 'lucide-react';
+import { Shield, ScrollText, Users, RefreshCw, UserPlus, Trash2, Download, Upload, GraduationCap, UserCog, ShieldCheck, KeyRound, Lock, TriangleAlert, Hourglass, CircleHelp, Sparkles } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useHanded } from '../useHanded';
 import { adminApi } from '../api';
@@ -15,7 +15,8 @@ import { AppointAdminDialog } from '../components/AppointAdminDialog';
 import { useAccess } from '../access';
 import { PasswordInput } from '../components/PasswordInput';
 import { ROLE_OPTIONS, roleLabel, roleTone } from '../roles';
-import type { AccountRole, AdminUser } from '../types';
+import { classStatus } from '../classStatus';
+import type { AccountRole, AdminUser, UserKindFilter, UsersSummary } from '../types';
 import { LastLogin, SecondFactorBadge } from '../components/LoginSecurity';
 
 function relativeDate(dateStr: string): string {
@@ -28,31 +29,35 @@ function relativeDate(dateStr: string): string {
   return months === 1 ? 'vor 1 Monat' : `vor ${months} Monaten`;
 }
 
-type FilterTab = 'all' | 'students' | 'parents' | 'none' | 'admins';
+type FilterTab = 'all' | 'students' | 'parents' | 'none' | 'admins' | 'noclass' | 'pending' | 'review';
 
 // Every tab is a server-side filter, applied before paging — so totals and
 // pages describe the filtered accounts. (Admins used to be picked out of the
 // loaded page only, which spread them over many pages.)
-function roleForFilter(filter: FilterTab): AccountRole | 'admin' | undefined {
+function roleForFilter(filter: FilterTab): UserKindFilter | undefined {
   if (filter === 'students') return 'student';
   if (filter === 'parents') return 'parent';
   if (filter === 'none') return 'none';
   if (filter === 'admins') return 'admin';
+  if (filter === 'noclass' || filter === 'pending' || filter === 'review') return filter;
   return undefined;
 }
 
 // Totals for the figures and diagrams above the list. They come from their own
 // requests, so the list still works if one of them fails.
-interface Summary {
-  total: number;
+interface Summary extends UsersSummary {
   admins: number;
-  students: number;
-  parents: number;
-  noRole: number;
   // Accounts made since Monday 00:00 (server time).
   newThisWeek: number;
   byDay: Array<{ date: string; count: number }>;
 }
+
+// The pupils' classes at a glance, each a filter of the list below.
+const CLASS_FILTERS: Array<{ value: 'noclass' | 'pending' | 'review'; label: string; icon: typeof Users; tone: string; count: (s: Summary) => number; hint: string }> = [
+  { value: 'review', label: 'Zu prüfen', icon: TriangleAlert, tone: 'var(--rose-deep)', count: (s) => s.review, hint: 'Konten, die sich einen Schülerdatensatz teilen, oder Elternkonten, die WebUntis als Schüler:in führt. Lege die Rolle fest.' },
+  { value: 'noclass', label: 'Ohne Klasse', icon: CircleHelp, tone: 'var(--amber-deep)', count: (s) => s.withoutClass, hint: 'Schüler:innen, für die WebUntis bei der letzten Anmeldung keine Klasse genannt hat.' },
+  { value: 'pending', label: 'Wartet auf Prüfung', icon: Hourglass, tone: 'var(--sky-deep)', count: (s) => s.pending, hint: 'Die Klasse wird bei der nächsten Anmeldung oder Sitzungs-Erneuerung einmal neu bei WebUntis geprüft.' },
+];
 
 const TABS: Array<{ value: FilterTab; label: string }> = [
   { value: 'all',      label: 'Alle' },
@@ -73,13 +78,32 @@ const EMPTY_FORM = {
   adminPassword: '',
 };
 
-// Choosing a role: three options, each with what it means.
-function RoleDialog({ user, onPick, onClose }: { user: AdminUser; onPick: (role: AccountRole) => void; onClose: () => void }) {
+// Choosing a role: WebUntis decides, or an admin fixes one of three, each
+// with what it means. A fixed role stays at every sign-in.
+function RoleDialog({ user, onPick, onClose }: { user: AdminUser; onPick: (role: AccountRole | 'auto') => void; onClose: () => void }) {
+  const locked = user.roleLocked === true;
+  const options: Array<{ value: AccountRole | 'auto'; label: string; hint: string }> = [
+    {
+      value: 'auto',
+      label: 'Automatisch (WebUntis)',
+      hint: `WebUntis entscheidet bei jeder Anmeldung. Ein Elternkonto wird dabei nie von selbst zur Schüler:in.${locked ? '' : ` Jetzt: ${roleLabel(user.role)}.`}`,
+    },
+    ...ROLE_OPTIONS.map((o) => ({ value: o.value, label: o.label, hint: `${o.hint} Bleibt bei jeder Anmeldung so.` })),
+  ];
   return (
     <Dialog title="Rolle ändern" subtitle={user.username} onClose={onClose}>
+      {user.sharedRecord && (
+        <div className="mb-4 rounded-[18px] px-[18px] py-3.5 text-[13px] leading-relaxed" style={{ background: 'var(--amber-wash)', color: 'var(--amber-deep)' }}>
+          Meldet sich auf demselben WebUntis-Schüler an wie{' '}
+          {user.sharedRecord.others.map((o, i) => (
+            <span key={o.username}>{i > 0 ? ', ' : ''}<strong className="font-medium">{o.username}</strong> ({roleLabel(o.role)})</span>
+          ))}
+          . Eines der Konten ist vermutlich ein Eltern-Login auf dem Datensatz des Kindes.
+        </div>
+      )}
       <div className="flex flex-col gap-2">
-        {ROLE_OPTIONS.map((option) => {
-          const current = option.value === user.role;
+        {options.map((option) => {
+          const current = option.value === 'auto' ? !locked : locked && option.value === user.role;
           return (
             <button
               key={option.value}
@@ -93,7 +117,7 @@ function RoleDialog({ user, onPick, onClose }: { user: AdminUser; onPick: (role:
                 <span className="block text-[14.5px] font-medium" style={{ color: current ? 'var(--sky-deep)' : 'var(--ink)' }}>{option.label}</span>
                 <span className="mt-0.5 block text-[13px] leading-relaxed text-ink-3">{option.hint}</span>
               </span>
-              {current && <span className="mt-0.5 text-[12.5px] text-sky-deep">aktuell</span>}
+              {current && <span className="mt-0.5 flex items-center gap-1 text-[12.5px] text-sky-deep">{option.value !== 'auto' && <Lock size={12} strokeWidth={1.9} />}aktuell</span>}
             </button>
           );
         })}
@@ -102,6 +126,28 @@ function RoleDialog({ user, onPick, onClose }: { user: AdminUser; onPick: (role:
         <p className="mt-4 text-[12.5px] leading-relaxed text-ink-3">Die Admin-Rechte bleiben bei jeder Rolle unverändert.</p>
       )}
     </Dialog>
+  );
+}
+
+// The class of an account, with where WebUntis named it; or why it has none.
+function ClassCell({ user }: { user: AdminUser }) {
+  const status = classStatus(user);
+  const hasClass = (user.webuntisKlasseId ?? 0) > 0;
+  return (
+    <div className="flex min-w-0 flex-col gap-1" title={status.hint || undefined}>
+      <div className="flex items-center gap-2.5">
+        {hasClass
+          ? <span className="text-ink-2">{status.text}</span>
+          : <span className="text-[13.5px]" style={{ color: status.tone === 'amber' ? 'var(--amber-deep)' : status.tone === 'sky' ? 'var(--sky-deep)' : 'var(--ink-3)' }}>{status.text}</span>}
+        {user.classCode && <Tag tone="sky" mono>{user.classCode}</Tag>}
+      </div>
+      {status.review && (
+        <span className="inline-flex items-center gap-1.5 text-[12px]" style={{ color: 'var(--rose-deep)' }}>
+          <TriangleAlert size={12.5} strokeWidth={1.9} />
+          {user.sharedRecord?.needsReview ? `Teilt Datensatz mit ${user.sharedRecord.others.map((o) => o.username).join(', ')}` : 'Bitte Rolle prüfen'}
+        </span>
+      )}
+    </div>
   );
 }
 
@@ -169,21 +215,16 @@ export function UsersPage() {
   const fetchSummary = useCallback(() => {
     Promise.all([
       adminApi.stats(),
-      adminApi.users(undefined, 1, 1, 'student'),
-      adminApi.users(undefined, 1, 1, 'parent'),
-      adminApi.users(undefined, 1, 1, 'none'),
-    ]).then(([stats, students, parents, noRole]) => {
+      adminApi.usersSummary(schoolFilter || undefined),
+    ]).then(([stats, counts]) => {
       setSummary({
-        total: stats.totalUsers,
+        ...counts,
         admins: stats.totalAdmins,
-        students: students.total,
-        parents: parents.total,
-        noRole: noRole.total,
         newThisWeek: stats.newUsersThisWeek ?? 0,
         byDay: stats.usersByDay ?? [],
       });
     }).catch(() => { /* the list below does not depend on the summary */ });
-  }, []);
+  }, [schoolFilter]);
 
   const fetchUsers = useCallback(async () => {
     setLoading(true);
@@ -317,19 +358,29 @@ export function UsersPage() {
     }
   }
 
-  async function handleSetRole(user: AdminUser, newRole: AccountRole) {
+  async function handleSetRole(user: AdminUser, newRole: AccountRole | 'auto') {
     setRoleDialogUser(null);
-    if (newRole === user.role) return;
+    const locked = user.roleLocked === true;
+    // Nothing changes: the same fixed role, or "automatic" for an unlocked one.
+    if (newRole === 'auto' ? !locked : locked && newRole === user.role) return;
     setPendingRole(user.stableUid);
-    setUsers((prev) => prev.map((u) => u.stableUid === user.stableUid ? { ...u, role: newRole } : u));
+    setUsers((prev) => prev.map((u) => u.stableUid === user.stableUid
+      ? { ...u, ...(newRole === 'auto' ? { roleLocked: false } : { role: newRole, roleLocked: true }) }
+      : u));
     try {
-      await adminApi.setUserRole(user.stableUid, newRole);
-      showToast(newRole === 'none' ? `${user.username} hat jetzt keine Rolle` : `${user.username} ist jetzt ${roleLabel(newRole)}`, 'success');
+      const result = await adminApi.setUserRole(user.stableUid, newRole);
+      showToast(
+        newRole === 'auto'
+          ? `${user.username}: Rolle kommt wieder aus WebUntis`
+          : newRole === 'none' ? `${user.username} hat jetzt fest keine Rolle` : `${user.username} ist jetzt fest ${roleLabel(newRole)}`,
+        'success',
+      );
+      setUsers((prev) => prev.map((u) => u.stableUid === user.stableUid ? { ...u, role: result.role, roleLocked: result.roleLocked } : u));
       fetchSummary();
-      // If a role filter is active, the row may no longer belong on this page.
-      if (roleForFilter(filter)) void fetchUsers();
+      // A role changes the class status too: the row is reloaded with it.
+      void fetchUsers();
     } catch (err) {
-      setUsers((prev) => prev.map((u) => u.stableUid === user.stableUid ? { ...u, role: user.role } : u));
+      setUsers((prev) => prev.map((u) => u.stableUid === user.stableUid ? { ...u, role: user.role, roleLocked: user.roleLocked } : u));
       showToast(err instanceof Error ? err.message : 'Aktion fehlgeschlagen', 'error');
     } finally {
       setPendingRole(null);
@@ -527,7 +578,14 @@ export function UsersPage() {
               ? <Delta trend="up" tone="mint"><span title="Neue Konten seit Montag 00:00">+{summary.newThisWeek.toLocaleString('de-AT')} diese Woche</span></Delta>
               : undefined,
           },
-          { label: 'Schüler:innen', value: summary?.students ?? '–', icon: GraduationCap },
+          {
+            label: 'Schüler:innen',
+            value: summary?.students ?? '–',
+            icon: GraduationCap,
+            note: summary && summary.students > 0
+              ? <span className="text-[12.5px] text-ink-3">{summary.withClass.toLocaleString('de-AT')} mit Klasse</span>
+              : undefined,
+          },
           { label: 'Eltern',        value: summary?.parents ?? '–',  icon: UserCog },
           { label: 'Admins',        value: summary?.admins ?? '–',   icon: ShieldCheck },
         ]}
@@ -546,18 +604,61 @@ export function UsersPage() {
             />
           </div>
         </Section>
-        <Section title="Rollen">
-          <div className="mt-9">
-            <SplitBar
-              ariaLabel="Verteilung der Konten nach Rolle"
-              parts={[
-                { label: 'Schüler:innen', value: summary?.students ?? 0, color: 'var(--mint)' },
-                { label: 'Eltern',        value: summary?.parents ?? 0,  color: '#a98be0' },
-                { label: 'Ohne Rolle',    value: summary?.noRole ?? 0,   color: 'var(--well-3)' },
-              ]}
-            />
-          </div>
-        </Section>
+        <div className="flex flex-col gap-12">
+          <Section title="Rollen">
+            <div className="mt-9">
+              <SplitBar
+                ariaLabel="Verteilung der Konten nach Rolle"
+                parts={[
+                  { label: 'Schüler:innen', value: summary?.students ?? 0, color: 'var(--mint)' },
+                  { label: 'Eltern',        value: summary?.parents ?? 0,  color: '#a98be0' },
+                  { label: 'Ohne Rolle',    value: summary?.noRole ?? 0,   color: 'var(--well-3)' },
+                ]}
+              />
+            </div>
+          </Section>
+          <Section title="Klassen der Schüler:innen" meta="aus WebUntis">
+            <div className="mt-9">
+              <SplitBar
+                ariaLabel="Schüler:innen nach Klassenzuordnung"
+                parts={[
+                  { label: 'Mit Klasse',         value: summary?.withClass ?? 0,    color: 'var(--mint)' },
+                  { label: 'Wartet auf Prüfung', value: summary?.pending ?? 0,      color: 'var(--sky)' },
+                  { label: 'Ohne Klasse',        value: summary?.withoutClass ?? 0, color: 'var(--amber)' },
+                ]}
+              />
+            </div>
+          </Section>
+        </div>
+      </div>
+
+      {/* The class status, each a filter of the list below; again to show all. */}
+      <div className="mt-[46px] grid gap-3 sm:grid-cols-3" role="group" aria-label="Klassen-Status filtern">
+        {CLASS_FILTERS.map((f) => {
+          const active = filter === f.value;
+          const count = summary ? f.count(summary) : null;
+          const Icon = f.icon;
+          return (
+            <button
+              key={f.value}
+              type="button"
+              aria-pressed={active}
+              title={f.hint}
+              onClick={() => { setFilter(active ? 'all' : f.value); setPage(1); }}
+              className="panel flex items-center gap-4 px-5 py-4 text-left transition-[box-shadow,transform] duration-200 ease-glide hover:-translate-y-px"
+              style={active ? { boxShadow: `inset 0 0 0 2px ${f.tone}` } : undefined}
+            >
+              <span className="grid h-10 w-10 flex-shrink-0 place-items-center rounded-full" style={{ background: 'var(--well)', color: f.tone }}>
+                <Icon size={18} strokeWidth={1.8} />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block text-[13.5px] text-ink-3">{f.label}</span>
+                <span className="tabular block text-[20px] font-semibold leading-tight">{count === null ? '–' : count.toLocaleString('de-AT')}</span>
+              </span>
+              {active && <span className="text-[12px] text-ink-3">Filter aktiv</span>}
+            </button>
+          );
+        })}
       </div>
 
       <Section
@@ -573,7 +674,12 @@ export function UsersPage() {
                 {me?.schools.map((sc) => <option key={sc.id} value={sc.id}>{sc.name}</option>)}
               </select>
             )}
-            <Segmented label="Konten filtern" value={filter} onChange={setFilter} options={TABS} />
+            <Segmented
+              label="Konten filtern"
+              value={TABS.some((t) => t.value === filter) ? filter : 'all'}
+              onChange={(value) => { setFilter(value); setPage(1); }}
+              options={TABS}
+            />
           </>
         )}
       >
@@ -597,7 +703,14 @@ export function UsersPage() {
                 ? (
                   <tr>
                     <td colSpan={7}>
-                      <Empty icon={Users}>{search ? `Kein Benutzer mit „${search}“.` : 'Keine Benutzer.'}</Empty>
+                      <Empty icon={filter === 'review' || filter === 'noclass' || filter === 'pending' ? Sparkles : Users}>
+                        {search
+                          ? `Kein Benutzer mit „${search}“.`
+                          : filter === 'review' ? 'Nichts zu prüfen.'
+                            : filter === 'noclass' ? 'Alle geprüften Schüler:innen haben eine Klasse.'
+                              : filter === 'pending' ? 'Keine Klasse wartet auf ihre Prüfung.'
+                                : 'Keine Benutzer.'}
+                      </Empty>
                     </td>
                   </tr>
                 )
@@ -616,10 +729,7 @@ export function UsersPage() {
                     </td>
 
                     <td className="hidden md:table-cell">
-                      <div className="flex items-center gap-2.5">
-                        <span className="text-ink-2">{user.webuntisKlasseName ?? '—'}</span>
-                        {user.classCode && <Tag tone="sky" mono>{user.classCode}</Tag>}
-                      </div>
+                      <ClassCell user={user} />
                     </td>
 
                     <td className="tabular hidden text-ink-2 lg:table-cell">{user.todoCount}</td>
@@ -629,9 +739,16 @@ export function UsersPage() {
                         {/* "No role" is not a role to show: an admin shows as
                             admin only, and only an account without any role
                             at all says so, quietly. */}
-                        {user.role !== 'none'
-                          ? <Status tone={roleTone(user.role)}>{roleLabel(user.role)}</Status>
-                          : !user.isAdmin && <span className="text-[13.5px] text-ink-3">Keine Rolle</span>}
+                        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                          {user.role !== 'none'
+                            ? <Status tone={roleTone(user.role)}>{roleLabel(user.role)}</Status>
+                            : !user.isAdmin && <span className="text-[13.5px] text-ink-3">Keine Rolle</span>}
+                          {user.roleLocked && (
+                            <span className="inline-flex items-center text-ink-4" title="Von einem Admin festgelegt: bleibt bei jeder Anmeldung">
+                              <Lock size={12.5} strokeWidth={1.9} aria-label="festgelegt" />
+                            </span>
+                          )}
+                        </div>
                         {user.isAdmin && (
                           <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
                             <Status tone={user.adminSetupExpiresAt ? 'amber' : user.adminKind === 'owner' || user.adminKind === 'global' ? 'violet' : user.adminKind === 'none' ? 'ink' : 'sky'}>

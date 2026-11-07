@@ -3,12 +3,11 @@ import { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
-import { v4 as uuidv4 } from 'uuid';
 import { rateLimit } from 'express-rate-limit';
 import fs from 'fs/promises';
 import path from 'path';
 import sharp from 'sharp';
-import { createHash, randomBytes } from 'crypto';
+import { createHash, randomBytes, randomUUID } from 'crypto';
 import { config } from '../config';
 import { prisma } from '../db';
 import { inScope, requireAdmin, requirePermission, schoolWhere, scopeSchool, allowDuringSecondFactorSetup } from '../middleware/requireAdmin';
@@ -25,17 +24,18 @@ import {
   resolveBackupPath, restoreBackup,
 } from '../services/dbBackup';
 import { writeLimiter } from '../middleware/rateLimiter';
+import { cachedAnswer } from '../middleware/cachedAnswer';
 import { issuedApiKeyScopes, parseApiKeyScopes, serializeApiKeyScopes } from '../security/apiKeyPolicy';
 import {
   rotatePastWeeks, normalizePlanAroundAnchor,
   lastFutureMondayIso, firstMondayIso, otherPlan, isoAddDays, layoutMenu, currentWeekMondayIso,
 } from '../utils/mensaRotate';
 import { snapForwardToSeason } from '../utils/mensaSeason';
-import { menuBreaks } from '../utils/mensaSchedule';
+import { dayOverridesFrom, menuBreaks } from '../utils/mensaSchedule';
 import { dishFingerprint, sourceUrlProblem } from '../utils/mensaSource';
 import { isInternalUrl } from '../utils/safeFetch';
-import { arrangeMenu, menuSchedule, type MenuSchedule } from '../services/mensaSchedule';
-import { PLANS, PULL_LINES, dishImageUrl, effectiveSourceUrl, failureText, lineFilter, pullPlan, readSource, sourceFile, storedPageProblem } from '../services/mensaSource';
+import { arrangeMenu, menuSchedule, previewArrange, proposedSchedule, type MenuSchedule } from '../services/mensaSchedule';
+import { PLANS, PULL_LINES, dishImageUrl, effectiveSourceUrl, failureText, lineFilter, nextPullAt, pullPlan, readSource, sourceFile, storedPageProblem } from '../services/mensaSource';
 import { slugifyDishName } from '../utils/dishKey';
 import { ForbiddenError, NotFoundError, ValidationError } from '../utils/errors';
 import { intQueryParam } from '../utils/duration';
@@ -61,7 +61,8 @@ import { adminCanSignIn, grantNeedsOneTimePassword, mayViewOneTimePassword, vali
 import { clearSecondFactors, issueSecondFactorTicket, secondFactorMethods } from '../services/adminSecondFactor';
 import { adminSecuritySummaries, clearAdminSecurity, lastAppSignIns, loginStepsFor, recordAdminLogin, secondFactorSetupNeeded } from '../services/adminSecurity';
 import { SIGN_IN_PATHS } from '../services/accountActivity';
-import { hasClassIdentity, parseAccountRole } from '../utils/accountClass';
+import { CLASS_CHECK_VERSION, hasClassIdentity, parseAccountRole } from '../utils/accountClass';
+import { classSummary, pendingWhere, reviewWhere, sharedRecords, withoutClassWhere } from '../services/accountClassReview';
 import { audit } from '../services/audit';
 import { assertMayAppointAdmin, assertMayRemoveAdmin, checkGrantRequest, clearGrants, grantsOf, isOwner, parseGrantRequest, setGrant } from '../services/adminAccess';
 import { DEFAULT_MENU_ID, defaultSchoolId, forgetUserSchool, listSchools, menuOfSchool, schoolById, schoolsOfMenu } from '../services/schools';
@@ -309,7 +310,7 @@ router.post('/auth/password-setup', loginLimiter, async (req: Request, res: Resp
 
 // ─── GET /api/admin/stats ─────────────────────────────────────────────────────
 
-router.get('/stats', requireAdmin, requirePermission('dashboard.view'), async (req: Request, res: Response): Promise<void> => {
+router.get('/stats', requireAdmin, requirePermission('dashboard.view'), cachedAnswer(10_000), async (req: Request, res: Response): Promise<void> => {
   const inSchool = schoolWhere(req);
   const schoolId = scopeSchool(req);
   const startOfToday = new Date();
@@ -452,18 +453,21 @@ router.post('/users', requireAdmin, requirePermission('users.create'), async (re
   }
 
   const passwordHash = password ? await bcrypt.hash(password, config.bcryptRounds) : undefined;
-  const stableUid = uuidv4();
+  const stableUid = randomUUID();
   const createUser = prisma.user.create({
     data: {
-      id: uuidv4(),
+      id: randomUUID(),
       stableUid,
       username: username.trim().toLowerCase(),
       webuntisKlasseId: withClass ? webuntisKlasseId ?? 0 : 0,
       webuntisKlasseName: withClass ? webuntisKlasseName?.trim() || '' : '',
       isUntisUser: !passwordHash,
       role: accountRole,
+      // A parent or role-less account made by an admin stays so at every
+      // sign-in; a student follows WebUntis (it may still turn out a parent).
+      roleLocked: accountRole !== 'student',
       schoolId,
-      ...(passwordHash ? { passwordHash } : {}),
+      ...(passwordHash ? { passwordHash, localOrigin: 'admin' } : {}),
     },
   });
   // The account and its admin rights are made together or not at all.
@@ -508,13 +512,18 @@ router.post('/users', requireAdmin, requirePermission('users.create'), async (re
 // admin who is not in a class). Parents and role-less accounts have no class
 // identity and no ClassMember row at all. Admin rights are independent of
 // the role: granting or revoking admin never changes it.
+//
+// The choice sticks: no sign-in changes it, whatever WebUntis says
+// (roleLocked, utils/accountClass.ts decideAccountRole). "auto" hands the
+// role back to WebUntis: the account keeps its role until its next sign-in
+// decides.
 
 router.patch('/users/:stableUid/role', requireAdmin, requirePermission('users.update'), async (req: Request, res: Response): Promise<void> => {
   const stableUid = String(req.params['stableUid'] ?? '');
   const { role } = req.body as { role?: unknown };
 
-  if (role !== 'student' && role !== 'parent' && role !== 'none') {
-    res.status(400).json({ error: 'role must be "student", "parent" or "none"' });
+  if (role !== 'student' && role !== 'parent' && role !== 'none' && role !== 'auto') {
+    res.status(400).json({ error: 'role must be "student", "parent", "none" or "auto"' });
     return;
   }
 
@@ -524,7 +533,9 @@ router.patch('/users/:stableUid/role', requireAdmin, requirePermission('users.up
     return;
   }
 
-  if (!hasClassIdentity(role)) {
+  if (role === 'auto') {
+    await prisma.user.update({ where: { stableUid }, data: { roleLocked: false } });
+  } else if (!hasClassIdentity(role)) {
     const memberships = await prisma.classMember.findMany({
       where: { stableUid },
       select: { classId: true },
@@ -533,24 +544,30 @@ router.patch('/users/:stableUid/role', requireAdmin, requirePermission('users.up
     await prisma.$transaction([
       prisma.user.update({
         where: { stableUid },
-        data: { role, webuntisKlasseId: 0, webuntisKlasseName: '' },
+        data: { role, roleLocked: true, webuntisKlasseId: 0, webuntisKlasseName: '', classSource: null, classNote: role === 'parent' ? 'role_parent' : 'role_none' },
       }),
       prisma.classMember.deleteMany({ where: { stableUid } }),
     ]);
     if (classIds.length > 0) {
       await prisma.class.deleteMany({
-        where: { id: { in: classIds }, members: { none: {} } },
+        where: { id: { in: classIds }, members: { none: {} }, reminders: { none: {} } },
       });
     }
   } else {
-    await prisma.user.update({ where: { stableUid }, data: { role } });
+    // A student by an admin's word: the class still comes from WebUntis, at
+    // the account's next sign-in.
+    const pending = user.role !== 'student' || user.webuntisKlasseId === 0;
+    await prisma.user.update({
+      where: { stableUid },
+      data: { role, roleLocked: true, ...(pending ? { classNote: null, classCheckVersion: 0 } : {}) },
+    });
   }
 
   const adminUsername = adminUsernameFromReq(req.headers['authorization']);
   logger.info('Admin action: set user role', { action: 'set_user_role', adminUsername, stableUid, role });
-  audit(req, 'user.role', { type: 'user', id: stableUid }, { from: user.role, to: role }, user.schoolId);
+  audit(req, 'user.role', { type: 'user', id: stableUid }, { from: user.role, to: role === 'auto' ? user.role : role, locked: role !== 'auto' }, user.schoolId);
 
-  res.json({ stableUid, role });
+  res.json({ stableUid, role: role === 'auto' ? user.role : role, roleLocked: role !== 'auto' });
 });
 
 // ─── PATCH /api/admin/users/:stableUid/password ───────────────────────────────
@@ -582,7 +599,8 @@ router.patch('/users/:stableUid/password', requireAdmin, requirePermission('user
   const passwordHash = await bcrypt.hash(password, config.bcryptRounds);
   await prisma.user.update({
     where: { stableUid },
-    data: { passwordHash, isUntisUser: false },
+    // An admin's password: a WebUntis sign-in of the name never takes it over.
+    data: { passwordHash, isUntisUser: false, localOrigin: 'admin' },
   });
 
   // A password reset is an incident-response action — it must actually cut
@@ -596,15 +614,28 @@ router.patch('/users/:stableUid/password', requireAdmin, requirePermission('user
 
 // ─── GET /api/admin/users ─────────────────────────────────────────────────────
 
+// The figures above the account list in one request: roles, and how the
+// pupils' classes stand (services/accountClassReview.ts).
+router.get('/users/summary', requireAdmin, requirePermission('users.view'), async (req: Request, res: Response): Promise<void> => {
+  const filterSchoolRaw = typeof req.query['schoolId'] === 'string' ? req.query['schoolId'].trim().toLowerCase() : '';
+  const filterSchool = scopeSchool(req) ?? (filterSchoolRaw ? (await schoolById(filterSchoolRaw))?.id ?? '__none__' : null);
+  const adminUids = (await prisma.admin.findMany({ select: { stableUid: true } })).map((a) => a.stableUid);
+  res.json({ ...(await classSummary(filterSchool, adminUids)), classRulesVersion: CLASS_CHECK_VERSION });
+});
+
+const USER_KINDS = new Set(['student', 'parent', 'none', 'admin', 'noclass', 'pending', 'review']);
+
 router.get('/users', requireAdmin, requirePermission('users.view'), async (req: Request, res: Response): Promise<void> => {
   const search = typeof req.query['search'] === 'string' ? req.query['search'].trim().slice(0, 100) : '';
   // One filter for the kind of account: 'student', 'parent', 'none' (no role
-  // and no admin), 'admin' (has panel access). Anything else: all accounts.
-  // Every filter runs in the database before paging, so totals and pages
-  // always describe the filtered set (the panel used to filter admins on the
-  // loaded page only, which spread two admins over several pages).
+  // and no admin), 'admin' (has panel access), 'noclass' (pupils WebUntis
+  // named no class for), 'pending' (pupils whose class waits for their next
+  // sign-in), 'review' (accounts an admin should look at). Anything else: all
+  // accounts. Every filter runs in the database before paging, so totals and
+  // pages always describe the filtered set (the panel used to filter admins
+  // on the loaded page only, which spread two admins over several pages).
   const roleRaw = typeof req.query['role'] === 'string' ? req.query['role'] : undefined;
-  const kind = roleRaw === 'student' || roleRaw === 'parent' || roleRaw === 'none' || roleRaw === 'admin' ? roleRaw : undefined;
+  const kind = roleRaw && USER_KINDS.has(roleRaw) ? roleRaw : undefined;
   const page = intQueryParam(req.query['page'], 1, 1, 1_000_000);
   const limit = intQueryParam(req.query['limit'], 20, 1, 100);
   // Global view: optionally one school's accounts.
@@ -614,29 +645,34 @@ router.get('/users', requireAdmin, requirePermission('users.view'), async (req: 
   // A lapsed grant must not show up as admin when the panel's countdown ends.
   await expireLapsedAdminSetups();
 
-  const adminRows = await prisma.admin.findMany({
-    select: { stableUid: true, mustChangePassword: true, setupExpiresAt: true, oneTimePasswordEnc: true, grantedBy: true },
-  });
+  const [adminRows, shared] = await Promise.all([
+    prisma.admin.findMany({
+      select: { stableUid: true, mustChangePassword: true, setupExpiresAt: true, oneTimePasswordEnc: true, grantedBy: true },
+    }),
+    sharedRecords(filterSchool),
+  ]);
   const adminUids = adminRows.map((a) => a.stableUid);
+  const kindWhere: Prisma.UserWhereInput = kind === 'admin'
+    ? { OR: [{ stableUid: { in: adminUids } }, { username: { in: config.adminUsernames.map((n) => n.toLowerCase()) } }] }
+    : kind === 'none'
+      // "Without a role" means no role at all: an admin set to "none" still
+      // has the admin role and is not listed there.
+      ? { role: 'none', ...(adminUids.length > 0 ? { stableUid: { notIn: adminUids } } : {}) }
+      : kind === 'noclass' ? withoutClassWhere
+        : kind === 'pending' ? pendingWhere
+          : kind === 'review' ? reviewWhere(shared)
+            : kind ? { role: kind } : {};
   const where: Prisma.UserWhereInput = {
-    ...(search ? { username: { contains: likeText(search) } } : {}),
-    ...(filterSchool ? { schoolId: filterSchool } : {}),
-    ...(kind === 'admin'
-      ? { OR: [{ stableUid: { in: adminUids } }, { username: { in: config.adminUsernames.map((n) => n.toLowerCase()) } }] }
-      : kind === 'none'
-        // "Without a role" means no role at all: an admin set to "none" still
-        // has the admin role and is not listed there.
-        ? { role: 'none', ...(adminUids.length > 0 ? { stableUid: { notIn: adminUids } } : {}) }
-        : kind ? { role: kind } : {}),
+    AND: [
+      search ? { username: { contains: likeText(search) } } : {},
+      filterSchool ? { schoolId: filterSchool } : {},
+      kindWhere,
+    ],
   };
 
-  const total = await prisma.user.count({ where });
-  // A page past the end (the filter shrank the set) shows the last page.
-  const lastPage = Math.max(1, Math.ceil(total / limit));
-  const effectivePage = Math.min(page, lastPage);
-  const users = await prisma.user.findMany({
+  const pageOf = (n: number) => prisma.user.findMany({
     where,
-    skip: (effectivePage - 1) * limit,
+    skip: (n - 1) * limit,
     take: limit,
     // The id breaks ties, so no account appears on two pages or on none.
     orderBy: [{ createdAt: 'desc' }, { stableUid: 'asc' }],
@@ -649,6 +685,12 @@ router.get('/users', requireAdmin, requirePermission('users.view'), async (req: 
       },
     },
   });
+  // Counted and read together; only a page past the end (the filter shrank
+  // the set) is read again, as the last page.
+  const [total, firstTry] = await Promise.all([prisma.user.count({ where }), pageOf(page)]);
+  const lastPage = Math.max(1, Math.ceil(total / limit));
+  const effectivePage = Math.min(page, lastPage);
+  const users = effectivePage === page ? firstTry : await pageOf(effectivePage);
 
   const adminByUid = new Map(adminRows.map((a) => [a.stableUid, a]));
   const names = users.filter((u) => adminByUid.has(u.stableUid)).map((u) => u.username);
@@ -693,6 +735,13 @@ router.get('/users', requireAdmin, requirePermission('users.view'), async (req: 
       // "Admin vergeben" asks for a one-time password for this account.
       needsOneTimePassword: grantNeedsOneTimePassword({ isUntisUser: u.isUntisUser, hasPassword: Boolean(u.passwordHash) }),
       role: u.role,
+      // An admin chose the role: sign-ins keep it.
+      roleLocked: u.roleLocked,
+      // Where WebUntis named the class, or why there is none (utils/accountClass.ts).
+      classSource: withClass && u.webuntisKlasseId > 0 ? u.classSource : null,
+      classNote: u.webuntisKlasseId > 0 ? null : u.classNote,
+      classCheckPending: u.isUntisUser && withClass && u.classCheckVersion < CLASS_CHECK_VERSION,
+      sharedRecord: shared.get(u.stableUid) ?? null,
       isUntisUser: u.isUntisUser,
       schoolId: u.schoolId,
       schoolName: school?.name ?? null,
@@ -718,7 +767,9 @@ router.get('/users/:stableUid', requireAdmin, requirePermission('users.view'), a
     prisma.user.findUnique({
       where: { stableUid },
       include: {
-        todos: { orderBy: { createdAt: 'desc' } },
+        // The newest ones; the count says how many there are.
+        todos: { orderBy: { createdAt: 'desc' }, take: 100 },
+        _count: { select: { todos: true } },
         classMembers: {
           include: { class: { select: { id: true, name: true, code: true } } },
           orderBy: { joinedAt: 'desc' },
@@ -755,6 +806,13 @@ router.get('/users/:stableUid', requireAdmin, requirePermission('users.view'), a
       : false,
     serverTime: new Date().toISOString(),
     role: user.role,
+    roleLocked: user.roleLocked,
+    classSource: withClass && user.webuntisKlasseId > 0 ? user.classSource : null,
+    classNote: user.webuntisKlasseId > 0 ? null : user.classNote,
+    classCheckPending: user.isUntisUser && withClass && user.classCheckVersion < CLASS_CHECK_VERSION,
+    classCheckedAt: user.classCheckedAt?.toISOString() ?? null,
+    sharedRecord: (await sharedRecords(user.schoolId)).get(user.stableUid) ?? null,
+    todoCount: user._count.todos,
     isUntisUser: user.isUntisUser,
     schoolId: user.schoolId,
     schoolName: school?.name ?? null,
@@ -1080,20 +1138,28 @@ router.get('/classes', requireAdmin, requirePermission('classes.view'), async (r
 // app, website, installed website …), each with its place, address and last
 // use (services/sessions.ts), newest use first; and the sign-ins per day of
 // the last 14 days from the login history.
-router.get('/sessions', requireAdmin, requirePermission('sessions.view'), async (req: Request, res: Response): Promise<void> => {
+router.get('/sessions', requireAdmin, requirePermission('sessions.view'), cachedAnswer(5_000), async (req: Request, res: Response): Promise<void> => {
   const schoolId = scopeSchool(req);
   const idle = new Date(Date.now() - config.sessionIdleDays * 24 * 60 * 60 * 1000);
-  const rows = await prisma.refreshToken.findMany({
-    where: { revokedAt: null, lastUsedAt: { gt: idle }, ...(schoolId ? { user: { schoolId } } : {}) },
-    orderBy: { lastUsedAt: 'desc' },
-    take: 3000,
-    select: {
-      ...SESSION_SELECT,
-      stableUid: true,
-      expiresAt: true,
-      user: { select: { username: true, role: true, webuntisKlasseName: true } },
-    },
-  });
+  const since = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000);
+  // The devices and the sign-ins of the last two weeks, read together.
+  const [rows, logins] = await Promise.all([
+    prisma.refreshToken.findMany({
+      where: { revokedAt: null, lastUsedAt: { gt: idle }, ...(schoolId ? { user: { schoolId } } : {}) },
+      orderBy: { lastUsedAt: 'desc' },
+      take: 3000,
+      select: {
+        ...SESSION_SELECT,
+        stableUid: true,
+        expiresAt: true,
+        user: { select: { username: true, role: true, webuntisKlasseName: true } },
+      },
+    }),
+    prisma.loginEvent.findMany({
+      where: { createdAt: { gte: since }, ...(schoolId ? { user: { schoolId } } : {}) },
+      select: { createdAt: true },
+    }),
+  ]);
 
   type Person = {
     stableUid: string; username: string; role: string; className: string; lastUsedAt: string;
@@ -1117,11 +1183,6 @@ router.get('/sessions', requireAdmin, requirePermission('sessions.view'), async 
   }
 
   const tz = config.usageAnalytics.timezone;
-  const since = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000);
-  const logins = await prisma.loginEvent.findMany({
-    where: { createdAt: { gte: since }, ...(schoolId ? { user: { schoolId } } : {}) },
-    select: { createdAt: true },
-  });
   const signInsPerDay: Record<string, number> = {};
   for (const login of logins) {
     const day = localDayAndHour(login.createdAt, tz).dayKey;
@@ -1522,7 +1583,7 @@ router.post('/classes/:id/members', requireAdmin, requirePermission('classes.man
 // ─── GET /api/admin/stats/requests-chart ─────────────────────────────────────
 // Requests per hour for the last 24 hours
 
-router.get('/stats/requests-chart', requireAdmin, requirePermission('dashboard.view'), async (req: Request, res: Response): Promise<void> => {
+router.get('/stats/requests-chart', requireAdmin, requirePermission('dashboard.view'), cachedAnswer(30_000), async (req: Request, res: Response): Promise<void> => {
   type HourRow = { hour: string; count: bigint; errors: bigint };
 
   // The apps' requests only: the panel's own polling is not activity.
@@ -1572,7 +1633,7 @@ router.get('/live', allowDuringSecondFactorSetup, requireAdmin, (_req: Request, 
 
 // ─── GET /api/admin/stats/top-endpoints ──────────────────────────────────────
 
-router.get('/stats/top-endpoints', requireAdmin, requirePermission('dashboard.view'), async (req: Request, res: Response): Promise<void> => {
+router.get('/stats/top-endpoints', requireAdmin, requirePermission('dashboard.view'), cachedAnswer(30_000), async (req: Request, res: Response): Promise<void> => {
   type EndpointRow = { path: string; count: bigint; totalMs: unknown };
 
   // Raw paths first (ids included), then grouped by route in code: a route
@@ -1829,7 +1890,7 @@ router.post('/dishes/reset', requireAdmin, requirePermission('mensa.manage'), as
     let imported = 0;
     for (const d of dishes) {
       // Fresh UUIDs so a source id can live in BOTH plans simultaneously.
-      const id = uuidv4();
+      const id = randomUUID();
       const stableKey = slugifyDishName(d.nameDe);
       const image = imageOf.get(stableKey);
       await tx.dish.create({
@@ -1988,20 +2049,64 @@ router.post('/dishes/auto-rotate', requireAdmin, requirePermission('mensa.manage
 // A year and a bit: the next summer holidays are always in it.
 const SCHEDULE_AHEAD_DAYS = 400;
 
+// The school days ahead the panel previews: which plan week the menu serves
+// on each, or why the Mensa is closed.
+const UPCOMING_DAYS = 10;
+
+async function upcomingDays(menuId: string, schedule: MenuSchedule): Promise<Array<{ date: string; off: string | null; plan: string | null; week: number | null }>> {
+  const today = localTodayIso();
+  const days: string[] = [];
+  for (let day = today; days.length < UPCOMING_DAYS; day = isoAddDays(day, 1)) {
+    const weekday = new Date(`${day}T00:00:00Z`).getUTCDay();
+    if (weekday !== 0 && weekday !== 6) days.push(day);
+  }
+  const dishes = await prisma.dish.findMany({
+    where: { menuId, date: { gte: new Date(`${days[0]}T00:00:00Z`), lte: new Date(`${days[days.length - 1]}T00:00:00Z`) } },
+    select: { date: true, plan: true, weekOrdinal: true },
+    orderBy: [{ date: 'asc' }, { sortOrder: 'asc' }],
+  });
+  const served = new Map<string, { plan: string; week: number }>();
+  for (const d of dishes) {
+    const day = d.date.toISOString().slice(0, 10);
+    if (!served.has(day)) served.set(day, { plan: d.plan, week: d.weekOrdinal });
+  }
+  return days.map((date) => {
+    const off = schedule.mode === 'auto' ? schedule.dayOffOf(date) : null;
+    const s = served.get(date);
+    return { date, off: off && off !== 'weekend' ? off : null, plan: s?.plan ?? null, week: s && s.week > 0 ? s.week : null };
+  });
+}
+
+function localTodayIso(): string {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+}
+
 async function scheduleJson(menuId: string, schedule: MenuSchedule) {
   const today = currentWeekMondayIso();
-  const [schoolIds, schools, menu] = await Promise.all([
+  const [schoolIds, schools, menu, upcoming] = await Promise.all([
     schoolsOfMenu(menuId),
     listSchools(),
-    prisma.mensaMenu.findUnique({ where: { id: menuId }, select: { pullMode: true, sources: true, sourcePage: true, sourceCanteen: true } }),
+    prisma.mensaMenu.findUnique({
+      where: { id: menuId },
+      select: { pullMode: true, sources: true, sourcePage: true, sourceCanteen: true, arrangedAt: true, arrangedMoved: true, summerFrom: true, winterFrom: true },
+    }),
+    upcomingDays(menuId, schedule),
   ]);
   const onRecord = new Map(schedule.schools.map((s) => [s.schoolId, s]));
+  const pullMenu = { id: menuId, pullMode: menu?.pullMode ?? 'auto', sourcePage: menu?.sourcePage ?? '' };
   return {
     mode: schedule.mode,
     season: schedule.season,
     calendar: schedule.calendar,
     overrides: schedule.overrides,
     breaks: menuBreaks(schedule.dayOffOf, today, isoAddDays(today, SCHEDULE_AHEAD_DAYS)),
+    // The next school days: which plan week the menu serves, or the break.
+    upcoming,
+    // The server's own last move of dishes onto other days.
+    arranged: menu?.arrangedAt ? { at: menu.arrangedAt.toISOString(), moved: menu.arrangedMoved } : null,
+    // How often plans are pulled by themselves on this installation (0: never).
+    pullIntervalHours: config.mensaPullIntervalHours,
     // Whether each school's WebUntis holidays have come in yet.
     schools: schoolIds.map((id) => ({
       id,
@@ -2025,6 +2130,7 @@ async function scheduleJson(menuId: string, schedule: MenuSchedule) {
         message: row?.message ?? '',
         checkedAt: row?.checkedAt?.toISOString() ?? null,
         changedAt: row?.changedAt?.toISOString() ?? null,
+        nextPullAt: nextPullAt(pullMenu, plan, row)?.toISOString() ?? null,
       };
     }),
   };
@@ -2040,14 +2146,23 @@ const dayKey = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((v) => !Number.isN
 const menuScheduleSchema = z.object({
   mode: z.enum(['auto', 'manual']),
   calendar: z.enum(['suedtirol', 'webuntis']),
-  overrides: z.array(z.object({ start: dayKey, end: dayKey, open: z.boolean() }).refine((o) => o.end >= o.start)).max(60).optional(),
+  overrides: z.array(z.object({ start: dayKey, end: dayKey, open: z.boolean(), note: z.string().max(80).optional() }).refine((o) => o.end >= o.start)).max(60).optional(),
   seasonRule: z.enum(['dates', 'clock']).optional(),
+  // Only how many dishes the change would move; nothing is stored.
+  dryRun: z.boolean().optional(),
 });
 
 router.put('/dishes/schedule', requireAdmin, requirePermission('mensa.manage'), writeLimiter, async (req: Request, res: Response): Promise<void> => {
-  const { mode, calendar, overrides, seasonRule } = menuScheduleSchema.parse(req.body);
+  const { mode, calendar, overrides, seasonRule, dryRun } = menuScheduleSchema.parse(req.body);
   const menuId = await editableMenu(req, req.body?.menuId);
-  await prisma.mensaMenu.update({ where: { id: menuId }, data: { mode, calendar, ...(seasonRule ? { seasonRule } : {}), ...(overrides ? { dayOverrides: JSON.stringify(overrides) } : {}) } });
+  if (dryRun) {
+    const proposed = await proposedSchedule(menuId, { mode, calendar, overrides, seasonRule });
+    res.json({ preview: { moved: await previewArrange(menuId, proposed) } });
+    return;
+  }
+  // Stored as the parser reads them back (notes cleaned to one plain line).
+  const stored = overrides ? dayOverridesFrom(JSON.stringify(overrides)) : undefined;
+  await prisma.mensaMenu.update({ where: { id: menuId }, data: { mode, calendar, ...(seasonRule ? { seasonRule } : {}), ...(stored ? { dayOverrides: JSON.stringify(stored) } : {}) } });
   const schedule = await menuSchedule(menuId);
   const moved = await arrangeMenu(menuId, schedule);
   invalidateDishesCache();
@@ -2125,13 +2240,25 @@ router.get('/dish-ratings', requireAdmin, requirePermission('comments.view'), as
     res.json([]);
     return;
   }
+  // ?summary=1: only each dish's average and count (the dish list); ?dishKey=:
+  // one dish, with every vote (its editor). Without either: everything.
+  const summary = req.query['summary'] === '1';
+  const onlyKey = typeof req.query['dishKey'] === 'string' && req.query['dishKey'] ? req.query['dishKey'].slice(0, 200) : null;
   // A school's view: the votes of its own accounts only (names and stars are
   // personal data of another school's pupils otherwise).
   const [allDishes, rows] = await Promise.all([
-    prisma.dish.findMany({ where: { menuId }, orderBy: { nameDe: 'asc' } }),
-    prisma.dishRating.findMany({ where: { menuId, ...schoolWhere(req) }, orderBy: [{ dishId: 'asc' }, { createdAt: 'asc' }] }),
+    prisma.dish.findMany({
+      where: { menuId, ...(onlyKey ? { OR: [{ stableKey: onlyKey }, { stableKey: '' }] } : {}) },
+      select: { nameDe: true, imageUrl: true, stableKey: true, plan: true, date: true },
+      orderBy: { nameDe: 'asc' },
+    }),
+    prisma.dishRating.findMany({
+      where: { menuId, ...schoolWhere(req), ...(onlyKey ? { dishId: onlyKey } : {}) },
+      select: { dishId: true, stableUid: true, username: true, stars: true, createdAt: true, updatedAt: true },
+      orderBy: [{ dishId: 'asc' }, { createdAt: 'asc' }],
+    }),
   ]);
-  const uids = [...new Set(rows.map((r) => r.stableUid))];
+  const uids = summary ? [] : [...new Set(rows.map((r) => r.stableUid))];
   const users = uids.length > 0
     ? await prisma.user.findMany({ where: { stableUid: { in: uids } }, select: { stableUid: true, username: true } })
     : [];
@@ -2157,7 +2284,7 @@ router.get('/dish-ratings', requireAdmin, requirePermission('comments.view'), as
     dishesByKey.set(k, list);
   }
 
-  const allKeys = new Set<string>([...dishesByKey.keys(), ...ratingsByKey.keys()]);
+  const allKeys = new Set<string>(onlyKey ? [onlyKey] : [...dishesByKey.keys(), ...ratingsByKey.keys()]);
 
   const result = [...allKeys]
     .map((key) => {
@@ -2178,7 +2305,7 @@ router.get('/dish-ratings', requireAdmin, requirePermission('comments.view'), as
         avgStars: Math.round(avg * 10) / 10,
         count: entries.length,
         plans, // e.g. ["summer"], ["winter"], or ["summer","winter"] when shared
-        ratings: entries.map((e) => ({
+        ratings: summary ? [] : entries.map((e) => ({
           stableUid: e.stableUid,
           username: uidToUsername[e.stableUid] ?? e.username ?? e.stableUid,
           stars: e.stars,
@@ -2684,20 +2811,25 @@ router.put('/subject-images/:subject', requireAdmin, requirePermission('subjecti
     res.status(413).json({ error: 'Image too large (max 3 MB)' }); return;
   }
   // sharp goes by what the bytes are: an SVG declared as PNG would be rendered.
-  const format = await sharp(buf).metadata().then((m) => m.format, () => undefined);
+  const meta = await sharp(buf, { limitInputPixels: DISH_IMAGE_MAX_PIXELS }).metadata().catch(() => undefined);
+  const format = meta?.format;
   if (!format || !ALLOWED_FORMATS.has(format)) {
     res.status(422).json({ error: 'Das ist kein gültiges Bild' }); return;
+  }
+  // A few megabytes of file can unpack to billions of pixels: refused before decoding.
+  if ((meta.width ?? 0) * (meta.height ?? 0) > DISH_IMAGE_MAX_PIXELS) {
+    res.status(422).json({ error: 'Das Bild ist zu groß (zu viele Pixel)' }); return;
   }
 
   let mimeType = body.mimeType;
   if (body.crop) {
-    buf = Buffer.from(await sharp(buf)
+    buf = Buffer.from(await sharp(buf, { limitInputPixels: DISH_IMAGE_MAX_PIXELS })
       .extract({ left: body.crop.left, top: body.crop.top, width: body.crop.width, height: body.crop.height })
       .webp({ quality: 85 })
       .toBuffer());
     mimeType = 'image/webp';
   } else {
-    buf = Buffer.from(await sharp(buf).webp({ quality: 85 }).toBuffer());
+    buf = Buffer.from(await sharp(buf, { limitInputPixels: DISH_IMAGE_MAX_PIXELS }).webp({ quality: 85 }).toBuffer());
     mimeType = 'image/webp';
   }
 
@@ -2749,7 +2881,7 @@ router.put('/dishes/:id/image', requireAdmin, requirePermission('mensa.manage'),
 
   // sharp goes by what the bytes are, not by what was declared: only the
   // formats allowed above get through (an SVG would be rendered otherwise).
-  let buf: Buffer;
+  let buf: Buffer<ArrayBuffer>;
   try {
     const { format, width = 0, height = 0 } = await sharp(upload).metadata();
     if (!format || !ALLOWED_FORMATS.has(format) || width * height > DISH_IMAGE_MAX_PIXELS) throw new Error('format');
@@ -2827,7 +2959,7 @@ router.get('/activity-logs', requireAdmin, requirePermission('logs.frontend.view
 
 // ─── GET /api/admin/activity-logs/stats ──────────────────────────────────────
 
-router.get('/activity-logs/stats', requireAdmin, requirePermission('dashboard.view'), async (req: Request, res: Response): Promise<void> => {
+router.get('/activity-logs/stats', requireAdmin, requirePermission('dashboard.view'), cachedAnswer(15_000), async (req: Request, res: Response): Promise<void> => {
   const inSchool = schoolSql(req);
   const schoolId = scopeSchool(req);
   // "Today" is the local day the Analytics page counts in, not the server's.
@@ -3141,7 +3273,7 @@ function adminUsernameFromReq(authHeader: string | undefined): string {
 
 const importSchema = z.object({
   version: z.number(),
-  data: z.record(z.array(z.record(z.any()))),
+  data: z.record(z.string(), z.array(z.record(z.string(), z.any()))),
 });
 
 router.post('/import', requireAdmin, requirePermission('backups.manage'), async (req2: Request, res: Response): Promise<void> => {
@@ -3445,7 +3577,7 @@ const createApiKeySchema = z.object({
 router.post('/api-keys', requireAdmin, requirePermission('apikeys.manage'), writeLimiter, async (req: Request, res: Response): Promise<void> => {
   const parsed = createApiKeySchema.safeParse(req.body);
   if (!parsed.success) {
-    res.status(422).json({ error: parsed.error.errors.map((e) => e.message).join('; ') });
+    res.status(422).json({ error: parsed.error.issues.map((e) => e.message).join('; ') });
     return;
   }
   const { name, purpose, platform, scopes, expiresAt } = parsed.data;
@@ -3522,7 +3654,7 @@ const backupConfigSchema = z.object({
 router.patch('/backups/config', requireAdmin, requirePermission('backups.manage'), writeLimiter, async (req: Request, res: Response): Promise<void> => {
   const parsed = backupConfigSchema.safeParse(req.body);
   if (!parsed.success) {
-    res.status(422).json({ error: parsed.error.errors.map((e) => e.message).join('; ') });
+    res.status(422).json({ error: parsed.error.issues.map((e) => e.message).join('; ') });
     return;
   }
   const adminUsername = adminUsernameFromReq(req.headers['authorization']);

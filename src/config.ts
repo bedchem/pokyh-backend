@@ -1,4 +1,4 @@
-import 'dotenv/config';
+import './env';
 import os from 'os';
 import path from 'path';
 
@@ -87,8 +87,19 @@ function buildDatabaseUrl(): string | undefined {
 // DATABASE_URL wins if set (Prisma CLI also reads it directly); otherwise fall
 // back to the discrete DB_* fields. Whichever we resolve is written back to the
 // environment so the Prisma client (created later) picks it up.
+// Without a pool size of its own, Prisma opens CPU cores × 2 + 1 connections
+// (5 in a two-core container), which a busy school morning queues on. A URL
+// that names `connection_limit` keeps it; any other gets DB_CONNECTION_LIMIT
+// (default 15) and a pool timeout. Several nodes of a cluster each open their
+// own pool: MySQL's max_connections (151 by default) has room for them.
+export function withPoolSize(url: string, limitText: string | undefined): string {
+  if (!/^mysql:\/\//i.test(url) || /[?&]connection_limit=/i.test(url)) return url;
+  const limit = Math.min(100, Math.max(2, parseInt(limitText ?? '', 10) || 15));
+  return `${url}${url.includes('?') ? '&' : '?'}connection_limit=${limit}&pool_timeout=20`;
+}
+
 const resolvedDatabaseUrl = process.env['DATABASE_URL'] || buildDatabaseUrl();
-if (resolvedDatabaseUrl) process.env['DATABASE_URL'] = resolvedDatabaseUrl;
+if (resolvedDatabaseUrl) process.env['DATABASE_URL'] = withPoolSize(resolvedDatabaseUrl, process.env['DB_CONNECTION_LIMIT']);
 
 const jwtSecret = requireEnv('JWT_SECRET');
 if (jwtSecret.length < 32) {
@@ -97,6 +108,14 @@ if (jwtSecret.length < 32) {
 
 const nodeEnv = process.env.NODE_ENV ?? 'development';
 const isProd = nodeEnv === 'production';
+
+// Test suites point every school at one stand-in WebUntis (tests/helpers/
+// fakeWebUntis.mjs). Only a test run may do that: anywhere else it would send
+// every sign-in to whatever address the variable names.
+const webuntisTestBase = (process.env['WEBUNTIS_TEST_BASE'] ?? '').trim().replace(/\/+$/, '');
+if (webuntisTestBase && nodeEnv !== 'test') {
+  throw new Error('WEBUNTIS_TEST_BASE is only allowed with NODE_ENV=test');
+}
 export const config = {
   nodeEnv,
   port: intEnv('PORT', 4000),
@@ -105,6 +124,8 @@ export const config = {
   // in front of the API. This keeps client-supplied X-Forwarded-For untrusted.
   trustProxy: parseTrustProxy(process.env['TRUST_PROXY']),
   databaseUrl: requireEnv('DATABASE_URL'),
+  // Connections of the admin panel's own pool for heavy figures (db.ts reportingDb).
+  reportingConnections: boundedIntEnv('DB_REPORTING_CONNECTIONS', 4, 1, 20),
   db: {
     host: process.env['DB_HOST'] ?? '',
     port: intEnv('DB_PORT', 3306),
@@ -177,6 +198,8 @@ export const config = {
       .filter(Boolean),
     // Development only: offer absence reporting regardless of WebUntis' flag.
     forceAbsenceReport: boolEnv('WEBUNTIS_FORCE_ABSENCE_REPORT', false),
+    // Tests only (NODE_ENV=test, checked above): every school's WebUntis.
+    testBase: webuntisTestBase,
   },
   webuntisSchool: process.env.WEBUNTIS_SCHOOL ?? '',
   // ── Schools ────────────────────────────────────────────────────────────────
@@ -189,6 +212,11 @@ export const config = {
   // its accounts signs in through the trusted login (X-Server-Key). Off: only
   // schools that already exist can sign in.
   schoolsAutoCreate: boolEnv('SCHOOLS_AUTO_CREATE', true),
+  // POKYH is for WebUntis accounts. Off (the default): nobody can make a
+  // POKYH-only account themselves (/auth/register, /auth/web/register); an
+  // admin still can. A self-made account could otherwise take a pupil's name
+  // before their first sign-in.
+  selfRegistration: boolEnv('SELF_REGISTRATION', false),
   // A safety net on how many schools may be added that way.
   schoolsMax: boundedIntEnv('SCHOOLS_MAX', 1000, 1, 100_000),
   // The panel's search (/api/admin/search): requests per admin and minute,
@@ -260,7 +288,8 @@ export const config = {
   // Apple refuses provider tokens older than an hour and throttles renewals
   // more often than every 20 minutes, hence the bounds.
   apnsTokenTtlMs: boundedIntEnv('APNS_TOKEN_TTL_MS', 50 * 60 * 1000, 20 * 60 * 1000, 59 * 60 * 1000),
-  webuntisBase: process.env.WEBUNTIS_BASE ?? 'https://lbs-brixen.webuntis.com/WebUntis',
+  // Empty counts as unset, like every other setting (a blanked line in .env).
+  webuntisBase: strEnv('WEBUNTIS_BASE', 'https://lbs-brixen.webuntis.com/WebUntis'),
 
   // ── Rate limiting (per-limiter, env-overridable) ───────────────────────────
   rateLimit: {
@@ -273,6 +302,12 @@ export const config = {
     // fifteen minutes (what stops guessing a password).
     webLoginMax: intEnv('RATE_LIMIT_WEB_LOGIN_MAX', 60),
     webLoginPerAccountMax: intEnv('RATE_LIMIT_WEB_LOGIN_PER_ACCOUNT_MAX', 10),
+    // The apps' sign-in (POST /auth/login with the app's WebUntis session):
+    // per address (a school's pupils share one) and per account, fifteen
+    // minutes each. Every attempt costs a few WebUntis requests.
+    appLoginMax: intEnv('RATE_LIMIT_APP_LOGIN_MAX', 120),
+    appLoginPerAccountMax: intEnv('RATE_LIMIT_APP_LOGIN_PER_ACCOUNT_MAX', 20),
+    appLoginWindowMs: intEnv('RATE_LIMIT_APP_LOGIN_WINDOW_MS', 15 * 60 * 1000),
     // Messages one website account may send to teachers (new, replies, excuses) per window.
     webMessageMax: intEnv('RATE_LIMIT_WEB_MESSAGE_MAX', 30),
     webMessageWindowMs: intEnv('RATE_LIMIT_WEB_MESSAGE_WINDOW_MS', 15 * 60 * 1000),

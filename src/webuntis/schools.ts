@@ -65,6 +65,9 @@ export function defaultSchool(): UntisSchool {
 
 /** `https://<server>/WebUntis` of a school, or of the default school. */
 export function schoolBase(school?: UntisSchool | null): string {
+  // A test run's stand-in WebUntis serves every school (config.ts refuses it
+  // outside NODE_ENV=test).
+  if (config.webuntis.testBase) return config.webuntis.testBase;
   const server = school ? allowedServer(school.server) : '';
   return server ? `https://${server}/WebUntis` : DEFAULT_BASE;
 }

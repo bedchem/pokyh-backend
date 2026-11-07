@@ -2,13 +2,13 @@
 // learn more about it in the docs: https://pris.ly/d/prisma-schema
 
 generator client {
-  provider      = "prisma-client-js"
-  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
+  provider = "prisma-client-js"
 }
 
+// The connection comes from DATABASE_URL: prisma.config.ts for the CLI,
+// src/dbAdapter.ts for the server.
 datasource db {
   provider = "mysql"
-  url      = env("DATABASE_URL")
 }
 
 model User {
@@ -29,6 +29,21 @@ model User {
   // Account role: "student" (default) or "parent". Parents have their own todos,
   // no class identity/membership and no reminders.
   role               String    @default("student") @db.VarChar(20)
+  // An admin chose the role: sign-ins keep it, whatever WebUntis says
+  // (utils/accountClass.ts decideAccountRole). Unlocked by "Automatisch".
+  roleLocked         Boolean   @default(false) @map("role_locked")
+  // The WebUntis person (student record) the account last signed in as, for
+  // spotting two accounts on one pupil's record (a parent's login on it).
+  webuntisPersonId   Int?      @map("webuntis_person_id")
+  // Where the class came from at the last check ("authenticate", "pageconfig",
+  // "timetable", …), and why an account has none ("appdata_unreadable",
+  // "shared_person", …): what the panel shows (docs/class-assignment.md).
+  classSource        String?   @map("class_source") @db.VarChar(20)
+  classNote          String?   @map("class_note") @db.VarChar(40)
+  // How a POKYH-only password came about: "admin" (made or reset by an
+  // admin) or "register" (self-registration). A WebUntis sign-in of the same
+  // name takes a self-registered account over (routes/auth.ts).
+  localOrigin        String?   @map("local_origin") @db.VarChar(10)
   // The school the account belongs to (schools.id). Set at sign-in from the
   // WebUntis school the account signed in with; every account that existed
   // before schools were introduced belongs to the default school.
@@ -53,6 +68,7 @@ model User {
 
   @@index([schoolId, createdAt])
   @@index([schoolId, role])
+  @@index([schoolId, webuntisPersonId])
   @@map("users")
 }
 
@@ -177,6 +193,9 @@ model AdminSecurity {
   lastLoginAt     DateTime? @map("last_login_at")
   // How: "password", "password+totp", "password+passkey", "passkey", …
   lastLoginMethod String?   @map("last_login_method") @db.VarChar(40)
+  // Panel tokens issued before this moment are void (a password or a second
+  // factor changed): middleware/requireAdmin.ts.
+  tokensValidFrom DateTime? @map("tokens_valid_from")
   createdAt       DateTime  @default(now()) @map("created_at")
   updatedAt       DateTime  @updatedAt @map("updated_at")
 
@@ -235,6 +254,7 @@ model ClassMember {
 
   @@id([classId, stableUid])
   @@index([stableUid])
+  @@index([username])
   @@map("class_members")
 }
 
@@ -283,6 +303,9 @@ model Reminder {
   @@index([archivedAt])
   // Speeds the per-minute "due reminders" notification scan.
   @@index([notifiedAt, remindAt])
+  // A creator's reminders (activity figures, reclaim).
+  @@index([createdBy])
+  @@index([createdByUsername])
   @@map("reminders")
 }
 
@@ -299,6 +322,9 @@ model Comment {
   reminder Reminder @relation(fields: [reminderId], references: [id], onDelete: Cascade)
 
   @@index([reminderId])
+  // An account's comments (activity figures, account deletion, reclaim).
+  @@index([stableUid])
+  @@index([username])
   @@map("comments")
 }
 
@@ -318,6 +344,8 @@ model DishComment {
   @@index([dishId])
   @@index([menuId, dishId])
   @@index([schoolId, createdAt])
+  @@index([stableUid])
+  @@index([username])
   @@map("dish_comments")
 }
 
@@ -397,6 +425,8 @@ model DishRating {
   @@index([username])
   @@index([menuId, dishId])
   @@index([schoolId])
+  // An account's votes (activity figures, reclaiming recreated accounts' votes).
+  @@index([stableUid])
   @@map("dish_ratings")
 }
 
@@ -435,6 +465,8 @@ model RefreshToken {
   apnsDevices ApnsDevice[]
 
   @@index([stableUid, deviceId])
+  // Active devices by last use (admin sessions, cleanup).
+  @@index([revokedAt, lastUsedAt])
   @@map("refresh_tokens")
 }
 
@@ -589,7 +621,8 @@ model RequestLog {
   schoolId  String?  @map("school_id") @db.VarChar(36)
   createdAt DateTime @default(now()) @map("created_at")
 
-  @@index([stableUid])
+  // An account's own requests, newest first (activity, recaps, admin detail).
+  @@index([stableUid, createdAt])
   @@index([username])
   @@index([createdAt])
   @@index([requestId])
@@ -656,12 +689,18 @@ model ArchivedUser {
   classCode          String?  @map("class_code")
   className          String?  @map("class_name")
   schoolId           String?  @map("school_id") @db.VarChar(36)
+  // Carried over the rollover, which deletes the account: an admin's role
+  // choice and a password's origin come back when the account does.
+  roleLocked         Boolean  @default(false) @map("role_locked")
+  localOrigin        String?  @map("local_origin") @db.VarChar(10)
   createdAt          DateTime @map("created_at")
 
   schoolYear SchoolYear @relation(fields: [schoolYearId], references: [id], onDelete: Cascade)
 
   @@index([schoolYearId])
   @@index([schoolYearId, stableUid])
+  // Found again by name when an account comes back (reclaim, recaps).
+  @@index([username])
   @@map("archived_users")
 }
 
@@ -706,6 +745,7 @@ model ArchivedTodo {
 
   @@index([schoolYearId])
   @@index([schoolYearId, stableUid])
+  @@index([username])
   @@map("archived_todos")
 }
 
@@ -716,20 +756,21 @@ model ArchivedTodo {
 // also those that stay after the rollover (admins; from 2026-10), as
 // their rows of the year go just the same. A recap of the year reads it.
 model ArchivedActivity {
-  id           String   @id @default(uuid())
-  schoolYearId String   @map("school_year_id")
-  stableUid    String   @map("stable_uid")
-  username     String   @default("")
-  activeDays   Int      @default(0) @map("active_days")
-  logins       Int      @default(0)
-  activeSeconds Int     @default(0) @map("active_seconds")
-  summaryJson  String   @map("summary_json") @db.Text
-  createdAt    DateTime @default(now()) @map("created_at")
+  id            String   @id @default(uuid())
+  schoolYearId  String   @map("school_year_id")
+  stableUid     String   @map("stable_uid")
+  username      String   @default("")
+  activeDays    Int      @default(0) @map("active_days")
+  logins        Int      @default(0)
+  activeSeconds Int      @default(0) @map("active_seconds")
+  summaryJson   String   @map("summary_json") @db.Text
+  createdAt     DateTime @default(now()) @map("created_at")
 
   schoolYear SchoolYear @relation(fields: [schoolYearId], references: [id], onDelete: Cascade)
 
   @@index([schoolYearId])
   @@index([schoolYearId, stableUid])
+  @@index([username])
   @@map("archived_activity")
 }
 
@@ -752,6 +793,7 @@ model ArchivedReminder {
   schoolYear SchoolYear @relation(fields: [schoolYearId], references: [id], onDelete: Cascade)
 
   @@index([schoolYearId])
+  @@index([createdByUsername])
   @@map("archived_reminders")
 }
 
@@ -823,6 +865,8 @@ model UsageSession {
   @@index([dayKey])
   @@index([stableUid, dayKey])
   @@index([lastSeenAt])
+  // A visit's first ping looks up the person's other visits of the day (routes/usage.ts).
+  @@index([dayKey, visitorKey])
   @@map("usage_sessions")
 }
 
@@ -936,19 +980,23 @@ model PrivacyConsent {
 model School {
   // Deterministic for the default school (src/services/schools.ts), so every
   // node of a cluster creates the same row.
-  id             String   @id @db.VarChar(36)
-  slug           String   @unique @db.VarChar(64)
-  name           String   @db.VarChar(160)
-  shortName      String   @default("") @map("short_name") @db.VarChar(60)
+  id               String   @id @db.VarChar(36)
+  slug             String   @unique @db.VarChar(64)
+  name             String   @db.VarChar(160)
+  shortName        String   @default("") @map("short_name") @db.VarChar(60)
   // The WebUntis school name accounts of this school sign in with
   // ("lbs-brixen"); the trusted login names it.
-  webuntisSchool String?  @unique @map("webuntis_school") @db.VarChar(100)
-  webuntisBase   String   @default("") @map("webuntis_base") @db.VarChar(300)
+  webuntisSchool   String?  @unique @map("webuntis_school") @db.VarChar(100)
+  webuntisBase     String   @default("") @map("webuntis_base") @db.VarChar(300)
+  // The school's WebUntis tenant, learned at a sign-in POKYH made with an
+  // account's own password or key; an app's session counts for this school
+  // only when it is of this tenant (webuntis/sessionIdentity.ts).
+  webuntisTenantId String?  @map("webuntis_tenant_id") @db.VarChar(40)
   // An inactive school's accounts cannot sign in; its data stays.
-  active         Boolean  @default(true)
-  createdBy      String?  @map("created_by") @db.VarChar(191)
-  createdAt      DateTime @default(now()) @map("created_at")
-  updatedAt      DateTime @updatedAt @map("updated_at")
+  active           Boolean  @default(true)
+  createdBy        String?  @map("created_by") @db.VarChar(191)
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
 
   @@map("schools")
 }
@@ -957,34 +1005,39 @@ model School {
 // be assigned to several schools; a school has at most one, and without one
 // it shows no menu at all.
 model MensaMenu {
-  id        String   @id @db.VarChar(36)
-  name      String   @db.VarChar(120)
+  id            String    @id @db.VarChar(36)
+  name          String    @db.VarChar(120)
   // "auto": the server lays the plans' weeks on school weeks and waits out
   // holidays (services/mensaSchedule.ts). "manual": the dates stay as an
   // administrator sets them; past weeks only roll to the end of their plan.
-  mode      String   @default("auto") @db.VarChar(10)
+  mode          String    @default("auto") @db.VarChar(10)
   // What "auto" waits out: "suedtirol" (the official calendar of South Tyrol
   // plus the schools' WebUntis holidays) or "webuntis" (only those).
-  calendar  String   @default("suedtirol") @db.VarChar(20)
+  calendar      String    @default("suedtirol") @db.VarChar(20)
   // Corrections to that calendar, JSON [{ start, end, open }]: days the Mensa
   // is closed although it is school, or open although it is not.
-  dayOverrides String @default("[]") @map("day_overrides") @db.VarChar(4000)
+  dayOverrides  String    @default("[]") @map("day_overrides") @db.VarChar(4000)
   // When summer and winter plan change (utils/mensaSeason.ts): "dates", from
   // summerFrom and winterFrom (MM-DD, the canteen's own, read from its plan),
   // or "clock", with the switch to summer and winter time.
-  seasonRule String  @default("dates") @map("season_rule") @db.VarChar(10)
-  summerFrom String  @default("04-01") @map("summer_from") @db.VarChar(5)
-  winterFrom String  @default("11-01") @map("winter_from") @db.VarChar(5)
+  seasonRule    String    @default("dates") @map("season_rule") @db.VarChar(10)
+  summerFrom    String    @default("04-01") @map("summer_from") @db.VarChar(5)
+  winterFrom    String    @default("11-01") @map("winter_from") @db.VarChar(5)
   // A page that links the canteen's plans as PDFs, and the canteen's name on
   // it ("Mensa St. Michael"): the plans are found there anew at each pull.
-  sourcePage    String @default("") @map("source_page") @db.VarChar(1000)
-  sourceCanteen String @default("") @map("source_canteen") @db.VarChar(120)
+  sourcePage    String    @default("") @map("source_page") @db.VarChar(1000)
+  sourceCanteen String    @default("") @map("source_canteen") @db.VarChar(120)
   // "auto": the plans are pulled from their sources regularly; "manual": only
   // when an administrator asks (services/mensaSource.ts).
-  pullMode  String   @default("auto") @map("pull_mode") @db.VarChar(10)
-  createdBy String?  @map("created_by") @db.VarChar(191)
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
+  pullMode      String    @default("auto") @map("pull_mode") @db.VarChar(10)
+  // The last time the server moved dishes onto other days by itself (the
+  // layout in "auto", rolled weeks in "manual"), and how many: shown in the
+  // panel (routes/admin.ts scheduleJson).
+  arrangedAt    DateTime? @map("arranged_at")
+  arrangedMoved Int       @default(0) @map("arranged_moved")
+  createdBy     String?   @map("created_by") @db.VarChar(191)
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
 
   schools MensaMenuSchool[]
   sources MensaMenuSource[]

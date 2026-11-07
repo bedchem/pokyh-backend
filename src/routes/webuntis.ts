@@ -6,6 +6,8 @@ import type { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simp
 import { prisma } from '../db';
 import { config } from '../config';
 import { AppError } from '../utils/errors';
+import { TtlCache } from '../utils/cache';
+import { mapLimit } from '../utils/singleFlight';
 import { withWwwOriginAlias } from '../utils/cors';
 import { logger } from '../utils/logger';
 import { apiKeyMiddleware } from '../middleware/apiKey';
@@ -42,6 +44,7 @@ import {
   untisError,
   untisErrorCode,
   untisGetText,
+  tenantIdOf,
   type UntisSession,
 } from '../webuntis/client';
 import {
@@ -64,6 +67,8 @@ import { readTimetableFilter } from '../webuntis/timetableFilter';
 import QRCode from 'qrcode';
 import { accountClassForRole, positiveId } from '../webuntis/accountClass';
 import { resolveAccount, type ResolvedAccount } from '../webuntis/accountResolver';
+import { verifySessionIdentity } from '../webuntis/sessionIdentity';
+import { rememberSchoolTenant, webuntisTenantOf } from '../services/schools';
 import { CLASS_CHECK_VERSION } from '../utils/accountClass';
 import { absenceWriteOutcome, conflictTexts, hmNumber, ymdNumber } from '../webuntis/absences';
 import { absenceSpan, composeExcuse, excuseLocale, parseExcuseSubject, type ExcuseAbsence, type ExcuseSpan } from '../webuntis/excuseMessage';
@@ -449,16 +454,18 @@ async function signInWebsite(req: Request, res: Response, input: WebsiteSignIn):
     // class rules, so WebUntis only has to sign in again; a new sign-in, and
     // a session from before the current rules, looks it all up.
     const previous = input.renewing ? readSession(req) : null;
-    const account: ResolvedAccount = previous && reusableResolution(previous)
+    const reused = previous !== null && reusableResolution(previous);
+    const account: ResolvedAccount = reused
       ? {
         kind: previous.accountKind!,
         studentId: previous.studentId,
         evidence: previous.accountKind === 'student'
-          ? { kind: 'class', klasseId: previous.klasseId, klasseName: previous.klasseName ?? '' }
-          : { kind: 'none' },
+          ? { kind: 'class', klasseId: previous.klasseId, klasseName: previous.klasseName ?? '', source: 'authenticate' }
+          : { kind: 'none', note: previous.accountKind === 'parent' ? 'role_parent' : 'not_student' },
         isParent: previous.accountKind === 'parent',
         imageUrl: previous.imageUrl,
         loginName: '',
+        studentRecordId: 0,
       }
       : await resolveAccount({
         base: BASE, school, sessionId, cookie, username,
@@ -481,8 +488,20 @@ async function signInWebsite(req: Request, res: Response, input: WebsiteSignIn):
         // Only a confirmed student gets a class; guardians and every other
         // account none (completeWebUntisLogin decides, authoritatively).
         const schoolId = await schoolIdRequest;
+        // A sign-in POKYH made itself with the password or key is certain of
+        // its school: the school's WebUntis tenant is learned from it (an
+        // app's session is then only accepted of that tenant).
+        if (!input.adopted) {
+          void bearerRequest.then((token) => {
+            const tenant = tenantIdOf(token);
+            if (tenant) return rememberSchoolTenant(schoolId, tenant);
+          }).catch(() => undefined);
+        }
         return await completeWebUntisLogin({
-          username, schoolId, ...accountFromWebUntis(account),
+          username, schoolId,
+          // A renewal reusing what its session worked out keeps the class as
+          // stored: nothing new was asked.
+          found: reused ? null : accountFromWebUntis(account),
           // This browser as a device: it keeps its device session across renewals.
           context: signInContext(req, { renewal, deviceId: webDeviceId(req, res), currentToken: readRefreshCookie(req) }),
           method: input.method,
@@ -701,21 +720,14 @@ const POLL = /^[A-Za-z0-9_-]{24,64}$/;
  * where WebUntis gives one); null otherwise.
  */
 async function adoptAppSession(school: UntisSchool, username: string, sessionId: string): Promise<{ sessionId: string; personId: number } | null> {
-  if (!/^[A-Za-z0-9._-]{8,200}$/.test(sessionId)) return null;
-  const probe: UntisSession = { sessionId, school, bearerToken: '', studentId: 0, klasseId: 0, klasseName: '', username };
-  try {
-    const appData = await fetchAppData(probe);
-    if (!appData.ok) return null;
-    const loginName = extractLoginName(appData.json);
-    if (loginName && loginName.toLowerCase() !== username.toLowerCase()) {
-      logger.warn('[webuntis qr] handed-over session belongs to another account', { school: school.loginName });
-      return null;
-    }
-    const personId = extractPersonId(appData.json);
-    return personId > 0 ? { sessionId, personId } : null;
-  } catch {
+  // Only a session WebUntis names as this account's (and, where the school's
+  // tenant is known, of that tenant): webuntis/sessionIdentity.ts.
+  const verified = await verifySessionIdentity(school, sessionId, username, await webuntisTenantOf(school.loginName)).catch(() => null);
+  if (!verified?.ok) {
+    if (verified) logger.warn('[webuntis qr] handed-over session not accepted', { school: school.loginName, code: verified.code });
     return null;
   }
+  return verified.personId > 0 ? { sessionId, personId: verified.personId } : null;
 }
 
 router.post('/qr/start', qrStartLimiter, async (req: Request, res: Response) => {
@@ -1302,8 +1314,9 @@ router.get('/grades', async (req: Request, res: Response) => {
       return;
     }
 
-    // Grades per lesson, in parallel.
-    const results = await Promise.allSettled(lessons.map(async (lesson) => {
+    // Grades per lesson, several at once (not all: a pupil with twenty
+    // subjects would send WebUntis twenty requests in the same instant).
+    const results = await mapLimit(lessons, 8, async (lesson) => {
       const lessonId = lesson.id as number;
       const subjectName = lesson.subjects?.toString() ?? lesson.subject?.toString() ?? '';
       const teacherName = lesson.teachers?.toString() ?? lesson.teacher?.toString() ?? '';
@@ -1328,7 +1341,7 @@ router.get('/grades', async (req: Request, res: Response) => {
         })
         .filter((g) => (g.markValue as number) > 0);
       return { lessonId, subjectName, teacherName, grades };
-    }));
+    });
     res.json({ subjects: results.map((r) => (r.status === 'fulfilled' ? r.value : null)).filter(Boolean) });
   } catch (e) {
     res.status(500).json({ error: errorText(e, 'Unbekannter Fehler') });
@@ -1446,8 +1459,20 @@ function parseReasons(json: unknown): { id: number; name: string }[] {
     .filter((r) => Number.isFinite(r.id) && r.name && r.name !== '---');
 }
 
+// A school's absence reasons are the same for each of its pupils: asked of
+// WebUntis once an hour per school.
+const schoolReasons = new TtlCache<ReturnType<typeof parseReasons>>(60 * 60 * 1000, 500);
+// A school's holidays likewise, a few times a day.
+const schoolHolidayList = new TtlCache<ReturnType<typeof readHolidays>>(6 * 60 * 60 * 1000, 500);
+const schoolKey = (s: UntisSession) => `${untisBase(s)}|${schoolLoginName(s.school).toLowerCase()}`;
+
 router.get('/absence-reasons', async (req: Request, res: Response) => {
   const s = session(req);
+  const known = schoolReasons.get(schoolKey(s));
+  if (known) {
+    res.json({ reasons: known });
+    return;
+  }
   const d = isoDay(new Date()).replace(/-/g, '');
   const candidates = [
     config.webuntis.paths.absenceReasons || undefined,
@@ -1460,7 +1485,9 @@ router.get('/absence-reasons', async (req: Request, res: Response) => {
       else res.status(503).json({ error: 'Abwesenheitsgründe konnten gerade nicht geladen werden.' });
       return;
     }
-    res.json({ reasons: parseReasons(result.json) });
+    const reasons = parseReasons(result.json);
+    schoolReasons.set(schoolKey(s), reasons);
+    res.json({ reasons });
   } catch (e) {
     res.status(500).json({ error: errorText(e) });
   }
@@ -2287,6 +2314,11 @@ router.get('/absences/times', async (req: Request, res: Response) => {
 router.get('/holidays', async (req: Request, res: Response) => {
   const s = session(req);
   const from = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000);
+  const known = schoolHolidayList.get(schoolKey(s));
+  if (known) {
+    res.json({ holidays: known.filter((h) => h.end >= isoDay(from)) });
+    return;
+  }
   try {
     const r = await rpc<unknown>(s, 'getHolidays');
     if (!r.ok) {
@@ -2294,7 +2326,9 @@ router.get('/holidays', async (req: Request, res: Response) => {
       else res.status(503).json({ error: 'Die Ferien konnten gerade nicht geladen werden.' });
       return;
     }
-    res.json({ holidays: readHolidays(r.result, isoDay(from)) });
+    const holidays = readHolidays(r.result, isoDay(from));
+    schoolHolidayList.set(schoolKey(s), holidays);
+    res.json({ holidays });
   } catch {
     res.status(503).json({ error: 'Die Ferien konnten gerade nicht geladen werden.' });
   }

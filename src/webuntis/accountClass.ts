@@ -105,6 +105,27 @@ function roleNames(json: unknown): string[] {
 }
 
 /**
+ * Whether the app-data's user lists students (`user.students[]`,
+ * `user.children[]`) other than the person themselves.
+ */
+export function listsOtherStudents(json: unknown, ownPersonId: unknown): boolean {
+  const own = positiveId(ownPersonId);
+  if (own === 0) return false;
+  const holders = [child(child(json, 'data'), 'user'), child(json, 'user'), child(json, 'data'), json];
+  for (const holder of holders) {
+    for (const key of ['students', 'children']) {
+      const list = child(holder, key);
+      if (!Array.isArray(list)) continue;
+      if (list.some((entry) => {
+        const id = positiveId(child(entry, 'id') ?? child(entry, 'personId') ?? child(entry, 'studentId'));
+        return id > 0 && id !== own;
+      })) return true;
+    }
+  }
+  return false;
+}
+
+/**
  * What the sign-in is, from `authenticate`'s person type and the app-data
  * (`appData` null when it could not be read).
  *
@@ -114,10 +135,19 @@ function roleNames(json: unknown): string[] {
  * student. For the same reason a student is only a student once the app-data
  * was read and shows no such marker.
  */
-export function accountKindOf(personType: unknown, appData: unknown, additionalParentTags: readonly string[] = []): AccountKind {
+export function accountKindOf(
+  personType: unknown,
+  appData: unknown,
+  additionalParentTags: readonly string[] = [],
+  ownPersonId: unknown = 0,
+): AccountKind {
   const type = positiveId(personType);
   if (type === PERSON_TYPE.PARENT) return 'parent';
   if (appData != null && containsParentRoleTag(appData, additionalParentTags)) return 'parent';
+  // A guardian's app-data lists their children; a pupil's lists at most
+  // themselves. Only with the own person known: without it, a pupil's own
+  // entry there would look like a child.
+  if (appData != null && listsOtherStudents(appData, ownPersonId)) return 'parent';
   if (type > 0 && type !== PERSON_TYPE.STUDENT) return 'other';
   if (appData == null) return 'unknown';
   if (type === PERSON_TYPE.STUDENT) return 'student';
@@ -135,7 +165,7 @@ export function studentClassId(student: WebUntisStudentClass | undefined): numbe
 }
 
 /** Where a student's class was found (./accountResolver.ts). */
-export type ClassSource = 'authenticate' | 'students' | 'app-data' | 'timetable';
+export type ClassSource = Exclude<import('../utils/accountClass').ClassSource, 'kept'>;
 
 /**
  * The ids WebUntis gives for the signed-in student's own class, most
@@ -149,14 +179,111 @@ export function ownClassCandidates(
   authenticated: { personId: unknown; klasseId: unknown },
   students: readonly WebUntisStudentClass[],
   appData: unknown,
+  pageConfig: unknown = null,
 ): Array<{ source: ClassSource; id: number }> {
   const person = positiveId(personId);
   if (person === 0) return [];
   return [
     { source: 'authenticate' as const, id: positiveId(authenticated.personId) === person ? positiveId(authenticated.klasseId) : 0 },
+    { source: 'pageconfig' as const, id: pageConfig != null ? pageConfigClassId(pageConfig, person) : 0 },
     { source: 'students' as const, id: studentClassId(students.find((student) => positiveId(student.id) === person)) },
     { source: 'app-data' as const, id: appData != null ? findStudentClassIdInData(appData, person) : 0 },
   ].filter((candidate) => candidate.id > 0);
+}
+
+// The elements of a weekly-timetable answer (`data.elements`, also nested
+// under `data.result.data`), whatever wrapper this instance puts around them.
+function weeklyData(json: unknown): unknown {
+  const data = child(json, 'data');
+  return child(child(data, 'result'), 'data') ?? child(data, 'result') ?? data ?? json;
+}
+
+/**
+ * The pupil's class in WebUntis' own timetable page set-up
+ * (`public/timetable/weekly/pageconfig?type=5`): the `klasseId` of the
+ * element that is the signed-in person, or 0.
+ */
+export function pageConfigClassId(json: unknown, personId: unknown): number {
+  const person = positiveId(personId);
+  if (person === 0) return 0;
+  const elements = child(weeklyData(json), 'elements');
+  if (!Array.isArray(elements)) return 0;
+  const own = elements.find((element) => {
+    const type = positiveId(child(element, 'type'));
+    return positiveId(child(element, 'id')) === person && (type === 0 || type === PERSON_TYPE.STUDENT);
+  }) as WebUntisStudentClass | undefined;
+  return studentClassId(own);
+}
+
+/** WebUntis numbers a class element 1 in its weekly timetable. */
+const CLASS_ELEMENT = 1;
+
+/**
+ * The classes of each of the pupil's lessons in a weekly-timetable answer
+ * (`public/timetable/weekly/data`, `elementPeriods[<person>][].elements`,
+ * type 1), by id: no name has to be looked up.
+ */
+export function weeklyLessonClassIds(json: unknown, personId: unknown): number[][] {
+  const person = positiveId(personId);
+  if (person === 0) return [];
+  const periods = child(child(weeklyData(json), 'elementPeriods'), String(person));
+  if (!Array.isArray(periods)) return [];
+  const lessons: number[][] = [];
+  for (const period of periods) {
+    const elements = child(period, 'elements');
+    if (!Array.isArray(elements)) continue;
+    const ids = [...new Set(elements
+      .filter((element) => positiveId(child(element, 'type')) === CLASS_ELEMENT)
+      .map((element) => positiveId(child(element, 'id')))
+      .filter((id) => id > 0))];
+    if (ids.length > 0) lessons.push(ids);
+  }
+  return lessons;
+}
+
+/** The classes a weekly-timetable answer describes (its type-1 elements), as `getKlassen` lists classes. */
+export function weeklyClassElements(json: unknown): WebUntisKlasse[] {
+  const elements = child(weeklyData(json), 'elements');
+  if (!Array.isArray(elements)) return [];
+  return elements
+    .filter((element) => positiveId(child(element, 'type')) === CLASS_ELEMENT && positiveId(child(element, 'id')) > 0)
+    .map((element) => ({
+      id: positiveId(child(element, 'id')),
+      name: child(element, 'name') ?? child(element, 'displayname'),
+      longName: child(element, 'longName') ?? child(element, 'longname'),
+    }));
+}
+
+/**
+ * The pupil's class from the class ids of their lessons: the one id in more
+ * than half of them and ahead of every other (as majorityClassName, by id).
+ */
+export function majorityClassId(lessons: readonly (readonly number[])[]): number {
+  const counted = lessons.filter((ids) => ids.length > 0);
+  if (counted.length < MIN_TIMETABLE_LESSONS) return 0;
+  const tally = new Map<number, number>();
+  for (const ids of counted) for (const id of new Set(ids)) tally.set(id, (tally.get(id) ?? 0) + 1);
+  const [first, second] = [...tally.entries()].sort((a, b) => b[1] - a[1]);
+  if (!first || first[1] * 2 <= counted.length) return 0;
+  if (second && second[1] === first[1]) return 0;
+  return first[0];
+}
+
+/**
+ * Every class list read at a sign-in, merged by id (the first name wins):
+ * `getKlassen`, the classes WebUntis' timetable picker offers, the classes a
+ * weekly timetable describes. Null when none of them could be read.
+ */
+export function classDirectory(...lists: ReadonlyArray<readonly WebUntisKlasse[] | null>): WebUntisKlasse[] | null {
+  if (lists.every((list) => list === null)) return null;
+  const merged = new Map<number, WebUntisKlasse>();
+  for (const list of lists) {
+    for (const klasse of list ?? []) {
+      const id = positiveId(klasse.id);
+      if (id > 0 && !merged.has(id)) merged.set(id, { id, name: klasse.name, longName: klasse.longName });
+    }
+  }
+  return [...merged.values()];
 }
 
 /**
@@ -168,10 +295,12 @@ export function ownClassCandidates(
 export function pickOwnClass(
   candidates: ReadonlyArray<{ source: ClassSource; id: number }>,
   klassen: readonly WebUntisKlasse[] | null,
+  /** Classes known from elsewhere (timetable picker, weekly timetable): only for the name when `getKlassen` was unread. */
+  names: readonly WebUntisKlasse[] = [],
 ): { picked: { id: number; name: string; source: ClassSource } | null; rejected: ClassSource[] } {
   const rejected: ClassSource[] = [];
   for (const { source, id } of candidates) {
-    if (klassen === null) return { picked: { id, name: '', source }, rejected };
+    if (klassen === null) return { picked: { id, name: klasseById(names, id)?.name ?? '', source }, rejected };
     const klasse = klasseById(klassen, id);
     if (klasse) return { picked: { ...klasse, source }, rejected };
     rejected.push(source);

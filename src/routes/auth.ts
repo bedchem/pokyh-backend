@@ -6,22 +6,26 @@ import { z } from 'zod';
 import { Prisma } from '@prisma/client';
 import { prisma } from '../db';
 import { config } from '../config';
-import { requireAuth } from '../middleware/auth';
-import { authLimiter, readLimiter, refreshLimiter, writeLimiter } from '../middleware/rateLimiter';
+import { APP_AUDIENCE, requireAuth } from '../middleware/auth';
+import { appLoginLimiters, authLimiter, readLimiter, refreshLimiter, writeLimiter } from '../middleware/rateLimiter';
 import { generateStableUid, generateClassCode, generateClassId } from '../utils/uid';
 import { reclaimDishRatings } from '../services/dishRatings';
 import { logger } from '../utils/logger';
 import {
   AccountRole,
-  ClassEvidence,
+  CLASS_CHECK_VERSION,
   decideAccountClass,
   decideAccountRole,
   hasClassIdentity,
   normalizeAccountClass,
   parseAccountRole,
 } from '../utils/accountClass';
-import { resolveSession, type ResolvedAccount } from '../webuntis/accountResolver';
-import { defaultSchoolId, forgetUserSchool, SchoolLimitError, schoolForLogin } from '../services/schools';
+import { resolveVerifiedSession, type ResolvedAccount } from '../webuntis/accountResolver';
+import { IDENTITY_FAILURES, verifySessionIdentity } from '../webuntis/sessionIdentity';
+import { defaultSchoolId, forgetUserSchool, SchoolLimitError, schoolForLogin, webuntisTenantOf } from '../services/schools';
+import { isOwner } from '../services/adminAccess';
+import { revokeUserTokens } from '../utils/revokedTokens';
+import { schoolYearStart } from '../services/accountClassReview';
 import { audit } from '../services/audit';
 import { announceChange } from '../services/adminLive';
 import { forgetSession as forgetUntisSession } from '../webuntis/client';
@@ -73,6 +77,8 @@ export type AuthenticatedUserResponse = {
     isUntisUser: boolean;
     role: string;
     schoolId: string | null;
+    /** Why the account has no class (utils/accountClass.ts ClassNote); null with one. */
+    classNote?: string | null;
   };
 };
 
@@ -91,6 +97,8 @@ function signJwt(payload: {
 }): string {
   return jwt.sign(payload, config.jwtSecret, {
     expiresIn: config.jwtExpiresIn,
+    audience: APP_AUDIENCE,
+    algorithm: 'HS256',
   } as jwt.SignOptions);
 }
 
@@ -246,19 +254,89 @@ async function syncUserClass(
 }
 
 const SCHOOL_TAKEN = 'Dieser Benutzername ist bereits einem Konto einer anderen Schule zugeordnet. Bitte wende dich an den Support.';
+const NAME_TAKEN_BY_ADMIN = 'Dieser Benutzername gehört zu einem POKYH-Konto mit Admin-Rechten. Bitte wende dich an den Support.';
 
 /**
- * What a resolved WebUntis sign-in means for the account: a confirmed
- * guardian or student as such; any other account (a teacher, …) has no class
- * and keeps the role it has (`claimed` for a new one).
+ * Whether another account of the school, older than this one and a student,
+ * signed in on the same pupil's record this school year. Two accounts on one
+ * record are a pupil and a parent's login on the child's record; until an
+ * admin says which is which, the newer one gets no class (a parent never
+ * lands in the class, the pupil keeps theirs). An admin's role choice
+ * decides it for good.
  */
-export function accountFromWebUntis(account: ResolvedAccount, claimed: 'student' | 'parent' = 'student'): {
-  role: 'student' | 'parent'; roleConfirmed: boolean; evidence: ClassEvidence;
-} {
-  if (account.kind === 'parent' || account.kind === 'student') {
-    return { role: account.kind, roleConfirmed: true, evidence: account.evidence };
+async function sharesPupilRecord(schoolId: string, recordId: number, self: { stableUid: string; createdAt: Date; roleLocked: boolean } | null): Promise<boolean> {
+  if (recordId <= 0 || self?.roleLocked) return false;
+  const other = await prisma.user.findFirst({
+    where: {
+      schoolId,
+      webuntisPersonId: recordId,
+      role: 'student',
+      classCheckedAt: { gte: schoolYearStart() },
+      ...(self ? { stableUid: { not: self.stableUid }, createdAt: { lt: self.createdAt } } : {}),
+    },
+    select: { stableUid: true },
+  });
+  return other !== null;
+}
+
+/**
+ * A POKYH-only account made with /auth/register under the name a WebUntis
+ * account now signs in with: the WebUntis account is the name's owner. The
+ * self-made password and everything that signs in or reaches the account
+ * without WebUntis goes (devices, push, passkeys, consent, classes); its
+ * todos stay. An admin's account (and one an admin gave a password) is never
+ * taken over.
+ */
+async function takeOverSelfRegistered(user: Prisma.UserGetPayload<object>, schoolId: string): Promise<Prisma.UserGetPayload<object>> {
+  const admin = isOwner(user.username) || (await prisma.admin.findUnique({ where: { stableUid: user.stableUid }, select: { stableUid: true } })) !== null;
+  if (admin) {
+    logger.warn('WebUntis login refused: the name belongs to a POKYH-only admin account', { action: 'login_name_admin_local', stableUid: user.stableUid });
+    audit(null, 'user.local_takeover_refused', { type: 'user', id: user.stableUid }, { reason: 'admin' }, user.schoolId);
+    throw new AppError(NAME_TAKEN_BY_ADMIN, 409);
   }
-  return { role: claimed, roleConfirmed: false, evidence: account.evidence };
+  const { stableUid } = user;
+  // Every device first (its access tokens die with it, whenever issued);
+  // the rows stay, revoked, as the record other nodes read.
+  await revokeSessions(stableUid);
+  const [taken] = await prisma.$transaction([
+    prisma.user.update({
+      where: { stableUid },
+      data: {
+        passwordHash: null, localOrigin: null, isUntisUser: true, schoolId,
+        role: 'student', roleLocked: false,
+        webuntisKlasseId: 0, webuntisKlasseName: '', classCheckVersion: 0, classSource: null, classNote: null, webuntisPersonId: null,
+      },
+    }),
+    prisma.pushSubscription.deleteMany({ where: { stableUid } }),
+    prisma.apnsDevice.deleteMany({ where: { stableUid } }),
+    prisma.webPasskey.deleteMany({ where: { stableUid } }),
+    prisma.privacyConsent.deleteMany({ where: { stableUid } }),
+    prisma.classMember.deleteMany({ where: { stableUid } }),
+  ]);
+  revokeUserTokens(stableUid);
+  forgetUserSchool(stableUid);
+  logger.warn('Self-registered account taken over by the WebUntis account of the same name', { action: 'user_local_takeover', stableUid });
+  audit(null, 'user.local_takeover', { type: 'user', id: stableUid }, { from: user.schoolId, to: schoolId }, schoolId);
+  return taken;
+}
+
+/** A self-made POKYH-only account (not one an admin made or gave a password). */
+export function isSelfRegistered(user: { passwordHash: string | null; isUntisUser: boolean; localOrigin: string | null }): boolean {
+  return Boolean(user.passwordHash) && !user.isUntisUser && user.localOrigin !== 'admin';
+}
+
+/**
+ * What a resolved WebUntis sign-in tells completeWebUntisLogin: what the
+ * account is, the pupil's own class, and the pupil's record it is on.
+ */
+export function accountFromWebUntis(account: ResolvedAccount): WebUntisFindings {
+  return { kind: account.kind, evidence: account.evidence, studentRecordId: account.studentRecordId };
+}
+
+export interface WebUntisFindings {
+  kind: ResolvedAccount['kind'];
+  evidence: ResolvedAccount['evidence'];
+  studentRecordId: number;
 }
 
 /**
@@ -268,24 +346,23 @@ export function accountFromWebUntis(account: ResolvedAccount, claimed: 'student'
  *
  * The account's role and class follow what WebUntis said at this sign-in
  * (decideAccountRole, decideAccountClass): a class only when WebUntis named the
- * signed-in student's own; never one a caller merely claims.
+ * signed-in student's own; never one a caller merely claims. `found` null:
+ * the identity is proven but nothing new was asked (a renewal whose class was
+ * just confirmed): role and class stay as they are.
  */
 export async function completeWebUntisLogin({
   username,
-  role,
-  roleConfirmed,
-  evidence,
+  found,
+  claimed = 'student',
   schoolId,
   context = NO_CONTEXT,
   method = 'webuntis',
 }: {
   username: string;
-  /** What the sign-in is: a guardian, or a student (also: anything WebUntis did not tell). */
-  role: 'student' | 'parent';
-  /** Whether WebUntis confirmed that role at this sign-in. */
-  roleConfirmed: boolean;
-  /** What WebUntis said about the signed-in student's own class. */
-  evidence: ClassEvidence;
+  /** What WebUntis said at this sign-in (accountFromWebUntis); null: nothing asked. */
+  found: WebUntisFindings | null;
+  /** The app's own say about the account (only ever makes a new account a parent). */
+  claimed?: 'student' | 'parent';
   // The school whose WebUntis validated the account.
   schoolId: string;
   // The device signing in (its session in the account's device list).
@@ -304,12 +381,22 @@ export async function completeWebUntisLogin({
   };
 
   let user = await prisma.user.findUnique({ where: { username } });
+  if (user && isSelfRegistered(user)) user = await takeOverSelfRegistered(user, schoolId);
   refuseOtherSchool(user?.schoolId ?? null);
 
   let created = false;
   if (!user) {
-    const accountRole = decideAccountRole(null, role, roleConfirmed);
-    const decided = decideAccountClass(accountRole, evidence, null);
+    const kind = found?.kind ?? 'unknown';
+    // An admin's choice from before the school-year rollover comes back.
+    const archived = await prisma.archivedUser.findFirst({
+      where: { username, roleLocked: true },
+      orderBy: { createdAt: 'desc' },
+      select: { role: true, roleLocked: true },
+    });
+    const { role: accountRole, note: roleNote } = decideAccountRole(archived ? { role: archived.role, roleLocked: true } : null, kind, claimed);
+    const recordId = found?.studentRecordId ?? 0;
+    const shared = await sharesPupilRecord(schoolId, recordId, null);
+    const decided = decideAccountClass(accountRole, found?.evidence ?? { kind: 'unknown', note: 'no_session' }, null, { sharedPerson: shared && !archived });
     try {
       user = await prisma.user.create({
         data: {
@@ -319,8 +406,12 @@ export async function completeWebUntisLogin({
           webuntisKlasseName: decided.klasseName,
           classCheckVersion: decided.checkVersion,
           classCheckedAt: decided.confirmed ? new Date() : null,
+          classSource: decided.classSource,
+          classNote: roleNote ?? decided.classNote,
+          webuntisPersonId: recordId > 0 ? recordId : null,
           isUntisUser: true,
           role: accountRole,
+          roleLocked: Boolean(archived),
           schoolId,
         },
       });
@@ -342,41 +433,53 @@ export async function completeWebUntisLogin({
     }
   }
 
-  if (!created) {
-    const accountRole = decideAccountRole(user.role, role, roleConfirmed);
-    const decided = decideAccountClass(accountRole, evidence, {
+  if (!created && found) {
+    const { role: accountRole, note: roleNote } = decideAccountRole({ role: user.role, roleLocked: user.roleLocked }, found.kind, claimed);
+    const recordId = found.studentRecordId;
+    if (recordId > 0 && user.webuntisPersonId && user.webuntisPersonId !== recordId) {
+      // The name now signs in on another person's record (a reissued login).
+      logger.warn('Account signs in on another WebUntis person than before', { action: 'account_person_changed', stableUid: user.stableUid });
+    }
+    const shared = await sharesPupilRecord(schoolId, recordId, user);
+    const decided = decideAccountClass(accountRole, found.evidence, {
       klasseId: user.webuntisKlasseId,
       klasseName: user.webuntisKlasseName,
       checkVersion: user.classCheckVersion,
-    });
+    }, { sharedPerson: shared });
+    const classNote = roleNote ?? decided.classNote;
     if (decided.klasseId !== user.webuntisKlasseId || accountRole !== user.role) {
       logger.info('Account class or role changed at sign-in', {
         action: 'account_class_changed', stableUid: user.stableUid,
         fromClass: user.webuntisKlasseId, toClass: decided.klasseId, fromRole: user.role, toRole: accountRole,
-        confirmed: decided.confirmed,
+        confirmed: decided.confirmed, source: decided.classSource, note: classNote,
       });
     }
-    user = await prisma.user.update({
-      where: { username },
-      data: {
-        webuntisKlasseId: decided.klasseId,
-        webuntisKlasseName: decided.klasseName,
-        classCheckVersion: decided.checkVersion,
-        ...(decided.confirmed ? { classCheckedAt: new Date() } : {}),
-        isUntisUser: true,
-        role: accountRole,
-        // An account from before schools existed joins the school it signs in with.
-        ...(user.schoolId ? {} : { schoolId }),
-      },
-    });
+    const changes: Prisma.UserUpdateInput = {
+      ...(decided.klasseId !== user.webuntisKlasseId ? { webuntisKlasseId: decided.klasseId } : {}),
+      ...(decided.klasseName !== user.webuntisKlasseName ? { webuntisKlasseName: decided.klasseName } : {}),
+      ...(decided.checkVersion !== user.classCheckVersion ? { classCheckVersion: decided.checkVersion } : {}),
+      ...(decided.confirmed ? { classCheckedAt: new Date() } : {}),
+      // "kept" says nothing new: the source it was found by stays.
+      ...(decided.classSource !== 'kept' && decided.classSource !== user.classSource ? { classSource: decided.classSource } : {}),
+      ...(classNote !== user.classNote ? { classNote } : {}),
+      ...(recordId > 0 && recordId !== user.webuntisPersonId ? { webuntisPersonId: recordId } : {}),
+      ...(!user.isUntisUser ? { isUntisUser: true } : {}),
+      ...(accountRole !== user.role ? { role: accountRole } : {}),
+      // An account from before schools existed joins the school it signs in with.
+      ...(user.schoolId ? {} : { schoolId }),
+    };
+    if (Object.keys(changes).length > 0) user = await prisma.user.update({ where: { username }, data: changes });
     forgetUserSchool(user.stableUid);
   }
 
   const classId = await syncUserClass(
     user.stableUid, username, user.webuntisKlasseId, user.webuntisKlasseName, parseAccountRole(user.role), user.schoolId ?? schoolId, true,
   );
-  const isAdmin = await prisma.admin.findUnique({ where: { stableUid: user.stableUid } }) !== null;
-  const session = await openSession(user.stableUid, context);
+  const [admin, session] = await Promise.all([
+    prisma.admin.findUnique({ where: { stableUid: user.stableUid }, select: { stableUid: true } }),
+    openSession(user.stableUid, context),
+  ]);
+  const isAdmin = admin !== null;
   const { sid, refreshToken } = session;
   await recordLogin(user.stableUid, context, method, session);
   const token = signJwt({
@@ -403,6 +506,7 @@ export async function completeWebUntisLogin({
       isUntisUser: true,
       role: user.role,
       schoolId: user.schoolId,
+      classNote: user.classNote,
     },
   };
 }
@@ -442,13 +546,14 @@ const loginSchema = z.object({
   // Coerce + default so a missing/string klasseId never 422s a valid login.
   klasseId: z.coerce.number().int().nonnegative().default(0),
   klasseName: z.string().min(0).max(100).default(''),
-  // The app's own say: "parent" makes the account a parent, "student" never
-  // turns a parent back into a student unless WebUntis confirms it.
+  // The app's own say: "parent" makes a new account a parent, "student"
+  // never turns a parent into a student.
   role: z.enum(['student', 'parent']).optional().default('student'),
-  // The app's own WebUntis session (JSESSIONID). With it the backend asks
-  // WebUntis itself what the account is and which class it belongs to
-  // (webuntis/accountResolver.ts); without it the account gets no class.
-  untisSessionId: z.string().trim().regex(/^[A-Za-z0-9._-]{8,200}$/).optional(),
+  // The app's own WebUntis session (JSESSIONID): the only proof of who signs
+  // in (webuntis/sessionIdentity.ts). The backend asks WebUntis with it what
+  // the account is and which class it belongs to (webuntis/accountResolver.ts).
+  // Required; the schema keeps it optional so a missing one gets its own answer.
+  untisSessionId: z.string().trim().max(200).optional(),
   // The WebUntis school the caller validated the account with (its login
   // name). Optional: without it the default school (WEBUNTIS_SCHOOL), as
   // before. Name and server only matter when the school signs in for the
@@ -456,8 +561,8 @@ const loginSchema = z.object({
   school: z.string().trim().toLowerCase().min(1).max(100).optional(),
   schoolName: z.string().trim().max(200).optional(),
   schoolServer: z.string().trim().max(253).optional(),
-  // An automatic renewal of an expired session (the website signs in again
-  // with the credentials it holds), not a sign-in by the person. It is not
+  // An automatic renewal of an expired session (the app signs in again with
+  // the WebUntis session it holds), not a sign-in by the person. It is not
   // counted among the account's sign-ins.
   renewal: z.boolean().optional().default(false),
   // How the person signed in to WebUntis, for the login history: with the
@@ -535,7 +640,12 @@ export async function signInLocalAccount(
   };
 }
 
-router.post('/login', authLimiter, async (req: Request, res: Response) => {
+// A renewal whose account WebUntis confirmed under the current class rules
+// within this time, on the same pupil's record, signs in without asking for
+// the class again: the session itself is still proven every time.
+const RENEWAL_RECHECK_MS = 24 * 60 * 60 * 1000;
+
+router.post('/login', appLoginLimiters, async (req: Request, res: Response) => {
   const serverKey = req.headers['x-server-key'];
 
   // ── Local password login (no server key) ──────────────────────────────────
@@ -546,7 +656,9 @@ router.post('/login', authLimiter, async (req: Request, res: Response) => {
     return res.json(result);
   }
 
-  // ── Server-to-server Untis login ──────────────────────────────────────────
+  // ── The apps' sign-in, with their WebUntis session ────────────────────────
+  // The key ships in every app and is no secret: it only says that one of
+  // POKYH's apps is asking. Who signs in is proven by the WebUntis session.
   if (typeof serverKey !== 'string') {
     throw new UnauthorizedError('Invalid X-Server-Key header');
   }
@@ -567,29 +679,46 @@ router.post('/login', authLimiter, async (req: Request, res: Response) => {
 
   const body = loginSchema.parse(req.body);
   const { username, role, renewal, method, untisSessionId } = body;
+  if (!untisSessionId) {
+    return res.status(400).json({ error: 'Bitte aktualisiere die POKYH-App, um dich anzumelden.', code: 'untis_session_required' });
+  }
+  const school = body.school
+    ? parseSchool({ loginName: body.school, server: body.schoolServer, name: body.schoolName })
+    : defaultSchool();
+  if (!school) {
+    return res.status(400).json({ error: 'Diese Schule ist nicht verfügbar.', code: 'school_invalid' });
+  }
+
+  // 1. Whose the session is, asked of WebUntis. Nothing is created (no
+  // account, no school) before that is proven.
+  const verified = await verifySessionIdentity(school, untisSessionId, username, await webuntisTenantOf(school.loginName));
+  if (!verified.ok) {
+    const failure = IDENTITY_FAILURES[verified.code];
+    logger.warn('App sign-in refused', { action: 'app_login_refused', code: verified.code, school: school.loginName });
+    return res.status(failure.status).json({ error: failure.error, code: verified.code });
+  }
   const schoolId = await loginSchool(req, body);
 
-  // What the account is and its class: from WebUntis, when the app handed
-  // over its session (of the school it names: login name and server);
-  // otherwise only the app's own say, which assigns no class.
-  let fromWebUntis: Pick<Parameters<typeof completeWebUntisLogin>[0], 'role' | 'roleConfirmed' | 'evidence'> = {
-    role, roleConfirmed: false, evidence: { kind: 'unknown' },
-  };
-  if (untisSessionId) {
-    const school = body.school
-      ? parseSchool({ loginName: body.school, server: body.schoolServer, name: body.schoolName })
-      : defaultSchool();
-    if (school) {
-      const account = await resolveSession(school, untisSessionId, username);
-      fromWebUntis = accountFromWebUntis(account, role);
-    }
+  // 2. What the account is and its class, asked with the same session; a
+  // renewal of an account confirmed a moment ago skips the class.
+  let found: WebUntisFindings | null;
+  const stored = renewal
+    ? await prisma.user.findUnique({ where: { username }, select: { classCheckVersion: true, classCheckedAt: true, webuntisPersonId: true, isUntisUser: true } })
+    : null;
+  const recent = stored?.isUntisUser && stored.classCheckVersion === CLASS_CHECK_VERSION
+    && stored.classCheckedAt && Date.now() - stored.classCheckedAt.getTime() < RENEWAL_RECHECK_MS
+    && verified.personId > 0 && stored.webuntisPersonId === verified.personId;
+  if (recent) {
+    found = null;
+  } else {
+    found = accountFromWebUntis(await resolveVerifiedSession(school, untisSessionId, username, verified));
   }
 
   // The app signs in again by itself (renewal: true) whenever its token
   // expires; for a device signed out from elsewhere that is refused
   // (`session_revoked`), and the app signs out.
   const result = await completeWebUntisLogin({
-    username, ...fromWebUntis, schoolId,
+    username, found, claimed: role, schoolId,
     context: signInContext(req, { renewal }), method,
   });
   if (!renewal) res.locals.signedIn = { stableUid: result.user.stableUid, username: result.user.username };
@@ -624,6 +753,9 @@ async function registerLocalAccount(username: string, password: string, context:
       webuntisKlasseName: '',
       passwordHash,
       isUntisUser: false,
+      // Self-made: a WebUntis account of the same name takes it over
+      // (completeWebUntisLogin), an admin-made one it never does.
+      localOrigin: 'register',
       // A self-registered local account belongs to the default school.
       schoolId: defaultSchoolId(),
     },
@@ -659,7 +791,12 @@ async function registerLocalAccount(username: string, password: string, context:
   };
 }
 
+// Off unless SELF_REGISTRATION is set: POKYH is for WebUntis accounts, and an
+// admin makes the POKYH-only ones.
+const REGISTRATION_OFF = { error: 'Eine Registrierung ist bei POKYH nicht möglich. Melde dich mit deinem WebUntis-Konto an.', code: 'registration_disabled' };
+
 router.post('/register', authLimiter, async (req: Request, res: Response) => {
+  if (!config.selfRegistration) return res.status(403).json(REGISTRATION_OFF);
   const { username, password } = registerSchema.parse(req.body);
   const result = await registerLocalAccount(username, password, signInContext(req));
   if (!result) {
@@ -735,6 +872,7 @@ router.post('/web/local-login', authLimiter, async (req: Request, res: Response)
 });
 
 router.post('/web/register', authLimiter, async (req: Request, res: Response) => {
+  if (!config.selfRegistration) return res.status(403).json(REGISTRATION_OFF);
   const { username, password } = registerSchema.parse(req.body);
   const result = await registerLocalAccount(username, password, webContext(req, res));
   if (!result) {
@@ -897,39 +1035,33 @@ router.post('/qr/:code/approve', writeLimiter, requireAuth, async (req: Request,
 router.get('/me', requireAuth, async (req: Request, res: Response) => {
   const { stableUid } = req.user!;
 
-  const user = await prisma.user.findUnique({ where: { stableUid } });
+  // Reads only: leftover memberships of parent and role-less accounts are
+  // cleared at sign-in and by the class check (services/classCheck.ts).
+  const [user, admin, membership] = await Promise.all([
+    prisma.user.findUnique({ where: { stableUid } }),
+    prisma.admin.findUnique({ where: { stableUid }, select: { stableUid: true } }),
+    prisma.classMember.findFirst({ where: { stableUid }, select: { classId: true } }),
+  ]);
   if (!user) {
     throw new UnauthorizedError('User not found');
   }
 
   const role = parseAccountRole(user.role);
-  if (!hasClassIdentity(role)) {
-    await syncUserClass(
-      user.stableUid,
-      user.username,
-      0,
-      '',
-      role,
-      user.schoolId ?? defaultSchoolId(),
-    );
-  }
-
-  const admin = await prisma.admin.findUnique({ where: { stableUid } });
   const accountClass = normalizeAccountClass(role, user.webuntisKlasseId, user.webuntisKlasseName);
-  const membership = !hasClassIdentity(role)
-    ? null
-    : await prisma.classMember.findFirst({ where: { stableUid } });
-
   res.json({
     stableUid: user.stableUid,
     username: user.username,
     webuntisKlasseId: accountClass.klasseId,
     webuntisKlasseName: accountClass.klasseName,
-    classId: membership?.classId ?? null,
+    classId: hasClassIdentity(role) ? membership?.classId ?? null : null,
     isAdmin: admin !== null,
     isUntisUser: user.isUntisUser,
     role: user.role,
     schoolId: user.schoolId,
+    // Why there is no class (utils/accountClass.ts ClassNote), and whether
+    // the next sign-in still has to check it (a new version of the rules).
+    classNote: accountClass.klasseId > 0 ? null : user.classNote,
+    classCheckPending: user.isUntisUser && hasClassIdentity(role) && user.classCheckVersion < CLASS_CHECK_VERSION,
   });
 });
 

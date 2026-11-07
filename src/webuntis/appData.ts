@@ -1,5 +1,6 @@
 import { config } from '../config';
-import { firstWorkingGet, untisGetText, type UntisSession } from './client';
+import { TtlCache } from '../utils/cache';
+import { firstWorkingGet, untisBase, untisGetText, untisSchool, type UntisSession } from './client';
 
 // What WebUntis tells about the signed-in account itself: its app-data (person,
 // guardian's children, permissions, profile picture) and whether it may
@@ -135,9 +136,20 @@ function isObject(json: unknown): boolean {
   return !!json && typeof json === 'object' && !Array.isArray(json) && Object.keys(json as object).length > 0;
 }
 
+// The candidate that answered last, per WebUntis server and school: tried
+// first next time, so a sign-in does not walk the whole list (each candidate
+// may take seconds to fail) before it reaches the one this school serves.
+const workingPath = new TtlCache<string>(24 * 60 * 60 * 1000, 2_000);
+const pathKey = (session: UntisSession) => `${untisBase(session)}|${untisSchool(session).toLowerCase()}`;
+
 export async function fetchAppData(session: UntisSession): Promise<AppDataResult> {
-  const result = await firstWorkingGet(session, APPDATA_CANDIDATES, isObject);
-  if (result.ok) return { ok: true, json: result.json };
+  const known = workingPath.get(pathKey(session));
+  const candidates = known ? [known, ...APPDATA_CANDIDATES.filter((p) => p !== known)] : APPDATA_CANDIDATES;
+  const result = await firstWorkingGet(session, candidates, isObject);
+  if (result.ok) {
+    workingPath.set(pathKey(session), result.path);
+    return { ok: true, json: result.json };
+  }
   return result.reason === 'expired' ? { ok: false, expired: true, status: 401 } : { ok: false, status: 404 };
 }
 

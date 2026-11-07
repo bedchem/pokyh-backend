@@ -92,6 +92,11 @@ function jwtExpiry(token?: string): number | undefined {
   return typeof exp === 'number' ? exp * 1000 : undefined;
 }
 
+/** The claims of a WebUntis bearer token (not verified: it is only read where WebUntis just minted it); null when unreadable. */
+export function jwtClaims(token?: string): Record<string, unknown> | null {
+  return decodeJwt(token);
+}
+
 export function tenantIdOf(token?: string): string | undefined {
   const claim = decodeJwt(token)?.tenant_id;
   return claim != null && String(claim).trim() ? String(claim) : undefined;

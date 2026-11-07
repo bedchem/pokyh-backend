@@ -1,26 +1,9 @@
 import rateLimit from 'express-rate-limit';
-import { timingSafeEqual } from 'crypto';
-import type { Request } from 'express';
+import type { NextFunction, Request, RequestHandler, Response } from 'express';
 import { config } from '../config';
 
-// Trusted server-to-server callers present a valid X-Server-Key (e.g. the
-// Next.js frontend proxying /auth/login for every user). These requests all
-// originate from ONE IP (the frontend server / tunnel), so counting them in the
-// per-IP auth limiter would let a few dozen logins exhaust the bucket for every
-// user at once. The server key is the trust boundary, so skip the limiter for
-// requests that carry it — anonymous/browser auth attempts are still limited.
-function hasValidServerKey(req: Request): boolean {
-  const provided = req.headers['x-server-key'];
-  if (typeof provided !== 'string' || provided.length === 0) return false;
-  const expectedBuf = Buffer.from(config.serverKey, 'utf8');
-  const actualBuf = Buffer.from(provided, 'utf8');
-  if (actualBuf.length !== expectedBuf.length) return false;
-  try {
-    return timingSafeEqual(expectedBuf, actualBuf);
-  } catch {
-    return false;
-  }
-}
+// No request skips a limiter for carrying the apps' X-Server-Key: the key
+// ships inside every app and proves nothing about the caller.
 
 export const globalLimiter = rateLimit({
   windowMs: config.rateLimit.globalWindowMs,
@@ -31,18 +14,51 @@ export const globalLimiter = rateLimit({
   // The usage heartbeat (once a minute per open app) has its own per-account
   // limiter; behind a school's single address it would otherwise use up the
   // bucket that real requests need.
-  skip: (req) => req.method === 'OPTIONS' || hasValidServerKey(req) || req.path === '/usage/ping',
+  skip: (req) => req.method === 'OPTIONS' || req.path === '/usage/ping',
 });
 
+// Password sign-ins of POKYH-only accounts: what stops guessing a password.
 export const authLimiter = rateLimit({
   windowMs: config.rateLimit.authWindowMs,
   max: config.rateLimit.authMax,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many authentication attempts, please try again later.' },
-  // Trusted server-to-server logins bypass the per-IP brute-force limiter.
-  skip: (req) => hasValidServerKey(req),
 });
+
+const appLoginByAddress = rateLimit({
+  windowMs: config.rateLimit.appLoginWindowMs,
+  max: config.rateLimit.appLoginMax,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Zu viele Anmeldungen. Bitte warte ein paar Minuten.', code: 'rate_limited' },
+});
+
+const appLoginByAccount = rateLimit({
+  windowMs: config.rateLimit.appLoginWindowMs,
+  max: config.rateLimit.appLoginPerAccountMax,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Zu viele Anmeldungen. Bitte warte ein paar Minuten.', code: 'rate_limited' },
+  keyGenerator: (req) => `app-login:${String(req.body?.username ?? '').trim().toLowerCase().slice(0, 100)}`,
+});
+
+/**
+ * POST /auth/login: the apps' sign-in (it carries the app key) is limited per
+ * address — generous, a school's pupils share one — and per account, since
+ * every attempt costs WebUntis requests; a POKYH-only password sign-in by the
+ * strict authLimiter.
+ */
+export const appLoginLimiters: RequestHandler = (req: Request, res: Response, next: NextFunction) => {
+  if (!req.headers['x-server-key']) {
+    authLimiter(req, res, next);
+    return;
+  }
+  appLoginByAddress(req, res, (err?: unknown) => {
+    if (err) return next(err);
+    appLoginByAccount(req, res, next);
+  });
+};
 
 // Token refresh limiter — generous because refresh is gated by an unguessable
 // token, not a password, and entire schools share one NATed public IP.
@@ -52,7 +68,6 @@ export const refreshLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many token refreshes, please try again later.' },
-  skip: (req) => hasValidServerKey(req),
 });
 
 // Guards the DB-issued-API-key lookup path (src/middleware/apiKey.ts): every

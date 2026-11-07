@@ -4,6 +4,7 @@ import { Prisma, type School } from '@prisma/client';
 import { prisma } from '../db';
 import { config } from '../config';
 import { TtlCache } from '../utils/cache';
+import { logger } from '../utils/logger';
 
 // Schools, the school an account belongs to, and the menu a school shows.
 //
@@ -73,6 +74,38 @@ export async function schoolByWebuntis(name: string): Promise<School | null> {
   const value = name.trim().toLowerCase();
   if (!value) return null;
   return (await listSchools()).find((s) => (s.webuntisSchool ?? '').toLowerCase() === value) ?? null;
+}
+
+/**
+ * The WebUntis tenant of a school (its login name), learned at a sign-in
+ * POKYH made itself with the account's password or key; null while unknown.
+ * An app's session is only accepted for the school when it belongs to this
+ * tenant (webuntis/sessionIdentity.ts).
+ */
+export async function webuntisTenantOf(loginName: string): Promise<string | null> {
+  return (await schoolByWebuntis(loginName))?.webuntisTenantId?.trim() || null;
+}
+
+const TENANT = /^[0-9A-Za-z-]{1,40}$/;
+
+/**
+ * Records the tenant such a sign-in showed for the school, the first time
+ * only: a tenant once known is never replaced by what a later sign-in says
+ * (a changed tenant is an admin's matter, logged here).
+ */
+export async function rememberSchoolTenant(schoolId: string, tenantId: string): Promise<void> {
+  if (!TENANT.test(tenantId)) return;
+  // Asked of the database itself, not the cached list: another node may
+  // have recorded it a moment ago.
+  const updated = await prisma.school.updateMany({ where: { id: schoolId, webuntisTenantId: null }, data: { webuntisTenantId: tenantId } });
+  if (updated.count > 0) {
+    invalidateSchools();
+    return;
+  }
+  const school = await prisma.school.findUnique({ where: { id: schoolId }, select: { webuntisTenantId: true } });
+  if (school?.webuntisTenantId && school.webuntisTenantId !== tenantId) {
+    logger.warn('WebUntis tenant of a school differs from the one recorded', { action: 'school_tenant_mismatch', schoolId });
+  }
 }
 
 // Creates the default school on first start; never changes an existing one

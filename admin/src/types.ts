@@ -27,7 +27,42 @@ export interface AdminUser {
   lastSignInAt?: string | null;
   // Admins only: second factor and last panel login.
   adminSecurity?: AdminLoginSecurity | null;
+  // An admin chose the role: no sign-in changes it.
+  roleLocked?: boolean;
+  // Where WebUntis named the class, or why the account has none.
+  classSource?: ClassSource | null;
+  classNote?: ClassNote | null;
+  // A pupil whose class waits for their next sign-in.
+  classCheckPending?: boolean;
+  // Other accounts of the school on the same pupil's WebUntis record.
+  sharedRecord?: SharedRecord | null;
 }
+
+export type ClassSource = 'authenticate' | 'students' | 'app-data' | 'pageconfig' | 'weekly-data' | 'timetable' | 'filter-single' | 'kept';
+export type ClassNote =
+  | 'role_parent' | 'role_none' | 'not_student' | 'appdata_unreadable' | 'no_class_found'
+  | 'candidate_rejected' | 'webuntis_unavailable' | 'shared_person' | 'student_record_on_parent' | 'no_session';
+
+export interface SharedRecord {
+  others: Array<{ username: string; role: string }>;
+  // Two or more of them are pupils: one is a parent's login, an admin says which.
+  needsReview: boolean;
+}
+
+// The figures above the account list (GET /api/admin/users/summary).
+export interface UsersSummary {
+  total: number;
+  students: number;
+  parents: number;
+  noRole: number;
+  withClass: number;
+  withoutClass: number;
+  pending: number;
+  review: number;
+  classRulesVersion: number;
+}
+
+export type UserKindFilter = AccountRole | 'admin' | 'noclass' | 'pending' | 'review';
 
 export type FactorKind = 'totp' | 'passkey';
 
@@ -72,6 +107,8 @@ export interface AdminUserClass {
 }
 
 export interface AdminUserDetail extends AdminUser {
+  // When WebUntis last confirmed the class (or that there is none).
+  classCheckedAt?: string | null;
   // Whether the account can sign in to the panel with its own password.
   hasPassword?: boolean;
   // False for an admin that has no password the panel accepts (an older
@@ -323,6 +360,8 @@ export interface MenuDayOverride {
   end: string;
   // Open although it is not school, or closed although it is.
   open: boolean;
+  // Why (shown here only), e.g. "Betriebsausflug".
+  note?: string;
 }
 
 // Where one plan is pulled from, and how the last pull went.
@@ -335,6 +374,16 @@ export interface MenuSourceInfo {
   message: string;
   checkedAt: string | null;
   changedAt: string | null;
+  // When the server pulls this plan next by itself; null: it does not.
+  nextPullAt?: string | null;
+}
+
+// One of the next school days: the plan week served on it, or why the Mensa is closed.
+export interface MenuUpcomingDay {
+  date: string;
+  off: MenuBreakReason | null;
+  plan: DishPlan | null;
+  week: number | null;
 }
 
 export interface MenuPullResult {
@@ -369,6 +418,12 @@ export interface MenuScheduleInfo {
   sourcePage: string;
   sourceCanteen: string;
   sources: MenuSourceInfo[];
+  // The next school days, as the menu serves them.
+  upcoming?: MenuUpcomingDay[];
+  // The server's last move of dishes onto other days by itself.
+  arranged?: { at: string; moved: number } | null;
+  // How often plans are pulled by themselves on this installation; 0: never.
+  pullIntervalHours?: number;
   moved?: number;
 }
 

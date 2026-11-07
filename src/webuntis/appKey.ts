@@ -44,7 +44,12 @@ export function readAppKeyAccount(result: unknown): AppKeyAccount {
   const raw = (result as { userData?: unknown } | null)?.userData;
   const user = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
   const personId = Number(user.elemId);
-  const personType = typeof user.elemType === 'string' ? PERSON_TYPES[user.elemType.toUpperCase()] : undefined;
+  // A guardian's answer lists their children (`children[]`), whatever the
+  // element type says (a parent's login on the child's record).
+  const hasChildren = Array.isArray(user.children) && user.children.some((c) => c && typeof c === 'object');
+  const personType = hasChildren
+    ? PERSON_TYPES.PARENT
+    : typeof user.elemType === 'string' ? PERSON_TYPES[user.elemType.toUpperCase()] : undefined;
   const klassen = Array.isArray(user.klassenIds)
     ? user.klassenIds.map(Number).filter((id) => Number.isInteger(id) && id > 0)
     : [];

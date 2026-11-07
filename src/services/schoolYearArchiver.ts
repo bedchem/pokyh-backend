@@ -113,6 +113,10 @@ export async function performRollover(
             classCode:          cm ? (classCodeMap.get(cm.classId) ?? null) : null,
             className:          cm ? (classNameMap.get(cm.classId) ?? null) : null,
             schoolId:           u.schoolId,
+            // An admin's role choice comes back with the account
+            // (routes/auth.ts completeWebUntisLogin).
+            roleLocked:         u.roleLocked,
+            localOrigin:        u.localOrigin,
             createdAt:          u.createdAt,
           };
         }),
@@ -289,6 +293,7 @@ export async function rollbackRollover(schoolYearId: string): Promise<RollbackRe
           stableUid:          u.stableUid,
           username:           u.username,
           role:               u.role,
+          roleLocked:         u.roleLocked,
           webuntisKlasseId:   u.webuntisKlasseId,
           webuntisKlasseName: u.webuntisKlasseName,
           schoolId:           u.schoolId,

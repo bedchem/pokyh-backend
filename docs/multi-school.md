@@ -11,17 +11,18 @@ of its accounts signs in:
 
 1. The web app (or app) lets the person pick their school — the WebUntis school
    search returns its *login name* (`loginName`), *display name* and *server*.
-2. The app's server validates the credentials at that school's WebUntis server
-   and calls `POST /auth/login` with the `X-Server-Key` header and
-   `school` (login name), `schoolName` (display name) and `schoolServer`
-   (WebUntis host, e.g. `xyz.webuntis.com`).
+2. The app signs in at that school's WebUntis server and calls
+   `POST /auth/login` with the `X-Server-Key` header, its WebUntis session
+   (`untisSessionId`) and `school` (login name), `schoolName` (display name)
+   and `schoolServer` (WebUntis host, e.g. `xyz.webuntis.com`).
 3. The backend finds the school by its login name, or adds it
    (`services/schools.ts`, `schoolForLogin`): active, display name from
    WebUntis, **no Mensa plan**. The audit trail records `school.join`, and the
    panel updates live.
 
-Only a caller holding the server key reaches this, after WebUntis accepted the
-credentials — nobody can invent schools from outside. A login name must look
+A school is only added after WebUntis has confirmed, with the app's session,
+whose the session is (`src/webuntis/sessionIdentity.ts`) — nobody can invent
+schools from outside, and a sign-in WebUntis does not confirm adds nothing. A login name must look
 like a WebUntis login name; a server outside `WEBUNTIS_HOST_SUFFIXES` is not
 stored. `SCHOOLS_MAX` is a safety net on how many schools may be added.
 `SCHOOLS_AUTO_CREATE=false` turns joining off (only existing schools can sign
@@ -125,12 +126,16 @@ schools the admin opens most (learnt in their browser only), then all.
 
 ## For the web app and the apps
 
-- **Sign-in** (`POST /auth/login`, server key): send `school` (WebUntis login
-  name), `schoolName` and `schoolServer` from the school search, and validate
-  the credentials at `https://<server>/WebUntis/jsonrpc.do?school=<loginName>`.
-  Send `untisSessionId` (the app's WebUntis JSESSIONID) as well: the class
-  comes only from WebUntis, never from `klasseId` ([class-assignment.md](class-assignment.md)).
-  Handle `403` (school deactivated) and `409` (name belongs to another school).
+- **Sign-in** (`POST /auth/login`, app key): sign in at
+  `https://<server>/WebUntis/jsonrpc.do?school=<loginName>` first, then send
+  `untisSessionId` (the app's WebUntis JSESSIONID, required), `school` (WebUntis
+  login name), `schoolName` and `schoolServer` from the school search. The
+  class comes only from WebUntis, never from `klasseId` ([class-assignment.md](class-assignment.md)).
+  Answers to handle: `400 untis_session_required` (old app), `400 school_invalid`,
+  `401 untis_session_invalid` (sign in to WebUntis again and retry once),
+  `401 untis_identity_unverified`, `403 account_mismatch` / `tenant_mismatch`,
+  `503 webuntis_unavailable` (WebUntis away: keep going with `/auth/refresh`),
+  `403` (school deactivated) and `409` (name belongs to another school).
 - **Mensa**: `GET /dishes` (signed in: always the account's own school; guests:
   `?school=<identifier>`). `available: false` → hide the Mensa.
 - **Error reports**: `POST /client-errors` with `source` (`web`, `android`,

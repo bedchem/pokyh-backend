@@ -1,4 +1,4 @@
-import 'dotenv/config';
+import './env';
 import fs from 'fs';
 import express, { Request, Response, NextFunction } from 'express';
 import helmet from 'helmet';
@@ -14,11 +14,13 @@ import { globalLimiter } from './middleware/rateLimiter';
 import { AppError } from './utils/errors';
 import { appRouter } from './routes/index';
 import { setupRouter } from './routes/setup';
-import { requestLogger } from './middleware/requestLogger';
+import { flushRequestLogs, requestLogger } from './middleware/requestLogger';
+import { hasSignedAdminToken } from './middleware/requireAdmin';
+import { flushUsageClassTotals } from './routes/usage';
 import { adminLive, adminAppSync } from './services/adminLive';
 import { expireLapsedAdminSetups } from './services/adminLogin';
 import { requestId } from './middleware/requestId';
-import { prisma } from './db';
+import { closeReportingDb, prisma } from './db';
 import { startPushPoller } from './services/pushPoller';
 import { startArchiver } from './services/archiver';
 import { startSchoolYearArchiver } from './services/schoolYearArchiver';
@@ -47,7 +49,7 @@ import { RELAY_SCRIPT_PATH, handleRelayScript } from './cluster/relaySetup';
 import { SETUP_PATH, createSetupRouter } from './cluster/provision';
 import { startCluster, stopCluster } from './cluster';
 import { migrateLegacyAdmins, migrateNewPermissions, migrateToSchools } from './services/multiSchool';
-import { recheckClassesOnce } from './services/classCheck';
+import { accountMigrationsOnce } from './services/classCheck';
 import { backfillAccountDays } from './services/accountDays';
 import { activityCutoffDay } from './services/accountActivity';
 import { BELL_MARK_RETENTION_DAYS, deleteExpiredBellMarks } from './services/bellMarks';
@@ -116,8 +118,9 @@ if (parsedCorsOrigins.length === 0 && config.corsOrigin.trim() !== '') {
 const allowedOrigins = new Set([
   ...parsedCorsOrigins.flatMap(withWwwOriginAlias),
   ...(config.isDev ? ['http://localhost:3000', 'http://localhost:3001', 'http://localhost:3005', 'http://localhost:5173'] : []),
-  `http://localhost:${config.port}`,
-  `https://localhost:${config.port}`,
+  // The API's own port on this machine, outside production only (there the
+  // panel is same-origin anyway, see below).
+  ...(config.nodeEnv !== 'production' ? [`http://localhost:${config.port}`, `https://localhost:${config.port}`] : []),
 ]);
 
 // Same-origin requests (the admin panel calling the server it was loaded
@@ -156,28 +159,40 @@ app.get(RELAY_SCRIPT_PATH, handleRelayScript);
 // has just created an install command (provision.ts).
 app.use(SETUP_PATH, createSetupRouter());
 
-// ─── Body parsing ────────────────────────────────────────────────────────────
-
-// Larger body limit for image upload routes; biggest for full-DB JSON import
-app.use('/api/admin/import', express.json({ limit: config.bodyLimitImport }));
-app.use('/subject-images', express.json({ limit: config.bodyLimitUpload }));
-app.use('/api/admin', express.json({ limit: config.bodyLimitUpload }));
-app.use(express.json({ limit: config.bodyLimit }));
-app.use(express.urlencoded({ extended: false }));
-app.use(cookieParser());
-
 // ─── Request identification, logging and rate limiting ───────────────────────
 //
 // Install correlation and finish-event logging before the limiter so 429s are
 // traceable too. The logger only inspects request metadata at finish time; it
-// never records bodies or credentials.
+// never records bodies or credentials. The limiter comes before any body is
+// read: a refused request costs no parsing.
 app.use(requestId);
 app.use(requestLogger);
-// Live updates: announce changes to open admin panels, and push an
-// administrator's edits to the app streams. Both act after the response.
+// Live updates: announce changes to open admin panels. Acts after the response.
 app.use(adminLive);
-app.use('/api/admin', adminAppSync);
 app.use(globalLimiter);
+
+// ─── Body parsing ────────────────────────────────────────────────────────────
+
+// Larger limits only behind a signed admin token (checked before the body is
+// read): the full-database JSON import biggest, image uploads in between.
+// Without one, every body has the small default limit, so no anonymous
+// request can make the server read and parse megabytes.
+const bigBody = (limit: string) => {
+  const parse = express.json({ limit });
+  return (req: express.Request, res: express.Response, next: express.NextFunction) => (
+    hasSignedAdminToken(req) ? parse(req, res, next) : next()
+  );
+};
+app.use('/api/admin/import', bigBody(config.bodyLimitImport));
+app.use('/api/admin/subject-images', bigBody(config.bodyLimitUpload));
+app.use('/api/admin', bigBody(config.bodyLimitUpload));
+// The apps report the subjects of a timetable (up to 100 names).
+app.use('/subject-images/report', express.json({ limit: '64kb' }));
+app.use(express.json({ limit: config.bodyLimit }));
+app.use(express.urlencoded({ extended: false }));
+app.use(cookieParser());
+// Pushes an administrator's edits to the app streams (after the response).
+app.use('/api/admin', adminAppSync);
 
 // ─── Health checks ───────────────────────────────────────────────────────────
 
@@ -310,7 +325,7 @@ app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
 
   // Zod validation errors
   if (err instanceof ZodError) {
-    const message = err.errors.map((e) => `${e.path.join('.')}: ${e.message}`).join('; ');
+    const message = err.issues.map((e) => `${e.path.join('.')}: ${e.message}`).join('; ');
     res.status(422).json({ error: `Validation error: ${message}` });
     return;
   }
@@ -632,7 +647,7 @@ function startBackgroundJobs() {
 // with the network's own reason (ENETUNREACH, ENOTFOUND, …).
 async function checkWebUntisReachable(): Promise<void> {
   try {
-    await fetch(config.webuntisBase, { method: 'HEAD', redirect: 'manual', signal: AbortSignal.timeout(10_000) });
+    await fetch(config.webuntis.testBase || config.webuntisBase, { method: 'HEAD', redirect: 'manual', signal: AbortSignal.timeout(10_000) });
   } catch (err) {
     const cause = (err as { cause?: { code?: unknown } } | null)?.cause?.code;
     logger.error('WebUntis is not reachable from this server: no WebUntis sign-in can work. Check the container\'s network (its way out to the internet).', {
@@ -647,7 +662,7 @@ function pushSchema(): Promise<boolean> {
   return new Promise((resolve) => {
     // No --accept-data-loss: db push then refuses any destructive change
     // (safe — only additive schema updates are applied automatically).
-    const child = spawnPrismaCli(['db', 'push', '--skip-generate'], {
+    const child = spawnPrismaCli(['db', 'push'], {
       cwd: process.cwd(),
       env: process.env,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -699,6 +714,9 @@ async function connectDatabaseWithRetry() {
         }
       }
       await prisma.$connect();
+      // The client connects lazily and does not fail on an unreachable
+      // server: one statement proves the connection.
+      await prisma.$queryRaw(Prisma.sql`SELECT 1`);
       // An empty database on a node that had data: rebuilt from the newest
       // backup, then brought to the current schema again (the dump's tables
       // are as old as the dump).
@@ -710,9 +728,6 @@ async function connectDatabaseWithRetry() {
         }
       }
       void rememberDataPresent();
-      databaseReady = true;
-      databaseStartupComplete = true;
-      logger.info('Database ready (schema applied, connected)');
       // Idempotent — safe to run every boot. Populates dish.stableKey and
       // rewrites rating/comment dishId references so bewertungen survive
       // resets and shared-name Sommer/Winter dishes share ratings.
@@ -733,14 +748,23 @@ async function connectDatabaseWithRetry() {
       try { await migrateToSchools(); } catch (err) {
         logger.warn(`multi-school migration failed (non-fatal, retried next start): ${err instanceof Error ? err.message.split('\n')[0] : String(err)}`);
       }
+      // Ready only now: a request that reaches the server once /readyz says
+      // so finds the revoked sessions known and the default school and menu
+      // in place. Before the activation below, which the updater gives only
+      // to a ready container.
+      databaseReady = true;
+      databaseStartupComplete = true;
+      logger.info('Database ready (schema applied, connected)');
       // Blue/green (servers set up by the installer): a new container serves
       // HTTP at once, but takes over background work and the cluster only
       // once the updater has stopped the previous one and named this one.
       await waitForActivation();
-      // Once per version of the class rules — after the previous container
-      // stopped, so none of its sign-ins slips past: every WebUntis account's
-      // class waits for its next sign-in to be confirmed (services/classCheck.ts).
-      try { await recheckClassesOnce(); } catch (err) {
+      // Once per installation and per version of the class rules — after
+      // the previous container stopped, so none of its sign-ins slips past:
+      // admin role choices are locked, password origins recorded, and every
+      // WebUntis account's class waits for its next sign-in to be confirmed
+      // (services/classCheck.ts).
+      try { await accountMigrationsOnce(); } catch (err) {
         logger.warn(`class check reset failed (non-fatal, retried next start): ${err instanceof Error ? err.message.split('\n')[0] : String(err)}`);
       }
       // Before the background jobs: they ask the cluster layer whether this
@@ -852,9 +876,13 @@ async function shutdown(signal: string) {
     });
   }
 
+  // The request log's last batch and the summed usage figures, before the database goes.
+  await flushRequestLogs().catch(() => {});
+  await flushUsageClassTotals().catch(() => {});
   await stopClusterListener().catch(() => {});
   await stopCluster().catch(() => {});
   await closeCache().catch(() => {});
+  await closeReportingDb();
   await prisma.$disconnect().catch(() => {});
   process.exit(0);
 }

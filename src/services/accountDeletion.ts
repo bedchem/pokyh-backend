@@ -2,6 +2,7 @@ import { prisma } from '../db';
 import { ForbiddenError } from '../utils/errors';
 import { logger } from '../utils/logger';
 import { revokeUserTokens } from '../utils/revokedTokens';
+import { dropPendingLogsOf } from '../middleware/requestLogger';
 import { isOwner, grantsOf } from './adminAccess';
 import { forgetUserSchool } from './schools';
 import { revokeSessions } from './sessions';
@@ -82,6 +83,8 @@ export async function deleteOwnAccount(stableUid: string, username: string): Pro
     prisma.user.delete({ where: { stableUid } }),
   ]);
   forgetUserSchool(stableUid);
+  // The account's request-log rows still waiting to be written go first.
+  dropPendingLogsOf(stableUid, username);
 
   // The logs run out by themselves soon, so a failure here doesn't undo the deletion.
   await Promise.all([

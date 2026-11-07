@@ -76,9 +76,11 @@ const SHARED_KEYS = new Set([
 
 const SHARED_PREFIXES = ['RATE_LIMIT_', 'VAPID_', 'WEBUNTIS_', 'SCHOOL_YEAR_ROLLOVER_', 'BACKUP_'];
 
-// Inside a shared prefix, but tied to the node's own containers or disk.
+// Inside a shared prefix, but tied to the node's own containers or disk, or
+// to a test run (a stand-in WebUntis must never reach another node).
 const NODE_LOCAL_KEYS = new Set([
   'BACKUP_DIR',
+  'WEBUNTIS_TEST_BASE',
 ]);
 
 export const ENV_KEY_PATTERN = /^[A-Z][A-Z0-9_]{0,63}$/;
