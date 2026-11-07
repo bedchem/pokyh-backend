@@ -111,7 +111,7 @@ async function completeSetup(req: Request, res: Response): Promise<void> {
   const token = jwt.sign(
     { role: 'admin', sub: 'admin-panel', username },
     config.jwtSecret,
-    { expiresIn: '8h' },
+    { expiresIn: '8h', audience: 'pokyh-admin', algorithm: 'HS256' },
   );
 
   res.json({ ok: true, token });

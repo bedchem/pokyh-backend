@@ -6,6 +6,7 @@ import { matchEnvAdmin } from '../security/adminLogin';
 import {
   GLOBAL_SCOPE,
   accessFrom,
+  can,
   isPermission,
   mayGrant,
   mayManageTarget,
@@ -19,7 +20,7 @@ import {
 import { ForbiddenError, NotFoundError, ValidationError } from '../utils/errors';
 import { audit } from './audit';
 import { announceChange } from './adminLive';
-import { schoolById } from './schools';
+import { defaultSchoolId, schoolById } from './schools';
 import { listPresets } from './adminPresets';
 
 // Loading and changing what administrators may do. The rules themselves are
@@ -265,4 +266,22 @@ export function assertMayAppointAdmin(req: Request, accountSchool: string | null
   if (managesAdminsIn(actor.access, GLOBAL_SCOPE)) return;
   if (accountSchool && managesAdminsIn(actor.access, accountSchool)) return;
   throw new ForbiddenError('Keine Berechtigung, Admins dieser Schule zu ernennen');
+}
+
+/**
+ * Whether an app account may act on other people's things in a class as an
+ * administrator (delete someone's comment, edit someone's reminder): an
+ * admin whose rights are in force (not a grant still waiting for its first
+ * login) holding `permission` in the class's school, or the owner. Admin
+ * standing alone is not enough: a school admin of another school, or one
+ * without the right, is an ordinary member here.
+ */
+export async function moderatesClass(stableUid: string, username: string, classId: string, permission: Permission): Promise<boolean> {
+  if (isOwner(username)) return true;
+  const [admin, cls] = await Promise.all([
+    prisma.admin.findUnique({ where: { stableUid }, select: { mustChangePassword: true } }),
+    prisma.class.findUnique({ where: { id: classId }, select: { schoolId: true } }),
+  ]);
+  if (!admin || admin.mustChangePassword || !cls) return false;
+  return can(await loadAccess(username), permission, cls.schoolId ?? defaultSchoolId());
 }

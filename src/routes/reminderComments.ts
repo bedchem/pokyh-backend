@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import { moderatesClass } from '../services/adminAccess';
 import { z } from 'zod';
 import { prisma } from '../db';
 import { requireAuth } from '../middleware/auth';
@@ -16,8 +17,14 @@ async function getCommentsForReminder(reminderId: string) {
   });
 }
 
-function broadcastComments(reminderId: string, comments: unknown[]): void {
-  sseManager.broadcast(`reminderComments:${reminderId}`, 'reminderComments', comments);
+// The list goes to the open live streams of this reminderId — only when one is
+// open, and after the answer: a write never waits for it.
+function broadcastComments(reminderId: string): void {
+  const channel = `reminderComments:${reminderId}`;
+  if (sseManager.getClientCount(channel) === 0) return;
+  void getCommentsForReminder(reminderId)
+    .then((list) => sseManager.broadcast(channel, 'reminderComments', list))
+    .catch(() => { /* the next write or reconnect sends it */ });
 }
 
 async function checkMembership(classId: string, stableUid: string): Promise<boolean> {
@@ -42,14 +49,18 @@ router.get('/', readLimiter, requireAuth, async (req: Request, res: Response) =>
 
   assertNotParent(req);
 
-  if (!(await checkMembership(classId, stableUid))) {
+  // Read together; nothing is answered before membership and reminder are checked.
+  const [isMember, reminder, comments] = await Promise.all([
+    checkMembership(classId, stableUid),
+    prisma.reminder.findUnique({ where: { id: reminderId }, select: { classId: true } }),
+    cached(`reminder-comments:${reminderId}`, ['Comment'], 120, () => getCommentsForReminder(reminderId)),
+  ]);
+  if (!isMember) {
     throw new ForbiddenError('You are not a member of this class');
   }
-
-  const reminder = await prisma.reminder.findUnique({ where: { id: reminderId } });
   if (!reminder || reminder.classId !== classId) throw new NotFoundError('Reminder not found');
 
-  res.json(await cached(`reminder-comments:${reminderId}`, ['Comment'], 120, () => getCommentsForReminder(reminderId)));
+  res.json(comments);
 });
 
 const bodySchema = z.object({ body: z.string().min(1).max(2000) });
@@ -75,7 +86,7 @@ router.post('/', writeLimiter, requireAuth, async (req: Request, res: Response) 
     data: { reminderId, classId, stableUid, username, body },
   });
 
-  broadcastComments(reminderId, await getCommentsForReminder(reminderId));
+  broadcastComments(reminderId);
   res.status(201).json(comment);
 });
 
@@ -100,7 +111,7 @@ router.patch('/:commentId', writeLimiter, requireAuth, async (req: Request, res:
 
   const updated = await prisma.comment.update({ where: { id: commentId }, data: { body } });
 
-  broadcastComments(reminderId, await getCommentsForReminder(reminderId));
+  broadcastComments(reminderId);
   res.json(updated);
 });
 
@@ -117,17 +128,23 @@ router.delete('/:commentId', writeLimiter, requireAuth, async (req: Request, res
     throw new ForbiddenError('You are not a member of this class');
   }
 
-  const comment = await prisma.comment.findUnique({ where: { id: commentId } });
-  if (!comment || comment.reminderId !== reminderId) throw new NotFoundError('Comment not found');
+  const [comment, reminder] = await Promise.all([
+    prisma.comment.findUnique({ where: { id: commentId } }),
+    prisma.reminder.findUnique({ where: { id: reminderId }, select: { classId: true } }),
+  ]);
+  // The comment must be one of this reminder's, and the reminder one of this class's.
+  if (!comment || comment.reminderId !== reminderId || !reminder || reminder.classId !== classId) {
+    throw new NotFoundError('Comment not found');
+  }
 
-  const isOwner = comment.stableUid === stableUid;
-  const admin = await prisma.admin.findUnique({ where: { stableUid } });
-
-  if (!isOwner && !admin) throw new ForbiddenError('Only the author or an admin can delete this comment');
+  const isAuthor = comment.stableUid === stableUid;
+  if (!isAuthor && !(await moderatesClass(stableUid, req.user!.username, classId, 'comments.moderate'))) {
+    throw new ForbiddenError('Only the author or an admin can delete this comment');
+  }
 
   await prisma.comment.delete({ where: { id: commentId } });
 
-  broadcastComments(reminderId, await getCommentsForReminder(reminderId));
+  broadcastComments(reminderId);
   res.status(204).send();
 });
 

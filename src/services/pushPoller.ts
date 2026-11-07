@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { pushEndpointProblem } from '../utils/pushEndpoint';
 import webpush from 'web-push';
 import { prisma } from '../db';
 import { logger } from '../utils/logger';
@@ -47,6 +48,13 @@ interface PollTarget {
 }
 
 async function sendWebPush(sub: PushSub, payload: WebPushPayload) {
+  // A subscription stored before addresses were checked, pointing anywhere
+  // but a push service, is dropped instead of being posted to.
+  if (pushEndpointProblem(sub.endpoint)) {
+    await prisma.pushSubscription.delete({ where: { id: sub.id } }).catch(() => {});
+    logger.warn('[push] Subscription with a foreign address removed', { action: 'push_endpoint_removed', id: sub.id });
+    return;
+  }
   try {
     await webpush.sendNotification(
       { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
@@ -89,7 +97,9 @@ async function liveApnsDevices(where: { stableUid?: string } = {}) {
 // installation's default for accounts from before schools existed.
 async function webuntisOf(stableUid: string): Promise<{ base: string; schoolCookie: string }> {
   const school = await schoolById(await schoolOfUser(stableUid));
-  const base = (school?.webuntisBase || config.webuntisBase).replace(/\/$/, '');
+  // A test run's stand-in WebUntis serves every school, here as everywhere
+  // else (webuntis/schools.ts schoolBase; refused outside NODE_ENV=test).
+  const base = (config.webuntis.testBase || school?.webuntisBase || config.webuntisBase).replace(/\/$/, '');
   const loginName = school?.webuntisSchool || schoolLoginName(null);
   return { base, schoolCookie: '_' + Buffer.from(loginName).toString('base64') };
 }

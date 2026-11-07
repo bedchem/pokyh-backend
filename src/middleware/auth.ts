@@ -27,19 +27,28 @@ function extractToken(req: Request): string | null {
   if (authHeader && authHeader.startsWith('Bearer ')) {
     return authHeader.slice(7);
   }
-  // Also allow token as query param (for EventSource / SSE connections)
+  // In the address only for the live streams: a browser's EventSource cannot
+  // send headers. Anywhere else a token in the address would end up in
+  // browser history and proxy logs.
   const queryToken = req.query['token'];
-  if (typeof queryToken === 'string' && queryToken.length > 0) {
+  const path = (req.originalUrl || req.url).split('?')[0] ?? '';
+  if (typeof queryToken === 'string' && queryToken.length > 0 && (path === '/sse' || path.startsWith('/sse/'))) {
     return queryToken;
   }
   return null;
 }
 
+/** The audience of app tokens; panel tokens carry their own (services/adminLogin.ts). */
+export const APP_AUDIENCE = 'pokyh-app';
+
 // `graceSeconds` accepts a token that expired up to that long ago; only
 // tokenAccount below passes it.
 function verifyToken(token: string, graceSeconds = 0): JwtPayload | null {
   try {
-    const decoded = jwt.verify(token, config.jwtSecret, { clockTolerance: graceSeconds }) as JwtPayload & jwt.JwtPayload;
+    const decoded = jwt.verify(token, config.jwtSecret, { clockTolerance: graceSeconds, algorithms: ['HS256'] }) as JwtPayload & jwt.JwtPayload;
+    // A panel token is never an app session (tokens from before audiences
+    // carry none and are told apart by their claims below).
+    if (decoded.aud !== undefined && decoded.aud !== APP_AUDIENCE) return null;
     // Only a user session token is acceptable here. The admin panel signs its
     // own tokens with the same secret but without a stable user id; letting
     // one through would hand routes an undefined id, which a database filter

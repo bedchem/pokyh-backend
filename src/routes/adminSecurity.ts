@@ -1,4 +1,10 @@
 import { Router, Request, Response } from 'express';
+import { renewAdminTokens } from '../services/adminLogin';
+
+// After a password or second-factor change the session that made it gets a
+// fresh token here (the panel keeps it, admin/src/api.ts); every other
+// session of the account is signed out.
+const RENEWED_TOKEN_HEADER = 'X-Admin-Token';
 import { rateLimit } from 'express-rate-limit';
 import { z } from 'zod';
 import type { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simplewebauthn/server';
@@ -139,7 +145,7 @@ router.post('/auth/2fa/passkey/options', secondFactorLimiter, async (req: Reques
 
 const assertionBody = z.object({
   challengeToken: z.string().min(1).max(4000),
-  response: z.record(z.unknown()),
+  response: z.record(z.string(), z.unknown()),
 });
 
 router.post('/auth/2fa/passkey', secondFactorLimiter, async (req: Request, res: Response): Promise<void> => {
@@ -220,6 +226,8 @@ router.post('/account/password', passwordChangeLimiter, requireAdmin, async (req
   }
   await changeAdminPassword(lookup.account, newPassword);
   logger.info('Admin security: password changed', { action: 'admin_password_changed', username, kind, ip: clientIp(req) });
+  // Every other panel session of the account ends; this one goes on.
+  res.setHeader(RENEWED_TOKEN_HEADER, await renewAdminTokens(username));
   res.status(204).send();
 });
 
@@ -243,6 +251,7 @@ router.post('/account/totp/disable', requireAdmin, async (req: Request, res: Res
   await assertMayRemove(username, 'totp', false);
   await disableTotp(username, code);
   logger.info('Admin security: authenticator app disabled', { action: 'admin_totp_disabled', username, ip: clientIp(req) });
+  res.setHeader(RENEWED_TOKEN_HEADER, await renewAdminTokens(username));
   res.status(204).send();
 });
 
@@ -261,6 +270,7 @@ router.post('/account/totp/move/finish', requireAdmin, async (req: Request, res:
   const username = sessionUsername(req);
   await finishTotpMove(username, code);
   logger.info('Admin security: authenticator app moved to a new device', { action: 'admin_totp_moved', username, ip: clientIp(req) });
+  res.setHeader(RENEWED_TOKEN_HEADER, await renewAdminTokens(username));
   res.status(204).send();
 });
 
@@ -289,7 +299,7 @@ router.post('/account/passkeys/options', allowDuringSecondFactorSetup, requireAd
 router.post('/account/passkeys', allowDuringSecondFactorSetup, requireAdmin, async (req: Request, res: Response): Promise<void> => {
   const body = z.object({
     challengeToken: z.string().min(1).max(4000),
-    response: z.record(z.unknown()),
+    response: z.record(z.string(), z.unknown()),
     name: z.string().max(100).default(''),
   }).parse(req.body);
   const username = sessionUsername(req);
@@ -310,6 +320,7 @@ router.delete('/account/passkeys/:id', requireAdmin, async (req: Request, res: R
   await assertMayRemove(username, 'passkey', others > 0);
   await deletePasskey(username, String(req.params['id']));
   logger.info('Admin security: passkey removed', { action: 'admin_passkey_removed', username, ip: clientIp(req) });
+  res.setHeader(RENEWED_TOKEN_HEADER, await renewAdminTokens(username));
   res.status(204).send();
 });
 

@@ -109,8 +109,33 @@ export function issueAdminToken(username: string): string {
   return jwt.sign(
     { role: 'admin', sub: 'admin-panel', username },
     config.jwtSecret,
-    { expiresIn: config.adminJwtExpiresIn } as jwt.SignOptions,
+    { expiresIn: config.adminJwtExpiresIn, audience: ADMIN_AUDIENCE, algorithm: 'HS256' } as jwt.SignOptions,
   );
+}
+
+/** The audience of panel tokens; app tokens carry their own (routes/auth.ts). */
+export const ADMIN_AUDIENCE = 'pokyh-admin';
+
+/**
+ * Voids every panel token of the account issued until now (its password or
+ * a second factor changed) and returns a fresh one for the session that made
+ * the change, so only the other sessions end.
+ */
+export async function renewAdminTokens(username: string): Promise<string> {
+  // The new token is issued in this second; tokens of earlier seconds are void.
+  const now = new Date(Math.floor(Date.now() / 1000) * 1000);
+  await prisma.adminSecurity.upsert({
+    where: { username },
+    create: { username, tokensValidFrom: now },
+    update: { tokensValidFrom: now },
+  });
+  return issueAdminToken(username);
+}
+
+/** When the account's valid panel tokens begin (null: every unexpired one is valid). */
+export async function adminTokensValidFrom(username: string): Promise<Date | null> {
+  const row = await prisma.adminSecurity.findUnique({ where: { username }, select: { tokensValidFrom: true } });
+  return row?.tokensValidFrom ?? null;
 }
 
 // ─── One-time password of a WebUntis account made admin ─────────────────────

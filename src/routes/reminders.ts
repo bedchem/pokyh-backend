@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import { moderatesClass } from '../services/adminAccess';
 import { z } from 'zod';
 import { prisma } from '../db';
 import { requireAuth } from '../middleware/auth';
@@ -23,8 +24,14 @@ function assertNotParent(req: Request): void {
   }
 }
 
-function broadcastReminders(classId: string, reminders: unknown[]): void {
-  sseManager.broadcast(`reminders:${classId}`, 'reminders', reminders);
+// The list goes to the open live streams of this classId — only when one is
+// open, and after the answer: a write never waits for it.
+function broadcastReminders(classId: string): void {
+  const channel = `reminders:${classId}`;
+  if (sseManager.getClientCount(channel) === 0) return;
+  void getRemindersForClass(classId)
+    .then((list) => sseManager.broadcast(channel, 'reminders', list))
+    .catch(() => { /* the next write or reconnect sends it */ });
 }
 
 async function checkMembership(classId: string, stableUid: string): Promise<boolean> {
@@ -41,12 +48,14 @@ router.get('/', readLimiter, requireAuth, async (req: Request, res: Response) =>
 
   assertNotParent(req);
 
-  const isMember = await checkMembership(classId, stableUid);
+  // Read together; nothing is answered before the membership is checked.
+  const [isMember, reminders] = await Promise.all([
+    checkMembership(classId, stableUid),
+    cached(`reminders:${classId}`, ['Reminder'], 120, () => getRemindersForClass(classId)),
+  ]);
   if (!isMember) {
     throw new ForbiddenError('You are not a member of this class');
   }
-
-  const reminders = await cached(`reminders:${classId}`, ['Reminder'], 120, () => getRemindersForClass(classId));
   res.json(reminders);
 });
 
@@ -83,8 +92,7 @@ router.post('/', writeLimiter, requireAuth, async (req: Request, res: Response) 
     },
   });
 
-  const reminders = await getRemindersForClass(classId);
-  broadcastReminders(classId, reminders);
+  broadcastReminders(classId);
 
   res.status(201).json(reminder);
 });
@@ -107,19 +115,15 @@ router.delete('/:reminderId', writeLimiter, requireAuth, async (req: Request, re
     throw new NotFoundError('Reminder not found');
   }
 
-  // Check if creator or admin
+  // The creator, or an admin with the right in this class's school.
   const isCreator = reminder.createdBy === stableUid;
-  const admin = await prisma.admin.findUnique({ where: { stableUid } });
-  const isAdmin = admin !== null;
-
-  if (!isCreator && !isAdmin) {
+  if (!isCreator && !(await moderatesClass(stableUid, req.user!.username, classId, 'classes.manage'))) {
     throw new ForbiddenError('Only the creator or an admin can delete this reminder');
   }
 
   await prisma.reminder.delete({ where: { id: reminderId } });
 
-  const reminders = await getRemindersForClass(classId);
-  broadcastReminders(classId, reminders);
+  broadcastReminders(classId);
 
   res.status(204).send();
 });
@@ -150,8 +154,7 @@ router.patch('/:reminderId', writeLimiter, requireAuth, async (req: Request, res
   }
 
   const isCreator = reminder.createdBy === stableUid;
-  const admin = await prisma.admin.findUnique({ where: { stableUid } });
-  if (!isCreator && admin === null) {
+  if (!isCreator && !(await moderatesClass(stableUid, req.user!.username, classId, 'classes.manage'))) {
     throw new ForbiddenError('Only the creator or an admin can edit this reminder');
   }
 
@@ -165,8 +168,7 @@ router.patch('/:reminderId', writeLimiter, requireAuth, async (req: Request, res
     },
   });
 
-  const reminders = await getRemindersForClass(classId);
-  broadcastReminders(classId, reminders);
+  broadcastReminders(classId);
 
   res.json(updated);
 });

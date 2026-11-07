@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
+import { ADMIN_AUDIENCE, adminTokensValidFrom } from '../services/adminLogin';
 import { config } from '../config';
 import { prisma } from '../db';
 import { can, isGlobalOnly, type Access, type Permission } from '../security/permissions';
@@ -49,16 +50,23 @@ function requestedSchool(req: Request): string | null {
   return value.trim() === '' ? null : value.trim().toLowerCase();
 }
 
+// The panel sends its token as a header only (its live stream too, through
+// fetch): a token in the address would land in browser history and proxy logs.
 function extractToken(req: Request): string | null {
   const authHeader = req.headers.authorization;
   if (authHeader && authHeader.startsWith('Bearer ')) {
     return authHeader.slice(7);
   }
-  const queryToken = req.query['token'];
-  if (typeof queryToken === 'string' && queryToken.length > 0) {
-    return queryToken;
-  }
   return null;
+}
+
+// A token this server signed for the panel: HS256 only, and no app token
+// (those carry the app audience; older panel tokens none).
+function verifyAdminToken(token: string): AdminJwtPayload & jwt.JwtPayload {
+  const payload = jwt.verify(token, config.jwtSecret, { algorithms: ['HS256'] }) as AdminJwtPayload & jwt.JwtPayload;
+  const aud = payload.aud;
+  if (aud !== undefined && aud !== ADMIN_AUDIENCE) throw new Error('not a panel token');
+  return payload;
 }
 
 // A bare `role: 'admin'` JWT claim is not, by itself, proof of current admin
@@ -80,6 +88,23 @@ async function isCurrentlyAdmin(username: string): Promise<boolean> {
   return record !== null && !record.mustChangePassword;
 }
 
+/**
+ * Whether the request carries an admin token this server signed (signature,
+ * expiry and the admin claim only; standing and rights are requireAdmin's).
+ * Decides before any body is read whether a large one may be (index.ts):
+ * nobody without such a token can make the server parse megabytes.
+ */
+export function hasSignedAdminToken(req: Request): boolean {
+  const token = extractToken(req);
+  if (!token) return false;
+  try {
+    const payload = verifyAdminToken(token);
+    return payload.role === 'admin' && typeof payload.username === 'string' && payload.username !== '';
+  } catch {
+    return false;
+  }
+}
+
 export async function requireAdmin(
   req: Request,
   res: Response,
@@ -92,9 +117,9 @@ export async function requireAdmin(
     return;
   }
 
-  let payload: AdminJwtPayload;
+  let payload: AdminJwtPayload & jwt.JwtPayload;
   try {
-    payload = jwt.verify(token, config.jwtSecret) as AdminJwtPayload;
+    payload = verifyAdminToken(token);
   } catch {
     res.status(401).json({ error: 'Invalid or expired token' });
     return;
@@ -105,14 +130,27 @@ export async function requireAdmin(
     return;
   }
 
-  if (!(await isCurrentlyAdmin(payload.username))) {
+  // Standing, second factor and rights are read together: three independent
+  // lookups, each still fresh on every request (nothing is remembered between
+  // requests, so a revoked right stops at once).
+  const [stillAdmin, setupPending, access, validFrom] = await Promise.all([
+    isCurrentlyAdmin(payload.username),
+    secondFactorSetupNeeded(payload.username),
+    loadAccess(payload.username),
+    adminTokensValidFrom(payload.username),
+  ]);
+  if (!stillAdmin) {
     res.status(403).json({ error: 'Forbidden: admin access has been revoked' });
+    return;
+  }
+  // Issued before the account's password or a second factor changed.
+  if (validFrom && (payload.iat ?? 0) < Math.floor(validFrom.getTime() / 1000)) {
+    res.status(401).json({ error: 'Diese Anmeldung wurde beendet. Bitte melde dich neu an.', code: 'session_revoked' });
     return;
   }
 
   // A second factor is required but none is set up yet: the password opened
   // the panel only far enough to set one up (security/adminSecondFactorPolicy.ts).
-  const setupPending = await secondFactorSetupNeeded(payload.username);
   if (setupPending && !req.allowSecondFactorSetup) {
     res.status(403).json({
       error: 'Für dein Admin-Konto ist ein zweiter Faktor Pflicht. Richte zuerst eine Authenticator-App oder einen Passkey ein.',
@@ -123,7 +161,7 @@ export async function requireAdmin(
 
   req.adminUser = payload;
   req.adminSecondFactorSetupPending = setupPending;
-  req.adminAccess = await loadAccess(payload.username);
+  req.adminAccess = access;
   next();
 }
 

@@ -7,6 +7,7 @@ import { readSession as readUntisSession } from '../webuntis/session';
 import { isDeviceToken } from '../services/apns';
 import { apnsActive } from '../services/pushPoller';
 import { PUSH_KINDS, wantsKind } from '../services/pushNotices';
+import { pushEndpointProblem } from '../utils/pushEndpoint';
 
 const router = Router();
 
@@ -24,6 +25,12 @@ const registerSchema = z.object({
 router.post('/register', writeLimiter, requireAuth, async (req: Request, res: Response) => {
   const { stableUid } = req.user!;
   const body = registerSchema.parse(req.body);
+  // Only a browser push service's address: the server posts to it later.
+  const problem = pushEndpointProblem(body.endpoint);
+  if (problem) {
+    res.status(400).json({ error: `Diese Push-Adresse wird nicht angenommen (${problem}).`, code: 'push_endpoint_invalid' });
+    return;
+  }
   const website = body.jsessionid ? null : readUntisSession(req);
   const jsessionid = body.jsessionid ?? website?.sessionId;
   if (!jsessionid) {
