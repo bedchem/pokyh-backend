@@ -14,7 +14,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 // writes — and small stand-in app images, switched between blue and green
 // while clients keep sending HTTPS requests through Caddy and opening
 // connections through the edge forwarder. Needs Docker with the images
-// node:22-alpine, mysql:8.4.10, redis:7.4.1-alpine and caddy:2.8.4-alpine;
+// node:22.23.4-alpine, mysql:8.4.13, redis:7.4.12-alpine and caddy:2.11.9-alpine;
 // run with `npm run test:updater`. Everything runs in a Compose project of its
 // own, bound to 127.0.0.1, and is removed afterwards.
 
@@ -69,7 +69,7 @@ process.on('SIGTERM', () => { clearInterval(waiting); channel.close(); web.close
 function appSource(dir, version, healthy = true) {
   mkdirSync(path.join(dir, 'deploy', 'node'), { recursive: true });
   writeFileSync(path.join(dir, 'server.js'), SERVER);
-  writeFileSync(path.join(dir, 'deploy', 'node', 'Dockerfile'), `FROM node:22-alpine\nWORKDIR /app\nCOPY server.js .\nENV APP_VERSION=${version} APP_HEALTHY=${healthy ? '1' : '0'}\nCMD ["node", "server.js"]\n`);
+  writeFileSync(path.join(dir, 'deploy', 'node', 'Dockerfile'), `FROM node:22.23.4-alpine\nWORKDIR /app\nCOPY server.js .\nENV APP_VERSION=${version} APP_HEALTHY=${healthy ? '1' : '0'}\nCMD ["node", "server.js"]\n`);
 }
 
 // A build as the cluster hands it over: a .tgz with one top directory.
@@ -194,7 +194,7 @@ test('the Caddyfiles the installer writes are valid for Caddy (own domain and be
       ['gateway', bootstrap.renderGatewayCaddyfile({ trusted: ['10.8.0.1', '10.8.0.0/24'] })],
     ]) {
       writeFileSync(path.join(dir, name), text);
-      const out = sh('docker', ['run', '--rm', '-v', `${path.join(dir, name)}:/etc/caddy/Caddyfile:ro`, 'caddy:2.8.4-alpine', 'caddy', 'validate', '--config', '/etc/caddy/Caddyfile', '--adapter', 'caddyfile'], { stdio: ['ignore', 'pipe', 'pipe'] });
+      const out = sh('docker', ['run', '--rm', '-v', `${path.join(dir, name)}:/etc/caddy/Caddyfile:ro`, 'caddy:2.11.9-alpine', 'caddy', 'validate', '--config', '/etc/caddy/Caddyfile', '--adapter', 'caddyfile'], { stdio: ['ignore', 'pipe', 'pipe'] });
       assert.match(out, /Valid configuration/, name);
     }
   } catch (err) {

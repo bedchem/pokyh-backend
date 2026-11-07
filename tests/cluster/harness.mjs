@@ -1,11 +1,12 @@
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { FakeWebUntis } from '../helpers/fakeWebUntis.mjs';
 
 // Infrastructure for the multi-node end-to-end test: a throw-away MySQL
 // server, several backend processes that each own one database on it, and
@@ -19,9 +20,12 @@ import { fileURLToPath } from 'node:url';
 const require = createRequire(import.meta.url);
 export const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const { PrismaClient } = require(path.join(REPO, 'node_modules', '@prisma', 'client'));
+// The server's own driver adapter (built with the suite's `npm run build`).
+const { mysqlAdapter } = require(path.join(REPO, 'dist', 'dbAdapter.js'));
+const dbClient = (url) => new PrismaClient({ adapter: mysqlAdapter(url, 4), log: [] });
 const jwt = require(path.join(REPO, 'node_modules', 'jsonwebtoken'));
 
-const MYSQL_IMAGE = 'mysql:8.4.10';
+const MYSQL_IMAGE = 'mysql:8.4.13';
 const ADMIN_USERNAME = 'clusteradmin';
 // Never used to sign in — it only has to be non-empty so the first-run setup
 // endpoint stays closed. Tests authenticate with tokens they mint themselves.
@@ -68,6 +72,9 @@ function freePort() {
 
 export class Cluster {
   constructor() {
+    // The stand-in WebUntis every node signs in with (tests/helpers/fakeWebUntis.mjs).
+    this.webuntis = new FakeWebUntis();
+    this.webuntisStarted = null;
     this.root = mkdtempSync(path.join(os.tmpdir(), 'pokyh-cluster-e2e-'));
     this.suffix = randomBytes(4).toString('hex');
     this.container = null;
@@ -107,7 +114,7 @@ export class Cluster {
       const mapping = execFileSync('docker', ['port', this.container, '3306/tcp'], { encoding: 'utf8' }).trim().split('\n')[0];
       this.mysqlUrl = `mysql://root:${password}@127.0.0.1:${mapping.split(':').pop()}`;
     }
-    const probe = new PrismaClient({ datasources: { db: { url: `${this.mysqlUrl}/mysql` } }, log: [] });
+    const probe = dbClient(`${this.mysqlUrl}/mysql`);
     try {
       await waitFor(async () => {
         await probe.$queryRawUnsafe('SELECT 1');
@@ -116,7 +123,7 @@ export class Cluster {
     } finally {
       await probe.$disconnect().catch(() => {});
     }
-    this.adminDb = new PrismaClient({ datasources: { db: { url: `${this.mysqlUrl}/mysql` } }, log: [] });
+    this.adminDb = dbClient(`${this.mysqlUrl}/mysql`);
   }
 
   // ── Nodes ────────────────────────────────────────────────────────────────
@@ -125,6 +132,8 @@ export class Cluster {
   // port of its own; `appDir` runs the server from that directory (an
   // unpacked install bundle) instead of this repository's build.
   async addNode(name, overrides = {}, { mtls = false, appDir = null } = {}) {
+    this.webuntisStarted ??= this.webuntis.start();
+    await this.webuntisStarted;
     const database = `pokyh_e2e_${this.suffix}_${name}`;
     await this.adminDb.$executeRawUnsafe(`CREATE DATABASE \`${database}\``);
     const dir = appDir ?? path.join(this.root, name);
@@ -132,6 +141,8 @@ export class Cluster {
     const linkType = process.platform === 'win32' ? 'junction' : 'dir';
     if (!existsSync(path.join(dir, 'prisma'))) symlinkSync(path.join(REPO, 'prisma'), path.join(dir, 'prisma'), linkType);
     if (!existsSync(path.join(dir, 'node_modules'))) symlinkSync(path.join(REPO, 'node_modules'), path.join(dir, 'node_modules'), linkType);
+    // The Prisma CLI (db push, db execute) reads its connection through it.
+    if (!existsSync(path.join(dir, 'prisma.config.ts'))) copyFileSync(path.join(REPO, 'prisma.config.ts'), path.join(dir, 'prisma.config.ts'));
     if (!appDir) writeFileSync(path.join(dir, 'package.json'), '{"name":"pokyh-cluster-e2e-node","private":true}\n');
     this.installClientShims(dir);
 
@@ -158,7 +169,7 @@ export class Cluster {
       url: `http://127.0.0.1:${port}`,
       process: null,
       overrides,
-      db: new PrismaClient({ datasources: { db: { url: databaseUrl } }, log: [] }),
+      db: dbClient(databaseUrl),
       serverKey: overrides.SERVER_KEY ?? this.secrets.serverKey,
     };
     this.nodes.set(name, node);
@@ -221,6 +232,11 @@ child.on('exit', (code) => process.exit(code === null ? 1 : code));
       RATE_LIMIT_WRITE_MAX: '1000000',
       RATE_LIMIT_READ_MAX: '1000000',
       RATE_LIMIT_SSE_MAX: '1000000',
+      RATE_LIMIT_APP_LOGIN_MAX: '1000000',
+      RATE_LIMIT_APP_LOGIN_PER_ACCOUNT_MAX: '1000000',
+      // Every school's WebUntis is the stand-in, unless a suite brings its
+      // own for the default school (WEBUNTIS_BASE).
+      ...(node.overrides.WEBUNTIS_BASE ? {} : { WEBUNTIS_TEST_BASE: this.webuntis.base }),
       CLUSTER_NODE_NAME: `node-${node.name}`,
       CLUSTER_HEARTBEAT_INTERVAL_MS: '500',
       CLUSTER_REQUEST_TIMEOUT_MS: '2000',
@@ -229,6 +245,13 @@ child.on('exit', (code) => process.exit(code === null ? 1 : code));
       CLUSTER_OFFLINE_AFTER_FAILURES: '4',
       ...node.overrides,
     });
+    // An installed node runs as in production, where the stand-in's test
+    // switch is refused: it reaches the stand-in as an operator's default
+    // school, through WEBUNTIS_BASE.
+    if (env.NODE_ENV !== 'test') {
+      delete env.WEBUNTIS_TEST_BASE;
+      if (!node.overrides.WEBUNTIS_BASE) env.WEBUNTIS_BASE = this.webuntis.base;
+    }
     return env;
   }
 
@@ -298,20 +321,30 @@ child.on('exit', (code) => process.exit(code === null ? 1 : code));
     const text = await res.text();
     let json = null;
     try { json = text ? JSON.parse(text) : null; } catch { json = null; }
-    return { status: res.status, json, text };
+    return { status: res.status, json, text, headers: res.headers };
   }
 
   admin(node, method, pathname, body) {
     return this.request(node, method, `/api/admin${pathname}`, { body, token: this.adminToken, apiKey: false });
   }
 
-  // Signs a user in the way the web frontend does (trusted server-to-server
-  // call), which creates the account on first use.
-  async login(node, username, { klasseId = 0, klasseName = '' } = {}) {
-    const res = await this.request(node, 'POST', '/auth/login', {
-      body: { username, klasseId, klasseName },
-      headers: { 'x-server-key': node.serverKey },
+  // Signs a user in the way the apps do: signed in to WebUntis (the
+  // stand-in), handing POKYH that session; the account is created on first
+  // use. `klasseId`: the pupil's class as WebUntis keeps it (in the stand-in's
+  // timetable set-up); `account`: further stand-in options (kind, personId, …).
+  async appLogin(node, username, { klasseId = 0, klasseName, account = {}, headers = {}, body = {} } = {}) {
+    if (!this.webuntis.accounts.has(username) || klasseId || Object.keys(account).length) {
+      this.webuntis.account(username, { klasseId, klasseName, pageConfig: klasseId > 0, ...account });
+    }
+    const untisSessionId = this.webuntis.session(username);
+    return this.request(node, 'POST', '/auth/login', {
+      body: { username, untisSessionId, ...body },
+      headers: { 'x-server-key': node.serverKey, ...headers },
     });
+  }
+
+  async login(node, username, options = {}) {
+    const res = await this.appLogin(node, username, options);
     if (res.status !== 200) throw new Error(`login of ${username} on ${node.name} failed: ${res.status} ${res.text}`);
     return { token: res.json.token, refreshToken: res.json.refreshToken, user: res.json.user };
   }
@@ -427,11 +460,12 @@ child.on('exit', (code) => process.exit(code === null ? 1 : code));
   // Runs SQL that the application's own database client cannot send (trigger
   // DDL), the same way the server itself does.
   runSql(node, sql) {
-    execFileSync(process.execPath, [path.join(REPO, 'node_modules', 'prisma', 'build', 'index.js'), 'db', 'execute', '--stdin', '--url', node.databaseUrl], {
+    // The connection comes through the node's prisma.config.ts.
+    execFileSync(process.execPath, [path.join(REPO, 'node_modules', 'prisma', 'build', 'index.js'), 'db', 'execute', '--stdin'], {
       input: sql,
       cwd: node.dir,
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: { PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '' },
+      env: { PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '', DATABASE_URL: node.databaseUrl },
     });
   }
 
@@ -469,6 +503,7 @@ child.on('exit', (code) => process.exit(code === null ? 1 : code));
 
   async teardown() {
     for (const node of this.nodes.values()) await this.stop(node, 'SIGKILL').catch(() => {});
+    if (this.webuntisStarted) await this.webuntis.stop().catch(() => {});
     for (const proxy of this.proxies) proxy.close();
     for (const node of this.nodes.values()) {
       await node.db.$disconnect().catch(() => {});

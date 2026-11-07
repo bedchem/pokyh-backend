@@ -5,7 +5,13 @@ import { loadTs } from './helpers/loadTs.mjs';
 const {
   accountClassForRole,
   accountKindOf,
+  classDirectory,
   containsParentRoleTag,
+  listsOtherStudents,
+  majorityClassId,
+  pageConfigClassId,
+  weeklyClassElements,
+  weeklyLessonClassIds,
   findStudentClassIdInData,
   klasseById,
   klasseIdByName,
@@ -173,4 +179,94 @@ test('exposes no class identity for a detected parent account', () => {
   assert.deepEqual(accountClassForRole(true, 345, '4A'), { klasseId: 0, klasseName: '' });
   assert.deepEqual(accountClassForRole(false, 345, ' 4A '), { klasseId: 345, klasseName: '4A' });
   assert.deepEqual(accountClassForRole(false, 0, '4A'), { klasseId: 0, klasseName: '' });
+});
+
+// ── Guardians told by their children ─────────────────────────────────────────
+
+test('an app-data that lists other students than the person is a guardian\'s, whatever the person type says', () => {
+  const ownAccount = { data: { user: { roles: [], person: { id: 40 }, students: [{ id: 12, displayName: 'Kind' }] } } };
+  assert.equal(listsOtherStudents(ownAccount, 40), true);
+  assert.equal(accountKindOf(undefined, ownAccount, [], 40), 'parent');
+  assert.equal(accountKindOf(5, ownAccount, [], 40), 'parent');
+  // `children` is the other name some instances use.
+  assert.equal(accountKindOf(5, { user: { person: { id: 40 }, children: [{ personId: 13 }] } }, [], 40), 'parent');
+});
+
+test('a pupil listed among their own students stays a pupil, and without the own id nothing is concluded', () => {
+  const pupil = { data: { user: { roles: ['STUDENT'], person: { id: 12 }, students: [{ id: 12 }] } } };
+  assert.equal(listsOtherStudents(pupil, 12), false);
+  assert.equal(accountKindOf(5, pupil, [], 12), 'student');
+  assert.equal(listsOtherStudents({ user: { students: [{ id: 12 }] } }, 0), false);
+  assert.equal(listsOtherStudents({ user: { students: [] } }, 12), false);
+});
+
+// ── WebUntis' own timetable set-up and weekly timetable ──────────────────────
+
+test('the pupil\'s class from the timetable page set-up: only their own element, string ids too', () => {
+  const pageConfig = { data: { elements: [
+    { type: 5, id: 99, name: 'Other', klasseId: 700 },
+    { type: 5, id: '12', name: 'Max', klasseId: '345' },
+  ] } };
+  assert.equal(pageConfigClassId(pageConfig, 12), 345);
+  assert.equal(pageConfigClassId(pageConfig, 13), 0);
+  assert.equal(pageConfigClassId({ data: { elements: [{ type: 1, id: 12, klasseId: 345 }] } }, 12), 0);
+  assert.equal(pageConfigClassId(null, 12), 0);
+  assert.equal(pageConfigClassId(pageConfig, 0), 0);
+});
+
+test('the page set-up\'s class comes second, after authenticate and before every list', () => {
+  const pageConfig = { data: { elements: [{ type: 5, id: 12, klasseId: 350 }] } };
+  assert.deepEqual(ownClassCandidates(12, { personId: 12, klasseId: 344 }, [{ id: 12, klasseId: 345 }], null, pageConfig), [
+    { source: 'authenticate', id: 344 },
+    { source: 'pageconfig', id: 350 },
+    { source: 'students', id: 345 },
+  ]);
+});
+
+const weekly = {
+  data: { result: { data: {
+    elementIds: [12],
+    elementPeriods: { 12: [
+      { id: 1, elements: [{ type: 1, id: 345 }, { type: 2, id: 7 }, { type: 4, id: 3 }] },
+      { id: 2, elements: [{ type: 1, id: 345 }, { type: 1, id: 346 }] },
+      { id: 3, elements: [{ type: 1, id: 345 }] },
+      { id: 4, elements: [{ type: 3, id: 9 }] },
+    ] },
+    elements: [
+      { type: 1, id: 345, name: '4A', longName: '4. Klasse A' },
+      { type: 1, id: 346, name: '4B', longName: '4. Klasse B' },
+      { type: 2, id: 7, name: 'MUS' },
+    ],
+  } } },
+};
+
+test('the weekly timetable gives each lesson\'s classes by id, and names them', () => {
+  assert.deepEqual(weeklyLessonClassIds(weekly, 12), [[345], [345, 346], [345]]);
+  assert.deepEqual(weeklyLessonClassIds(weekly, 13), []);
+  assert.deepEqual(weeklyClassElements(weekly), [
+    { id: 345, name: '4A', longName: '4. Klasse A' },
+    { id: 346, name: '4B', longName: '4. Klasse B' },
+  ]);
+});
+
+test('the class id in a clear majority of the lessons wins; a tie or too few lessons give none', () => {
+  assert.equal(majorityClassId(weeklyLessonClassIds(weekly, 12)), 345);
+  assert.equal(majorityClassId([[1, 2], [1, 2], [1, 2]]), 0);
+  assert.equal(majorityClassId([[1]]), 0);
+  assert.equal(majorityClassId([[1], [2], [3]]), 0);
+});
+
+test('the class directory merges every list read, first name wins; nothing read is null', () => {
+  assert.equal(classDirectory(null, null), null);
+  assert.deepEqual(classDirectory(null, [{ id: 1, name: '1A' }], [{ id: 1, name: 'x' }, { id: '2', name: '2B' }]), [
+    { id: 1, name: '1A', longName: undefined },
+    { id: 2, name: '2B', longName: undefined },
+  ]);
+  assert.deepEqual(classDirectory([], null), []);
+});
+
+test('with getKlassen unread the first own candidate stands, named from the other lists', () => {
+  const { picked } = pickOwnClass([{ source: 'pageconfig', id: 345 }], null, [{ id: 345, name: '4A' }]);
+  assert.deepEqual(picked, { id: 345, name: '4A', source: 'pageconfig' });
+  assert.deepEqual(pickOwnClass([{ source: 'pageconfig', id: 345 }], null).picked, { id: 345, name: '', source: 'pageconfig' });
 });

@@ -12,9 +12,9 @@ let devices = 0;
 // Each sign-in is its own device, as the app sends its device id.
 async function signIn(username) {
   devices += 1;
-  const res = await cluster.request(node, 'POST', '/auth/login', {
-    body: { username, klasseId: 0, klasseName: '' },
-    headers: { 'x-server-key': node.serverKey, 'x-pokyh-device': `e2e-device-${String(devices).padStart(8, '0')}` },
+  // The app's sign-in, with its WebUntis session (the harness's stand-in).
+  const res = await cluster.appLogin(node, username, {
+    headers: { 'x-pokyh-device': `e2e-device-${String(devices).padStart(8, '0')}` },
   });
   assert.equal(res.status, 200, res.text);
   return { token: res.json.token, refreshToken: res.json.refreshToken, user: res.json.user };

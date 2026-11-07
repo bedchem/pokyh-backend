@@ -18,8 +18,11 @@ const parseSchool = (v) => (v && typeof v.loginName === 'string' && typeof v.ser
 const roundTrip = (unlock) => readUnlock(unsealWith(key, sealWith(key, unlockPayload(unlock))), parseSchool);
 
 test('the unlock cookie is sealed, not readable', () => {
-  const value = sealWith(key, unlockPayload({ uid: 'u1', cid: 'c1', signIn }));
-  assert.ok(!value.includes('geheim') && !value.includes('anna') && !value.includes('c1'));
+  // Markers long enough that random ciphertext never contains them by chance
+  // (a two-letter id did, now and then).
+  const cid = 'credential-marker-7f3a';
+  const value = sealWith(key, unlockPayload({ uid: 'u1', cid, signIn }));
+  assert.ok(!value.includes('geheim') && !value.includes('anna.muster') && !value.includes(cid));
 });
 
 test('a WebUntis account keeps its sign-in, with the password or the app key', () => {

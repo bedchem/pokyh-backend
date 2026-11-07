@@ -16,7 +16,7 @@
 
 import { execFileSync, spawn } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import { createRequire } from 'node:module';
 import os from 'node:os';
@@ -26,6 +26,9 @@ import { fileURLToPath } from 'node:url';
 const require = createRequire(import.meta.url);
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const { PrismaClient } = require(path.join(REPO, 'node_modules', '@prisma', 'client'));
+// The server's own driver adapter (built with the suite's `npm run build`).
+const { mysqlAdapter } = require(path.join(REPO, 'dist', 'dbAdapter.js'));
+const dbClient = (url) => new PrismaClient({ adapter: mysqlAdapter(url, 4), log: [] });
 const jwt = require(path.join(REPO, 'node_modules', 'jsonwebtoken'));
 
 const args = process.argv.slice(2);
@@ -47,6 +50,8 @@ const SECRETS = {
   serverKey: 'bench-server-key-0123456789abcdef01234567',
 };
 const ADMIN_USERNAME = 'benchadmin';
+// A seeded pupil (seed() below): bench-uid-1 is a student of bench-class-1.
+const BENCH_USER = { stableUid: 'bench-uid-1', username: 'bench.user1', klasseId: 1001, klasseName: '2B', role: 'student' };
 const ADMIN_PASSWORD_HASH = '$2b$12$abcdefghijklmnopqrstuuABCDEFGHIJKLMNOPQRSTUVWXYZ012345';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -89,7 +94,7 @@ async function mysqlServer() {
     '-p', '127.0.0.1::3306',
     // Disk-backed like a real server (a tmpfs fills up with the binary log
     // of the seed and then stalls every write).
-    'mysql:8.4.10',
+    'mysql:8.4.13',
     '--mysql-native-password=ON',
   ], { stdio: 'pipe' });
   const mapping = execFileSync('docker', ['port', container, '3306/tcp'], { encoding: 'utf8' }).trim().split('\n')[0];
@@ -102,6 +107,8 @@ async function startServer(databaseUrl) {
   const dir = mkdtempSync(path.join(os.tmpdir(), 'pokyh-bench-'));
   symlinkSync(path.join(APP, 'prisma'), path.join(dir, 'prisma'), 'dir');
   symlinkSync(path.join(APP, 'node_modules'), path.join(dir, 'node_modules'), 'dir');
+  // The Prisma CLI's connection (db push at start); builds before Prisma 7 have none.
+  if (existsSync(path.join(APP, 'prisma.config.ts'))) copyFileSync(path.join(APP, 'prisma.config.ts'), path.join(dir, 'prisma.config.ts'));
   writeFileSync(path.join(dir, 'package.json'), '{"name":"pokyh-bench","private":true}\n');
   const port = await freePort();
   const env = {};
@@ -119,6 +126,9 @@ async function startServer(databaseUrl) {
     ADMIN_USERNAME,
     ADMIN_USERNAMES: ADMIN_USERNAME,
     ADMIN_PASSWORD_HASH,
+    // The bench acts with a signed admin token, as the cluster suites do; a
+    // required second factor would refuse every admin request with 403.
+    ADMIN_REQUIRE_SECOND_FACTOR: 'false',
     DB_AUTO_PUSH: 'true',
     BACKUP_ENABLED: 'false',
     BACKUP_DIR: path.join(dir, 'backups'),
@@ -161,7 +171,18 @@ const dayKey = (ms) => new Date(ms).toISOString().slice(0, 10);
 async function insertRows(db, table, columns, rows, chunk = 2000) {
   for (let i = 0; i < rows.length; i += chunk) {
     const values = rows.slice(i, i + chunk).map((r) => `(${r.join(',')})`).join(',');
-    await db.$executeRawUnsafe(`INSERT INTO \`${table}\` (${columns.map((c) => `\`${c}\``).join(',')}) VALUES ${values}`);
+    const sql = `INSERT INTO \`${table}\` (${columns.map((c) => `\`${c}\``).join(',')}) VALUES ${values}`;
+    // The server's own start-up jobs touch the same tables while seeding;
+    // MySQL then picks one side of a deadlock to retry.
+    for (let attempt = 1; ; attempt++) {
+      try {
+        await db.$executeRawUnsafe(sql);
+        break;
+      } catch (err) {
+        if (attempt >= 5 || err?.meta?.code !== '1213') throw err;
+        await sleep(200 * attempt);
+      }
+    }
   }
 }
 
@@ -303,6 +324,14 @@ const ENDPOINTS = [
   ['GET', '/api/admin/analytics?range=7&fresh=1'],
   ['GET', '/dishes'],
   ['POST', '/dish-ratings/batch', { dishIds: Array.from({ length: 20 }, (_, i) => `gericht-nummer-${i}`) }],
+  // What a signed-in pupil's app does all day (as BENCH_USER below).
+  ['GET', '/users/me', undefined, 'user'],
+  ['GET', '/auth/me', undefined, 'user'],
+  ['GET', '/classes/mine', undefined, 'user'],
+  ['GET', `/users/${BENCH_USER.username}/todos`, undefined, 'user'],
+  ['POST', '/usage/ping', { sessionId: '7b0e7a4e-5f2c-4c1e-9a8b-2d6f0c1e3a5b', client: 'browser', activeSeconds: 30, screens: 2 }, 'user'],
+  ['POST', '/activity-log', { event: 'page_view', page: '/home' }, 'user'],
+  ['POST', '/dish-ratings/gericht-nummer-1', { stars: 4 }, 'user'],
   ...(process.env.BENCH_EXTRA ? JSON.parse(process.env.BENCH_EXTRA) : []),
 ];
 
@@ -319,14 +348,15 @@ function stats(samples) {
 
 async function measure(server, db) {
   const token = jwt.sign({ role: 'admin', sub: 'admin-panel', username: ADMIN_USERNAME }, SECRETS.jwt, { expiresIn: '2h' });
+  const userToken = jwt.sign(BENCH_USER, SECRETS.jwt, { expiresIn: '2h' });
   const results = [];
-  for (const [method, pathname, body] of ENDPOINTS) {
+  for (const [method, pathname, body, as] of ENDPOINTS) {
     const call = async () => {
       const started = performance.now();
       const res = await fetch(`${server.url}${pathname}`, {
         method,
         headers: {
-          authorization: `Bearer ${token}`,
+          authorization: `Bearer ${as === 'user' ? userToken : token}`,
           'x-api-key': SECRETS.apiKey,
           ...(body ? { 'content-type': 'application/json' } : {}),
         },
@@ -359,16 +389,63 @@ async function measure(server, db) {
   return results;
 }
 
+// A school's morning: many pupils at once (BENCH_CONCURRENCY in flight,
+// BENCH_BURST requests), mixed reads and the heartbeat, plus the panel's
+// summary in between. Shows pool and lock contention that one request at a
+// time never meets.
+async function burst(server) {
+  // Sixty different pupils (the heartbeat is limited per account).
+  const userTokens = Array.from({ length: 60 }, (_, k) => k + 1).filter((i) => i % 25 !== 0)
+    .map((i) => jwt.sign({ stableUid: `bench-uid-${i}`, username: `bench.user${i}`, klasseId: 1000 + (i % 80), klasseName: '', role: 'student' }, SECRETS.jwt, { expiresIn: '2h' }));
+  const adminToken = jwt.sign({ role: 'admin', sub: 'admin-panel', username: ADMIN_USERNAME }, SECRETS.jwt, { expiresIn: '2h' });
+  const mix = [
+    ['GET', '/dishes', undefined, 'user'],
+    ['GET', '/users/me', undefined, 'user'],
+    ['GET', '/classes/mine', undefined, 'user'],
+    ['POST', '/usage/ping', { sessionId: '7b0e7a4e-5f2c-4c1e-9a8b-2d6f0c1e3a5b', client: 'browser', activeSeconds: 30, screens: 1 }, 'user'],
+    ['POST', '/dish-ratings/batch', { dishIds: Array.from({ length: 20 }, (_, i) => `gericht-nummer-${i}`) }, 'user'],
+    ['GET', '/api/admin/stats', undefined, 'admin'],
+  ];
+  const total = Number(process.env.BENCH_BURST ?? 600);
+  const width = Number(process.env.BENCH_CONCURRENCY ?? 24);
+  const samples = [];
+  let failed = 0;
+  let next = 0;
+  const started = performance.now();
+  const worker = async () => {
+    while (next < total) {
+      const n = next++;
+      const [method, pathname, body, as] = mix[n % mix.length];
+      const t = performance.now();
+      const res = await fetch(`${server.url}${pathname}`, {
+        method,
+        headers: {
+          authorization: `Bearer ${as === 'admin' ? adminToken : userTokens[n % userTokens.length]}`,
+          'x-api-key': SECRETS.apiKey,
+          ...(body ? { 'content-type': 'application/json' } : {}),
+        },
+        body: body ? JSON.stringify(body) : undefined,
+      }).catch(() => null);
+      if (!res || res.status >= 500) failed++;
+      await res?.text().catch(() => '');
+      samples.push(performance.now() - t);
+    }
+  };
+  await Promise.all(Array.from({ length: width }, worker));
+  const wall = performance.now() - started;
+  return { requests: total, concurrency: width, wallMs: wall, perSecond: total / (wall / 1000), failed, ...stats(samples) };
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 const mysql = await mysqlServer();
-const admin = new PrismaClient({ datasources: { db: { url: `${mysql.url}/mysql` } }, log: [] });
+const admin = dbClient(`${mysql.url}/mysql`);
 await waitFor(async () => { await admin.$queryRawUnsafe('SELECT 1'); return true; }, 120_000, 'MySQL');
 const [existing] = await admin.$queryRawUnsafe(`SELECT COUNT(*) AS n FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = '${DATABASE}'`);
 const fresh = Number(existing.n) === 0;
 if (fresh) await admin.$executeRawUnsafe(`CREATE DATABASE \`${DATABASE}\``);
 const databaseUrl = `${mysql.url}/${DATABASE}`;
-const db = new PrismaClient({ datasources: { db: { url: databaseUrl } }, log: [] });
+const db = dbClient(databaseUrl);
 
 let server = await startServer(databaseUrl);
 if (fresh) {
@@ -382,16 +459,19 @@ if (fresh) {
 // Start-up work (migrations, backfills) settles before measuring.
 await sleep(Number(process.env.BENCH_SETTLE_MS ?? 2000));
 const results = await measure(server, db);
+const load = await burst(server);
 console.log(`\n## ${LABEL} (${RUNS} runs each, ms)\n`);
 console.log('| endpoint | status | mean | p50 | p95 | SQL/req | bytes |');
 console.log('|---|---|---|---|---|---|---|');
 for (const r of results) {
   console.log(`| ${r.endpoint} | ${r.status} | ${r.mean.toFixed(1)} | ${r.p50.toFixed(1)} | ${r.p95.toFixed(1)} | ${r.sql} | ${r.bytes} |`);
 }
+console.log(`\n### burst: ${load.requests} requests, ${load.concurrency} at once\n`);
+console.log(`wall ${load.wallMs.toFixed(0)} ms · ${load.perSecond.toFixed(0)} req/s · mean ${load.mean.toFixed(1)} · p50 ${load.p50.toFixed(1)} · p95 ${load.p95.toFixed(1)} ms · failed ${load.failed}`);
 const out = opt('out');
 if (out) {
   mkdirSync(path.dirname(out), { recursive: true });
-  writeFileSync(out, JSON.stringify({ label: LABEL, runs: RUNS, results }, null, 2));
+  writeFileSync(out, JSON.stringify({ label: LABEL, runs: RUNS, results, burst: load }, null, 2));
 }
 server.child.kill('SIGTERM');
 await db.$disconnect();

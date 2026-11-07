@@ -141,6 +141,7 @@ test('only cluster-wide settings are shared; node secrets and process controls n
     TRUST_PROXY: 'loopback', PUBLIC_BASE_URL: 'https://a', REDIS_URL: 'redis://x',
     BACKUP_DIR: '/x', NODE_OPTIONS: '--require /tmp/x.js', PATH: '/bin', HOME: '/root', LD_PRELOAD: '/x.so', UNKNOWN_SETTING: 'x',
     CORS_ORIGIN: 'https://ok\nINJECTED=1',
+    WEBUNTIS_TEST_BASE: 'http://127.0.0.1:9/WebUntis',
   };
   const result = shared.sharedEnvironment(env);
   for (const key of ['JWT_SECRET', 'REFRESH_TOKEN_SECRET', 'API_KEY', 'SERVER_KEY', 'ADMIN_PASSWORD_HASH', 'ADMIN_USERNAME',
@@ -150,7 +151,7 @@ test('only cluster-wide settings are shared; node secrets and process controls n
   }
   for (const key of ['DATABASE_URL', 'DB_PASSWORD', 'MYSQL_ROOT_PASSWORD', 'CLUSTER_SECRET', 'CLUSTER_ADVERTISE_URL', 'CLUSTER_MTLS_URL',
     'CLUSTER_NODE_NAME', 'PORT', 'TRUST_PROXY', 'REDIS_URL', 'BACKUP_DIR', 'LEARN_AI_ENABLED',
-    'NODE_OPTIONS', 'PATH', 'HOME', 'LD_PRELOAD', 'UNKNOWN_SETTING']) {
+    'NODE_OPTIONS', 'PATH', 'HOME', 'LD_PRELOAD', 'UNKNOWN_SETTING', 'WEBUNTIS_TEST_BASE']) {
     assert.equal(result.values[key], undefined, `${key} stays on its node`);
   }
   assert.equal(result.values.CORS_ORIGIN, undefined, 'a multi-line value is never handed over');

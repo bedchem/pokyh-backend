@@ -46,12 +46,14 @@ async function ok(promise, status = 200) {
   return res.json;
 }
 
-// An app login the way the web frontend does it, optionally for a school
-// (its WebUntis login name, display name and server).
-async function appLogin(username, { school, schoolName, schoolServer, klasseId = 0, klasseName = '' } = {}) {
-  return cluster.request(node, 'POST', '/auth/login', {
-    body: { username, klasseId, klasseName, ...(school ? { school } : {}), ...(schoolName ? { schoolName } : {}), ...(schoolServer ? { schoolServer } : {}) },
-    headers: { 'x-server-key': node.serverKey },
+// An app login the way the apps do it (with their WebUntis session, from the
+// harness's stand-in WebUntis), optionally for a school (its WebUntis login
+// name, display name and server).
+async function appLogin(username, { school, schoolName, schoolServer, klasseId = 0, klasseName } = {}) {
+  return cluster.appLogin(node, username, {
+    klasseId, klasseName,
+    // A school's sign-in names its WebUntis server; the stand-in serves any.
+    body: { ...(school ? { school, schoolServer: schoolServer ?? 'test.webuntis.com' } : {}), ...(schoolName ? { schoolName } : {}) },
   });
 }
 
@@ -113,21 +115,25 @@ test('a school joins on the first WebUntis sign-in of one of its accounts', asyn
   assert.ok(events.some((e) => e.action === 'school.join' && e.schoolId === schoolB.id && e.actor === 'webuntis'));
 
   // The next sign-in finds it again: one school, not two.
-  const again = await appLogin('bert.b', { school: 'FS-Zweite', schoolName: 'Something else' });
+  const again = await appLogin('bert.b', { school: 'FS-Zweite', schoolName: 'Something else', schoolServer: 'zweite.webuntis.com' });
   assert.equal(again.status, 200, again.text);
   const after = (await ok(api('GET', '/api/admin/schools'))).schools;
   assert.equal(after.length, 2);
   assert.equal(after.find((s) => s.id === schoolB.id).name, 'Fachschule Zweite');
 
-  // A server outside WebUntis is not stored; a name that is not a WebUntis
-  // login name is refused.
-  const third = await appLogin('dora.d', { school: 'dritte schule', schoolServer: 'evil.example.com' });
+  // A server outside WebUntis can prove no session: refused, and no school
+  // is added for it; nor for a name that is not a WebUntis login name.
+  const evil = await appLogin('dora.d', { school: 'dritte schule', schoolServer: 'evil.example.com' });
+  assert.equal(evil.status, 400, evil.text);
+  assert.equal(evil.json.code, 'school_invalid');
+  assert.equal((await ok(api('GET', '/api/admin/schools'))).schools.some((s) => s.webuntisSchool === 'dritte schule'), false);
+  assert.equal((await appLogin('eve.e', { school: '<script>', schoolServer: 'x.webuntis.com' })).status, 400);
+  assert.equal((await appLogin('eve.e', { school: ' ' })).status, 422);
+  const third = await appLogin('dora.d', { school: 'dritte schule', schoolServer: 'dritte.webuntis.com' });
   assert.equal(third.status, 200, third.text);
   const dritte = (await ok(api('GET', '/api/admin/schools'))).schools.find((s) => s.webuntisSchool === 'dritte schule');
-  assert.equal(dritte.webuntisBase, '');
+  assert.equal(dritte.webuntisBase, 'https://dritte.webuntis.com/WebUntis');
   assert.equal(dritte.name, 'dritte schule');
-  assert.equal((await appLogin('eve.e', { school: '<script>' })).status, 422);
-  assert.equal((await appLogin('eve.e', { school: ' ' })).status, 422);
 
   // Without the server key nobody adds a school.
   const anon = await cluster.request(node, 'POST', '/auth/login', { body: { username: 'x', password: 'y', school: 'vierte' } });
@@ -136,14 +142,14 @@ test('a school joins on the first WebUntis sign-in of one of its accounts', asyn
 
   // A school switched off in the panel stays refused.
   await ok(api('PATCH', `/api/admin/schools/${dritte.id}`, { body: { active: false } }));
-  assert.equal((await appLogin('dora.d', { school: 'dritte schule' })).status, 403);
+  assert.equal((await appLogin('dora.d', { school: 'dritte schule', schoolServer: 'dritte.webuntis.com' })).status, 403);
 });
 
 test('a WebUntis login lands in its school; the same name from another school is refused', async () => {
   const a = await appLogin('anna.a', { klasseId: 11, klasseName: '1A' });
   assert.equal(a.status, 200, a.text);
   assert.equal(a.json.user.schoolId, schoolA.id);
-  const b = await appLogin('bert.b', { school: 'fs-zweite', klasseId: 11, klasseName: '1A' });
+  const b = await appLogin('bert.b', { school: 'fs-zweite', schoolServer: 'zweite.webuntis.com', klasseId: 11, klasseName: '1A' });
   assert.equal(b.status, 200, b.text);
   assert.equal(b.json.user.schoolId, schoolB.id);
   // WebUntis class 11 exists in both schools: two different classes.
@@ -152,7 +158,7 @@ test('a WebUntis login lands in its school; the same name from another school is
   assert.equal(elevens.length, 2);
   assert.notEqual(elevens[0].schoolId, elevens[1].schoolId);
 
-  const clash = await appLogin('anna.a', { school: 'fs-zweite' });
+  const clash = await appLogin('anna.a', { school: 'fs-zweite', schoolServer: 'zweite.webuntis.com' });
   assert.equal(clash.status, 409, clash.text);
 });
 
@@ -357,7 +363,8 @@ test('menus are per school: no menu, no dishes; comments group by dish per menu 
   await ok(api('POST', '/api/admin/dishes', { token: mensaA.token, school: schoolA.id, body: { nameDe: 'Strudel', date: today } }), 201);
   // … and imports from the internal network are refused for them.
   const internal = await api('POST', '/api/admin/dishes/import-url', { token: mensaA.token, school: schoolA.id, body: { url: 'http://127.0.0.1:3306/mensa.json' } });
-  assert.equal(internal.status, 502);
+  // 503, never 502: Cloudflare in front of the API replaces a 502 with a page of its own.
+  assert.equal(internal.status, 503);
   assert.match(internal.json.error, /intern/);
 });
 
@@ -460,8 +467,13 @@ test('the search finds only what an admin may see, in every school they reach', 
   // No network details or secrets in a result.
   const text = JSON.stringify(await ok(search('.a')));
   for (const needle of ['"ip"', 'userAgent', 'passwordHash', 'Very-long-pass-1', 'refreshToken']) assert.ok(!text.includes(needle), needle);
-  // The terms are not stored: the request log keeps the path only.
-  const logged = await node.db.$queryRawUnsafe("SELECT path FROM request_logs WHERE path LIKE '/api/admin/search%'");
+  // The terms are not stored: the request log keeps the path only. (The log
+  // is written in batches, a moment after the requests.)
+  let logged = [];
+  for (let i = 0; i < 30 && logged.length === 0; i++) {
+    logged = await node.db.$queryRawUnsafe("SELECT path FROM request_logs WHERE path LIKE '/api/admin/search%'");
+    if (logged.length === 0) await new Promise((resolve) => setTimeout(resolve, 200));
+  }
   assert.ok(logged.length > 0);
   assert.ok(logged.every((row) => row.path === '/api/admin/search'));
 });
@@ -577,7 +589,7 @@ test('the authenticator app is required for every admin; a passkey per switch; u
   await must(call('POST', '/api/admin/users', {
     body: { username: 'twofa.anna', password: 'Very-long-pass-1', role: 'none', isAdmin: true, schoolId: school.id, grant: { scope: school.id, permissions: viewer, preset: 'viewer' } },
   }), 201);
-  const anna = tokenFor('twofa.anna');
+  let anna = tokenFor('twofa.anna');
   const asAnna = (method, pathname, body) => cluster.request(secure, method, pathname, { body, token: anna, apiKey: false, headers: { 'x-pokyh-school': school.id } });
   assert.equal((await asAnna('GET', '/api/admin/users')).status, 403);
   const annaSetup = await must(asAnna('POST', '/api/admin/account/totp/setup'));
@@ -596,7 +608,17 @@ test('the authenticator app is required for every admin; a passkey per switch; u
   const moving = await must(asAnna('POST', '/api/admin/account/totp/move/start', { code: recoveryCodes[1] }));
   assert.notEqual(moving.secret, annaSetup.secret);
   await must(asAnna('POST', '/api/admin/account/totp/move/finish', { code: '000000' }), 422);
-  await must(asAnna('POST', '/api/admin/account/totp/move/finish', { code: code(moving.secret) }), 204);
+  // A changed second factor ends the account's other panel sessions (tokens
+  // of earlier seconds); the panel carries on with the token it is handed.
+  await new Promise((resolve) => setTimeout(resolve, 1_100));
+  const moved = await asAnna('POST', '/api/admin/account/totp/move/finish', { code: code(moving.secret) });
+  assert.equal(moved.status, 204, moved.text);
+  const renewed = moved.headers.get('x-admin-token');
+  assert.ok(renewed, 'the renewed token comes with the answer');
+  const ended = await asAnna('GET', '/api/admin/me');
+  assert.equal(ended.status, 401, ended.text);
+  assert.equal(ended.json.code, 'session_revoked');
+  anna = renewed;
 
   // A passkey: optional, until another admin (or anna herself) switches it on.
   const on = await must(call('PUT', '/api/admin/admins/twofa.anna/passkey-requirement', { body: { required: true } }));

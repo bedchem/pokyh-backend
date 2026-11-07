@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import http from 'node:http';
 import http2 from 'node:http2';
 import { generateKeyPairSync } from 'node:crypto';
 import { after, before, test } from 'node:test';
@@ -33,24 +32,29 @@ apple.on('stream', (stream, headers) => {
   });
 });
 
-// WebUntis' message list, per session id: how many are unread, or 401.
+// WebUntis' message list, per session id: how many are unread, or 401. Served
+// by the harness's stand-in WebUntis, which also signs the accounts in.
 const inbox = new Map();
-const webuntis = http.createServer((req, res) => {
+const cluster = new Cluster();
+cluster.webuntis.extra.push((req, res, path) => {
+  // Only the sessions this suite registers phones with; every other request
+  // (the sign-ins) is the stand-in's own.
   const session = /JSESSIONID=([^;]+)/.exec(req.headers.cookie ?? '')?.[1] ?? '';
   const unread = inbox.get(session);
-  if (!req.url.includes('/api/rest/view/v1/messages') || unread === undefined) {
+  if (unread === undefined) return false;
+  if (!path.startsWith('/api/rest/view/v1/messages')) {
     res.writeHead(404).end();
-    return;
+    return true;
   }
   if (unread === 401) {
     res.writeHead(401).end();
-    return;
+    return true;
   }
   const incomingMessages = Array.from({ length: unread + 2 }, (_, i) => ({ id: i + 1, isRead: i >= unread }));
   res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ incomingMessages }));
+  return true;
 });
 
-const cluster = new Cluster();
 let node;
 let noKeyNode;
 
@@ -61,9 +65,9 @@ const pushesTo = (token) => pushes.filter((p) => p.token === token);
 let devices = 0;
 async function signIn(username) {
   devices += 1;
-  const res = await cluster.request(node, 'POST', '/auth/login', {
-    body: { username, klasseId: 0, klasseName: '' },
-    headers: { 'x-server-key': node.serverKey, 'x-pokyh-device': `e2e-device-${String(devices).padStart(8, '0')}` },
+  // The app's sign-in, with its WebUntis session (the harness's stand-in).
+  const res = await cluster.appLogin(node, username, {
+    headers: { 'x-pokyh-device': `e2e-device-${String(devices).padStart(8, '0')}` },
   });
   assert.equal(res.status, 200, res.text);
   return { token: res.json.token, user: res.json.user };
@@ -84,7 +88,6 @@ async function dueTodo(username, accessToken, title) {
 
 before(async () => {
   await new Promise((resolve) => apple.listen(0, '127.0.0.1', resolve));
-  await new Promise((resolve) => webuntis.listen(0, '127.0.0.1', resolve));
   const appleHost = `http://127.0.0.1:${apple.address().port}`;
   await cluster.startMysql();
   node = await cluster.addNode('push', {
@@ -96,7 +99,6 @@ before(async () => {
     APNS_HOST_PRODUCTION: appleHost,
     PUSH_DUE_CHECK_INTERVAL_MS: '300',
     PUSH_POLL_INTERVAL_MS: '300',
-    WEBUNTIS_BASE: `http://127.0.0.1:${webuntis.address().port}/WebUntis`,
   });
   await cluster.start(node, { waitForCluster: false });
   // Same backend, nobody filled in the APNs block yet.
@@ -107,7 +109,6 @@ before(async () => {
 after(async () => {
   await cluster.teardown();
   await new Promise((resolve) => apple.close(resolve));
-  await new Promise((resolve) => webuntis.close(resolve));
 });
 
 test('the poller starts with APNs as its channel', async () => {

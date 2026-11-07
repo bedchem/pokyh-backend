@@ -100,7 +100,9 @@ test('a popup meant for chosen users and classes reaches exactly them — on eve
   const s3 = await cluster.login(a, 'popup-cleo', { klasseId: 202, klasseName: '5BHIT' });
   const s4 = await cluster.login(a, 'popup-dora', { klasseId: 0, klasseName: '' });
 
-  const targets = await cluster.admin(a, 'GET', '/popups/targets?q=popup-');
+  // The global view picks one school's classes, as the panel does (?forSchool=).
+  const schoolId = (await cluster.admin(a, 'GET', '/me')).json.schools[0].id;
+  const targets = await cluster.admin(a, 'GET', `/popups/targets?q=popup-&forSchool=${schoolId}`);
   assert.equal(targets.status, 200, targets.text);
   assert.ok(targets.json.users.some((user) => user.username === 'popup-anna'));
   const class101 = targets.json.classes.find((entry) => entry.id === 101);
@@ -109,7 +111,7 @@ test('a popup meant for chosen users and classes reaches exactly them — on eve
 
   for (const [extra, pattern] of [
     [{ targetUsers: ['does-not-exist'] }, /Benutzer/],
-    [{ targetClasses: [999_999] }, /Klasse/],
+    [{ targetClasses: [999_999], schoolId }, /Klasse/],
   ]) {
     const refused = await cluster.admin(a, 'POST', '/popups', popupInput('refused', extra));
     assert.ok([400, 422].includes(refused.status), refused.text);
@@ -120,6 +122,8 @@ test('a popup meant for chosen users and classes reaches exactly them — on eve
     audience: 'guests',
     targetUsers: [s4.user.stableUid],
     targetClasses: [101],
+    // A class id names a class of one school.
+    schoolId,
   }));
   assert.equal(created.status, 201, created.text);
   assert.equal(created.json.popup.audience, 'users', 'chosen people are signed in by definition');
