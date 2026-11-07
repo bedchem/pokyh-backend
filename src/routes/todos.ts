@@ -9,8 +9,14 @@ import { cached } from '../services/cache';
 
 const router = Router({ mergeParams: true });
 
-function broadcastTodos(stableUid: string, todos: unknown[]): void {
-  sseManager.broadcast(`todos:${stableUid}`, 'todos', todos);
+// The list goes to the open live streams of this stableUid — only when one is
+// open, and after the answer: a write never waits for it.
+function broadcastTodos(stableUid: string): void {
+  const channel = `todos:${stableUid}`;
+  if (sseManager.getClientCount(channel) === 0) return;
+  void getTodosForUser(stableUid)
+    .then((list) => sseManager.broadcast(channel, 'todos', list))
+    .catch(() => { /* the next write or reconnect sends it */ });
 }
 
 async function getTodosForUser(stableUid: string) {
@@ -62,8 +68,7 @@ router.post('/', writeLimiter, requireAuth, async (req: Request, res: Response) 
   });
 
   // Broadcast updated list
-  const todos = await getTodosForUser(stableUid);
-  broadcastTodos(stableUid, todos);
+  broadcastTodos(stableUid);
 
   res.status(201).json(todo);
 });
@@ -105,8 +110,7 @@ router.patch('/:todoId', writeLimiter, requireAuth, async (req: Request, res: Re
     },
   });
 
-  const todos = await getTodosForUser(stableUid);
-  broadcastTodos(stableUid, todos);
+  broadcastTodos(stableUid);
 
   res.json(updated);
 });
@@ -129,8 +133,7 @@ router.delete('/:todoId', writeLimiter, requireAuth, async (req: Request, res: R
 
   await prisma.todo.delete({ where: { id: todoId } });
 
-  const todos = await getTodosForUser(stableUid);
-  broadcastTodos(stableUid, todos);
+  broadcastTodos(stableUid);
 
   res.status(204).send();
 });

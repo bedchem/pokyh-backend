@@ -104,6 +104,14 @@ export function announceChange(areas: string[]): void {
   sseManager.broadcast(ADMIN_LIVE_KEY, 'change', { areas, at: Date.now() });
 }
 
+// POSTs that change nothing the panel lists: a token renewal (every app,
+// hourly), a batch read of ratings. They count as requests, like a GET.
+const READ_LIKE_POSTS = new Set(['/auth/refresh', '/auth/web/refresh', '/dish-ratings/batch']);
+// The website reports every page view: the activity page follows at most
+// every ACTIVITY_TICK_MS instead of refetching on each one.
+const ACTIVITY_TICK_MS = 10_000;
+let lastActivityTick = 0;
+
 function isBackgroundPath(path: string): boolean {
   return path === '/health' || path === '/readyz' || path.startsWith('/admin') || path.startsWith('/sse')
     || path.startsWith('/api/admin') || path.startsWith('/cluster/');
@@ -122,7 +130,16 @@ export function adminLive(req: Request, res: Response, next: NextFunction): void
       return;
     }
 
-    if (MUTATING.has(req.method)) {
+    if (path === '/activity-log' || path.startsWith('/activity-log/')) {
+      const now = Date.now();
+      if (res.statusCode < 400 && now - lastActivityTick >= ACTIVITY_TICK_MS) {
+        lastActivityTick = now;
+        announceChange(['activity']);
+      }
+      return;
+    }
+
+    if (MUTATING.has(req.method) && !READ_LIKE_POSTS.has(path)) {
       if (res.statusCode < 400) announceChange(areasFor(path));
       return;
     }

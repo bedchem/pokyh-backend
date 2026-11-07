@@ -119,6 +119,8 @@ router.get('/', readLimiter, optionalAuth, async (req: Request, res: Response): 
       breaks: menuBreaks(schedule.dayOffOf, currentMonday, isoAddDays(currentMonday, BREAKS_AHEAD_DAYS)),
     };
   });
+  // Briefly kept by the browser (the menu changes rarely; ratings come live).
+  res.setHeader('Cache-Control', 'private, max-age=30, stale-while-revalidate=300');
   res.json(payload);
 });
 
@@ -145,13 +147,18 @@ function oncePerDay(list: DishJson[]): DishJson[] {
 // GET /dishes/:id/image — serve an uploaded dish image (public, cacheable)
 router.get('/:id/image', readLimiter, async (req: Request, res: Response): Promise<void> => {
   const id = String(req.params['id']);
-  const row = await prisma.dishImage.findUnique({ where: { dishId: id } });
-  if (!row) { res.status(404).end(); return; }
-  const etag = `"${row.updatedAt.getTime()}"`;
-  if (req.headers['if-none-match'] === etag) { res.status(304).end(); return; }
+  // The picture's date first: a browser that has it gets its 304 without the
+  // picture being read from the database at all.
+  const meta = await prisma.dishImage.findUnique({ where: { dishId: id }, select: { updatedAt: true, mimeType: true } });
+  if (!meta) { res.status(404).end(); return; }
+  const etag = `"${meta.updatedAt.getTime()}"`;
   res.setHeader('ETag', etag);
-  res.setHeader('Content-Type', row.mimeType);
-  res.setHeader('Cache-Control', 'public, max-age=86400');
+  res.setHeader('Cache-Control', 'public, max-age=86400, stale-while-revalidate=604800');
+  if (req.headers['if-none-match'] === etag) { res.status(304).end(); return; }
+  const row = await prisma.dishImage.findUnique({ where: { dishId: id }, select: { data: true } });
+  if (!row) { res.status(404).end(); return; }
+  res.setHeader('Content-Type', meta.mimeType);
+  res.setHeader('Content-Length', row.data.length);
   res.end(row.data);
 });
 

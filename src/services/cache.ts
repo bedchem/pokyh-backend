@@ -158,8 +158,34 @@ async function write(key: string, value: unknown, ttlSeconds: number): Promise<v
  * `ttlSeconds`. Meant for whole JSON answers: what comes back from the cache
  * has been through JSON (dates are strings), exactly as a client receives it.
  */
+/**
+ * The tables (model names) cached answers are built from. Only a write to one
+ * of these makes anything stale; every other write (logs, usage, sessions)
+ * skips the round trip to Redis (db.ts). The list is static, not learned from
+ * the calls, so a node that has not served a cached read yet still keeps the
+ * other nodes' entries honest. A cached() call naming a table not listed here
+ * adds it and says so in the log: the list in this file is to be extended.
+ */
+const CACHE_TABLES = new Set([
+  'Dish', 'DishImage', 'MensaMenu', 'MensaMenuSchool', 'SchoolHolidays',
+  'DishRating', 'DishComment', 'Comment', 'Reminder', 'Todo', 'SubjectImage',
+  'Popup', 'PopupTargetUser', 'PopupTargetClass',
+  'Recap', 'RecapTargetSchool', 'RecapTargetClass', 'RecapTargetUser',
+]);
+
+/** Whether a write to this model can make a cached answer stale. */
+export function isCacheTable(model: string): boolean {
+  return CACHE_TABLES.has(model) || model === ALL;
+}
+
 export async function cached<T>(name: string, tables: readonly string[], ttlSeconds: number, load: () => Promise<T>): Promise<T> {
   if (!config.cache.enabled) return load();
+  for (const table of tables) {
+    if (!CACHE_TABLES.has(table)) {
+      CACHE_TABLES.add(table);
+      logger.warn('A cached answer depends on a table missing from CACHE_TABLES (services/cache.ts)', { table });
+    }
+  }
   let key: string | null = null;
   try {
     key = entryKey(name, await currentVersions(tables));
@@ -242,7 +268,7 @@ function relations(model: string): Map<string, string> {
   return relationsOf.get(model) ?? new Map();
 }
 
-const WRITE_ACTIONS = new Set(['create', 'createMany', 'createManyAndReturn', 'update', 'updateMany', 'upsert', 'delete', 'deleteMany']);
+const WRITE_ACTIONS = new Set(['create', 'createMany', 'createManyAndReturn', 'update', 'updateMany', 'updateManyAndReturn', 'upsert', 'delete', 'deleteMany']);
 
 /**
  * The models a Prisma write changes: its own, the related models a nested

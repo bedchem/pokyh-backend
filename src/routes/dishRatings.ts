@@ -1,3 +1,5 @@
+import { createHash } from 'crypto';
+import { TtlCache } from '../utils/cache';
 import { Router, Request, Response } from 'express';
 import { z } from 'zod';
 import { prisma } from '../db';
@@ -22,9 +24,21 @@ async function getDishRatingsData(menuId: string | null, dishKey: string, myStab
   // The votes of a dish are kept in the shared cache per menu; each request
   // picks its own vote out of them. Any vote drops the entry.
   const rows = menuId
-    ? await cached(`dish-ratings:${menuId}:${dishKey}`, ['DishRating'], 120, () => prisma.dishRating.findMany({ where: { dishId: dishKey, menuId } }))
+    ? await cached(`dish-ratings:${menuId}:${dishKey}`, ['DishRating'], 120, () => prisma.dishRating.findMany({ where: { dishId: dishKey, menuId }, select: { stableUid: true, stars: true } }))
     : [];
   return ratingsPayload(rows, myStableUid);
+}
+
+// The votes of several dishes, kept in the shared cache under the set asked
+// for: in a school morning everyone asks for the same week's dishes. Only what
+// the answer is made of — a dish can have thousands of votes.
+function votesOfDishes(menuId: string, dishKeys: string[]): Promise<Array<{ dishId: string; stableUid: string; stars: number }>> {
+  const keys = [...dishKeys].sort();
+  const set = createHash('sha256').update(keys.join('\n')).digest('base64url').slice(0, 22);
+  return cached(`dish-ratings-batch:${menuId}:${set}`, ['DishRating'], 120, () => prisma.dishRating.findMany({
+    where: { menuId, dishId: { in: keys } },
+    select: { dishId: true, stableUid: true, stars: true },
+  }));
 }
 
 // Guests may read ratings, but never see who rated: replace stableUids with
@@ -62,12 +76,14 @@ router.post('/batch', readLimiter, optionalAuth, async (req: Request, res: Respo
   const keyByInput = await resolveDishKeys(dishIds);
   const uniqueKeys = [...new Set(keyByInput.values())];
 
-  const rows = menuId
-    ? await prisma.dishRating.findMany({ where: { menuId, dishId: { in: uniqueKeys } } })
-    : [];
+  const rows = menuId ? await votesOfDishes(menuId, uniqueKeys) : [];
 
   const rowsByKey = new Map<string, typeof rows>();
-  for (const row of rows) rowsByKey.set(row.dishId, [...(rowsByKey.get(row.dishId) ?? []), row]);
+  for (const row of rows) {
+    const list = rowsByKey.get(row.dishId);
+    if (list) list.push(row);
+    else rowsByKey.set(row.dishId, [row]);
+  }
 
   const result: Record<string, DishRatingsPayload> = {};
   for (const [inputId, key] of keyByInput) {
@@ -85,6 +101,9 @@ const rateSchema = z.object({
   imageUrl: z.string().max(1000).optional(),
 });
 
+// Accounts whose earlier votes this process has already reclaimed.
+const reclaimed = new TtlCache<boolean>(12 * 60 * 60 * 1000, 20_000);
+
 router.post('/:dishId', writeLimiter, requireAuth, async (req: Request, res: Response) => {
   const raw = req.params['dishId'] as string;
   const { stableUid, username } = req.user!;
@@ -101,7 +120,12 @@ router.post('/:dishId', writeLimiter, requireAuth, async (req: Request, res: Res
 
   // Pull any earlier vote of this person (under an old stableUid) onto the
   // current one first, so the upsert changes it instead of adding a second.
-  await reclaimDishRatings(stableUid, username);
+  // Once per account and process: an account's sign-in on creation and the
+  // start-up reconcile do it too, and it reads nine tables.
+  if (!reclaimed.get(stableUid)) {
+    await reclaimDishRatings(stableUid, username);
+    reclaimed.set(stableUid, true);
+  }
 
   await prisma.dishRating.upsert({
     where: { dishId_stableUid: { dishId: dishKey, stableUid } },
@@ -111,10 +135,12 @@ router.post('/:dishId', writeLimiter, requireAuth, async (req: Request, res: Res
 
   // Every open app and browser — Android and web — gets the new numbers live,
   // and the dish's comments the voter's new stars beside their name.
-  await publishDishRatings(menuId, dishKey);
-  await publishDishComments(menuId, dishKey);
-
-  res.json(await getDishRatingsData(menuId, dishKey, stableUid));
+  const [data] = await Promise.all([
+    getDishRatingsData(menuId, dishKey, stableUid),
+    publishDishRatings(menuId, dishKey),
+    publishDishComments(menuId, dishKey),
+  ]);
+  res.json(data);
 });
 
 export { router as dishRatingsRouter };

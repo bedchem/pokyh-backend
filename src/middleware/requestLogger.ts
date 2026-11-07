@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
+import type { Prisma } from '@prisma/client';
 import { prisma } from '../db';
 import { config } from '../config';
 import { logger } from '../utils/logger';
@@ -24,6 +25,60 @@ export type RequestScope = 'admin' | 'core';
 export function requestScopeOf(path: string): RequestScope {
   if (path === '/api/admin' || path.startsWith('/api/admin/')) return 'admin';
   return 'core';
+}
+
+// Rows are written in batches: one INSERT for every request of the last
+// moment instead of one per request (a busy minute is thousands of them).
+// A crash loses at most the last FLUSH_MS of the log.
+type LogRow = Prisma.RequestLogCreateManyInput;
+const FLUSH_MS = 500;
+const FLUSH_ROWS = 250;
+const MAX_PENDING = 10_000;
+let pending: LogRow[] = [];
+let flushTimer: NodeJS.Timeout | null = null;
+
+async function writeRows(rows: LogRow[]): Promise<void> {
+  try {
+    await prisma.requestLog.createMany({ data: rows });
+  } catch (e) {
+    if (config.debug) logger.warn('[requestLogger] DB write failed', { message: e instanceof Error ? e.message : String(e), rows: rows.length });
+  }
+}
+
+/** Writes what is waiting now (also at shutdown). */
+export async function flushRequestLogs(): Promise<void> {
+  if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+  if (pending.length === 0) return;
+  const rows = pending;
+  pending = [];
+  await writeRows(rows);
+}
+
+// Accounts deleted a moment ago: a row of theirs still on its way to the
+// queue (its school was being looked up) is dropped too.
+const forgotten = new Set<string>();
+
+/**
+ * A deleted account's rows that are still waiting are dropped, so its emptied
+ * log stays empty (services/accountDeletion.ts).
+ */
+export function dropPendingLogsOf(stableUid: string, username: string): void {
+  pending = pending.filter((row) => row.stableUid !== stableUid && row.username !== username);
+  forgotten.add(stableUid);
+  forgotten.add(`name:${username}`);
+  setTimeout(() => { forgotten.delete(stableUid); forgotten.delete(`name:${username}`); }, 60_000).unref();
+}
+
+function queueRow(row: LogRow): void {
+  if ((row.stableUid && forgotten.has(row.stableUid)) || (row.username && forgotten.has(`name:${row.username}`))) return;
+  // The database away for long: the oldest rows give way, the API keeps going.
+  if (pending.length >= MAX_PENDING) pending.shift();
+  pending.push(row);
+  if (pending.length >= FLUSH_ROWS) void flushRequestLogs();
+  else if (!flushTimer) {
+    flushTimer = setTimeout(() => { flushTimer = null; void flushRequestLogs(); }, FLUSH_MS);
+    flushTimer.unref();
+  }
 }
 
 export function requestLogger(req: Request, res: Response, next: NextFunction): void {
@@ -98,9 +153,8 @@ export function requestLogger(req: Request, res: Response, next: NextFunction): 
       void school.then((schoolId) => noteSignIn(signedIn.stableUid, req.headers['user-agent'], schoolId));
     }
 
-    // Non-blocking DB write — never fails silently
-    void school.then((schoolId) => prisma.requestLog.create({
-      data: {
+    // Batched, off the request's way (queueRow above).
+    void school.then((schoolId) => queueRow({
         method: req.method,
         path: path.slice(0, 500),
         status: res.statusCode,
@@ -117,10 +171,8 @@ export function requestLogger(req: Request, res: Response, next: NextFunction): 
         // for support correlation without retaining that input.
         error: res.statusCode >= 500 ? 'server_error' : res.statusCode >= 400 ? 'client_error' : null,
         schoolId,
-      },
-    })).catch((e) => {
-      if (config.debug) logger.warn('[requestLogger] DB write failed', { message: e instanceof Error ? e.message : String(e), requestId: req.id });
-    });
+        createdAt: new Date(),
+    }));
   });
 
   next();

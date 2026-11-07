@@ -66,14 +66,12 @@ export function apiKeyMiddleware(
     return;
   }
 
-  const keyHash = hashKey(provided);
 
   // Fast path: the static master key, unchanged from before. Checked first so
   // its behavior can never regress regardless of the DB-key path below.
+  // The master key is never a row of api_keys (only issued keys are), so
+  // there is no "last used" to record for it: no write per request.
   if (safeEquals(provided, config.apiKey)) {
-    prisma.apiKey
-      .updateMany({ where: { keyHash }, data: { lastUsedAt: new Date() } })
-      .catch(() => { /* non-blocking, ignore errors */ });
     next();
     return;
   }

@@ -10,32 +10,35 @@ import { SecondFactorGate } from './components/SecondFactorGate';
 import { LoginPage } from './pages/LoginPage';
 import { SetupPage } from './pages/SetupPage';
 import { DashboardPage } from './pages/DashboardPage';
-import { AnalyticsPage } from './pages/AnalyticsPage';
-import { UsersPage } from './pages/UsersPage';
-import { ClassesPage } from './pages/ClassesPage';
-import { SessionsPage } from './pages/SessionsPage';
-import { DishesPage } from './pages/DishesPage';
-import { SubjectImagesPage } from './pages/SubjectImagesPage';
-import { CommentsPage } from './pages/CommentsPage';
-import { LogFilesPage } from './pages/LogFilesPage';
-import { TodosRemindersPage } from './pages/TodosRemindersPage';
-import { SettingsPage } from './pages/SettingsPage';
-import { SchoolYearsPage } from './pages/SchoolYearsPage';
-import { ApiKeysPage } from './pages/ApiKeysPage';
-import { BackupsPage } from './pages/BackupsPage';
-import { PopupsPage } from './pages/PopupsPage';
-import { RecapsPage } from './pages/RecapsPage';
-import { ClusterPage } from './pages/ClusterPage';
-import { RequestsPage } from './pages/RequestsPage';
-import { SchoolsPage } from './pages/SchoolsPage';
-import { SchoolSettingsPage } from './pages/SchoolSettingsPage';
-import { AdminsPage } from './pages/AdminsPage';
-import { FrontendLogsPage } from './pages/FrontendLogsPage';
-import { BackendLogsPage } from './pages/BackendLogsPage';
-import { AuditPage } from './pages/AuditPage';
-import { SystemPage } from './pages/SystemPage';
-import { PrivacyPage } from './pages/PrivacyPage';
-import { Suspense, useState, useEffect } from 'react';
+import { Suspense, lazy, useState, useEffect } from 'react';
+// Every page but the first ones is its own chunk, loaded when it is opened:
+// the panel starts with the sign-in, the dashboard and the shell only.
+const AnalyticsPage = lazy(() => import('./pages/AnalyticsPage').then((m) => ({ default: m.AnalyticsPage })));
+const UsersPage = lazy(() => import('./pages/UsersPage').then((m) => ({ default: m.UsersPage })));
+const ClassesPage = lazy(() => import('./pages/ClassesPage').then((m) => ({ default: m.ClassesPage })));
+const SessionsPage = lazy(() => import('./pages/SessionsPage').then((m) => ({ default: m.SessionsPage })));
+const DishesPage = lazy(() => import('./pages/DishesPage').then((m) => ({ default: m.DishesPage })));
+const SubjectImagesPage = lazy(() => import('./pages/SubjectImagesPage').then((m) => ({ default: m.SubjectImagesPage })));
+const CommentsPage = lazy(() => import('./pages/CommentsPage').then((m) => ({ default: m.CommentsPage })));
+const LogFilesPage = lazy(() => import('./pages/LogFilesPage').then((m) => ({ default: m.LogFilesPage })));
+const TodosRemindersPage = lazy(() => import('./pages/TodosRemindersPage').then((m) => ({ default: m.TodosRemindersPage })));
+const SettingsPage = lazy(() => import('./pages/SettingsPage').then((m) => ({ default: m.SettingsPage })));
+const SchoolYearsPage = lazy(() => import('./pages/SchoolYearsPage').then((m) => ({ default: m.SchoolYearsPage })));
+const ApiKeysPage = lazy(() => import('./pages/ApiKeysPage').then((m) => ({ default: m.ApiKeysPage })));
+const BackupsPage = lazy(() => import('./pages/BackupsPage').then((m) => ({ default: m.BackupsPage })));
+const PopupsPage = lazy(() => import('./pages/PopupsPage').then((m) => ({ default: m.PopupsPage })));
+const RecapsPage = lazy(() => import('./pages/RecapsPage').then((m) => ({ default: m.RecapsPage })));
+const ClusterPage = lazy(() => import('./pages/ClusterPage').then((m) => ({ default: m.ClusterPage })));
+const RequestsPage = lazy(() => import('./pages/RequestsPage').then((m) => ({ default: m.RequestsPage })));
+const SchoolsPage = lazy(() => import('./pages/SchoolsPage').then((m) => ({ default: m.SchoolsPage })));
+const SchoolSettingsPage = lazy(() => import('./pages/SchoolSettingsPage').then((m) => ({ default: m.SchoolSettingsPage })));
+const AdminsPage = lazy(() => import('./pages/AdminsPage').then((m) => ({ default: m.AdminsPage })));
+const FrontendLogsPage = lazy(() => import('./pages/FrontendLogsPage').then((m) => ({ default: m.FrontendLogsPage })));
+const BackendLogsPage = lazy(() => import('./pages/BackendLogsPage').then((m) => ({ default: m.BackendLogsPage })));
+const AuditPage = lazy(() => import('./pages/AuditPage').then((m) => ({ default: m.AuditPage })));
+const SystemPage = lazy(() => import('./pages/SystemPage').then((m) => ({ default: m.SystemPage })));
+const PrivacyPage = lazy(() => import('./pages/PrivacyPage').then((m) => ({ default: m.PrivacyPage })));
+
 import { setupApi } from './api';
 import type { SetupStatus } from './types';
 
@@ -84,7 +87,13 @@ function Guarded() {
       </Layout>
     );
   }
-  return <Layout bleed={BLEED.has(pathname)}><Outlet /></Layout>;
+  return (
+    <Layout bleed={BLEED.has(pathname)}>
+      <Suspense fallback={<div className="grid min-h-[40vh] place-items-center"><MarkLoader size={40} /></div>}>
+        <Outlet />
+      </Suspense>
+    </Layout>
+  );
 }
 
 function NoAccess({ title, text, showHome }: { title: string; text: string; showHome: boolean }) {

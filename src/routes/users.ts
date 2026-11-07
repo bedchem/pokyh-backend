@@ -23,13 +23,14 @@ const bellMarksSchema = z.object({ seen: bellKeys.default([]), cleared: bellKeys
 router.get('/me', readLimiter, requireAuth, async (req: Request, res: Response) => {
   const { stableUid } = req.user!;
 
-  const user = await prisma.user.findUnique({ where: { stableUid } });
+  const [user, admin, membership] = await Promise.all([
+    prisma.user.findUnique({ where: { stableUid } }),
+    prisma.admin.findUnique({ where: { stableUid }, select: { stableUid: true } }),
+    prisma.classMember.findFirst({ where: { stableUid }, select: { classId: true } }),
+  ]);
   if (!user) {
     throw new NotFoundError('User not found');
   }
-
-  const admin = await prisma.admin.findUnique({ where: { stableUid } });
-  const membership = await prisma.classMember.findFirst({ where: { stableUid } });
 
   res.json({
     stableUid: user.stableUid,

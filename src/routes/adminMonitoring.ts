@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import { cachedAnswer } from '../middleware/cachedAnswer';
 import { Prisma } from '@prisma/client';
 import { createReadStream } from 'fs';
 import fs from 'fs/promises';
@@ -128,7 +129,7 @@ async function endpointStats(since: Date, until: Date, filters: Prisma.Sql, limi
 // One local day of requests, hour by hour, with totals, status classes and
 // the busiest endpoints. The panel swipes between days with ?day=.
 
-router.get('/requests/summary', requireAdmin, requirePermission('requests.view'), async (req: Request, res: Response): Promise<void> => {
+router.get('/requests/summary', requireAdmin, requirePermission('requests.view'), cachedAnswer(10_000), async (req: Request, res: Response): Promise<void> => {
   const choice = scopeChoice(req);
   if (!choice) {
     res.status(403).json({ error: 'Admin-Anfragen sind nur in der globalen Ansicht für System-Admins sichtbar' });
@@ -196,7 +197,7 @@ router.get('/requests/summary', requireAdmin, requirePermission('requests.view')
 // Every endpoint's load and response times — the apps' and the panel's —
 // for the operators: what is slow, what fails.
 
-router.get('/monitoring/performance', requireAdmin, requirePermission('system.monitoring.view'), async (req: Request, res: Response): Promise<void> => {
+router.get('/monitoring/performance', requireAdmin, requirePermission('system.monitoring.view'), cachedAnswer(30_000), async (req: Request, res: Response): Promise<void> => {
   const hours = intQueryParam(req.query['hours'], 24, 1, 24 * 7);
   const until = new Date();
   const since = new Date(until.getTime() - hours * 60 * 60 * 1000);

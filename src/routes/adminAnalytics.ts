@@ -1,6 +1,9 @@
 import { Router, Request, Response } from 'express';
 import { Prisma } from '@prisma/client';
-import { prisma } from '../db';
+import { reportingDb } from '../db';
+
+// Every read here goes through the reporting pool (db.ts): Analytics only reads.
+const prisma = reportingDb();
 import { config } from '../config';
 import { inScope, requireAdmin, requirePermission, scopeSchool } from '../middleware/requireAdmin';
 import { can } from '../security/permissions';
@@ -46,7 +49,7 @@ const router = Router();
 // Five seconds: the length of one usage announcement's throttle window, so
 // the refetches that follow one announcement share one computation. Keys
 // carry the school — a school's figures never answer another view.
-const cache = new TtlCache<AnalyticsResponse>(5 * 1000);
+const cache = new TtlCache<AnalyticsResponse>(15 * 1000);
 // One computation per key at a time: panels that ask together wait for it.
 const inFlight = new Map<string, Promise<AnalyticsResponse>>();
 const userAgentCache = new TtlCache<UaRow[]>(5 * 60 * 1000);

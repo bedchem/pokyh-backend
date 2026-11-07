@@ -14,7 +14,12 @@ interface Entry<V> {
 export class TtlCache<V> {
   private store = new Map<string, Entry<V>>();
 
-  constructor(private readonly ttlMs: number = config.cacheTtlMs) {}
+  /**
+   * `maxEntries` bounds the memory a cache keyed by something unbounded (a
+   * session, an account) can take: past it, the entries written longest ago
+   * go first.
+   */
+  constructor(private readonly ttlMs: number = config.cacheTtlMs, private readonly maxEntries = 5_000) {}
 
   get(key: string): V | undefined {
     const e = this.store.get(key);
@@ -30,7 +35,18 @@ export class TtlCache<V> {
   }
 
   set(key: string, value: V): void {
+    // Re-inserted, so the Map's order stays the order of the last write.
+    this.store.delete(key);
     this.store.set(key, { value, expiresAt: Date.now() + this.ttlMs });
+    while (this.store.size > this.maxEntries) {
+      const oldest = this.store.keys().next().value;
+      if (oldest === undefined) break;
+      this.store.delete(oldest);
+    }
+  }
+
+  get size(): number {
+    return this.store.size;
   }
 
   delete(key: string): void {

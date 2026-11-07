@@ -1,3 +1,4 @@
+import { TtlCache } from './cache';
 import https from 'https';
 import http from 'http';
 import { prisma } from '../db';
@@ -87,19 +88,28 @@ export async function resolveDishKeys(idsOrKeys: string[]): Promise<Map<string, 
   return out;
 }
 
+// Every ratings and comments read and every live stream asks this; the
+// answer for an id hardly ever changes. Kept briefly.
+const keyOf = new TtlCache<string>(2 * 60 * 1000, 10_000);
+
 export async function resolveDishKey(idOrKey: string): Promise<string> {
   if (!idOrKey) return '';
+  const known = keyOf.get(idOrKey);
+  if (known !== undefined) return known;
   // First: is it an internal UUID for an existing dish? Then use that dish's key.
   const byId = await prisma.dish.findUnique({ where: { id: idOrKey }, select: { stableKey: true, nameDe: true } });
+  let key = idOrKey;
   if (byId) {
-    if (byId.stableKey) return byId.stableKey;
-    // Legacy row not yet migrated — compute on the fly (and persist).
-    const key = slugifyDishName(byId.nameDe);
-    await prisma.dish.update({ where: { id: idOrKey }, data: { stableKey: key } }).catch(() => null);
-    return key;
+    if (byId.stableKey) key = byId.stableKey;
+    else {
+      // Legacy row not yet migrated — compute on the fly (and persist).
+      key = slugifyDishName(byId.nameDe);
+      await prisma.dish.update({ where: { id: idOrKey }, data: { stableKey: key } }).catch(() => null);
+    }
   }
   // Not a dish id → assume it's already a key (or a stale reference).
-  return idOrKey;
+  keyOf.set(idOrKey, key);
+  return key;
 }
 
 // One-time bootstrap that populates stableKey on every dish and rewrites

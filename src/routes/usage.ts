@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { z } from 'zod';
-import { rateLimit } from 'express-rate-limit';
+import { ipKeyGenerator, rateLimit } from 'express-rate-limit';
 import { Prisma } from '@prisma/client';
 import { prisma } from '../db';
 import { config } from '../config';
@@ -47,12 +47,15 @@ const limiter = rateLimit({
   max: (req) => (req.user ? 30 : 600),
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req) => (req.user ? `usage:${req.user.stableUid}` : `usage-ip:${req.ip ?? 'unknown'}`),
+  // Guests by address — an IPv6 address by its /56 network, so one machine
+  // cannot step around the limit by changing its last bits.
+  keyGenerator: (req) => (req.user ? `usage:${req.user.stableUid}` : `usage-ip:${ipKeyGenerator(req.ip ?? 'unknown')}`),
   message: { error: 'Too many usage pings' },
 });
 
 const pingSchema = z.object({
-  sessionId: z.string().uuid(),
+  // Any 8-4-4-4-12 id, as before zod 4 (apps generate it themselves).
+  sessionId: z.guid(),
   // The client's own view of its device wins: it can tell an iPad from a Mac,
   // which its user agent cannot.
   device: z.enum(USAGE_DEVICES).optional(),
@@ -85,26 +88,58 @@ async function classOf(stableUid: string): Promise<string | null> {
   return klasse;
 }
 
-// Adds to a class's totals for the day — across every school, and within
-// the account's school (class names are only unique there). Best effort: a
-// lost addition never costs the ping itself.
+// A class's totals for the day, across every school and within the
+// account's school (class names are only unique there). Every pupil of a
+// class adds to the same two rows once a minute; the additions are summed
+// here and written every CLASS_FLUSH_MS, one upsert per class instead of two
+// per ping (and no queue of pings waiting for the same row lock). Best
+// effort: a crash loses at most the last few seconds of these figures.
+interface ClassTotals { dayKey: string; klasse: string; schoolId: string; seconds: number; visits: number; people: number }
+const CLASS_FLUSH_MS = 30_000;
+let classTotals = new Map<string, ClassTotals>();
+let classTimer: NodeJS.Timeout | null = null;
+
+/** Writes the summed class totals now (also at shutdown). */
+export async function flushUsageClassTotals(): Promise<void> {
+  if (classTimer) { clearTimeout(classTimer); classTimer = null; }
+  if (classTotals.size === 0) return;
+  const batch = [...classTotals.values()];
+  classTotals = new Map();
+  const bySchoolless = new Map<string, ClassTotals>();
+  for (const t of batch) {
+    const key = `${t.dayKey}|${t.klasse}`;
+    const sum = bySchoolless.get(key) ?? { ...t, seconds: 0, visits: 0, people: 0 };
+    sum.seconds += t.seconds; sum.visits += t.visits; sum.people += t.people;
+    bySchoolless.set(key, sum);
+  }
+  const add = (t: ClassTotals) => ({ seconds: { increment: t.seconds }, visits: { increment: t.visits }, people: { increment: t.people } });
+  await Promise.all([
+    ...[...bySchoolless.values()].map((t) => prisma.usageClassDay.upsert({
+      where: { dayKey_klasse: { dayKey: t.dayKey, klasse: t.klasse } },
+      create: { dayKey: t.dayKey, klasse: t.klasse, seconds: t.seconds, visits: t.visits, people: t.people },
+      update: add(t),
+    }).catch(() => undefined)),
+    ...batch.map((t) => prisma.usageSchoolClassDay.upsert({
+      where: { dayKey_schoolId_klasse: { dayKey: t.dayKey, schoolId: t.schoolId, klasse: t.klasse } },
+      create: { dayKey: t.dayKey, schoolId: t.schoolId, klasse: t.klasse, seconds: t.seconds, visits: t.visits, people: t.people },
+      update: add(t),
+    }).catch(() => undefined)),
+  ]);
+}
+
 async function addToClass(account: string, dayKey: string, seconds: number, visits: number, people: number): Promise<void> {
   if (seconds === 0 && visits === 0 && people === 0) return;
   const klasse = await classOf(account);
   if (!klasse) return;
   const schoolId = await schoolOfUser(account);
-  await Promise.all([
-    prisma.usageClassDay.upsert({
-      where: { dayKey_klasse: { dayKey, klasse } },
-      create: { dayKey, klasse, seconds, visits, people },
-      update: { seconds: { increment: seconds }, visits: { increment: visits }, people: { increment: people } },
-    }),
-    prisma.usageSchoolClassDay.upsert({
-      where: { dayKey_schoolId_klasse: { dayKey, schoolId, klasse } },
-      create: { dayKey, schoolId, klasse, seconds, visits, people },
-      update: { seconds: { increment: seconds }, visits: { increment: visits }, people: { increment: people } },
-    }),
-  ]);
+  const key = `${dayKey}|${schoolId}|${klasse}`;
+  const totals = classTotals.get(key) ?? { dayKey, klasse, schoolId, seconds: 0, visits: 0, people: 0 };
+  totals.seconds += seconds; totals.visits += visits; totals.people += people;
+  classTotals.set(key, totals);
+  if (!classTimer) {
+    classTimer = setTimeout(() => { classTimer = null; void flushUsageClassTotals(); }, CLASS_FLUSH_MS);
+    classTimer.unref();
+  }
 }
 
 // `account` is who sent the ping; `named` whether the row may say so.

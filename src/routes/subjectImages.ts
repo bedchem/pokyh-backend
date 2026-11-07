@@ -29,13 +29,8 @@ router.post('/report', writeLimiter, requireAuth, async (req: Request, res: Resp
     shortName: s.shortName,
   })).filter(s => s.key.length > 0);
 
-  for (const row of rows) {
-    await prisma.knownSubject.upsert({
-      where:  { key: row.key },
-      create: row,
-      update: {},  // don't overwrite existing name
-    });
-  }
+  // One statement for all of them; a subject already known keeps its name.
+  if (rows.length > 0) await prisma.knownSubject.createMany({ data: rows, skipDuplicates: true });
   res.json({ ok: true, count: rows.length });
 });
 
@@ -45,31 +40,39 @@ router.get('/', readLimiter, async (_req: Request, res: Response): Promise<void>
     const images = await prisma.subjectImage.findMany({ select: { subject: true } });
     return images.map(i => ({ subject: i.subject }));
   });
+  res.setHeader('Cache-Control', 'public, max-age=300, stale-while-revalidate=3600');
   res.json(list);
 });
 
 // GET /subject-images/:subject — serve binary image (API key only, for <img src>)
 router.get('/:subject', readLimiter, async (req: Request, res: Response): Promise<void> => {
   const subject = normalizeKey(req.params['subject'] as string);
-  const row = await prisma.subjectImage.findUnique({ where: { subject } });
+  // The picture's date first: a cached copy gets its 304 without the picture
+  // being read from the database.
+  const meta = await prisma.subjectImage.findUnique({ where: { subject }, select: { updatedAt: true, mimeType: true } });
 
-  if (!row) {
+  if (!meta) {
     res.status(404).json({ error: 'Not found' });
     return;
   }
 
-  const etag = `"${row.updatedAt.getTime()}"`;
+  const etag = `"${meta.updatedAt.getTime()}"`;
+  res.setHeader('ETag', etag);
+  res.setHeader('Cache-Control', 'public, max-age=86400, stale-while-revalidate=86400');
+  res.setHeader('Last-Modified', meta.updatedAt.toUTCString());
+  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
   if (req.headers['if-none-match'] === etag) {
     res.status(304).end();
     return;
   }
 
-  res.setHeader('ETag', etag);
-  res.setHeader('Cache-Control', 'public, max-age=86400, stale-while-revalidate=86400');
-  res.setHeader('Last-Modified', row.updatedAt.toUTCString());
-  res.setHeader('Content-Type', row.mimeType);
+  const row = await prisma.subjectImage.findUnique({ where: { subject }, select: { data: true } });
+  if (!row) {
+    res.status(404).json({ error: 'Not found' });
+    return;
+  }
+  res.setHeader('Content-Type', meta.mimeType);
   res.setHeader('Content-Length', row.data.length);
-  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
   res.end(row.data);
 });
 

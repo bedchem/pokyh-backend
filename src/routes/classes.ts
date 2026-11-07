@@ -17,17 +17,20 @@ router.get('/mine', readLimiter, requireAuth, async (req: Request, res: Response
   const { stableUid, role } = req.user!;
   // The account's class as stored now, not as the access token remembers it:
   // a class a sign-in has since taken away is gone at once.
-  const currentUser = await prisma.user.findUnique({
-    where: { stableUid },
-    select: { role: true, webuntisKlasseId: true },
-  });
+  if (!mayJoinClass(role)) {
+    res.json(null);
+    return;
+  }
+  const [currentUser, schoolId] = await Promise.all([
+    prisma.user.findUnique({ where: { stableUid }, select: { role: true, webuntisKlasseId: true } }),
+    schoolOfUser(stableUid),
+  ]);
 
-  if (!mayJoinClass(role) || !currentUser || !mayJoinClass(currentUser.role) || currentUser.webuntisKlasseId <= 0) {
+  if (!currentUser || !mayJoinClass(currentUser.role) || currentUser.webuntisKlasseId <= 0) {
     res.json(null);
     return;
   }
 
-  const schoolId = await schoolOfUser(stableUid);
   const membership = await prisma.classMember.findFirst({
     where: {
       stableUid,
@@ -58,33 +61,31 @@ router.get('/mine', readLimiter, requireAuth, async (req: Request, res: Response
 router.get('/:classId', readLimiter, requireAuth, async (req: Request, res: Response) => {
   const classId = req.params['classId'] as string;
   const { stableUid, role } = req.user!;
-  const currentUser = await prisma.user.findUnique({
-    where: { stableUid },
-    select: { role: true },
-  });
-
-  if (!mayJoinClass(role) || !currentUser || !mayJoinClass(currentUser.role)) {
+  if (!mayJoinClass(role)) {
     throw new ForbiddenError('Eltern-Accounts werden keiner Klasse zugeteilt');
   }
+  // Read together; nothing is answered before the membership is checked.
+  const [currentUser, membership, cls] = await Promise.all([
+    prisma.user.findUnique({ where: { stableUid }, select: { role: true } }),
+    prisma.classMember.findUnique({ where: { classId_stableUid: { classId, stableUid } }, select: { classId: true } }),
+    prisma.class.findUnique({
+      where: { id: classId },
+      include: {
+        // Filter legacy parent rows defensively; new parent rows are forbidden.
+        members: {
+          where: { role: { not: 'parent' } },
+          select: { stableUid: true, username: true, joinedAt: true },
+        },
+      },
+    }),
+  ]);
 
-  const membership = await prisma.classMember.findUnique({
-    where: { classId_stableUid: { classId, stableUid } },
-  });
-
+  if (!currentUser || !mayJoinClass(currentUser.role)) {
+    throw new ForbiddenError('Eltern-Accounts werden keiner Klasse zugeteilt');
+  }
   if (!membership) {
     throw new ForbiddenError('You are not a member of this class');
   }
-
-  const cls = await prisma.class.findUnique({
-    where: { id: classId },
-    include: {
-      // Filter legacy parent rows defensively; new parent rows are forbidden.
-      members: {
-        where: { role: { not: 'parent' } },
-        select: { stableUid: true, username: true, joinedAt: true },
-      },
-    },
-  });
 
   if (!cls) {
     throw new NotFoundError('Class not found');
