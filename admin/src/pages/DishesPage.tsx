@@ -13,7 +13,7 @@ import { MenuDeleteDialog, MenuNameDialog, MenuSchoolsDialog } from '../componen
 import type { AdminDishFull, AdminDish, AdminDishRatingEntry, DishPlan, MensaMenu, MenuBreakReason, MenuCalendar, MenuDayOverride, MenuMode, MenuPullMode, MenuScheduleInfo } from '../types';
 import { useToast } from '../components/Toast';
 import { useLive } from '../live';
-import { Collapse, Delta, Figures, IconButton, Notice, PageHeader, SearchField, Segmented, Spinner, Tag } from '../components/kit';
+import { Collapse, Delta, Dialog, Figures, IconButton, Notice, PageHeader, SearchField, Segmented, Spinner, Tag } from '../components/kit';
 
 // What the signed-in admin may change here: the menu (mensa.manage) and the
 // votes on it (comments.moderate). Without them the plan is shown read-only;
@@ -342,9 +342,25 @@ interface DishFormProps {
   onRatingChanged: () => void;
 }
 
-function DishForm({ dish, ratingData, initialDate, activePlan, onSaved, onClose, onRatingChanged }: DishFormProps) {
+function DishForm({ dish, ratingData: ratingSummary, initialDate, activePlan, onSaved, onClose, onRatingChanged }: DishFormProps) {
   const { showToast } = useToast();
   const isEdit = dish !== null;
+  // The list holds only each dish's average and count; this dish's votes
+  // are read when its editor opens, and again after one changes.
+  const [ratingDetail, setRatingDetail] = useState<AdminDish | null>(null);
+  const [ratingsVersion, setRatingsVersion] = useState(0);
+  const summaryKey = ratingSummary?.dishId;
+  const summaryCount = ratingSummary?.count ?? 0;
+  useEffect(() => {
+    if (!isEdit || !summaryKey || summaryCount === 0) return;
+    let cancelled = false;
+    adminApi.dishRatings({ dishKey: summaryKey })
+      .then((rows) => { if (!cancelled) setRatingDetail(rows.find((r) => r.dishId === summaryKey) ?? null); })
+      .catch(() => { /* the summary still shows the average */ });
+    return () => { cancelled = true; };
+  }, [isEdit, summaryKey, summaryCount, ratingsVersion]);
+  const ratingData = ratingDetail ?? ratingSummary;
+  const ratingChanged = () => { setRatingsVersion((v) => v + 1); onRatingChanged(); };
 
   const [form, setForm] = useState(() =>
     dish
@@ -690,7 +706,7 @@ function DishForm({ dish, ratingData, initialDate, activePlan, onSaved, onClose,
                         key={entry.stableUid}
                         dishId={ratingData.dishId}
                         entry={entry}
-                        onChanged={onRatingChanged}
+                        onChanged={ratingChanged}
                       />
                     ))}
                   </div>
@@ -1045,52 +1061,100 @@ function weekInBreak(monIso: string, schedule: MenuScheduleInfo): boolean {
   });
 }
 
-const fieldStyle = { background: 'rgb(var(--ink-rgb) / calc(0.05 * var(--veil)))', color: 'rgb(var(--ink-rgb) / 0.9)' };
-const fieldClass = 'rounded-[10px] px-3 py-2 text-[13.5px] outline-none';
+const fieldClass = 'field h-11 px-4 text-[14px]';
 
-function OverridesEditor({ overrides, canEdit, onChange }: {
+// "heute 14:30", "morgen 08:00", "Fr, 7.11. 09:15": when something happens next.
+function upcomingTime(iso: string): string {
+  const at = new Date(iso);
+  const now = new Date();
+  const time = at.toLocaleTimeString('de-AT', { hour: '2-digit', minute: '2-digit' });
+  const dayDiff = Math.round((new Date(at.toDateString()).getTime() - new Date(now.toDateString()).getTime()) / 86_400_000);
+  if (at.getTime() - now.getTime() < 60_000) return 'in Kürze';
+  if (dayDiff === 0) return `heute ${time}`;
+  if (dayDiff === 1) return `morgen ${time}`;
+  return `${at.toLocaleDateString('de-AT', { weekday: 'short', day: 'numeric', month: 'numeric' })} ${time}`;
+}
+
+const weekdayDate = (iso: string) => new Date(`${iso}T00:00:00`).toLocaleDateString('de-AT', { weekday: 'short', day: 'numeric', month: 'numeric' });
+
+function OverridesEditor({ overrides, canEdit, busy, onChange }: {
   overrides: MenuDayOverride[];
   canEdit: boolean;
+  busy: boolean;
   onChange: (next: MenuDayOverride[]) => void;
 }) {
   const [start, setStart] = useState('');
   const [end, setEnd] = useState('');
   const [open, setOpen] = useState(false);
+  const [note, setNote] = useState('');
+  const [confirmRemove, setConfirmRemove] = useState<number | null>(null);
+  const endBeforeStart = Boolean(start && end && end < start);
+  const full = overrides.length >= 60;
   const add = () => {
-    onChange([...overrides, { start, end: end && end >= start ? end : start, open }]);
+    if (!start || endBeforeStart) return;
+    onChange([...overrides, { start, end: end || start, open, ...(note.trim() ? { note: note.trim() } : {}) }]);
     setStart('');
     setEnd('');
+    setNote('');
   };
+  const sorted = overrides.map((o, i) => ({ o, i })).sort((a, b) => a.o.start.localeCompare(b.o.start));
   return (
-    <div className="mt-4">
-      <div className="text-[12.5px] font-medium text-ink-3">Eigene Tage</div>
-      {overrides.length > 0 && (
-        <div className="mt-2 flex flex-wrap gap-2">
-          {overrides.map((o, i) => (
-            <span key={`${o.start}-${i}`} className="inline-flex items-center gap-1.5">
-              <Tag tone={o.open ? 'mint' : 'amber'}>{o.open ? 'Offen' : 'Zu'} · {breakRange(o.start, o.end)}</Tag>
-              {canEdit && (
-                <button type="button" aria-label="Eintrag entfernen" className="text-ink-4 hover:text-ink" onClick={() => onChange(overrides.filter((_, n) => n !== i))}>
-                  <X size={13} />
+    <div>
+      <div className="text-[13.5px] font-medium text-ink">Eigene Tage</div>
+      <p className="mt-1 text-[12.5px] leading-relaxed text-ink-3">Tage, an denen die Mensa anders als der Kalender zu oder offen ist, z. B. ein Betriebsausflug oder ein Projekttag.</p>
+      {overrides.length === 0 ? (
+        <p className="mt-3 text-[13px] text-ink-4">Keine eigenen Tage.</p>
+      ) : (
+        <ul className="mt-3 flex flex-col gap-2">
+          {sorted.map(({ o, i }) => (
+            <li key={`${o.start}-${i}`} className="flex flex-wrap items-center gap-2.5">
+              <Tag tone={o.open ? 'mint' : 'amber'}>{o.open ? 'Offen' : 'Zu'}</Tag>
+              <span className="tabular text-[13.5px] text-ink-2">{breakRange(o.start, o.end)}</span>
+              {o.note && <span className="text-[13px] text-ink-3">{o.note}</span>}
+              {canEdit && (confirmRemove === i ? (
+                <span className="flex items-center gap-2">
+                  <button type="button" className="btn btn-sm btn-danger" disabled={busy} onClick={() => { setConfirmRemove(null); onChange(overrides.filter((_, n) => n !== i)); }}>Entfernen</button>
+                  <button type="button" className="btn btn-sm btn-quiet" onClick={() => setConfirmRemove(null)}>Behalten</button>
+                </span>
+              ) : (
+                <button type="button" aria-label={`Eintrag ${breakRange(o.start, o.end)} entfernen`} className="text-ink-4 hover:text-ink" disabled={busy} onClick={() => setConfirmRemove(i)}>
+                  <X size={14} />
                 </button>
-              )}
-            </span>
+              ))}
+            </li>
           ))}
-        </div>
+        </ul>
       )}
-      {canEdit && overrides.length < 60 && (
-        <div className="mt-2 flex flex-wrap items-center gap-2">
-          <input type="date" aria-label="Von" className={fieldClass} style={fieldStyle} value={start} onChange={(e) => setStart(e.target.value)} />
-          <input type="date" aria-label="Bis (optional)" className={fieldClass} style={fieldStyle} value={end} min={start || undefined} onChange={(e) => setEnd(e.target.value)} />
-          <Segmented<'closed' | 'open'>
-            label="Mensa an diesen Tagen"
-            value={open ? 'open' : 'closed'}
-            onChange={(v) => setOpen(v === 'open')}
-            options={[{ value: 'closed', label: 'Zu' }, { value: 'open', label: 'Offen' }]}
-          />
-          <button type="button" className="btn btn-quiet btn-sm" disabled={!start} onClick={add}>Hinzufügen</button>
+      {canEdit && (full ? (
+        <p className="mt-3 text-[12.5px] text-ink-3">60 eigene Tage sind das Höchste. Entferne vergangene, um neue einzutragen.</p>
+      ) : (
+        <div className="mt-4 grid gap-3 sm:grid-cols-[repeat(2,minmax(0,170px))_minmax(0,1fr)] sm:items-end">
+          <label className="block text-[12.5px] text-ink-3">
+            Von
+            <input type="date" className={`${fieldClass} mt-1 w-full`} value={start} onChange={(e) => setStart(e.target.value)} />
+          </label>
+          <label className="block text-[12.5px] text-ink-3">
+            Bis <span className="text-ink-4">(optional)</span>
+            <input type="date" className={`${fieldClass} mt-1 w-full`} value={end} min={start || undefined} onChange={(e) => setEnd(e.target.value)} aria-invalid={endBeforeStart} />
+          </label>
+          <label className="block text-[12.5px] text-ink-3">
+            Grund <span className="text-ink-4">(optional)</span>
+            <input className={`${fieldClass} mt-1 w-full`} maxLength={80} value={note} onChange={(e) => setNote(e.target.value)} placeholder="z. B. Betriebsausflug" />
+          </label>
+          <div className="flex flex-wrap items-center gap-3 sm:col-span-3">
+            <Segmented<'closed' | 'open'>
+              label="Mensa an diesen Tagen"
+              value={open ? 'open' : 'closed'}
+              onChange={(v) => setOpen(v === 'open')}
+              options={[{ value: 'closed', label: 'Zu' }, { value: 'open', label: 'Offen' }]}
+            />
+            <button type="button" className="btn btn-quiet btn-sm" disabled={!start || endBeforeStart || busy} onClick={add}>
+              <Plus size={14} /> Eintragen
+            </button>
+            {endBeforeStart && <span className="text-[12.5px]" style={{ color: 'var(--rose-deep)' }}>„Bis“ liegt vor „Von“.</span>}
+          </div>
         </div>
-      )}
+      ))}
     </div>
   );
 }
@@ -1104,29 +1168,47 @@ function SourceEditor({ schedule, canEdit, onSaved, onPulled }: {
   onPulled: () => void;
 }) {
   const { showToast } = useToast();
-  const urlOf = (plan: DishPlan) => schedule.sources.find((s) => s.plan === plan)?.url ?? '';
+  const urlOf = useCallback((plan: DishPlan) => schedule.sources.find((s) => s.plan === plan)?.url ?? '', [schedule.sources]);
   const [summerUrl, setSummerUrl] = useState(urlOf('summer'));
   const [winterUrl, setWinterUrl] = useState(urlOf('winter'));
   const [page, setPage] = useState(schedule.sourcePage);
   const [canteen, setCanteen] = useState(schedule.sourceCanteen);
-  const [busy, setBusy] = useState(false);
-  const usable = schedule.sourcePage !== '' || schedule.sources.some((s) => s.url || s.usesServerSource);
+  const [busy, setBusy] = useState<'mode' | 'save' | 'pull' | null>(null);
   const changed = summerUrl.trim() !== urlOf('summer') || winterUrl.trim() !== urlOf('winter') || page.trim() !== schedule.sourcePage || canteen.trim() !== schedule.sourceCanteen;
+  // What is stored arrives (another admin, a pull): fields nobody is editing follow it.
+  const dirty = useRef(false);
+  dirty.current = changed;
+  useEffect(() => {
+    if (dirty.current) return;
+    setSummerUrl(urlOf('summer'));
+    setWinterUrl(urlOf('winter'));
+    setPage(schedule.sourcePage);
+    setCanteen(schedule.sourceCanteen);
+  }, [schedule.sourcePage, schedule.sourceCanteen, urlOf]);
+  const usable = schedule.sourcePage !== '' || schedule.sources.some((s) => s.url || s.usesServerSource);
+  const pullOff = (schedule.pullIntervalHours ?? 6) <= 0;
 
-  async function save(pullMode: MenuPullMode) {
-    setBusy(true);
+  async function store(pullMode: MenuPullMode, fields: { summerUrl: string; winterUrl: string; sourcePage: string; sourceCanteen: string }, what: 'mode' | 'save') {
+    setBusy(what);
     try {
-      onSaved(await adminApi.setMenuSource({ pullMode, summerUrl: summerUrl.trim(), winterUrl: winterUrl.trim(), sourcePage: page.trim(), sourceCanteen: canteen.trim() }));
-      showToast('Quelle gespeichert', 'success');
+      onSaved(await adminApi.setMenuSource({ pullMode, ...fields }));
+      showToast(what === 'mode' ? (pullMode === 'auto' ? 'Plan wird automatisch geholt' : 'Plan wird nur noch von Hand geholt') : 'Quelle gespeichert', 'success');
     } catch (err) {
       showToast(err instanceof Error ? err.message : 'Die Quelle konnte nicht gespeichert werden', 'error');
     } finally {
-      setBusy(false);
+      setBusy(null);
     }
   }
 
+  // Switching how plans are pulled keeps the stored addresses, whatever is typed below.
+  const setMode = (pullMode: MenuPullMode) => {
+    if (pullMode === schedule.pullMode || busy) return;
+    void store(pullMode, { summerUrl: urlOf('summer'), winterUrl: urlOf('winter'), sourcePage: schedule.sourcePage, sourceCanteen: schedule.sourceCanteen }, 'mode');
+  };
+  const save = () => void store(schedule.pullMode, { summerUrl: summerUrl.trim(), winterUrl: winterUrl.trim(), sourcePage: page.trim(), sourceCanteen: canteen.trim() }, 'save');
+
   async function pull(force: boolean) {
-    setBusy(true);
+    setBusy('pull');
     try {
       const { results, schedule: next } = await adminApi.pullMenuSource(force);
       onSaved(next);
@@ -1140,59 +1222,66 @@ function SourceEditor({ schedule, canEdit, onSaved, onPulled }: {
     } catch (err) {
       showToast(err instanceof Error ? err.message : 'Der Plan konnte nicht geholt werden', 'error');
     } finally {
-      setBusy(false);
+      setBusy(null);
     }
   }
 
   const held = schedule.sources.filter((s) => s.status === 'held');
   const failed = schedule.sources.filter((s) => s.status === 'error');
+  const lines = schedule.sources.filter((s) => s.checkedAt || s.nextPullAt);
+  const pullHint = !usable ? 'Trag zuerst eine Quelle ein.' : changed ? 'Speichere zuerst die geänderte Quelle.' : '';
   return (
-    <div className="mt-5 pt-4" style={{ borderTop: '1px solid rgb(var(--ink-rgb) / calc(0.07 * var(--veil)))' }}>
+    <div>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
         <span className="flex items-center gap-2 text-[14.5px] font-medium text-ink"><CloudDownload size={16} strokeWidth={1.7} /> Quelle</span>
         {canEdit ? (
           <Segmented<MenuPullMode>
             label="Plan holen"
             value={schedule.pullMode}
-            onChange={(mode) => void save(mode)}
+            onChange={setMode}
             options={[{ value: 'auto', label: 'Automatisch' }, { value: 'manual', label: 'Nur von Hand' }]}
           />
         ) : (
           <Tag>{schedule.pullMode === 'auto' ? 'Automatisch' : 'Nur von Hand'}</Tag>
         )}
+        {busy === 'mode' && <Spinner size={15} />}
         {canEdit && (
-          <button type="button" className="btn btn-quiet btn-sm" disabled={busy || !usable || changed} onClick={() => void pull(false)}>
-            <CloudDownload size={15} strokeWidth={1.7} /> Jetzt holen
-          </button>
+          <span className="flex items-center gap-2.5">
+            <button type="button" className="btn btn-quiet btn-sm" disabled={busy !== null || pullHint !== ''} title={pullHint || undefined} onClick={() => void pull(false)}>
+              {busy === 'pull' ? <Spinner size={14} /> : <CloudDownload size={15} strokeWidth={1.7} />} Jetzt holen
+            </button>
+            {pullHint && <span className="text-[12.5px] text-ink-4">{pullHint}</span>}
+          </span>
         )}
       </div>
       <p className="mt-3 max-w-[78ch] text-[13.5px] leading-relaxed text-ink-3">
         {schedule.pullMode === 'auto'
-          ? 'POKYH holt den Plan regelmäßig von der Quelle und übernimmt nur, was sich dort geändert hat. Die Position im Plan, hochgeladene Bilder und deine Änderungen bleiben; aus einem PDF kommen bei einem gleichen Gericht nur die Allergene. Eine fehlerhafte Datei ändert nichts.'
+          ? pullOff
+            ? 'Automatisches Holen ist auf diesem Server ausgeschaltet (MENSA_PULL_INTERVAL_HOURS=0): Der Plan kommt nur, wenn du ihn hier holst.'
+            : `POKYH schaut alle ${schedule.pullIntervalHours ?? 6} Stunden bei der Quelle nach und übernimmt nur, was sich dort geändert hat. Die Position im Plan, hochgeladene Bilder und deine Änderungen bleiben; aus einem PDF kommen bei einem gleichen Gericht nur die Allergene. Eine fehlerhafte Datei ändert nichts.`
           : 'Der Plan wird nur geholt, wenn du es hier auslöst.'}
       </p>
       {canEdit && (
         <>
-          <div className="mt-3 grid gap-2 sm:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
+          <div className="mt-4 grid gap-3 sm:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
             <label className="block text-[12.5px] text-ink-3">
               Seite mit den Menüplänen (PDF)
-              <input type="url" className={`${fieldClass} mt-1 w-full`} style={fieldStyle} value={page} onChange={(e) => setPage(e.target.value)} placeholder="https://www.gemeinde.brixen.bz.it/Dienste/…" />
+              <input type="url" className={`${fieldClass} mt-1 w-full`} value={page} onChange={(e) => setPage(e.target.value)} placeholder="https://www.gemeinde.brixen.bz.it/Dienste/…" />
             </label>
             <label className="block text-[12.5px] text-ink-3">
               Name der Mensa dort
-              <input className={`${fieldClass} mt-1 w-full`} style={fieldStyle} value={canteen} onChange={(e) => setCanteen(e.target.value)} placeholder="Mensa St. Michael" />
+              <input className={`${fieldClass} mt-1 w-full`} value={canteen} onChange={(e) => setCanteen(e.target.value)} placeholder="Mensa St. Michael" />
             </label>
           </div>
-          <p className="mt-1 text-[12px] text-ink-4">Mit einer Seite werden Sommer, Winter und die vegetarischen Menüs bei jedem Holen dort neu gesucht. Ohne Seite gelten die Adressen darunter (mensa.json oder PDF).</p>
+          <p className="mt-1.5 text-[12px] text-ink-4">Mit einer Seite werden Sommer, Winter und die vegetarischen Menüs bei jedem Holen dort neu gesucht. Ohne Seite gelten die Adressen darunter (mensa.json oder PDF).</p>
           {!page.trim() && (
-            <div className="mt-2 grid gap-2 sm:grid-cols-2">
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
               {([['summer', 'Sommerplan', summerUrl, setSummerUrl], ['winter', 'Winterplan', winterUrl, setWinterUrl]] as const).map(([plan, label, value, set]) => (
                 <label key={plan} className="block text-[12.5px] text-ink-3">
                   {label}
                   <input
                     type="url"
                     className={`${fieldClass} mt-1 w-full`}
-                    style={fieldStyle}
                     value={value}
                     onChange={(e) => set(e.target.value)}
                     placeholder={schedule.sources.find((s) => s.plan === plan)?.usesServerSource ? 'Quelle des Servers' : 'https://…/mensa.json oder …pdf'}
@@ -1201,26 +1290,57 @@ function SourceEditor({ schedule, canEdit, onSaved, onPulled }: {
               ))}
             </div>
           )}
+          {changed && (
+            <div className="mt-3 flex flex-wrap items-center gap-2.5">
+              <button type="button" className="btn btn-primary btn-sm" disabled={busy !== null} onClick={save}>
+                {busy === 'save' && <Spinner size={14} />} Quelle speichern
+              </button>
+              <button
+                type="button"
+                className="btn btn-quiet btn-sm"
+                disabled={busy !== null}
+                onClick={() => { setSummerUrl(urlOf('summer')); setWinterUrl(urlOf('winter')); setPage(schedule.sourcePage); setCanteen(schedule.sourceCanteen); }}
+              >
+                Verwerfen
+              </button>
+            </div>
+          )}
         </>
       )}
-      {canEdit && changed && (
-        <button type="button" className="btn btn-primary btn-sm mt-2" disabled={busy} onClick={() => void save(schedule.pullMode)}>Quelle speichern</button>
+      {lines.length > 0 && (
+        <div className="tbl-scroll mt-4">
+          <table className="tbl">
+            <thead>
+              <tr><th>Plan</th><th>Geprüft</th><th className="hidden sm:table-cell">Geändert</th><th>Nächster Abruf</th></tr>
+            </thead>
+            <tbody>
+              {lines.map((s) => (
+                <tr key={s.plan}>
+                  <td>
+                    <div className="flex items-center gap-2">
+                      <span>{LINE_NAMES[s.plan] ?? s.plan}</span>
+                      {s.status === 'error' && <Tag tone="rose">Fehler</Tag>}
+                      {s.status === 'held' && <Tag tone="amber">Zurückgehalten</Tag>}
+                    </div>
+                    {s.status === 'ok' && s.message && <div className="text-[12px] text-ink-3">{s.message}</div>}
+                  </td>
+                  <td className="whitespace-nowrap text-ink-3">{relative(s.checkedAt)}</td>
+                  <td className="hidden whitespace-nowrap text-ink-3 sm:table-cell">{s.changedAt ? relative(s.changedAt) : '–'}</td>
+                  <td className="whitespace-nowrap text-ink-3">{s.nextPullAt ? upcomingTime(s.nextPullAt) : schedule.pullMode === 'manual' || pullOff ? 'von Hand' : '–'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
-      <ul className="mt-3 space-y-1 text-[12.5px] text-ink-3">
-        {schedule.sources.filter((s) => s.checkedAt).map((s) => (
-          <li key={s.plan}>
-            {LINE_NAMES[s.plan] ?? s.plan}: zuletzt geprüft {relative(s.checkedAt)}{s.changedAt ? `, zuletzt geändert ${relative(s.changedAt)}` : ''}{s.status === 'ok' && s.message ? ` · ${s.message}` : ''}
-          </li>
-        ))}
-      </ul>
       {failed.map((s) => (
-        <div key={s.plan} className="mt-3"><Notice tone="rose" icon={CloudDownload}>{LINE_NAMES[s.plan] ?? s.plan}: {s.message}. Der Plan bleibt, wie er ist.</Notice></div>
+        <div key={s.plan} className="mt-3"><Notice tone="rose" icon={CloudDownload}>{LINE_NAMES[s.plan] ?? s.plan}: {s.message}. Der Plan bleibt, wie er ist; POKYH versucht es in einer Stunde wieder.</Notice></div>
       ))}
       {held.map((s) => (
         <div key={s.plan} className="mt-3">
           <Notice tone="amber" icon={CloudDownload}>
             {LINE_NAMES[s.plan] ?? s.plan} zurückgehalten: {s.message}. Der Plan bleibt, bis du entscheidest.{' '}
-            {canEdit && <button type="button" className="font-medium underline underline-offset-2" disabled={busy} onClick={() => void pull(true)}>Trotzdem übernehmen</button>}
+            {canEdit && <button type="button" className="font-medium underline underline-offset-2" disabled={busy !== null} onClick={() => void pull(true)}>Trotzdem übernehmen</button>}
           </Notice>
         </div>
       ))}
@@ -1230,85 +1350,216 @@ function SourceEditor({ schedule, canEdit, onSaved, onPulled }: {
 
 const dayMonth = (md: string) => `${Number(md.slice(3))}.${Number(md.slice(0, 2))}.`;
 
-function SchedulePanel({ schedule, canEdit, onChange, onSourceSaved, onPulled }: {
+// The figures at the head of the panel: what POKYH does next, and did last.
+function ScheduleStatus({ schedule }: { schedule: MenuScheduleInfo }) {
+  const auto = schedule.mode === 'auto';
+  const today = new Date().toLocaleDateString('sv-SE');
+  const current = schedule.breaks.find((b) => b.start <= today && today <= b.end && b.reason !== 'holiday' && b.reason !== 'bridge');
+  const next = schedule.breaks.find((b) => b.start > today && b.reason !== 'holiday' && b.reason !== 'bridge');
+  const nextPull = schedule.sources.map((s) => s.nextPullAt).filter((v): v is string => Boolean(v)).sort()[0];
+  const pullOff = schedule.pullMode === 'manual' || (schedule.pullIntervalHours ?? 6) <= 0;
+  const items: Array<{ label: string; value: string; note?: string }> = [
+    {
+      label: 'Ablauf',
+      value: auto ? 'Autonom' : 'Manuell',
+      note: auto ? 'Wochen liegen auf den Schulwochen' : 'Daten bleiben, wie du sie setzt',
+    },
+    {
+      label: 'Nächster Abruf',
+      value: pullOff ? 'Von Hand' : nextPull ? upcomingTime(nextPull) : 'Keine Quelle',
+      note: pullOff ? (schedule.pullMode === 'manual' ? 'automatisches Holen aus' : 'auf diesem Server aus') : `alle ${schedule.pullIntervalHours ?? 6} Std.`,
+    },
+    {
+      label: 'Zuletzt neu gelegt',
+      value: schedule.arranged ? relative(schedule.arranged.at) : 'Noch nie',
+      note: schedule.arranged ? `${schedule.arranged.moved} ${schedule.arranged.moved === 1 ? 'Gericht' : 'Gerichte'} verschoben` : undefined,
+    },
+    {
+      label: current ? 'Gerade' : 'Nächste Pause',
+      value: current ? BREAK_NAMES[current.reason] : next ? BREAK_NAMES[next.reason] : 'Keine bekannt',
+      note: current ? `bis ${breakRange(current.end, current.end)}` : next ? breakRange(next.start, next.end) : undefined,
+    },
+  ];
+  return (
+    <dl className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      {items.map((item) => (
+        <div key={item.label} className="rounded-[18px] px-[18px] py-3.5" style={{ background: 'var(--sheet)' }}>
+          <dt className="text-[12.5px] text-ink-3">{item.label}</dt>
+          <dd className="mt-1 text-[16px] font-semibold leading-tight text-ink">{item.value}</dd>
+          {item.note && <dd className="mt-0.5 text-[12px] text-ink-3">{item.note}</dd>}
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+// The next school days as the menu serves them: a glance at what the layout does.
+function UpcomingDays({ schedule }: { schedule: MenuScheduleInfo }) {
+  const days = schedule.upcoming ?? [];
+  if (days.length === 0) return null;
+  return (
+    <div>
+      <div className="text-[13.5px] font-medium text-ink">Die nächsten Schultage</div>
+      <ol className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-5" aria-label="Was die Mensa an den nächsten Schultagen serviert">
+        {days.map((d) => (
+          <li key={d.date} className="rounded-[14px] px-3 py-2.5" style={{ background: d.off ? 'transparent' : 'var(--sheet)', boxShadow: d.off ? 'inset 0 0 0 1px var(--line)' : undefined }}>
+            <div className="tabular text-[12px] text-ink-3">{weekdayDate(d.date)}</div>
+            <div className="mt-0.5 text-[13px] font-medium" style={{ color: d.off ? 'var(--ink-3)' : 'var(--ink)' }}>
+              {d.off ? BREAK_NAMES[d.off] : d.week ? `Woche ${d.week}` : d.plan ? 'Plan' : 'Kein Menü'}
+            </div>
+            {!d.off && d.plan && <div className="text-[11.5px] text-ink-4">{d.plan === 'summer' ? 'Sommerplan' : 'Winterplan'}</div>}
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
+}
+
+type ScheduleChange = { mode: MenuMode; calendar: MenuCalendar; overrides: MenuDayOverride[]; seasonRule: 'dates' | 'clock' };
+
+function SchedulePanel({ schedule, canEdit, busy, onChange, onSourceSaved, onPulled }: {
   schedule: MenuScheduleInfo;
   canEdit: boolean;
-  onChange: (mode: MenuMode, calendar: MenuCalendar, overrides: MenuDayOverride[], seasonRule?: 'dates' | 'clock') => void;
+  busy: boolean;
+  onChange: (change: ScheduleChange) => void;
   onSourceSaved: (next: MenuScheduleInfo) => void;
   onPulled: () => void;
 }) {
   const auto = schedule.mode === 'auto';
-  // The named breaks: single holidays are simply days without a menu.
-  const breaks = schedule.breaks.filter((b) => b.reason !== 'holiday' && b.reason !== 'bridge' && b.reason !== 'closed').slice(0, 6);
+  const [allBreaks, setAllBreaks] = useState(false);
+  const base: ScheduleChange = { mode: schedule.mode, calendar: schedule.calendar, overrides: schedule.overrides, seasonRule: schedule.season.kind };
+  const change = (patch: Partial<ScheduleChange>) => { if (!busy) onChange({ ...base, ...patch }); };
+  // The named breaks and the menu's own closed days; single holidays are simply days without a menu.
+  const breaks = schedule.breaks.filter((b) => b.reason !== 'holiday' && b.reason !== 'bridge');
+  const shown = allBreaks ? breaks : breaks.slice(0, 6);
+  const onlyInAuto = !auto ? 'Gilt nur im Autonom-Modus.' : '';
   return (
-    <section className="mt-8 rounded-[20px] p-5" style={{ background: 'rgb(var(--ink-rgb) / calc(0.032 * var(--veil)))' }} aria-label="Ablauf des Speiseplans">
+    <section className="panel mt-8 flex flex-col gap-7 p-6" aria-label="Ablauf des Speiseplans" aria-busy={busy}>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
-        <span className="flex items-center gap-2 text-[14.5px] font-medium text-ink"><CalendarDays size={16} strokeWidth={1.7} /> Ablauf</span>
+        <span className="flex items-center gap-2 text-[15px] font-medium text-ink"><CalendarDays size={17} strokeWidth={1.7} /> Ablauf</span>
         {canEdit ? (
           <Segmented<MenuMode>
             label="Ablauf"
             value={schedule.mode}
-            onChange={(mode) => onChange(mode, schedule.calendar, schedule.overrides)}
+            onChange={(mode) => { if (mode !== schedule.mode) change({ mode }); }}
             options={[{ value: 'auto', label: 'Autonom' }, { value: 'manual', label: 'Manuell' }]}
           />
         ) : (
           <Tag tone={auto ? 'mint' : 'amber'}>{auto ? 'Autonom' : 'Manuell'}</Tag>
         )}
-        {auto && canEdit && (
-          <Segmented<MenuCalendar>
-            label="Ferienkalender"
-            value={schedule.calendar}
-            onChange={(calendar) => onChange(schedule.mode, calendar, schedule.overrides)}
-            options={[{ value: 'suedtirol', label: 'Südtirol + WebUntis' }, { value: 'webuntis', label: 'Nur WebUntis' }]}
-          />
-        )}
+        {busy && <span className="flex items-center gap-2 text-[12.5px] text-ink-3"><Spinner size={14} /> Wird angewendet…</span>}
       </div>
-      <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-3">
-        <span className="text-[13.5px] text-ink-3">Planwechsel</span>
-        {canEdit ? (
-          <Segmented<'dates' | 'clock'>
-            label="Planwechsel"
-            value={schedule.season.kind}
-            onChange={(rule) => onChange(schedule.mode, schedule.calendar, schedule.overrides, rule)}
-            options={[
-              { value: 'dates', label: schedule.season.kind === 'dates' ? `Wie die Mensa (${dayMonth(schedule.season.summerFrom)} / ${dayMonth(schedule.season.winterFrom)})` : 'Wie die Mensa' },
-              { value: 'clock', label: 'Zeitumstellung' },
-            ]}
-          />
-        ) : (
-          <Tag>{schedule.season.kind === 'dates' ? `Sommer ab ${dayMonth(schedule.season.summerFrom)}, Winter ab ${dayMonth(schedule.season.winterFrom)}` : 'Mit der Zeitumstellung'}</Tag>
-        )}
-      </div>
-      <p className="mt-3 max-w-[78ch] text-[13.5px] leading-relaxed text-ink-3">
+
+      <ScheduleStatus schedule={schedule} />
+
+      <p className="max-w-[78ch] text-[13.5px] leading-relaxed text-ink-3">
         {auto
-          ? `POKYH legt die Wochen selbst auf die Schulwochen: Ferien werden abgewartet, danach geht es mit der nächsten Planwoche weiter. Sommer- und Winterplan wechseln ${schedule.season.kind === 'dates' ? 'in der Woche, deren Montag auf den Tag fällt, den der Plan der Mensa nennt' : 'mit der Zeitumstellung'}. Über das Datum einer Woche legst du fest, welche Planwoche wann dran ist.`
+          ? `POKYH legt die Planwochen selbst auf die Schulwochen: Ferien werden abgewartet, danach geht es mit der nächsten Planwoche weiter. ${schedule.season.kind === 'dates' ? `Ab ${dayMonth(schedule.season.summerFrom)} gilt der Sommerplan, ab ${dayMonth(schedule.season.winterFrom)} der Winterplan` : 'Sommer- und Winterplan wechseln mit der Zeitumstellung'}. Über das Datum einer Woche legst du fest, welche Planwoche wann dran ist.`
           : 'Die Daten bleiben, wie du sie setzt. Ferien werden nicht beachtet; vergangene Wochen rollen nur ans Ende ihres Plans.'}
       </p>
-      {auto && breaks.length > 0 && (
-        <div className="mt-3 flex flex-wrap gap-2">
-          {breaks.map((b) => <Tag key={b.start}>{BREAK_NAMES[b.reason]} · {breakRange(b.start, b.end)}</Tag>)}
+
+      {auto && <UpcomingDays schedule={schedule} />}
+
+      <div className="grid gap-6 lg:grid-cols-2" style={{ opacity: auto ? 1 : 0.62 }}>
+        <div>
+          <div className="text-[13.5px] font-medium text-ink">Ferienkalender</div>
+          <p className="mt-1 text-[12.5px] leading-relaxed text-ink-3">
+            Woher die freien Tage kommen. „Nur WebUntis“ für Schulen außerhalb Südtirols. Ferien einer einzelnen Schule zählen bei einer geteilten Mensa erst, wenn alle Schulen frei haben. {onlyInAuto}
+          </p>
+          <div className="mt-3">
+            {canEdit ? (
+              <Segmented<MenuCalendar>
+                label="Ferienkalender"
+                value={schedule.calendar}
+                onChange={(calendar) => { if (calendar !== schedule.calendar) change({ calendar }); }}
+                options={[{ value: 'suedtirol', label: 'Südtirol + WebUntis' }, { value: 'webuntis', label: 'Nur WebUntis' }]}
+              />
+            ) : (
+              <Tag>{schedule.calendar === 'suedtirol' ? 'Südtirol + WebUntis' : 'Nur WebUntis'}</Tag>
+            )}
+          </div>
         </div>
-      )}
-      {auto && schedule.schools.length > 0 && (
-        <ul className="mt-3 space-y-1 text-[12.5px] text-ink-3">
-          {schedule.schools.map((sc) => (
-            <li key={sc.id}>
-              {sc.name}: {sc.fetchedAt
-                ? `${sc.breaks} ${sc.breaks === 1 ? 'Eintrag' : 'Einträge'} aus WebUntis, zuletzt ${relative(sc.fetchedAt)}`
-                : 'noch keine Ferien aus WebUntis, sie kommen mit der nächsten Anmeldung eines Schülers'}
-            </li>
-          ))}
-        </ul>
-      )}
-      {auto && schedule.calendar === 'webuntis' && schedule.schools.every((sc) => !sc.fetchedAt) && (
-        <div className="mt-3"><Notice tone="amber" icon={CalendarDays}>Noch keine Ferien bekannt: Bis welche aus WebUntis kommen, läuft der Plan durch.</Notice></div>
-      )}
-      {auto && <OverridesEditor overrides={schedule.overrides} canEdit={canEdit} onChange={(next) => onChange(schedule.mode, schedule.calendar, next)} />}
-      <SourceEditor schedule={schedule} canEdit={canEdit} onSaved={onSourceSaved} onPulled={onPulled} />
+        <div>
+          <div className="text-[13.5px] font-medium text-ink">Planwechsel</div>
+          <p className="mt-1 text-[12.5px] leading-relaxed text-ink-3">
+            Wann Sommer- und Winterplan wechseln. Die Daten der Mensa ({dayMonth(schedule.season.kind === 'dates' ? schedule.season.summerFrom : '04-01')} / {dayMonth(schedule.season.kind === 'dates' ? schedule.season.winterFrom : '11-01')}) kommen aus ihren Plänen, sonst gilt 1.4. / 1.11.
+          </p>
+          <div className="mt-3">
+            {canEdit ? (
+              <Segmented<'dates' | 'clock'>
+                label="Planwechsel"
+                value={schedule.season.kind}
+                onChange={(seasonRule) => { if (seasonRule !== schedule.season.kind) change({ seasonRule }); }}
+                options={[{ value: 'dates', label: 'Wie die Mensa' }, { value: 'clock', label: 'Mit der Zeitumstellung' }]}
+              />
+            ) : (
+              <Tag>{schedule.season.kind === 'dates' ? `Sommer ab ${dayMonth(schedule.season.summerFrom)}, Winter ab ${dayMonth(schedule.season.winterFrom)}` : 'Mit der Zeitumstellung'}</Tag>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div style={{ opacity: auto ? 1 : 0.62 }}>
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <div className="text-[13.5px] font-medium text-ink">Pausen der Mensa</div>
+          {onlyInAuto && <span className="text-[12.5px] text-ink-4">{onlyInAuto}</span>}
+        </div>
+        {breaks.length === 0 ? (
+          <p className="mt-2 text-[13px] text-ink-4">Keine Pausen bekannt.</p>
+        ) : (
+          <>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {shown.map((b) => <Tag key={`${b.start}-${b.reason}`} tone={b.reason === 'closed' ? 'amber' : undefined}>{BREAK_NAMES[b.reason]} · {breakRange(b.start, b.end)}</Tag>)}
+            </div>
+            {breaks.length > 6 && (
+              <button type="button" className="mt-2 text-[12.5px] font-medium text-ink-3 underline underline-offset-2" onClick={() => setAllBreaks((v) => !v)}>
+                {allBreaks ? 'Weniger anzeigen' : `Alle ${breaks.length} Pausen anzeigen`}
+              </button>
+            )}
+          </>
+        )}
+        {schedule.schools.length > 0 && (
+          <ul className="mt-3 space-y-1 text-[12.5px] text-ink-3">
+            {schedule.schools.map((sc) => (
+              <li key={sc.id}>
+                {sc.name}: {sc.fetchedAt
+                  ? `${sc.breaks} ${sc.breaks === 1 ? 'freier Zeitraum' : 'freie Zeiträume'} aus WebUntis, zuletzt ${relative(sc.fetchedAt)} geholt`
+                  : 'noch keine Ferien aus WebUntis. Sie kommen, sobald jemand dieser Schule POKYH benutzt.'}
+              </li>
+            ))}
+          </ul>
+        )}
+        {auto && schedule.calendar === 'webuntis' && schedule.schools.every((sc) => !sc.fetchedAt) && (
+          <div className="mt-3"><Notice tone="amber" icon={CalendarDays}>Noch keine Ferien bekannt: Bis welche aus WebUntis kommen, läuft der Plan durch.</Notice></div>
+        )}
+      </div>
+
+      <div style={{ opacity: auto ? 1 : 0.62 }}>
+        <OverridesEditor overrides={schedule.overrides} canEdit={canEdit && auto} busy={busy} onChange={(overrides) => change({ overrides })} />
+      </div>
+
+      <div className="pt-6" style={{ borderTop: '1px solid var(--line)' }}>
+        <SourceEditor schedule={schedule} canEdit={canEdit} onSaved={onSourceSaved} onPulled={onPulled} />
+      </div>
       {schedule.pictureBaseMissing && (
-        <div className="mt-3"><Notice tone="amber" icon={ImagePlus}>PUBLIC_BASE_URL ist auf dem Server nicht gesetzt: Die Website findet hochgeladene Bilder trotzdem, die Apps erst, wenn die Adresse der API dort eingetragen ist.</Notice></div>
+        <Notice tone="amber" icon={ImagePlus}>PUBLIC_BASE_URL ist auf dem Server nicht gesetzt: Die Website findet hochgeladene Bilder trotzdem, die Apps erst, wenn die Adresse der API dort eingetragen ist.</Notice>
       )}
     </section>
+  );
+}
+
+// A change that moves dishes onto other days is shown before it happens.
+function ScheduleConfirm({ moved, change, onConfirm, onClose }: { moved: number; change: ScheduleChange; onConfirm: () => void; onClose: () => void }) {
+  return (
+    <Dialog title="Gerichte neu verteilen?" subtitle={change.mode === 'auto' ? 'Autonomer Ablauf' : 'Manueller Ablauf'} onClose={onClose}>
+      <p className="text-[14px] leading-relaxed text-ink-2">
+        Mit dieser Änderung legt POKYH <strong className="font-semibold">{moved} {moved === 1 ? 'Gericht' : 'Gerichte'}</strong> auf andere Tage, damit die Planwochen wieder auf den Schulwochen liegen. Bilder, Bewertungen und Kommentare bleiben bei ihren Gerichten.
+      </p>
+      <div className="mt-6 flex flex-wrap justify-end gap-2.5">
+        <button type="button" className="btn btn-quiet" onClick={onClose}>Abbrechen</button>
+        <button type="button" className="btn btn-primary" onClick={onConfirm}>Übernehmen</button>
+      </div>
+    </Dialog>
   );
 }
 
@@ -1352,10 +1603,15 @@ function MenuPlan({ note, handed }: { note?: ReactNode; handed: Partial<HandedDi
   const rotatedPlans = useRef<Set<DishPlan>>(new Set());
 
   const [schedule, setSchedule] = useState<MenuScheduleInfo | null>(null);
+  // The schedule could not be read: said so, with a way to try again.
+  const [scheduleFailed, setScheduleFailed] = useState(false);
+  const [scheduleBusy, setScheduleBusy] = useState(false);
+  // A change that would move dishes, waiting for the admin's yes.
+  const [pendingChange, setPendingChange] = useState<{ change: ScheduleChange; moved: number } | null>(null);
 
   const loadRatings = useCallback(async () => {
     try {
-      const ratingData = await adminApi.dishRatings();
+      const ratingData = await adminApi.dishRatings({ summary: true });
       const map = new Map<string, AdminDish>();
       ratingData.forEach((r) => map.set(r.dishId, r));
       setRatingsMap(map);
@@ -1379,7 +1635,10 @@ function MenuPlan({ note, handed }: { note?: ReactNode; handed: Partial<HandedDi
       const next = await adminApi.menuSchedule();
       seasonRule = next.season;
       setSchedule(next);
-    } catch { /* the panel just stays away */ }
+      setScheduleFailed(false);
+    } catch {
+      setScheduleFailed(true);
+    }
   }, []);
 
   useEffect(() => { loadRatings(); }, [loadRatings]);
@@ -1387,17 +1646,36 @@ function MenuPlan({ note, handed }: { note?: ReactNode; handed: Partial<HandedDi
   useLive(['ratings'], () => { void loadRatings(); });
   useLive(['dishes'], () => { void loadDishes(activePlan); void loadSchedule(); });
 
-  async function changeSchedule(mode: MenuMode, calendar: MenuCalendar, overrides: MenuDayOverride[], rule?: 'dates' | 'clock') {
+  async function applySchedule(change: ScheduleChange) {
+    setScheduleBusy(true);
     try {
-      const res = await adminApi.setMenuSchedule(mode, calendar, overrides, rule ?? schedule?.season.kind ?? 'dates');
+      const res = await adminApi.setMenuSchedule(change.mode, change.calendar, change.overrides, change.seasonRule);
       seasonRule = res.season;
       setSchedule(res);
-      const what = mode === 'auto' ? 'Autonom' : 'Manuell';
-      showToast(res.moved ? `Ablauf: ${what} · ${res.moved} Gerichte neu gelegt` : `Ablauf: ${what}`, 'success');
+      const what = change.mode === 'auto' ? 'Autonom' : 'Manuell';
+      showToast(res.moved ? `Ablauf: ${what} · ${res.moved} ${res.moved === 1 ? 'Gericht' : 'Gerichte'} neu gelegt` : `Ablauf: ${what} · gespeichert`, 'success');
       await loadDishes(activePlan);
     } catch (err) {
       showToast(err instanceof Error ? err.message : 'Der Ablauf konnte nicht geändert werden', 'error');
+    } finally {
+      setScheduleBusy(false);
     }
+  }
+
+  // First how many dishes the change would move; with any, the admin confirms.
+  async function changeSchedule(change: ScheduleChange) {
+    if (scheduleBusy) return;
+    setScheduleBusy(true);
+    let moved: number | null = null;
+    try {
+      moved = (await adminApi.previewMenuSchedule(change.mode, change.calendar, change.overrides, change.seasonRule)).preview.moved;
+    } catch {
+      moved = null;
+    } finally {
+      setScheduleBusy(false);
+    }
+    if (moved && moved > 0) setPendingChange({ change, moved });
+    else await applySchedule(change);
   }
 
   // Load dishes for the active plan. First time we visit a plan this session,
@@ -1757,7 +2035,23 @@ function MenuPlan({ note, handed }: { note?: ReactNode; handed: Partial<HandedDi
 
       {note && <div className="mt-8">{note}</div>}
 
-      {schedule && <SchedulePanel schedule={schedule} canEdit={rights.edit} onChange={changeSchedule} onSourceSaved={setSchedule} onPulled={() => void loadDishes(activePlan)} />}
+      {schedule && <SchedulePanel schedule={schedule} canEdit={rights.edit} busy={scheduleBusy} onChange={(change) => void changeSchedule(change)} onSourceSaved={setSchedule} onPulled={() => void loadDishes(activePlan)} />}
+      {!schedule && scheduleFailed && (
+        <div className="mt-8">
+          <Notice tone="rose" icon={CalendarDays}>
+            Der Ablauf des Speiseplans konnte nicht geladen werden.{' '}
+            <button type="button" className="font-medium underline underline-offset-2" onClick={() => void loadSchedule()}>Erneut versuchen</button>
+          </Notice>
+        </div>
+      )}
+      {pendingChange && (
+        <ScheduleConfirm
+          moved={pendingChange.moved}
+          change={pendingChange.change}
+          onClose={() => setPendingChange(null)}
+          onConfirm={() => { const { change } = pendingChange; setPendingChange(null); void applySchedule(change); }}
+        />
+      )}
 
       <Figures
         className="mt-10"
@@ -1786,6 +2080,16 @@ function MenuPlan({ note, handed }: { note?: ReactNode; handed: Partial<HandedDi
         />
         <SearchField value={search} onChange={setSearch} placeholder="Suche nach Name, Kategorie, Datum" className="min-w-[240px] flex-1" />
       </div>
+
+      {/* In the autonomous mode the server keeps the weeks on school weeks:
+          moving dishes by hand only decides which plan week comes when. */}
+      {schedule?.mode === 'auto' && rights.edit && (
+        <div className="mb-6">
+          <Notice tone="sky" icon={CalendarDays}>
+            Autonom: POKYH legt die Wochen wieder auf Schulwochen. Ein Gericht oder das Datum einer Woche von Hand zu verschieben legt nur fest, welche Planwoche wann dran ist; Ferien wartet POKYH weiter ab.
+          </Notice>
+        </div>
+      )}
 
       {/* Content */}
       {loading && dishes.length === 0 ? (

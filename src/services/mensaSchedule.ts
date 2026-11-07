@@ -1,6 +1,6 @@
 import { prisma } from '../db';
 import { logger } from '../utils/logger';
-import { layoutMenu, rotatePastWeeks } from '../utils/mensaRotate';
+import { layoutMenu, previewLayout, rotatePastWeeks } from '../utils/mensaRotate';
 import { seasonRuleOf, type SeasonRule } from '../utils/mensaSeason';
 import { dayOverridesFrom, menuDayOff, parseCalendar, parseMode, type DayOffOf, type DayOverride, type MenuCalendar, type MenuMode } from '../utils/mensaSchedule';
 import { storableHolidays, type Holiday } from '../webuntis/holidays';
@@ -60,8 +60,37 @@ export async function menuSchedule(menuId: string): Promise<MenuSchedule> {
  * write once everything is in place. Returns how many dishes moved.
  */
 export async function arrangeMenu(menuId: string, schedule: MenuSchedule): Promise<number> {
-  if (schedule.mode === 'auto') return layoutMenu(menuId, schedule.dayOffOf, undefined, schedule.season);
-  return (await rotatePastWeeks(menuId, 'summer', undefined, schedule.season)) + (await rotatePastWeeks(menuId, 'winter', undefined, schedule.season));
+  const moved = schedule.mode === 'auto'
+    ? await layoutMenu(menuId, schedule.dayOffOf, undefined, schedule.season)
+    : (await rotatePastWeeks(menuId, 'summer', undefined, schedule.season)) + (await rotatePastWeeks(menuId, 'winter', undefined, schedule.season));
+  // Recorded for the panel; a failure here never undoes the move.
+  if (moved > 0) {
+    await prisma.mensaMenu.update({ where: { id: menuId }, data: { arrangedAt: new Date(), arrangedMoved: moved } }).catch(() => undefined);
+  }
+  return moved;
+}
+
+/**
+ * The schedule the menu would have with these settings (nothing stored):
+ * what the panel previews before a change is applied.
+ */
+export async function proposedSchedule(menuId: string, change: { mode: MenuMode; calendar: MenuCalendar; overrides?: DayOverride[]; seasonRule?: 'dates' | 'clock' }): Promise<MenuSchedule> {
+  const current = await menuSchedule(menuId);
+  const menu = await prisma.mensaMenu.findUnique({ where: { id: menuId }, select: { seasonRule: true, summerFrom: true, winterFrom: true } });
+  const overrides = change.overrides ?? current.overrides;
+  return {
+    ...current,
+    mode: change.mode,
+    calendar: change.calendar,
+    overrides,
+    season: seasonRuleOf(change.seasonRule ?? menu?.seasonRule, menu?.summerFrom, menu?.winterFrom),
+    dayOffOf: menuDayOff(change.calendar, current.schools.map((s) => s.holidays), overrides),
+  };
+}
+
+/** How many dishes a change to `schedule` would move; null in manual mode (nothing is laid out there). */
+export async function previewArrange(menuId: string, schedule: MenuSchedule): Promise<number | null> {
+  return schedule.mode === 'auto' ? previewLayout(menuId, schedule.dayOffOf, schedule.season) : null;
 }
 
 // ─── A school's holidays from WebUntis ───────────────────────────────────────

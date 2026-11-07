@@ -27,6 +27,14 @@ export interface HolidayRange {
 /** A menu's own correction: closed although it is school, or open although it is not. */
 export interface DayOverride extends HolidayRange {
   open: boolean;
+  /** Why (shown in the panel only), e.g. "Betriebsausflug". */
+  note?: string;
+}
+
+const MAX_NOTE = 80;
+/** A note as stored: one line of plain text, at most MAX_NOTE characters. */
+function cleanNote(value: unknown): string {
+  return typeof value === 'string' ? value.replace(/[\p{C}]/gu, ' ').replace(/\s+/g, ' ').trim().slice(0, MAX_NOTE) : '';
 }
 
 const MAX_OVERRIDES = 60;
@@ -44,7 +52,10 @@ export function dayOverridesFrom(json: string | null | undefined): DayOverride[]
   return list
     .filter((o): o is DayOverride => isDay(o?.start) && isDay(o?.end) && o.end >= o.start && typeof o.open === 'boolean')
     .slice(0, MAX_OVERRIDES)
-    .map(({ start, end, open }) => ({ start, end, open }));
+    .map(({ start, end, open, note }) => {
+      const text = cleanNote(note);
+      return text ? { start, end, open, note: text } : { start, end, open };
+    });
 }
 
 const DAY = 86_400_000;

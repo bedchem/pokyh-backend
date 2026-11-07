@@ -12,6 +12,7 @@ import { pdfTextItems } from '../utils/pdfText';
 import { BlockedAddressError, fetchBytes, fetchUrl, isInternalUrl } from '../utils/safeFetch';
 import { arrangeMenu, menuSchedule } from './mensaSchedule';
 import { DEFAULT_MENU_ID } from './schools';
+import { audit } from './audit';
 
 // Pulling a menu's plans from their sources: regularly by itself or when an
 // administrator asks. A source is a mensa.json, the plan's PDF, or a page that
@@ -62,6 +63,16 @@ export function effectiveSourceUrl(menuId: string, stored: string | null | undef
 
 // Only the operator's own MENSA_IMPORT_URL is trusted with the internal network.
 const isOperatorSource = (url: string) => config.mensaImportUrl !== '' && url === config.mensaImportUrl;
+
+function sameHost(a: string, b: string): boolean {
+  try {
+    const x = new URL(a);
+    const y = new URL(b);
+    return x.protocol === y.protocol && x.host === y.host;
+  } catch {
+    return false;
+  }
+}
 
 // What may be shown about a failed pull: not addresses from inside the server.
 export function failureText(err: unknown): string {
@@ -139,7 +150,11 @@ export async function sourceFile(menuId: string, line: PullLine, stored: string,
       if (isVegetarianLine(line)) return null;
       throw new MenuSourceError(`Auf der Seite steht kein ${planOf(line) === 'summer' ? 'Sommer' : 'Winter'}plan für „${menu.sourceCanteen}“`);
     }
-    return { bytes: await fetchBytes(link, { publicOnly: !trusted }), file: fileName(link) };
+    // A link found on the page is the page's say, not the operator's: into the
+    // internal network only from the operator's own page, and only to that
+    // page's own host (never somewhere else the page points to).
+    const internalAllowed = isOperatorSource(link) || (trusted && sameHost(link, menu.sourcePage));
+    return { bytes: await fetchBytes(link, { publicOnly: !internalAllowed }), file: fileName(link) };
   }
   if (isVegetarianLine(line)) return null;
   const url = effectiveSourceUrl(menuId, stored);
@@ -304,17 +319,41 @@ let running = false;
 // A source that failed is asked again sooner: most failures are short.
 const RETRY_AFTER_FAILURE_MS = 60 * 60 * 1000;
 
-async function pullDueMenus(): Promise<void> {
+/**
+ * When a menu's line is next pulled by itself: null when it is not (pulling
+ * by hand only, switched off on this installation, no source for the line).
+ * A line never looked at goes with the next round.
+ */
+export function nextPullAt(
+  menu: { id: string; pullMode: string; sourcePage: string },
+  line: PullLine,
+  row: { url?: string | null; status?: string | null; checkedAt?: Date | null } | undefined,
+  now = Date.now(),
+): Date | null {
   const interval = config.mensaPullIntervalHours * 60 * 60 * 1000;
-  const menus = await prisma.mensaMenu.findMany({ where: { pullMode: 'auto' }, select: { id: true, sourcePage: true, sources: true } });
+  if (interval <= 0 || menu.pullMode === 'manual') return null;
+  const hasSource = menu.sourcePage !== '' || (!isVegetarianLine(line) && effectiveSourceUrl(menu.id, row?.url ?? '') !== '');
+  if (!hasSource) return null;
+  if (!row?.checkedAt) return new Date(now + config.mensaPullCheckIntervalMs);
+  const every = row.status === 'error' ? Math.min(interval, RETRY_AFTER_FAILURE_MS) : interval;
+  return new Date(Math.max(row.checkedAt.getTime() + every, now));
+}
+
+async function pullDueMenus(): Promise<void> {
+  const menus = await prisma.mensaMenu.findMany({ where: { pullMode: 'auto' }, select: { id: true, pullMode: true, sourcePage: true, sources: true } });
   for (const menu of menus) {
     for (const line of PULL_LINES) {
       const row = menu.sources.find((s) => s.plan === line);
-      const hasSource = menu.sourcePage !== '' || (!isVegetarianLine(line) && effectiveSourceUrl(menu.id, row?.url) !== '');
-      if (!hasSource) continue;
-      const every = row?.status === 'error' ? Math.min(interval, RETRY_AFTER_FAILURE_MS) : interval;
-      if (row?.checkedAt && Date.now() - row.checkedAt.getTime() < every - 60_000) continue;
-      await pullPlan(menu.id, line);
+      const due = nextPullAt(menu, line, row);
+      if (!due || (row?.checkedAt && due.getTime() - Date.now() > 60_000)) continue;
+      const result = await pullPlan(menu.id, line);
+      // Into the audit trail when the pull changed something or went wrong;
+      // an unchanged file every few hours is no event.
+      if (result.created + result.updated + result.removed > 0 || result.status === 'error' || result.status === 'held') {
+        audit(null, 'mensa.pull', { type: 'menu', id: menu.id }, {
+          auto: true, plan: line, status: result.status, created: result.created, updated: result.updated, removed: result.removed,
+        });
+      }
     }
   }
 }

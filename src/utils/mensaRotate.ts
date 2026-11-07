@@ -154,6 +154,12 @@ export async function layoutMenu(menuId: string, dayOffOf: DayOffOf, tx?: Prisma
   return moved;
 }
 
+/** How many dishes layoutMenu would move now, without moving any. */
+export async function previewLayout(menuId: string, dayOffOf: DayOffOf, rule: SeasonRule = CLOCK): Promise<number> {
+  const dishes = await prisma.dish.findMany({ where: { menuId }, select: { id: true, plan: true, date: true } });
+  return planMoves(dishes, currentWeekMondayIso(), dayOffOf, rule).reduce((n, move) => n + move.ids.length, 0);
+}
+
 export function otherPlan(p: Plan): Plan { return p === 'summer' ? 'winter' : 'summer'; }
 export function isoAddDays(iso: string, days: number): string {
   const d = new Date(iso + 'T00:00:00Z');
