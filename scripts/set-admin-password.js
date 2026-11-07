@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Usage: npm run set-admin-password <username>
 require('dotenv').config({ quiet: true });
-const { createPrisma } = require('./_db');
+const { createPrisma, endPanelSessions } = require('./_db');
 const { askNewPassword } = require('./_auth');
 
 const prisma = createPrisma();
@@ -34,8 +34,9 @@ async function main() {
     // A password set here is final: it ends a pending one-time-password grant.
     data: { passwordHash, mustChangePassword: false, setupExpiresAt: null, oneTimePasswordEnc: null },
   });
+  await endPanelSessions(prisma, username);
 
-  console.log(`\n✅ Password updated for "${username}"\n`);
+  console.log(`\n✅ Password updated for "${username}"; open panel sessions are signed out\n`);
 }
 
 main()

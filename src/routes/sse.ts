@@ -103,7 +103,7 @@ router.get('/dish-ratings/:dishId', requireAuth, sseLimiter, async (req: Request
   sseManager.addClient(ratingsStreamKey(menuId, dishId), res, stableUid);
 
   // Send current ratings on connect
-  const rows = menuId ? await prisma.dishRating.findMany({ where: { dishId, menuId } }) : [];
+  const rows = menuId ? await prisma.dishRating.findMany({ where: { dishId, menuId }, select: { stableUid: true, stars: true } }) : [];
 
   try {
     res.write(`event: dishRatings\ndata: ${JSON.stringify(ratingsPayload(rows, stableUid))}\n\n`);

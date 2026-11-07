@@ -14,4 +14,16 @@ function createPrisma() {
   return new PrismaClient({ adapter: mysqlAdapter(url, 2) });
 }
 
-module.exports = { createPrisma };
+// Ends every admin panel session of the account (services/adminLogin.ts:
+// tokens issued before this moment are refused), after its password or
+// second factor was reset here.
+async function endPanelSessions(prisma, username) {
+  const from = new Date(Math.ceil(Date.now() / 1000) * 1000);
+  await prisma.adminSecurity.upsert({
+    where: { username },
+    create: { username, tokensValidFrom: from },
+    update: { tokensValidFrom: from },
+  });
+}
+
+module.exports = { createPrisma, endPanelSessions };

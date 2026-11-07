@@ -7,7 +7,7 @@
 // and, where one is required, a passkey. A phone that still works moves to a
 // new one in the panel instead (Sicherheit → Auf neues Gerät umziehen).
 require('dotenv').config({ quiet: true });
-const { createPrisma } = require('./_db');
+const { createPrisma, endPanelSessions } = require('./_db');
 
 const prisma = createPrisma();
 
@@ -22,6 +22,9 @@ async function main() {
     prisma.adminTotp.deleteMany({ where: { username } }),
     prisma.adminPasskey.deleteMany({ where: { username } }),
   ]);
+
+  // Whoever is signed in with the old factor has to sign in again.
+  if (totp.count > 0 || passkeys.count > 0) await endPanelSessions(prisma, username);
 
   if (totp.count === 0 && passkeys.count === 0) {
     console.log(`ℹ️  "${username}" had no second factor (the name is matched exactly)`);
