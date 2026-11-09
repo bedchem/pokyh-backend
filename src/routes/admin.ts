@@ -28,13 +28,14 @@ import { cachedAnswer } from '../middleware/cachedAnswer';
 import { issuedApiKeyScopes, parseApiKeyScopes, serializeApiKeyScopes } from '../security/apiKeyPolicy';
 import {
   rotatePastWeeks, normalizePlanAroundAnchor,
-  lastFutureMondayIso, firstMondayIso, otherPlan, isoAddDays, layoutMenu, currentWeekMondayIso,
+  lastFutureMondayIso, firstMondayIso, otherPlan, isoAddDays, currentWeekMondayIso, mensaTodayIso,
 } from '../utils/mensaRotate';
 import { snapForwardToSeason } from '../utils/mensaSeason';
 import { dayOverridesFrom, menuBreaks } from '../utils/mensaSchedule';
+import { mondayOfDay, planWeekOn } from '../utils/mensaCycle';
 import { dishFingerprint, sourceUrlProblem } from '../utils/mensaSource';
 import { isInternalUrl } from '../utils/safeFetch';
-import { arrangeMenu, menuSchedule, previewArrange, proposedSchedule, type MenuSchedule } from '../services/mensaSchedule';
+import { anchorPlanWeek, arrangeMenu, layoutInTransaction, menuSchedule, previewArrange, proposedSchedule, thisWeek, type MenuSchedule } from '../services/mensaSchedule';
 import { PLANS, PULL_LINES, dishImageUrl, effectiveSourceUrl, failureText, lineFilter, nextPullAt, pullPlan, readSource, sourceFile, storedPageProblem } from '../services/mensaSource';
 import { slugifyDishName } from '../utils/dishKey';
 import { ForbiddenError, NotFoundError, ValidationError } from '../utils/errors';
@@ -1732,10 +1733,19 @@ router.post('/dishes', requireAdmin, requirePermission('mensa.manage'), async (r
     return;
   }
   const menuId = await editableMenu(req, b['menuId']);
+  const date = new Date(String(b['date']));
+  if (Number.isNaN(date.getTime())) {
+    res.status(400).json({ error: 'date must be YYYY-MM-DD' });
+    return;
+  }
+  const plan = parsePlan(b['plan']);
 
   const dish = await prisma.dish.create({
     data: {
       menuId,
+      // Laid out by the server, a dish belongs to a plan week, not a day: the
+      // one lying there, or a new one when none does (utils/mensaCycle.ts).
+      weekOrdinal: (await planWeekAtDay(menuId, plan, date)) ?? 0,
       nameDe: String(b['nameDe']).trim(),
       nameIt: b['nameIt'] ? String(b['nameIt']).trim() : '',
       nameEn: b['nameEn'] ? String(b['nameEn']).trim() : '',
@@ -1753,15 +1763,19 @@ router.post('/dishes', requireAdmin, requirePermission('mensa.manage'), async (r
       allergens: JSON.stringify(Array.isArray(b['allergens']) ? b['allergens'] : []),
       isVegetarian: b['isVegetarian'] === true,
       isVegan: b['isVegan'] === true,
-      date: new Date(String(b['date'])),
+      date,
       sortOrder: typeof b['sortOrder'] === 'number' ? b['sortOrder'] : 0,
-      plan: parsePlan(b['plan']),
+      plan,
       stableKey: slugifyDishName(String(b['nameDe']).trim()),
     },
   });
+  // A new week is named and laid out right away, not at the next visitor;
+  // the answer is the dish where it lies then.
+  await arrangeAfterEdit(menuId);
+  const placed = (await prisma.dish.findUnique({ where: { id: dish.id } })) ?? dish;
 
   invalidateDishesCache();
-  res.status(201).json(dishRow(dish));
+  res.status(201).json(dishRow(placed));
 });
 
 // ─── PATCH /api/admin/dishes/:id ──────────────────────────────────────────────
@@ -1769,7 +1783,7 @@ router.post('/dishes', requireAdmin, requirePermission('mensa.manage'), async (r
 router.patch('/dishes/:id', requireAdmin, requirePermission('mensa.manage'), async (req: Request, res: Response): Promise<void> => {
   const id = String(req.params['id']);
   const b = req.body as Record<string, unknown>;
-  await editableDish(req, id);
+  const before = await editableDish(req, id);
 
   const data: Record<string, unknown> = {};
   if (b['nameDe'] !== undefined) {
@@ -1798,6 +1812,21 @@ router.patch('/dishes/:id', requireAdmin, requirePermission('mensa.manage'), asy
   if (b['date'] !== undefined) data['date'] = new Date(String(b['date']));
   if (b['sortOrder'] !== undefined) data['sortOrder'] = Number(b['sortOrder']);
   if (b['plan'] !== undefined) data['plan'] = parsePlan(b['plan']);
+  if (data['date'] instanceof Date && Number.isNaN((data['date'] as Date).getTime())) {
+    res.status(400).json({ error: 'date must be YYYY-MM-DD' });
+    return;
+  }
+
+  // Put on a day of another week (or into the other plan), a dish joins the
+  // plan week lying there; on a week without one it stays in its own, so a
+  // stray drop never makes the cycle longer.
+  const newDate = (data['date'] as Date | undefined) ?? before.date;
+  const newPlan = (data['plan'] as 'summer' | 'winter' | undefined) ?? parsePlan(before.plan);
+  const movedWeek = mondayOfDay(newDate.toISOString().slice(0, 10)) !== mondayOfDay(before.date.toISOString().slice(0, 10)) || newPlan !== before.plan;
+  if (movedWeek && before.menuId) {
+    const week = await planWeekAtDay(before.menuId, newPlan, newDate, id);
+    if (week !== null) data['weekOrdinal'] = week;
+  }
 
   const dish = await prisma.dish.update({ where: { id }, data }).catch(() => null);
   if (!dish) { res.status(404).json({ error: 'Dish not found' }); return; }
@@ -1805,6 +1834,30 @@ router.patch('/dishes/:id', requireAdmin, requirePermission('mensa.manage'), asy
   invalidateDishesCache();
   res.json(dishRow(dish));
 });
+
+// The plan week the dishes of `plan` lying in the week of `day` are (`except`
+// not counted), or null when none lie there.
+async function planWeekAtDay(menuId: string, plan: 'summer' | 'winter', day: Date, except?: string): Promise<number | null> {
+  const monday = mondayOfDay(day.toISOString().slice(0, 10));
+  const from = new Date(`${monday}T00:00:00Z`);
+  const to = new Date(from.getTime() + 7 * 86_400_000);
+  const rows = await prisma.dish.findMany({
+    where: { menuId, plan, date: { gte: from, lt: to }, ...(except ? { NOT: { id: except } } : {}) },
+    select: { id: true, plan: true, date: true, weekOrdinal: true },
+  });
+  return planWeekOn(rows.filter((r) => r.weekOrdinal >= 1), plan, monday);
+}
+
+// After a dish was added by hand: a menu set to "auto" names its new week and
+// lays it out at once. Never fails the edit that came before.
+async function arrangeAfterEdit(menuId: string): Promise<void> {
+  try {
+    const schedule = await menuSchedule(menuId);
+    if (schedule.mode === 'auto') await arrangeMenu(menuId, schedule);
+  } catch (err) {
+    logger.warn('mensa arrangement after an edit failed', { menuId, error: err instanceof Error ? err.message : String(err) });
+  }
+}
 
 // ─── DELETE /api/admin/dishes/:id ────────────────────────────────────────────
 
@@ -1981,9 +2034,10 @@ router.post('/dishes/cascade-shift', requireAdmin, requirePermission('mensa.mana
 //      this plan's last future week, snapped into the other plan's season. So
 //      the two plans together form a seamless rolling schedule.
 //
-// A menu laid out by the server ("auto") has no handoff: its plans are laid
-// out on their school weeks right after, so what this sets there is the order,
-// i.e. which week of the plan comes when.
+// A menu laid out by the server ("auto") counts its plan weeks itself
+// (utils/mensaCycle.ts): there this is a correction of that count, "the canteen
+// serves the chosen week in the week of targetMonday", kept until the plan's
+// season ends (services/mensaSchedule.anchorPlanWeek).
 //
 // All in one transaction so the client never sees a torn state.
 
@@ -1991,14 +2045,26 @@ router.post('/dishes/anchor-week', requireAdmin, requirePermission('mensa.manage
   const plan = parsePlan(req.body?.plan);
   const chosenRaw = req.body?.chosenWeek ? String(req.body.chosenWeek) : '';
   const targetRaw = req.body?.targetMonday ? String(req.body.targetMonday) : '';
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(chosenRaw) || !/^\d{4}-\d{2}-\d{2}$/.test(targetRaw)) {
+  // A real day: 2026-02-30 would roll on into March.
+  const isDay = (v: string) => {
+    const t = /^\d{4}-\d{2}-\d{2}$/.test(v) ? Date.parse(`${v}T00:00:00Z`) : NaN;
+    return !Number.isNaN(t) && new Date(t).toISOString().slice(0, 10) === v;
+  };
+  if (!isDay(chosenRaw) || !isDay(targetRaw)) {
     res.status(400).json({ error: 'chosenWeek and targetMonday must be YYYY-MM-DD' });
     return;
   }
 
   const menuId = await editableMenu(req, req.body?.menuId);
   const schedule = await menuSchedule(menuId);
-  const alignOther = schedule.mode === 'manual' && req.body?.alignOtherPlan !== false; // default true
+  if (schedule.mode === 'auto') {
+    const anchor = await anchorPlanWeek(menuId, plan, chosenRaw, targetRaw);
+    invalidateDishesCache();
+    audit(req, 'mensa.anchor', { type: 'menu', id: menuId }, { plan, week: anchor.week, monday: anchor.monday, anchored: anchor.anchored, moved: anchor.laidOut });
+    res.json({ normalized: 0, rotated: 0, otherAligned: 0, otherAnchorDate: null, otherRotated: 0, laidOut: anchor.laidOut, anchor });
+    return;
+  }
+  const alignOther = req.body?.alignOtherPlan !== false; // default true
   const result = await prisma.$transaction(async (tx) => {
     const normalized = await normalizePlanAroundAnchor(tx, menuId, plan, chosenRaw, targetRaw);
     const rotated = await rotatePastWeeks(menuId, plan, tx, schedule.season);
@@ -2020,7 +2086,7 @@ router.post('/dishes/anchor-week', requireAdmin, requirePermission('mensa.manage
       }
     }
 
-    const laidOut = schedule.mode === 'auto' ? await layoutMenu(menuId, schedule.dayOffOf, tx, schedule.season) : 0;
+    const laidOut = await layoutInTransaction(menuId, schedule, tx);
 
     return { normalized, rotated, otherAligned, otherAnchorDate, otherRotated, laidOut };
   });
@@ -2037,7 +2103,7 @@ router.post('/dishes/auto-rotate', requireAdmin, requirePermission('mensa.manage
   const plan = parsePlan(req.body?.plan);
   const menuId = await editableMenu(req, req.body?.menuId);
   const schedule = await menuSchedule(menuId);
-  const rotated = schedule.mode === 'auto' ? await layoutMenu(menuId, schedule.dayOffOf, undefined, schedule.season) : await rotatePastWeeks(menuId, plan, undefined, schedule.season);
+  const rotated = schedule.mode === 'auto' ? await arrangeMenu(menuId, schedule) : await rotatePastWeeks(menuId, plan, undefined, schedule.season);
   if (rotated > 0) invalidateDishesCache();
   res.json({ rotated });
 });
@@ -2077,14 +2143,12 @@ async function upcomingDays(menuId: string, schedule: MenuSchedule): Promise<Arr
   });
 }
 
-function localTodayIso(): string {
-  const now = new Date();
-  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-}
+// Today where the Mensa is (MENSA_TIMEZONE).
+const localTodayIso = () => mensaTodayIso();
 
 async function scheduleJson(menuId: string, schedule: MenuSchedule) {
   const today = currentWeekMondayIso();
-  const [schoolIds, schools, menu, upcoming] = await Promise.all([
+  const [schoolIds, schools, menu, upcoming, counted] = await Promise.all([
     schoolsOfMenu(menuId),
     listSchools(),
     prisma.mensaMenu.findUnique({
@@ -2092,6 +2156,7 @@ async function scheduleJson(menuId: string, schedule: MenuSchedule) {
       select: { pullMode: true, sources: true, sourcePage: true, sourceCanteen: true, arrangedAt: true, arrangedMoved: true, summerFrom: true, winterFrom: true },
     }),
     upcomingDays(menuId, schedule),
+    thisWeek(menuId, schedule),
   ]);
   const onRecord = new Map(schedule.schools.map((s) => [s.schoolId, s]));
   const pullMenu = { id: menuId, pullMode: menu?.pullMode ?? 'auto', sourcePage: menu?.sourcePage ?? '' };
@@ -2100,6 +2165,10 @@ async function scheduleJson(menuId: string, schedule: MenuSchedule) {
     season: schedule.season,
     calendar: schedule.calendar,
     overrides: schedule.overrides,
+    // How the plan weeks go on, the corrections to it, and what that gives this week.
+    weekCount: schedule.count,
+    anchors: schedule.anchors,
+    thisWeek: counted,
     breaks: menuBreaks(schedule.dayOffOf, today, isoAddDays(today, SCHEDULE_AHEAD_DAYS)),
     // The next school days: which plan week the menu serves, or the break.
     upcoming,
@@ -2148,25 +2217,37 @@ const menuScheduleSchema = z.object({
   calendar: z.enum(['suedtirol', 'webuntis']),
   overrides: z.array(z.object({ start: dayKey, end: dayKey, open: z.boolean(), note: z.string().max(80).optional() }).refine((o) => o.end >= o.start)).max(60).optional(),
   seasonRule: z.enum(['dates', 'clock']).optional(),
+  weekCount: z.enum(['calendar', 'school']).optional(),
+  // Back to the plain count: an administrator's corrections go.
+  resetAnchors: z.boolean().optional(),
   // Only how many dishes the change would move; nothing is stored.
   dryRun: z.boolean().optional(),
 });
 
 router.put('/dishes/schedule', requireAdmin, requirePermission('mensa.manage'), writeLimiter, async (req: Request, res: Response): Promise<void> => {
-  const { mode, calendar, overrides, seasonRule, dryRun } = menuScheduleSchema.parse(req.body);
+  const { mode, calendar, overrides, seasonRule, weekCount, resetAnchors, dryRun } = menuScheduleSchema.parse(req.body);
   const menuId = await editableMenu(req, req.body?.menuId);
   if (dryRun) {
-    const proposed = await proposedSchedule(menuId, { mode, calendar, overrides, seasonRule });
+    const proposed = await proposedSchedule(menuId, { mode, calendar, overrides, seasonRule, weekCount, resetAnchors });
     res.json({ preview: { moved: await previewArrange(menuId, proposed) } });
     return;
   }
   // Stored as the parser reads them back (notes cleaned to one plain line).
   const stored = overrides ? dayOverridesFrom(JSON.stringify(overrides)) : undefined;
-  await prisma.mensaMenu.update({ where: { id: menuId }, data: { mode, calendar, ...(seasonRule ? { seasonRule } : {}), ...(stored ? { dayOverrides: JSON.stringify(stored) } : {}) } });
+  await prisma.mensaMenu.update({
+    where: { id: menuId },
+    data: {
+      mode, calendar,
+      ...(seasonRule ? { seasonRule } : {}),
+      ...(weekCount ? { weekCount } : {}),
+      ...(resetAnchors ? { weekAnchors: '[]' } : {}),
+      ...(stored ? { dayOverrides: JSON.stringify(stored) } : {}),
+    },
+  });
   const schedule = await menuSchedule(menuId);
   const moved = await arrangeMenu(menuId, schedule);
   invalidateDishesCache();
-  audit(req, 'mensa.schedule', { type: 'menu', id: menuId }, { mode, calendar, seasonRule, overrides: overrides?.length, moved });
+  audit(req, 'mensa.schedule', { type: 'menu', id: menuId }, { mode, calendar, seasonRule, weekCount, resetAnchors, overrides: overrides?.length, moved });
   res.json({ ...(await scheduleJson(menuId, schedule)), moved });
 });
 

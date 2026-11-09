@@ -1028,6 +1028,15 @@ model MensaMenu {
   seasonRule    String    @default("dates") @map("season_rule") @db.VarChar(10)
   summerFrom    String    @default("04-01") @map("summer_from") @db.VarChar(5)
   winterFrom    String    @default("11-01") @map("winter_from") @db.VarChar(5)
+  // How "auto" counts the plan weeks (utils/mensaCycle.ts): each plan starts
+  // with week 1 in the first week of its season and goes on every calendar
+  // week, holidays included ("calendar", as the Mensa St. Michael does), or
+  // only in weeks the Mensa is open ("school").
+  weekCount     String    @default("calendar") @map("week_count") @db.VarChar(10)
+  // An administrator's corrections to that count, JSON [{ plan, monday, week }]:
+  // in the week of `monday` the canteen serves `week`; counted on from there
+  // to the end of that season. At most one per plan.
+  weekAnchors   String    @default("[]") @map("week_anchors") @db.VarChar(400)
   // A page that links the canteen's plans as PDFs, and the canteen's name on
   // it ("Mensa St. Michael"): the plans are found there anew at each pull.
   sourcePage    String    @default("") @map("source_page") @db.VarChar(1000)

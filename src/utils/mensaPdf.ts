@@ -148,6 +148,9 @@ const wordsOf = (s: string) => s.toLowerCase().normalize('NFC').replace(/ß/g, '
 const GENERIC = new Set(['mensa', 'menü', 'menu', 'menue', 'menueplan', 'menüplan', 'pdf', 'plan', 'sommer', 'winter', 'vegetarisch', 'vegetarian', 'dt', 'de', 'deutsch']);
 // The Italian edition of the same plan: its dish names are not the ones kept here.
 const ITALIAN = new Set(['it', 'ita', 'italiano', 'italienisch', 'vegetariano', 'sezione', 'sezioni', 'distaccata', 'distaccate']);
+// Another menu of the same kitchen (the plan for its branch schools, packed
+// lunches): never taken for the canteen's own, unless the canteen named is it.
+const OTHER_MENU = new Set(['aussenstellen', 'aussenstelle', 'lunchpakete', 'lunchpaket', 'lunchpakets']);
 
 /**
  * The plan's PDF among the links of an overview page, so a source goes on
@@ -155,8 +158,10 @@ const ITALIAN = new Set(['it', 'ita', 'italiano', 'italienisch', 'vegetariano', 
  * ("Mensa St. Michael"): the file name with most of its telling words wins,
  * then a plan for this season before one for the whole year (the canteens had
  * one plan a year until 2024/25), then the one with the fewest other words
- * (not "St. Michael Außenstellen"), then the newest year. Italian editions and
- * links to other hosts never count.
+ * (not "St. Michael Außenstellen"), then the newest year. Italian editions,
+ * another menu of the same kitchen (its branch schools, packed lunches) and
+ * links to other hosts never count: with the canteen's own file gone from the
+ * page, the line fails rather than taking another menu's dishes.
  */
 export function pickPlanLink(html: string, pageUrl: string, hint: string, plan: 'summer' | 'winter', vegetarian: boolean): string | null {
   const page = new URL(pageUrl);
@@ -178,6 +183,7 @@ export function pickPlanLink(html: string, pageUrl: string, hint: string, plan: 
     if (url.host !== page.host || url.protocol !== page.protocol) continue;
     const words = wordsOf(name);
     if (words.includes(otherSeason) || words.includes('vegetarisch') !== vegetarian || words.some((w) => ITALIAN.has(w))) continue;
+    if (words.some((w) => OTHER_MENU.has(w) && !hintWords.includes(w))) continue;
     const matched = needed.filter((w) => words.includes(w)).length;
     if (matched === 0) continue;
     const year = Number(name.match(/(?:^|\D)(20\d\d)(?:\D|$)/)?.[1] ?? 0);

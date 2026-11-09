@@ -168,7 +168,7 @@ npx web-push generate-vapid-keys   # VAPID key pair for Web Push
 | Read cache | `REDIS_URL` | Optional; without it entries live in process memory |
 | Backups | `BACKUP_*` | Schedule, retention, encryption and encrypted off-site copies |
 | Push | `VAPID_*` · `APNS_*` | Web Push key pair and contact address; APNs .p8 key, key/team id, topic (iOS app) |
-| Canteen | `MENSA_IMPORT_URL`, `MENSA_PULL_INTERVAL_HOURS` | Menu source for the dish import and the default menu's automatic pull; how often menus pull by themselves (hours, 0 = never) |
+| Canteen | `MENSA_IMPORT_URL`, `MENSA_PULL_INTERVAL_HOURS`, `MENSA_TIMEZONE` | Menu source for the dish import and the default menu's automatic pull; how often menus pull by themselves (hours, 0 = never); the canteen's time zone, where its week starts on Monday (default `Europe/Rome`) |
 | Analytics and retention | `ANALYTICS_TIMEZONE` · `USAGE_ANALYTICS_RETENTION_DAYS` · `ACCOUNT_ACTIVITY_SCHOOL_YEAR` · `REQUEST_LOG_RETENTION_DAYS` · `LOG_FILE_RETENTION_DAYS` | Usage statistics (anonymous, named only with consent) and finite retention |
 | School year | rollover settings | Date of the yearly archive and fresh start (default 1 August) |
 | Cluster | `CLUSTER_*` · `POKYH_*` | See [docs/cluster.md](docs/cluster.md#cluster-settings) |
@@ -415,10 +415,16 @@ Canteen plans are assigned to schools; a school without one shows no canteen.
 [`docs/multi-school.md`](docs/multi-school.md).
 
 A plan runs by itself unless it is switched to manual on the admin panel's dish
-page. Then the server lays its weeks on the school weeks: holidays are waited
-out and the next week follows after them; the summer and the winter plan take
-over in the week whose Monday reaches the dates the canteen's plan names (1 April
-and 1 November by default), or after the clocks change. The days off come from the school
+page. Then the server counts its weeks the way the canteen does
+(`src/utils/mensaCycle.ts`): the summer and the winter plan begin with week 1 in
+the week whose Monday reaches the dates the canteen's plan names (1 April and
+1 November by default), or after the clocks change, and go on one week every
+calendar week, holiday weeks included (the Mensa St. Michael's count; "only
+school weeks" is a setting). The count depends on the calendar alone, never on
+where the dishes lie, so a plan cannot drift; when the canteen counts differently
+once, an administrator sets the week it serves and the count goes on from there
+until the next plan begins. The week turns on Monday in `MENSA_TIMEZONE`
+(Europe/Rome). The days off come from the school
 calendar of South Tyrol (`src/utils/schoolCalendarSuedtirol.ts`, computed from
 the provincial rules, and optional for schools elsewhere), the WebUntis holidays
 of the plan's schools, and days entered per plan. A plan can also be pulled from

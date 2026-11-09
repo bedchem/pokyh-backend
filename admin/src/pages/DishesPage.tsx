@@ -10,7 +10,7 @@ import { useAccess } from '../access';
 import { relative } from '../components/format';
 import { useSwitchView } from '../useSwitchView';
 import { MenuDeleteDialog, MenuNameDialog, MenuSchoolsDialog } from '../components/MenuDialogs';
-import type { AdminDishFull, AdminDish, AdminDishRatingEntry, DishPlan, MensaMenu, MenuBreakReason, MenuCalendar, MenuDayOverride, MenuMode, MenuPullMode, MenuScheduleInfo } from '../types';
+import type { AdminDishFull, AdminDish, AdminDishRatingEntry, DishPlan, MensaMenu, MenuBreakReason, MenuCalendar, MenuDayOverride, MenuMode, MenuPullMode, MenuScheduleInfo, MenuWeekCount } from '../types';
 import { useToast } from '../components/Toast';
 import { useLive } from '../live';
 import { Collapse, Delta, Dialog, Figures, IconButton, Notice, PageHeader, SearchField, Segmented, Spinner, Tag } from '../components/kit';
@@ -1349,6 +1349,8 @@ function SourceEditor({ schedule, canEdit, onSaved, onPulled }: {
 }
 
 const dayMonth = (md: string) => `${Number(md.slice(3))}.${Number(md.slice(0, 2))}.`;
+const dayMonthYear = (day: string) => `${Number(day.slice(8))}.${Number(day.slice(5, 7))}.${day.slice(0, 4)}`;
+const planLabel = (plan: DishPlan) => (plan === 'summer' ? 'Sommerplan' : 'Winterplan');
 
 // The figures at the head of the panel: what POKYH does next, and did last.
 function ScheduleStatus({ schedule }: { schedule: MenuScheduleInfo }) {
@@ -1362,8 +1364,13 @@ function ScheduleStatus({ schedule }: { schedule: MenuScheduleInfo }) {
     {
       label: 'Ablauf',
       value: auto ? 'Autonom' : 'Manuell',
-      note: auto ? 'Wochen liegen auf den Schulwochen' : 'Daten bleiben, wie du sie setzt',
+      note: auto ? (schedule.weekCount === 'school' ? 'zählt nur Schulwochen' : 'zählt jede Kalenderwoche') : 'Daten bleiben, wie du sie setzt',
     },
+    ...(auto && schedule.thisWeek ? [{
+      label: 'Diese Woche',
+      value: `Woche ${schedule.thisWeek.week}`,
+      note: `${planLabel(schedule.thisWeek.plan)}, ${schedule.thisWeek.anchored ? 'von Hand korrigiert' : `Woche 1 ab ${dayMonthYear(schedule.thisWeek.seasonStart)}`}`,
+    }] : []),
     {
       label: 'Nächster Abruf',
       value: pullOff ? 'Von Hand' : nextPull ? upcomingTime(nextPull) : 'Keine Quelle',
@@ -1381,7 +1388,7 @@ function ScheduleStatus({ schedule }: { schedule: MenuScheduleInfo }) {
     },
   ];
   return (
-    <dl className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+    <dl className={`grid gap-3 sm:grid-cols-2 ${items.length > 4 ? 'xl:grid-cols-5' : 'xl:grid-cols-4'}`}>
       {items.map((item) => (
         <div key={item.label} className="rounded-[18px] px-[18px] py-3.5" style={{ background: 'var(--sheet)' }}>
           <dt className="text-[12.5px] text-ink-3">{item.label}</dt>
@@ -1415,7 +1422,7 @@ function UpcomingDays({ schedule }: { schedule: MenuScheduleInfo }) {
   );
 }
 
-type ScheduleChange = { mode: MenuMode; calendar: MenuCalendar; overrides: MenuDayOverride[]; seasonRule: 'dates' | 'clock' };
+type ScheduleChange = { mode: MenuMode; calendar: MenuCalendar; overrides: MenuDayOverride[]; seasonRule: 'dates' | 'clock'; weekCount: MenuWeekCount; resetAnchors?: boolean };
 
 function SchedulePanel({ schedule, canEdit, busy, onChange, onSourceSaved, onPulled }: {
   schedule: MenuScheduleInfo;
@@ -1427,7 +1434,8 @@ function SchedulePanel({ schedule, canEdit, busy, onChange, onSourceSaved, onPul
 }) {
   const auto = schedule.mode === 'auto';
   const [allBreaks, setAllBreaks] = useState(false);
-  const base: ScheduleChange = { mode: schedule.mode, calendar: schedule.calendar, overrides: schedule.overrides, seasonRule: schedule.season.kind };
+  const base: ScheduleChange = { mode: schedule.mode, calendar: schedule.calendar, overrides: schedule.overrides, seasonRule: schedule.season.kind, weekCount: schedule.weekCount ?? 'calendar' };
+  const anchors = schedule.anchors ?? [];
   const change = (patch: Partial<ScheduleChange>) => { if (!busy) onChange({ ...base, ...patch }); };
   // The named breaks and the menu's own closed days; single holidays are simply days without a menu.
   const breaks = schedule.breaks.filter((b) => b.reason !== 'holiday' && b.reason !== 'bridge');
@@ -1454,13 +1462,39 @@ function SchedulePanel({ schedule, canEdit, busy, onChange, onSourceSaved, onPul
 
       <p className="max-w-[78ch] text-[13.5px] leading-relaxed text-ink-3">
         {auto
-          ? `POKYH legt die Planwochen selbst auf die Schulwochen: Ferien werden abgewartet, danach geht es mit der nächsten Planwoche weiter. ${schedule.season.kind === 'dates' ? `Ab ${dayMonth(schedule.season.summerFrom)} gilt der Sommerplan, ab ${dayMonth(schedule.season.winterFrom)} der Winterplan` : 'Sommer- und Winterplan wechseln mit der Zeitumstellung'}. Über das Datum einer Woche legst du fest, welche Planwoche wann dran ist.`
+          ? `POKYH zählt die Planwochen selbst, wie die Mensa: Jeder Plan beginnt mit Woche 1 in der ersten Woche seiner Saison (${schedule.season.kind === 'dates' ? `Sommerplan ab ${dayMonth(schedule.season.summerFrom)}, Winterplan ab ${dayMonth(schedule.season.winterFrom)}` : 'Wechsel mit der Zeitumstellung'}) und geht ${schedule.weekCount === 'school' ? 'in jeder Woche mit Schule' : 'jede Kalenderwoche, auch in den Ferien,'} eine Woche weiter. An freien Tagen gibt es kein Menü. Liegt die Mensa einmal daneben, setze bei der Woche, die sie gerade serviert, das Datum auf diese Woche: POKYH zählt dann von dort weiter, bis der nächste Plan beginnt.`
           : 'Die Daten bleiben, wie du sie setzt. Ferien werden nicht beachtet; vergangene Wochen rollen nur ans Ende ihres Plans.'}
       </p>
 
       {auto && <UpcomingDays schedule={schedule} />}
 
       <div className="grid gap-6 lg:grid-cols-2" style={{ opacity: auto ? 1 : 0.62 }}>
+        <div className="lg:col-span-2">
+          <div className="text-[13.5px] font-medium text-ink">Planwochen zählen</div>
+          <p className="mt-1 max-w-[78ch] text-[12.5px] leading-relaxed text-ink-3">
+            „Jede Kalenderwoche“ zählt Ferienwochen mit. So zählt die Mensa St. Michael: 2026 begann ihr Winterplan am 2. November mitten in den Allerheiligenferien, am ersten Schultag danach gab es Woche 2. „Nur Schulwochen“ für eine Mensa, die nach den Ferien dort weitermacht, wo sie aufgehört hat. {onlyInAuto}
+          </p>
+          <div className="mt-3 flex flex-wrap items-center gap-3">
+            {canEdit ? (
+              <Segmented<MenuWeekCount>
+                label="Planwochen zählen"
+                value={schedule.weekCount ?? 'calendar'}
+                onChange={(weekCount) => { if (weekCount !== (schedule.weekCount ?? 'calendar')) change({ weekCount }); }}
+                options={[{ value: 'calendar', label: 'Jede Kalenderwoche' }, { value: 'school', label: 'Nur Schulwochen' }]}
+              />
+            ) : (
+              <Tag>{schedule.weekCount === 'school' ? 'Nur Schulwochen' : 'Jede Kalenderwoche'}</Tag>
+            )}
+          </div>
+          {auto && anchors.length > 0 && (
+            <div className="mt-3">
+              <Notice tone="amber" icon={CalendarDays}>
+                Von Hand korrigiert: {anchors.map((a) => `${planLabel(a.plan)} ab ${dayMonthYear(a.monday)} mit Woche ${a.week}`).join(', ')}. Gilt bis zum nächsten Planwechsel.{' '}
+                {canEdit && <button type="button" className="font-medium underline underline-offset-2" disabled={busy} onClick={() => change({ resetAnchors: true })}>Korrektur entfernen</button>}
+              </Notice>
+            </div>
+          )}
+        </div>
         <div>
           <div className="text-[13.5px] font-medium text-ink">Ferienkalender</div>
           <p className="mt-1 text-[12.5px] leading-relaxed text-ink-3">
@@ -1553,7 +1587,7 @@ function ScheduleConfirm({ moved, change, onConfirm, onClose }: { moved: number;
   return (
     <Dialog title="Gerichte neu verteilen?" subtitle={change.mode === 'auto' ? 'Autonomer Ablauf' : 'Manueller Ablauf'} onClose={onClose}>
       <p className="text-[14px] leading-relaxed text-ink-2">
-        Mit dieser Änderung legt POKYH <strong className="font-semibold">{moved} {moved === 1 ? 'Gericht' : 'Gerichte'}</strong> auf andere Tage, damit die Planwochen wieder auf den Schulwochen liegen. Bilder, Bewertungen und Kommentare bleiben bei ihren Gerichten.
+        Mit dieser Änderung legt POKYH <strong className="font-semibold">{moved} {moved === 1 ? 'Gericht' : 'Gerichte'}</strong> auf andere Tage, damit jede Planwoche in der Woche liegt, in der die Mensa sie serviert. Bilder, Bewertungen und Kommentare bleiben bei ihren Gerichten.
       </p>
       <div className="mt-6 flex flex-wrap justify-end gap-2.5">
         <button type="button" className="btn btn-quiet" onClick={onClose}>Abbrechen</button>
@@ -1649,7 +1683,7 @@ function MenuPlan({ note, handed }: { note?: ReactNode; handed: Partial<HandedDi
   async function applySchedule(change: ScheduleChange) {
     setScheduleBusy(true);
     try {
-      const res = await adminApi.setMenuSchedule(change.mode, change.calendar, change.overrides, change.seasonRule);
+      const res = await adminApi.setMenuSchedule(change.mode, change.calendar, change.overrides, change.seasonRule, change.weekCount, change.resetAnchors);
       seasonRule = res.season;
       setSchedule(res);
       const what = change.mode === 'auto' ? 'Autonom' : 'Manuell';
@@ -1668,7 +1702,7 @@ function MenuPlan({ note, handed }: { note?: ReactNode; handed: Partial<HandedDi
     setScheduleBusy(true);
     let moved: number | null = null;
     try {
-      moved = (await adminApi.previewMenuSchedule(change.mode, change.calendar, change.overrides, change.seasonRule)).preview.moved;
+      moved = (await adminApi.previewMenuSchedule(change.mode, change.calendar, change.overrides, change.seasonRule, change.weekCount, change.resetAnchors)).preview.moved;
     } catch {
       moved = null;
     } finally {
@@ -1854,6 +1888,16 @@ function MenuPlan({ note, handed }: { note?: ReactNode; handed: Partial<HandedDi
 
     try {
       const res = await adminApi.anchorWeek(activePlan, oldWk, newMonIso);
+      if (res.anchor) {
+        // Autonomous: the count was corrected (or already said so).
+        const a = res.anchor;
+        showToast(a.anchored
+          ? `Woche ${a.week} ab ${formatDate(a.monday)}, ab dort wird weitergezählt${a.laidOut > 0 ? ` · ${a.laidOut} Gerichte verschoben` : ''}`
+          : `Woche ${a.week} liegt ab ${formatDate(a.monday)} schon so, keine Korrektur nötig`, 'success');
+        rotatedPlans.current.clear();
+        await Promise.all([loadDishes(activePlan), loadRatings(), loadSchedule()]);
+        return;
+      }
       const parts: string[] = [];
       if (res.normalized > 0) parts.push(`${res.normalized} normalisiert`);
       if (res.rotated > 0) parts.push(`${res.rotated} weitergerollt`);
@@ -2086,7 +2130,7 @@ function MenuPlan({ note, handed }: { note?: ReactNode; handed: Partial<HandedDi
       {schedule?.mode === 'auto' && rights.edit && (
         <div className="mb-6">
           <Notice tone="sky" icon={CalendarDays}>
-            Autonom: POKYH legt die Wochen wieder auf Schulwochen. Ein Gericht oder das Datum einer Woche von Hand zu verschieben legt nur fest, welche Planwoche wann dran ist; Ferien wartet POKYH weiter ab.
+            Autonom: POKYH legt jede Planwoche in die Woche, in der die Mensa sie serviert. Serviert die Mensa gerade eine andere Woche, setze deren Datum auf „Diese Woche“: Von dort wird weitergezählt. Ein Gericht in eine andere Woche zu ziehen macht es zu einem Gericht dieser Planwoche.
           </Notice>
         </div>
       )}
@@ -2180,8 +2224,8 @@ function MenuPlan({ note, handed }: { note?: ReactNode; handed: Partial<HandedDi
                     className="week-head flex items-center gap-3 rounded-[16px] px-3 py-3 transition-colors"
                     style={{ background: isDragTarget ? 'var(--sky-wash)' : 'var(--well)' }}
                   >
-                    {/* Week drag grip */}
-                    {rights.edit && <div
+                    {/* Week drag grip: by hand only, the server orders the weeks in "auto" */}
+                    {rights.edit && schedule?.mode !== 'auto' && <div
                       draggable
                       onDragStart={(e) => {
                         e.dataTransfer.setData('text/week-key', wk);

@@ -1,8 +1,10 @@
 import { prisma } from '../db';
+import { config } from '../config';
 import { logger } from './logger';
 import { Prisma } from '@prisma/client';
 import { CLOCK, snapForwardToSeason, toUtcIso, utcMondayOf, type Plan, type SeasonRule } from './mensaSeason';
-import { planMoves, type DayOffOf } from './mensaSchedule';
+import { cycleMoves, dayInZone, mondayOfDay, planWeeksOf, type CycleSettings } from './mensaCycle';
+import type { DayOffOf } from './mensaSchedule';
 
 type PrismaLike = Prisma.TransactionClient | typeof prisma;
 
@@ -16,13 +18,18 @@ function addDays(d: Date, days: number): Date {
   return r;
 }
 
+/**
+ * Today (YYYY-MM-DD) where the Mensa is (MENSA_TIMEZONE, Europe/Rome unless
+ * set): a server running on UTC would otherwise still see Sunday for the first
+ * hours of a Monday.
+ */
+export function mensaTodayIso(now = new Date()): string {
+  return dayInZone(now, config.mensaTimezone);
+}
+
+// This week's Monday as a UTC midnight, comparable with Prisma's DATE values.
 function currentLocalMonday(): Date {
-  const today = new Date();
-  const wd = today.getDay() || 7;
-  // Local wall-clock Monday, then re-express as UTC midnight so it can be
-  // compared with Prisma-returned DATE values without timezone drift.
-  const local = new Date(today.getFullYear(), today.getMonth(), today.getDate() - wd + 1);
-  return new Date(Date.UTC(local.getFullYear(), local.getMonth(), local.getDate()));
+  return new Date(`${mondayOfDay(mensaTodayIso())}T00:00:00Z`);
 }
 
 // This week's Monday (YYYY-MM-DD): the week the public menu is served for.
@@ -131,33 +138,55 @@ export async function rotatePastWeeks(menuId: string, plan: Plan, tx?: PrismaLik
   return rotated;
 }
 
-// Puts both plans of a menu where planMoves says, the school weeks of their
-// seasons, in one transaction. The dishes are named by id: a week may move
-// onto the dates of one that has yet to move.
-export async function layoutMenu(menuId: string, dayOffOf: DayOffOf, tx?: PrismaLike, rule: SeasonRule = CLOCK): Promise<number> {
+export interface LayoutSettings extends CycleSettings {
+  dayOffOf: DayOffOf;
+}
+
+// Gives every dish of a menu its plan week once: dishes added by hand have
+// none (mensaCycle.planWeeksOf names them), and the count needs one to keep
+// a week in its place.
+async function nameWeeks(db: PrismaLike, dishes: Array<{ id: string; weekOrdinal: number }>, weeks: Map<string, number>): Promise<void> {
+  const unnamed = new Map<number, string[]>();
+  for (const d of dishes) {
+    const week = weeks.get(d.id);
+    if (week && week !== d.weekOrdinal) unnamed.set(week, [...(unnamed.get(week) ?? []), d.id]);
+  }
+  for (const [week, ids] of unnamed) await db.dish.updateMany({ where: { id: { in: ids } }, data: { weekOrdinal: week } });
+}
+
+// Puts both plans of a menu where the count says (utils/mensaCycle.ts), in one
+// transaction. The dates are written as they should be, not shifted from
+// where they are, so two nodes of a cluster laying out the same menu at once
+// come to the same result.
+export async function layoutMenu(menuId: string, settings: LayoutSettings, tx?: PrismaLike): Promise<number> {
   const db: PrismaLike = tx ?? prisma;
-  const dishes = await db.dish.findMany({ where: { menuId }, select: { id: true, plan: true, date: true } });
-  const moves = planMoves(dishes, currentWeekMondayIso(), dayOffOf, rule);
-  if (moves.length === 0) return 0;
+  const currentMonday = currentWeekMondayIso();
+  const dishes = await db.dish.findMany({ where: { menuId }, select: { id: true, plan: true, date: true, weekOrdinal: true } });
+  const moves = cycleMoves(dishes, currentMonday, settings.dayOffOf, settings);
+  const weeks = planWeeksOf(dishes, currentMonday);
+  const needsNames = dishes.some((d) => weeks.get(d.id) !== d.weekOrdinal);
+  if (moves.length === 0 && !needsNames) return 0;
 
   async function run(client: PrismaLike): Promise<number> {
+    if (needsNames) await nameWeeks(client, dishes, weeks);
     let n = 0;
     for (const move of moves) {
-      const r = await client.$executeRaw`UPDATE dishes SET date = DATE_ADD(date, INTERVAL ${move.shiftDays} DAY) WHERE id IN (${Prisma.join(move.ids)})`;
+      // Each dish keeps its weekday (WEEKDAY: 0 = Monday).
+      const r = await client.$executeRaw`UPDATE dishes SET date = DATE_ADD(CAST(${move.to} AS DATE), INTERVAL WEEKDAY(date) DAY) WHERE menu_id = ${menuId} AND id IN (${Prisma.join(move.ids)})`;
       n += Number(r) || 0;
     }
     return n;
   }
 
   const moved = tx ? await run(tx) : await prisma.$transaction((inner) => run(inner));
-  if (moved > 0) logger.info('mensa layout', { menuId, moved, weeks: moves.length });
+  if (moved > 0) logger.info('mensa layout', { menuId, moved, weeks: moves.length, count: settings.count });
   return moved;
 }
 
 /** How many dishes layoutMenu would move now, without moving any. */
-export async function previewLayout(menuId: string, dayOffOf: DayOffOf, rule: SeasonRule = CLOCK): Promise<number> {
-  const dishes = await prisma.dish.findMany({ where: { menuId }, select: { id: true, plan: true, date: true } });
-  return planMoves(dishes, currentWeekMondayIso(), dayOffOf, rule).reduce((n, move) => n + move.ids.length, 0);
+export async function previewLayout(menuId: string, settings: LayoutSettings): Promise<number> {
+  const dishes = await prisma.dish.findMany({ where: { menuId }, select: { id: true, plan: true, date: true, weekOrdinal: true } });
+  return cycleMoves(dishes, currentWeekMondayIso(), settings.dayOffOf, settings).reduce((n, move) => n + move.ids.length, 0);
 }
 
 export function otherPlan(p: Plan): Plan { return p === 'summer' ? 'winter' : 'summer'; }

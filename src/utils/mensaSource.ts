@@ -133,7 +133,8 @@ function dayOf(v: unknown): string | null {
   const day = new Date(t).toISOString().slice(0, 10);
   // 2026-02-31 would roll on to March.
   const wanted = `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
-  return day === wanted && day >= '2000-01-01' && day <= '2100-12-31' ? day : null;
+  // Up to the last day a DATE column holds: a source may run for a long time.
+  return day === wanted && day >= '2000-01-01' && day <= '9999-12-31' ? day : null;
 }
 
 // "w6_mo": week 6, Monday.

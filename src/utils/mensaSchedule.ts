@@ -1,13 +1,13 @@
-// Where a menu's weeks go when the server lays them out by itself ("auto"):
-// one plan week on every school week of its season, holidays waited out, the
-// next week after them. Which days are off comes from the outside as a
-// function, so all of this is free of the database and tested on its own
+// The days a menu is closed, its breaks, and what the public sees of a menu the
+// server lays out by itself ("auto"; which plan week goes where is in
+// ./mensaCycle). Which days are off comes from the outside as a function, so
+// all of this is free of the database and tested on its own
 // (tests/mensaSchedule.test.mjs).
 //
 // Days are YYYY-MM-DD; a week is named by its Monday.
 
 import { suedtirolDayOff, type DayOffReason } from './schoolCalendarSuedtirol';
-import { CLOCK, isInSeason, seasonOfWeek, servedDishes, toUtcIso, utcMondayOf, type Plan, type SeasonRule } from './mensaSeason';
+import { CLOCK, seasonOfWeek, servedDishes, toUtcIso, utcMondayOf, type SeasonRule } from './mensaSeason';
 
 export type MenuMode = 'auto' | 'manual';
 export type MenuCalendar = 'suedtirol' | 'webuntis';
@@ -59,8 +59,6 @@ export function dayOverridesFrom(json: string | null | undefined): DayOverride[]
 }
 
 const DAY = 86_400_000;
-// Far enough for a plan to wait for its next season, whatever the calendar.
-const MAX_WEEKS_AHEAD = 160;
 
 const parse = (day: string) => Date.parse(`${day}T00:00:00Z`);
 const addDays = (day: string, days: number) => toUtcIso(new Date(parse(day) + days * DAY));
@@ -92,84 +90,14 @@ export function menuDayOff(calendar: MenuCalendar, schools: HolidayRange[][], ov
 // Whether a plan that serves on `weekdays` (1 = Monday … 7 = Sunday) has a day
 // open in the week of `monday`. A week with a single school day counts: that
 // day needs a menu too.
-function isOpenWeek(monday: string, weekdays: Set<number>, dayOffOf: DayOffOf): boolean {
+export function isOpenWeek(monday: string, weekdays: Set<number>, dayOffOf: DayOffOf): boolean {
   for (const weekday of weekdays) {
     if (!isClosed(dayOffOf(addDays(monday, weekday - 1)))) return true;
   }
   return false;
 }
 
-export interface MenuDishRow {
-  id: string;
-  plan: string;
-  date: Date;
-}
-
-export interface WeekMove {
-  plan: Plan;
-  from: string;
-  to: string;
-  shiftDays: number;
-  ids: string[];
-}
-
 const weekdayOf = (d: Date) => d.getUTCDay() || 7;
-
-/**
- * The moves that put both plans of a menu where they belong. Each plan keeps
- * the order of its weeks, past ones behind the others, and gets one week on
- * each school week of its season from now on. A menu with only one plan runs
- * all year. Gives no moves once everything is in place.
- *
- * This week is special, because people may already have read or eaten from
- * it: a week that is being served stays, even outside its season, as long as
- * the other plan has nothing for it, and a plan only takes this week over
- * when nothing else is on it.
- */
-export function planMoves(dishes: MenuDishRow[], currentMonday: string, dayOffOf: DayOffOf, rule: SeasonRule = CLOCK): WeekMove[] {
-  const moves: WeekMove[] = [];
-  const rowsOf = (plan: Plan) => dishes.filter((d) => d.plan === plan);
-
-  for (const plan of ['summer', 'winter'] as const) {
-    const own = rowsOf(plan);
-    if (own.length === 0) continue;
-    const other = rowsOf(plan === 'summer' ? 'winter' : 'summer');
-
-    const weeks = new Map<string, string[]>();
-    const weekdays = new Set<number>();
-    for (const d of own) {
-      const date = new Date(d.date);
-      const monday = mondayOf(date);
-      weeks.set(monday, [...(weeks.get(monday) ?? []), d.id]);
-      weekdays.add(weekdayOf(date));
-    }
-
-    const inSeason = (monday: string) => other.length === 0 || isInSeason(new Date(parse(monday)), plan, rule);
-    const isSlot = (monday: string) => inSeason(monday) && isOpenWeek(monday, weekdays, dayOffOf);
-
-    const hasThisWeek = weeks.has(currentMonday);
-    const otherHasThisWeek = other.some((d) => mondayOf(new Date(d.date)) === currentMonday);
-    const takesThisWeek = isOpenWeek(currentMonday, weekdays, dayOffOf)
-      && (inSeason(currentMonday) ? hasThisWeek || !otherHasThisWeek : hasThisWeek && !otherHasThisWeek);
-
-    const mondays = [...weeks.keys()].sort();
-    const order = [...mondays.filter((m) => m >= currentMonday), ...mondays.filter((m) => m < currentMonday)];
-
-    const slots: string[] = takesThisWeek ? [currentMonday] : [];
-    for (let i = 1; slots.length < order.length && i <= MAX_WEEKS_AHEAD; i++) {
-      const monday = addDays(currentMonday, i * 7);
-      if (isSlot(monday)) slots.push(monday);
-    }
-    // No room at all (a calendar that is closed for years): leave the plan be.
-    if (slots.length < order.length) continue;
-
-    order.forEach((from, i) => {
-      const to = slots[i]!;
-      if (from !== to) moves.push({ plan, from, to, shiftDays: Math.round((parse(to) - parse(from)) / DAY), ids: weeks.get(from)! });
-    });
-  }
-  return moves;
-}
 
 /**
  * What the public sees of a laid-out menu: every week from the plan of its

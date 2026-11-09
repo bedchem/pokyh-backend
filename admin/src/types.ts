@@ -347,7 +347,15 @@ export interface AdminDishAnchorResult {
   otherAnchorDate: string | null;
   otherRotated: number;
   laidOut: number;
+  // In the autonomous mode: the correction of the count that was stored.
+  anchor?: { plan: DishPlan; week: number; monday: string; anchored: boolean; laidOut: number };
 }
+
+// How the autonomous mode counts the plan weeks: every calendar week, or only
+// weeks the Mensa is open.
+export type MenuWeekCount = 'calendar' | 'school';
+// "In the week of `monday` the canteen serves `week` of `plan`", counted on from there.
+export interface MenuWeekAnchor { plan: DishPlan; monday: string; week: number }
 
 export type MenuMode = 'auto' | 'manual';
 export type MenuCalendar = 'suedtirol' | 'webuntis';
@@ -409,6 +417,10 @@ export interface MenuScheduleInfo {
   season: MenuSeasonRule;
   calendar: MenuCalendar;
   overrides: MenuDayOverride[];
+  weekCount?: MenuWeekCount;
+  anchors?: MenuWeekAnchor[];
+  // What the count gives this week (autonomous mode only).
+  thisWeek?: { plan: DishPlan; week: number; seasonStart: string; anchored: boolean } | null;
   breaks: Array<{ start: string; end: string; reason: MenuBreakReason }>;
   // Whether each school's WebUntis holidays have come in yet.
   schools: Array<{ id: string; name: string; breaks: number; fetchedAt: string | null }>;

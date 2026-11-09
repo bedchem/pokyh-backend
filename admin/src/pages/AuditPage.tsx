@@ -35,6 +35,7 @@ const ACTIONS: Record<string, { label: string; tone: Tone }> = {
   'mensa.schedule': { label: 'Speiseplan-Ablauf geändert', tone: 'sky' },
   'mensa.source': { label: 'Speiseplan-Quelle geändert', tone: 'sky' },
   'mensa.pull': { label: 'Speiseplan geholt', tone: 'sky' },
+  'mensa.anchor': { label: 'Planwoche korrigiert', tone: 'sky' },
   'mensa.dish.image': { label: 'Gerichtbild hochgeladen', tone: 'sky' },
   'mensa.dish.image.delete': { label: 'Gerichtbild entfernt', tone: 'rose' },
   'mensa.dish.delete': { label: 'Gericht gelöscht', tone: 'rose' },

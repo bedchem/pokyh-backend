@@ -1,7 +1,7 @@
 import type { AdminStats, AdminClass, AdminSessionsResponse, AdminLoginEvent, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish, AdminDishFull, AdminDishImportResult, AdminDishShiftResult, AdminDishRotateResult, AdminDishResetResult, AdminDishAnchorResult, DishPlan, AdminCommentsResponse, FileLogFile, FileLogResponse, FileLogEntry, FrontendActivityLogsResponse, FrontendActivityStats, AllTodosResponse, AllRemindersResponse, SchoolYearsResponse, ArchivedUsersResponse, ArchivedClass, ArchivedTodosResponse, ArchivedRemindersResponse, RolloverResult, RollbackResult, AdminApiKey, CreatedApiKey, BackupsResponse, AdminPopup, PopupInput, ClusterStatus, ClusterInstall, CreatedClusterInstall, ClusterReach, ReachEntry, AdminAnalytics, AnalyticsRange, AnalyticsPeople, PeopleFilters, AnalyticsBreakdown, BreakdownKind, AnalyticsDishes, AnalyticsVisitors, AnalyticsVisitorIp, AnalyticsPersonDetail, VisitSource, ClusterUpdates, ClusterUpdateSettings, PopupTargetUser, PopupTargetClass, WayTestResult, ReachKind, LoginResult, PasskeyChallenge, AdminSecurityStatus, TotpSetup, AdminPasskey, AccountRole, FactorKind, PermissionPreset, PresetDraft } from './types';
 import type { SearchKind, SearchResponse, UserKindFilter, UsersSummary } from './types';
 import type { AdminRecap, RecapInput, RecapTargets } from './types';
-import type { MenuCalendar, MenuDayOverride, MenuMode, MenuPullMode, MenuPullResult, MenuScheduleInfo } from './types';
+import type { MenuCalendar, MenuDayOverride, MenuMode, MenuPullMode, MenuPullResult, MenuScheduleInfo, MenuWeekCount } from './types';
 import type { AdminMe, AccessCatalog, AdminSchool, MensaMenu, AdminAccount, AdminGrantView, GrantInput, AuditEventsResponse, RequestScopeChoice, RequestsSummary, PerformanceReport, SystemHealth, SystemLogsResponse, ClientErrorGroup, ClientErrorOccurrence, PrivacyOverview, DishCommentGroupsResponse, DishCommentsResponse, ReminderCommentGroup, ReminderCommentItem } from './types';
 import type { AuthenticationResponseJSON, PublicKeyCredentialCreationOptionsJSON, PublicKeyCredentialRequestOptionsJSON, RegistrationResponseJSON } from '@simplewebauthn/browser';
 
@@ -523,11 +523,11 @@ export const adminApi = {
   menuSchedule: (): Promise<MenuScheduleInfo> =>
     request<MenuScheduleInfo>('GET', '/api/admin/dishes/schedule'),
 
-  setMenuSchedule: (mode: MenuMode, calendar: MenuCalendar, overrides: MenuDayOverride[], seasonRule: 'dates' | 'clock'): Promise<MenuScheduleInfo> =>
-    request<MenuScheduleInfo>('PUT', '/api/admin/dishes/schedule', { mode, calendar, overrides, seasonRule }),
+  setMenuSchedule: (mode: MenuMode, calendar: MenuCalendar, overrides: MenuDayOverride[], seasonRule: 'dates' | 'clock', weekCount?: MenuWeekCount, resetAnchors?: boolean): Promise<MenuScheduleInfo> =>
+    request<MenuScheduleInfo>('PUT', '/api/admin/dishes/schedule', { mode, calendar, overrides, seasonRule, weekCount, resetAnchors }),
   // How many dishes that change would move (null: none, manual mode); nothing is stored.
-  previewMenuSchedule: (mode: MenuMode, calendar: MenuCalendar, overrides: MenuDayOverride[], seasonRule: 'dates' | 'clock'): Promise<{ preview: { moved: number | null } }> =>
-    request<{ preview: { moved: number | null } }>('PUT', '/api/admin/dishes/schedule', { mode, calendar, overrides, seasonRule, dryRun: true }),
+  previewMenuSchedule: (mode: MenuMode, calendar: MenuCalendar, overrides: MenuDayOverride[], seasonRule: 'dates' | 'clock', weekCount?: MenuWeekCount, resetAnchors?: boolean): Promise<{ preview: { moved: number | null } }> =>
+    request<{ preview: { moved: number | null } }>('PUT', '/api/admin/dishes/schedule', { mode, calendar, overrides, seasonRule, weekCount, resetAnchors, dryRun: true }),
 
   setMenuSource: (source: { pullMode: MenuPullMode; summerUrl: string; winterUrl: string; sourcePage: string; sourceCanteen: string }): Promise<MenuScheduleInfo> =>
     request<MenuScheduleInfo>('PUT', '/api/admin/dishes/source', source),

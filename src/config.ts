@@ -585,6 +585,9 @@ export const config = {
   mensaPullIntervalHours: intEnv('MENSA_PULL_INTERVAL_HOURS', 6),
   mensaPullCheckIntervalMs: intEnv('MENSA_PULL_CHECK_INTERVAL_MS', 15 * 60 * 1000),
   mensaPullStartDelayMs: intEnv('MENSA_PULL_START_DELAY_MS', 60 * 1000),
+  // Where the Mensa is: its week starts on Monday there, whatever zone the
+  // server runs in (utils/mensaRotate.ts).
+  mensaTimezone: strEnv('MENSA_TIMEZONE', 'Europe/Rome'),
   // Absolute base for self-hosted asset URLs (e.g. uploaded dish images). When
   // empty, a relative path is stored instead. No hardcoded domain.
   publicBaseUrl: (process.env['PUBLIC_BASE_URL'] ?? '').replace(/\/$/, ''),
