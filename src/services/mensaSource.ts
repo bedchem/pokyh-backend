@@ -5,7 +5,7 @@ import { ownsClusterWork } from '../cluster/hooks';
 import { invalidateDishesCache } from '../utils/cache';
 import { slugifyDishName } from '../utils/dishKey';
 import { logger } from '../utils/logger';
-import { parseMenuPdf, pickPlanLink } from '../utils/mensaPdf';
+import { parseMenuPdf, pickPlanLink, validityText } from '../utils/mensaPdf';
 import type { Plan } from '../utils/mensaSeason';
 import { MenuSourceError, parseMenuSource, planPull, type ParsedSource, type SourceDish } from '../utils/mensaSource';
 import { pdfTextItems } from '../utils/pdfText';
@@ -116,7 +116,7 @@ export function dishImageUrl(dishId: string): string {
   return `${config.publicBaseUrl}/dishes/${encodeURIComponent(dishId)}/image?v=${Date.now()}`;
 }
 
-async function record(menuId: string, line: PullLine, data: { status: string; message: string; lastHash?: string; changedAt?: Date }): Promise<void> {
+async function record(menuId: string, line: PullLine, data: { status: string; message: string; lastHash?: string; changedAt?: Date; validity?: string }): Promise<void> {
   const row = { ...data, message: data.message.slice(0, 300), checkedAt: new Date() };
   await prisma.mensaMenuSource.upsert({ where: { menuId_plan: { menuId, plan: line } }, create: { menuId, plan: line, ...row }, update: row });
 }
@@ -162,23 +162,36 @@ export async function sourceFile(menuId: string, line: PullLine, stored: string,
   return { bytes: await fetchBytes(url, { publicOnly: !isOperatorSource(url) }), file: fileName(url) };
 }
 
-// A PDF plan, or a mensa.json.
-export async function readSource(menuId: string, line: PullLine, bytes: Buffer): Promise<ParsedSource> {
+const isPdf = (bytes: Buffer) => bytes.subarray(0, 5).toString('latin1') === '%PDF-';
+
+export interface ReadSource extends ParsedSource {
+  /** What a PDF says in its top right corner, as validityText ("-": nothing); "" for a mensa.json. */
+  validity: string;
+  /** Whether that changed the day the menu's plan begins. */
+  seasonChanged: boolean;
+}
+
+// A PDF plan, or a mensa.json. A PDF's date in its top right corner ("1.
+// November bis 31. März") is the day its plan begins from then on.
+export async function readSource(menuId: string, line: PullLine, bytes: Buffer): Promise<ReadSource> {
   const plan = planOf(line);
-  if (bytes.subarray(0, 5).toString('latin1') !== '%PDF-') {
+  if (!isPdf(bytes)) {
     if (isVegetarianLine(line)) throw new MenuSourceError('Ein vegetarisches Menü wird nur aus dem PDF der Mensa gelesen');
-    return parseMenuSource(bytes.toString('utf8'), plan);
+    return { ...parseMenuSource(bytes.toString('utf8'), plan), validity: '', seasonChanged: false };
   }
   const pdf = parseMenuPdf(await pdfTextItems(bytes));
   if (pdf.season && pdf.season !== plan) throw new MenuSourceError(`Das PDF ist ein ${pdf.season === 'summer' ? 'Sommer' : 'Winter'}plan`);
   if (pdf.vegetarian !== isVegetarianLine(line)) throw new MenuSourceError(pdf.vegetarian ? 'Das PDF ist das vegetarische Menü' : 'Das PDF ist nicht das vegetarische Menü');
-  // From when the plan applies, as the canteen says ("1. November bis 31. März").
+  let seasonChanged = false;
   if (pdf.validFrom) {
     const field = plan === 'summer' ? 'summerFrom' : 'winterFrom';
-    await prisma.mensaMenu.updateMany({ where: { id: menuId, NOT: { [field]: pdf.validFrom } }, data: { [field]: pdf.validFrom } });
+    const { count } = await prisma.mensaMenu.updateMany({ where: { id: menuId, NOT: { [field]: pdf.validFrom } }, data: { [field]: pdf.validFrom } });
+    seasonChanged = count > 0;
+    if (seasonChanged) logger.info('mensa season date from the plan', { menuId, plan, from: pdf.validFrom });
   }
-  if (!isVegetarianLine(line)) return pdf;
-  return { ...pdf, dishes: pdf.dishes.map((d) => ({ ...d, sourceId: `${VEG}${d.sourceId}`, isVegetarian: true })) };
+  const read = { ...pdf, validity: validityText(pdf) || '-', seasonChanged };
+  if (!isVegetarianLine(line)) return read;
+  return { ...read, dishes: pdf.dishes.map((d) => ({ ...d, sourceId: `${VEG}${d.sourceId}`, isVegetarian: true })) };
 }
 
 /** The dishes of one line within its plan. */
@@ -203,7 +216,9 @@ export async function pullPlan(menuId: string, line: PullLine, options: PullOpti
     }
 
     const fileHash = createHash('sha256').update(fetched.bytes).digest('hex');
-    if (!force && !oneOff && row?.status === 'ok' && row.lastHash === fileHash) {
+    // A PDF taken over before its dates were kept is read once more for them.
+    const datesMissing = isPdf(fetched.bytes) && !row?.validity;
+    if (!force && !oneOff && row?.status === 'ok' && row.lastHash === fileHash && !datesMissing) {
       await record(menuId, line, { status: 'ok', message: row.message || 'Unverändert' });
       result.status = 'ok';
       result.message = 'Unverändert';
@@ -281,9 +296,10 @@ export async function pullPlan(menuId: string, line: PullLine, options: PullOpti
     result.removed = pull.remove.length;
     const changed = result.created + result.updated + result.removed > 0;
     result.message = changed ? `${result.created} neu, ${result.updated} geändert, ${result.removed} entfernt` : 'Unverändert';
-    if (!oneOff) await record(menuId, line, { status: 'ok', message: `${fetched.file}: ${result.message}`, lastHash: fileHash, ...(changed ? { changedAt: new Date() } : {}) });
+    if (!oneOff) await record(menuId, line, { status: 'ok', message: `${fetched.file}: ${result.message}`, lastHash: fileHash, validity: source.validity, ...(changed ? { changedAt: new Date() } : {}) });
 
-    if (changed) {
+    // New dates in the plan's corner move its weeks as much as new dishes do.
+    if (changed || source.seasonChanged) {
       invalidateDishesCache();
       // The new weeks go where they belong right away, not at the next visitor.
       await arrangeMenu(menuId, await menuSchedule(menuId)).catch((err) => {

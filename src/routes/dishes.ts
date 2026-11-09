@@ -75,14 +75,15 @@ function dishToJson(d: {
 // The menu of one school: a signed-in account's own, a guest's ?school=
 // (id or slug), or the default school's — what every client got before
 // schools existed. A school without a menu gets an empty one.
-// Every week is served from the plan of its season (utils/mensaSeason): summer
-// from the switch to summer time, winter from the switch to winter time, so in
-// the week before a switch "next week" already shows the other plan. A week
-// the season's plan has no dishes for is served from the other plan.
+// Every day is served from the plan of its season (utils/mensaSeason): on the
+// dates the canteen's plans name, or with the clocks; so in the week before a
+// switch "next week" already shows the other plan. A day the season's plan
+// has no dishes for is served from the other plan.
 // On cache miss the menu is also brought up to date without any admin action
-// (services/mensaSchedule): by default its plans run on school weeks only and
-// wait out the holidays, which are named in `breaks`; a menu set to manual
-// keeps its dates and only has past weeks rolled to the end of their plan.
+// (services/mensaSchedule): by default each plan week lies in the week the
+// canteen serves it (one rotation, every calendar week counted) and holidays,
+// named in `breaks`, have no dishes; a menu set to manual keeps its dates and
+// only has past weeks rolled to the end of their plan.
 // Idempotent and no write when nothing has changed.
 router.get('/', readLimiter, optionalAuth, async (req: Request, res: Response): Promise<void> => {
   const { menuId } = await menuContext(req);

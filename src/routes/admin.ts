@@ -30,7 +30,8 @@ import {
   rotatePastWeeks, normalizePlanAroundAnchor,
   lastFutureMondayIso, firstMondayIso, otherPlan, isoAddDays, currentWeekMondayIso, mensaTodayIso,
 } from '../utils/mensaRotate';
-import { snapForwardToSeason } from '../utils/mensaSeason';
+import { servedDishes, snapForwardToSeason } from '../utils/mensaSeason';
+import { seasonDatesProblem } from '../utils/mensaPdf';
 import { dayOverridesFrom, menuBreaks } from '../utils/mensaSchedule';
 import { mondayOfDay, planWeekOn } from '../utils/mensaCycle';
 import { dishFingerprint, sourceUrlProblem } from '../utils/mensaSource';
@@ -2036,8 +2037,8 @@ router.post('/dishes/cascade-shift', requireAdmin, requirePermission('mensa.mana
 //
 // A menu laid out by the server ("auto") counts its plan weeks itself
 // (utils/mensaCycle.ts): there this is a correction of that count, "the canteen
-// serves the chosen week in the week of targetMonday", kept until the plan's
-// season ends (services/mensaSchedule.anchorPlanWeek).
+// serves the chosen week in the week of targetMonday", counted on from there
+// across every change of plan (services/mensaSchedule.anchorPlanWeek).
 //
 // All in one transaction so the client never sees a torn state.
 
@@ -2131,8 +2132,9 @@ async function upcomingDays(menuId: string, schedule: MenuSchedule): Promise<Arr
     select: { date: true, plan: true, weekOrdinal: true },
     orderBy: [{ date: 'asc' }, { sortOrder: 'asc' }],
   });
+  // Each day the dishes of the plan whose season it is.
   const served = new Map<string, { plan: string; week: number }>();
-  for (const d of dishes) {
+  for (const d of servedDishes(dishes, schedule.season)) {
     const day = d.date.toISOString().slice(0, 10);
     if (!served.has(day)) served.set(day, { plan: d.plan, week: d.weekOrdinal });
   }
@@ -2160,12 +2162,22 @@ async function scheduleJson(menuId: string, schedule: MenuSchedule) {
   ]);
   const onRecord = new Map(schedule.schools.map((s) => [s.schoolId, s]));
   const pullMenu = { id: menuId, pullMode: menu?.pullMode ?? 'auto', sourcePage: menu?.sourcePage ?? '' };
+  const validity = (line: string) => menu?.sources.find((s) => s.plan === line)?.validity ?? '';
   return {
     mode: schedule.mode,
     season: schedule.season,
+    // What the plans' PDFs say in their top right corner ("MM-DD/MM-DD", ""
+    // unknown, "-" none), and what of it does not fit together.
+    seasonDates: {
+      summer: validity('summer'),
+      winter: validity('winter'),
+      summerVeg: validity('summer-veg'),
+      winterVeg: validity('winter-veg'),
+      problem: seasonDatesProblem({ summer: validity('summer'), winter: validity('winter'), summerVeg: validity('summer-veg'), winterVeg: validity('winter-veg') }),
+    },
     calendar: schedule.calendar,
     overrides: schedule.overrides,
-    // How the plan weeks go on, the corrections to it, and what that gives this week.
+    // How the plan weeks go on, the anchors it goes from, and what that gives this week.
     weekCount: schedule.count,
     anchors: schedule.anchors,
     thisWeek: counted,

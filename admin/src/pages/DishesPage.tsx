@@ -136,9 +136,9 @@ function lastSundayIso(year: number, month: number): string {
 // The menu's rule (GET /dishes/schedule); until it is known, the canteens' usual dates.
 let seasonRule: { kind: 'dates' | 'clock'; summerFrom: string; winterFrom: string } = { kind: 'dates', summerFrom: '04-01', winterFrom: '11-01' };
 
-// The season of this week, i.e. the plan the public /dishes endpoint serves now.
+// The season of today, i.e. the plan the public /dishes endpoint serves now.
 function currentSeason(): DishPlan {
-  return seasonOfIsoDate(currentMondayIso());
+  return seasonOfIsoDate(toLocalIso(new Date()));
 }
 
 // Mirror of the backend slugifyDishName. Used as a fallback so rating/comment
@@ -162,21 +162,30 @@ function dishKeyOf(dish: { stableKey?: string; nameDe: string }): string {
   return dish.stableKey && dish.stableKey.length > 0 ? dish.stableKey : slugifyDishName(dish.nameDe);
 }
 
-// Which season the given ISO date's week belongs to, by its Monday: on the
-// canteen's dates, or with the clocks (summer from the switch to summer time,
-// the last Sunday of March, to the switch to winter time, the last Sunday of
-// October). Mirrors backend utils/mensaSeason. Used to warn the user when a week of the
-// active plan has drifted into the other season's window — that week the
-// public /dishes endpoint serves the other plan.
+// Which season the given day is in: by its date, on the canteen's dates (as
+// the top right corner of its plans has them), or with the clocks (summer
+// from the switch to summer time, the last Sunday of March, to the switch to
+// winter time, the last Sunday of October; by the week's Monday). Mirrors
+// backend utils/mensaSeason.seasonOfDay. Used to warn the user when days of a
+// week of the active plan lie in the other season — those days the public
+// /dishes endpoint serves the other plan.
 function seasonOfIsoDate(iso: string): DishPlan {
-  const mon = weekKey(iso);
   if (seasonRule.kind === 'dates') {
-    const day = mon.slice(5);
+    const day = iso.slice(5);
     const { summerFrom: from, winterFrom: to } = seasonRule;
     return (from < to ? day >= from && day < to : day >= from || day < to) ? 'summer' : 'winter';
   }
+  const mon = weekKey(iso);
   const year = Number(mon.slice(0, 4));
   return mon > lastSundayIso(year, 2) && mon < lastSundayIso(year, 9) ? 'summer' : 'winter';
+}
+
+const SHORT_WEEKDAYS = ['Mo', 'Di', 'Mi', 'Do', 'Fr'];
+
+// The school days (Monday to Friday) of the week of `monIso` that lie in the
+// other season than `plan`'s, by their short names: [] when none.
+function otherSeasonDays(monIso: string, plan: DishPlan): string[] {
+  return SHORT_WEEKDAYS.filter((_, i) => seasonOfIsoDate(dateForWeekAndDow(monIso, i + 1)) !== plan);
 }
 
 
@@ -1349,6 +1358,27 @@ function SourceEditor({ schedule, canEdit, onSaved, onPulled }: {
 }
 
 const dayMonth = (md: string) => `${Number(md.slice(3))}.${Number(md.slice(0, 2))}.`;
+// The day before a day of the year (MM-DD), in a year without 29 February.
+const dayBefore = (md: string) => {
+  const d = new Date(Date.UTC(2001, Number(md.slice(0, 2)) - 1, Number(md.slice(3)) - 1));
+  return d.toISOString().slice(5, 10);
+};
+// "04-01/10-31" as the PDF says it: "1.4.–31.10."; null when it says nothing.
+const validityRange = (v: string | undefined) => {
+  const m = (v ?? '').match(/^(\d{2}-\d{2})\/(\d{2}-\d{2})?$/);
+  return m ? `${dayMonth(m[1]!)}–${m[2] ? dayMonth(m[2]) : '?'}` : null;
+};
+// When each plan applies: as its PDF says, else from the menu's dates.
+function seasonRanges(schedule: MenuScheduleInfo): { summer: string; winter: string; fromPdf: boolean } {
+  const { summerFrom, winterFrom } = schedule.season.kind === 'dates' ? schedule.season : { summerFrom: '04-01', winterFrom: '11-01' };
+  const summer = validityRange(schedule.seasonDates?.summer);
+  const winter = validityRange(schedule.seasonDates?.winter);
+  return {
+    summer: summer ?? `${dayMonth(summerFrom)}–${dayMonth(dayBefore(winterFrom))}`,
+    winter: winter ?? `${dayMonth(winterFrom)}–${dayMonth(dayBefore(summerFrom))}`,
+    fromPdf: Boolean(summer || winter),
+  };
+}
 const dayMonthYear = (day: string) => `${Number(day.slice(8))}.${Number(day.slice(5, 7))}.${day.slice(0, 4)}`;
 const planLabel = (plan: DishPlan) => (plan === 'summer' ? 'Sommerplan' : 'Winterplan');
 
@@ -1369,7 +1399,7 @@ function ScheduleStatus({ schedule }: { schedule: MenuScheduleInfo }) {
     ...(auto && schedule.thisWeek ? [{
       label: 'Diese Woche',
       value: `Woche ${schedule.thisWeek.week}`,
-      note: `${planLabel(schedule.thisWeek.plan)}, ${schedule.thisWeek.anchored ? 'von Hand korrigiert' : `Woche 1 ab ${dayMonthYear(schedule.thisWeek.seasonStart)}`}`,
+      note: `${planLabel(schedule.thisWeek.plan)} · ${schedule.thisWeek.anchored ? 'von Hand: ' : ''}Woche ${schedule.thisWeek.fromWeek} ab ${dayMonthYear(schedule.thisWeek.from)}`,
     }] : []),
     {
       label: 'Nächster Abruf',
@@ -1435,7 +1465,10 @@ function SchedulePanel({ schedule, canEdit, busy, onChange, onSourceSaved, onPul
   const auto = schedule.mode === 'auto';
   const [allBreaks, setAllBreaks] = useState(false);
   const base: ScheduleChange = { mode: schedule.mode, calendar: schedule.calendar, overrides: schedule.overrides, seasonRule: schedule.season.kind, weekCount: schedule.weekCount ?? 'calendar' };
-  const anchors = schedule.anchors ?? [];
+  // The administrator's corrections; the server's own first anchor is no correction.
+  const corrections = (schedule.anchors ?? []).filter((a) => !a.auto);
+  const ranges = seasonRanges(schedule);
+  const planLength = schedule.thisWeek?.length;
   const change = (patch: Partial<ScheduleChange>) => { if (!busy) onChange({ ...base, ...patch }); };
   // The named breaks and the menu's own closed days; single holidays are simply days without a menu.
   const breaks = schedule.breaks.filter((b) => b.reason !== 'holiday' && b.reason !== 'bridge');
@@ -1462,7 +1495,7 @@ function SchedulePanel({ schedule, canEdit, busy, onChange, onSourceSaved, onPul
 
       <p className="max-w-[78ch] text-[13.5px] leading-relaxed text-ink-3">
         {auto
-          ? `POKYH zählt die Planwochen selbst, wie die Mensa: Jeder Plan beginnt mit Woche 1 in der ersten Woche seiner Saison (${schedule.season.kind === 'dates' ? `Sommerplan ab ${dayMonth(schedule.season.summerFrom)}, Winterplan ab ${dayMonth(schedule.season.winterFrom)}` : 'Wechsel mit der Zeitumstellung'}) und geht ${schedule.weekCount === 'school' ? 'in jeder Woche mit Schule' : 'jede Kalenderwoche, auch in den Ferien,'} eine Woche weiter. An freien Tagen gibt es kein Menü. Liegt die Mensa einmal daneben, setze bei der Woche, die sie gerade serviert, das Datum auf diese Woche: POKYH zählt dann von dort weiter, bis der nächste Plan beginnt.`
+          ? `POKYH zählt die Planwochen selbst, wie die Mensa: eine Runde von Woche 1 bis ${planLength ?? 6}, die beim Planwechsel nicht neu beginnt. Sommer und Winter bestimmen nur, aus welchem Plan die Gerichte eines Tages kommen (${schedule.season.kind === 'dates' ? `Sommerplan ${ranges.summer}, Winterplan ${ranges.winter}, Tag für Tag${ranges.fromPdf ? ', wie oben rechts in ihren PDFs' : ''}` : 'Wechsel mit der Zeitumstellung'}). Die Runde geht ${schedule.weekCount === 'school' ? 'in jeder Woche mit Schule' : 'jede Kalenderwoche, auch in den Ferien,'} eine Woche weiter${schedule.thisWeek ? `, gezählt ab Woche ${schedule.thisWeek.fromWeek} in der Woche des ${dayMonthYear(schedule.thisWeek.from)}` : ''}. An freien Tagen gibt es kein Menü. Liegt die Mensa einmal daneben, setze bei der Woche, die sie gerade serviert, das Datum auf diese Woche: POKYH zählt dann von dort weiter, auch über den nächsten Planwechsel hinaus.`
           : 'Die Daten bleiben, wie du sie setzt. Ferien werden nicht beachtet; vergangene Wochen rollen nur ans Ende ihres Plans.'}
       </p>
 
@@ -1472,7 +1505,7 @@ function SchedulePanel({ schedule, canEdit, busy, onChange, onSourceSaved, onPul
         <div className="lg:col-span-2">
           <div className="text-[13.5px] font-medium text-ink">Planwochen zählen</div>
           <p className="mt-1 max-w-[78ch] text-[12.5px] leading-relaxed text-ink-3">
-            „Jede Kalenderwoche“ zählt Ferienwochen mit. So zählt die Mensa St. Michael: 2026 begann ihr Winterplan am 2. November mitten in den Allerheiligenferien, am ersten Schultag danach gab es Woche 2. „Nur Schulwochen“ für eine Mensa, die nach den Ferien dort weitermacht, wo sie aufgehört hat. {onlyInAuto}
+            „Jede Kalenderwoche“ zählt Ferienwochen mit. So zählt die Mensa St. Michael: Woche 1 ab 30. März 2026, Woche 6 ab 19. Oktober, Woche 1 ab 26. Oktober (noch mit Sommergerichten), Woche 2 in den Allerheiligenferien und Woche 3 am 9. November, dem ersten Schultag mit Wintergerichten. „Nur Schulwochen“ für eine Mensa, die nach den Ferien dort weitermacht, wo sie aufgehört hat. {onlyInAuto}
           </p>
           <div className="mt-3 flex flex-wrap items-center gap-3">
             {canEdit ? (
@@ -1486,11 +1519,11 @@ function SchedulePanel({ schedule, canEdit, busy, onChange, onSourceSaved, onPul
               <Tag>{schedule.weekCount === 'school' ? 'Nur Schulwochen' : 'Jede Kalenderwoche'}</Tag>
             )}
           </div>
-          {auto && anchors.length > 0 && (
+          {auto && corrections.length > 0 && (
             <div className="mt-3">
               <Notice tone="amber" icon={CalendarDays}>
-                Von Hand korrigiert: {anchors.map((a) => `${planLabel(a.plan)} ab ${dayMonthYear(a.monday)} mit Woche ${a.week}`).join(', ')}. Gilt bis zum nächsten Planwechsel.{' '}
-                {canEdit && <button type="button" className="font-medium underline underline-offset-2" disabled={busy} onClick={() => change({ resetAnchors: true })}>Korrektur entfernen</button>}
+                Von Hand korrigiert: {corrections.map((a) => `ab ${dayMonthYear(a.monday)} Woche ${a.week}`).join(', ')}. POKYH zählt von dort weiter, auch über den Planwechsel hinaus.{' '}
+                {canEdit && <button type="button" className="font-medium underline underline-offset-2" disabled={busy} title="Dann zählt POKYH wieder ab Woche 1 in der Woche, in der der laufende Plan begann" onClick={() => change({ resetAnchors: true })}>Korrektur entfernen</button>}
               </Notice>
             </div>
           )}
@@ -1516,8 +1549,13 @@ function SchedulePanel({ schedule, canEdit, busy, onChange, onSourceSaved, onPul
         <div>
           <div className="text-[13.5px] font-medium text-ink">Planwechsel</div>
           <p className="mt-1 text-[12.5px] leading-relaxed text-ink-3">
-            Wann Sommer- und Winterplan wechseln. Die Daten der Mensa ({dayMonth(schedule.season.kind === 'dates' ? schedule.season.summerFrom : '04-01')} / {dayMonth(schedule.season.kind === 'dates' ? schedule.season.winterFrom : '11-01')}) kommen aus ihren Plänen, sonst gilt 1.4. / 1.11.
+            Wann Sommer- und Winterplan wechseln, Tag für Tag. „Wie die Mensa“ nimmt die Daten, die oben rechts in ihren PDFs stehen, bei jedem Abruf neu: {ranges.fromPdf ? `Sommerplan ${ranges.summer}, Winterplan ${ranges.winter}, aus den PDFs gelesen.` : `noch aus keinem PDF gelesen, bis dahin Sommerplan ${ranges.summer}, Winterplan ${ranges.winter}.`}
           </p>
+          {schedule.seasonDates?.problem && (
+            <div className="mt-2">
+              <Notice tone="amber" icon={CalendarDays}>Die Daten in den PDFs passen nicht zusammen: {schedule.seasonDates.problem}. Jeder Plan beginnt an dem Tag, den sein eigenes PDF nennt.</Notice>
+            </div>
+          )}
           <div className="mt-3">
             {canEdit ? (
               <Segmented<'dates' | 'clock'>
@@ -2310,23 +2348,29 @@ function MenuPlan({ note, handed }: { note?: ReactNode; handed: Partial<HandedDi
                       <span className="flex-shrink-0"><Tag tone="amber">In den Ferien</Tag></span>
                     )}
 
-                    {/* Season boundary badge — this week's Monday falls in the
-                        other season, so the public endpoint will serve the other
-                        plan for it. */}
-                    {editingWeekKey !== wk && seasonOfIsoDate(wk) !== activePlan && (
-                      <span
-                        className="flex-shrink-0 flex items-center gap-1 px-2 py-1 rounded-[10px] text-[10px] font-bold uppercase tracking-wider"
-                        style={{
-                          background: seasonOfIsoDate(wk) === 'winter' ? 'rgba(60,135,215,0.18)' : 'rgba(236,140,40,0.18)',
-                          color: seasonOfIsoDate(wk) === 'winter' ? 'var(--sky-deep)' : 'var(--amber-deep)',
-                          border: seasonOfIsoDate(wk) === 'winter' ? '1px solid transparent' : '1px solid transparent',
-                        }}
-                        title={`Am ${formatWeekRange(wk).split('–')[0].trim()} übernimmt der ${seasonOfIsoDate(wk) === 'winter' ? 'Winter' : 'Sommer'}plan diesen Zeitraum`}
-                      >
-                        {seasonOfIsoDate(wk) === 'winter' ? <Snowflake size={11} /> : <Sun size={11} />}
-                        {seasonOfIsoDate(wk) === 'winter' ? 'Winterplan aktiv' : 'Sommerplan aktiv'}
-                      </span>
-                    )}
+                    {/* Season boundary badge: days of this week lie in the other
+                        season, so the public endpoint serves the other plan on
+                        them (all week, or the days of a week the plans change in). */}
+                    {editingWeekKey !== wk && (() => {
+                      const days = otherSeasonDays(wk, activePlan);
+                      if (days.length === 0) return null;
+                      const other: DishPlan = activePlan === 'summer' ? 'winter' : 'summer';
+                      const name = other === 'winter' ? 'Winterplan' : 'Sommerplan';
+                      const all = days.length === SHORT_WEEKDAYS.length;
+                      return (
+                        <span
+                          className="flex-shrink-0 flex items-center gap-1 px-2 py-1 rounded-[10px] text-[10px] font-bold uppercase tracking-wider"
+                          style={{
+                            background: other === 'winter' ? 'rgba(60,135,215,0.18)' : 'rgba(236,140,40,0.18)',
+                            color: other === 'winter' ? 'var(--sky-deep)' : 'var(--amber-deep)',
+                          }}
+                          title={all ? `In dieser Woche serviert die Mensa den ${name}` : `${days.join(', ')}: an diesen Tagen serviert die Mensa den ${name}`}
+                        >
+                          {other === 'winter' ? <Snowflake size={11} /> : <Sun size={11} />}
+                          {all ? `${name} aktiv` : `${days[0]}${days.length > 1 ? `–${days[days.length - 1]}` : ''} ${name}`}
+                        </span>
+                      );
+                    })()}
 
                     {/* Edit week date */}
                     {rights.edit && editingWeekKey !== wk && (

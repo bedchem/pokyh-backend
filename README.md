@@ -416,14 +416,20 @@ Canteen plans are assigned to schools; a school without one shows no canteen.
 
 A plan runs by itself unless it is switched to manual on the admin panel's dish
 page. Then the server counts its weeks the way the canteen does
-(`src/utils/mensaCycle.ts`): the summer and the winter plan begin with week 1 in
-the week whose Monday reaches the dates the canteen's plan names (1 April and
-1 November by default), or after the clocks change, and go on one week every
-calendar week, holiday weeks included (the Mensa St. Michael's count; "only
-school weeks" is a setting). The count depends on the calendar alone, never on
-where the dishes lie, so a plan cannot drift; when the canteen counts differently
-once, an administrator sets the week it serves and the count goes on from there
-until the next plan begins. The week turns on Monday in `MENSA_TIMEZONE`
+(`src/utils/mensaCycle.ts`): one round of weeks 1 to 6 for both plans that never
+starts over when the plans change, one week on every calendar week, holiday
+weeks included (the Mensa St. Michael's count; "only school weeks" is a
+setting). The season only decides, day by day, from which plan a day's dishes
+come: on the dates in the top right corner of the canteen's PDFs ("1. April bis
+31. Oktober", "1. November bis 31. März", read at each pull and checked against
+each other), or with the clocks. For the Mensa St. Michael that is week 1 in the
+week of 30 March 2026, week 1 again in the week of 26 October (summer dishes),
+week 2 in the Allerheiligenferien and week 3 on 9 November, the first school day
+with winter dishes. The count goes from an anchor the server sets once by itself
+(week 1 in the week the season under way began) and keeps; it depends on the
+calendar alone, never on where the dishes lie, so a plan cannot drift. When the
+canteen counts differently, an administrator sets the week it serves and the
+count goes on from there, across every change of plan. The week turns on Monday in `MENSA_TIMEZONE`
 (Europe/Rome). The days off come from the school
 calendar of South Tyrol (`src/utils/schoolCalendarSuedtirol.ts`, computed from
 the provincial rules, and optional for schools elsewhere), the WebUntis holidays

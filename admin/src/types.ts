@@ -354,8 +354,9 @@ export interface AdminDishAnchorResult {
 // How the autonomous mode counts the plan weeks: every calendar week, or only
 // weeks the Mensa is open.
 export type MenuWeekCount = 'calendar' | 'school';
-// "In the week of `monday` the canteen serves `week` of `plan`", counted on from there.
-export interface MenuWeekAnchor { plan: DishPlan; monday: string; week: number }
+// "In the week of `monday` the canteen serves `week`" (of both plans; `plan`
+// is the one meant), counted on from there. `auto`: the server's own first one.
+export interface MenuWeekAnchor { plan: DishPlan; monday: string; week: number; auto?: boolean }
 
 export type MenuMode = 'auto' | 'manual';
 export type MenuCalendar = 'suedtirol' | 'webuntis';
@@ -419,8 +420,13 @@ export interface MenuScheduleInfo {
   overrides: MenuDayOverride[];
   weekCount?: MenuWeekCount;
   anchors?: MenuWeekAnchor[];
-  // What the count gives this week (autonomous mode only).
-  thisWeek?: { plan: DishPlan; week: number; seasonStart: string; anchored: boolean } | null;
+  // What the count gives this week (autonomous mode only), and the anchor it
+  // goes from: week `fromWeek` in the week of `from`.
+  // `length`: how many weeks the plan's round has.
+  thisWeek?: { plan: DishPlan; week: number; length: number; from: string; fromWeek: number; anchored: boolean } | null;
+  // What the plans' PDFs say in their top right corner ("MM-DD/MM-DD"; ""
+  // not read yet, "-" nothing), and what of it does not fit together.
+  seasonDates?: { summer: string; winter: string; summerVeg: string; winterVeg: string; problem: string | null };
   breaks: Array<{ start: string; end: string; reason: MenuBreakReason }>;
   // Whether each school's WebUntis holidays have come in yet.
   schools: Array<{ id: string; name: string; breaks: number; fetchedAt: string | null }>;

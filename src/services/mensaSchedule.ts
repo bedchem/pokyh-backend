@@ -1,8 +1,8 @@
 import { prisma } from '../db';
 import { logger } from '../utils/logger';
 import { currentWeekMondayIso, layoutMenu, previewLayout, rotatePastWeeks } from '../utils/mensaRotate';
-import { activeAnchors, countedWeek, hasBothPlans, mondayOfDay, parseWeekCount, planWeekOn, seasonStartOf, servedWeek, weekAnchorsFrom, withAnchor, type WeekAnchor, type WeekCount } from '../utils/mensaCycle';
-import { seasonOfWeek, seasonRuleOf, type Plan, type SeasonRule } from '../utils/mensaSeason';
+import { anchorsBeside, countedWeek, hasBothPlans, mondayOfDay, parseWeekCount, planWeekOn, servedWeek, settledAnchors, weekAnchorsFrom, weekAnchorsJson, withAnchor, type WeekAnchor, type WeekCount } from '../utils/mensaCycle';
+import { isInSeason, seasonRuleOf, type Plan, type SeasonRule } from '../utils/mensaSeason';
 import { ValidationError } from '../utils/errors';
 import { dayOverridesFrom, menuDayOff, parseCalendar, parseMode, type DayOffOf, type DayOverride, type MenuCalendar, type MenuMode } from '../utils/mensaSchedule';
 import { storableHolidays, type Holiday } from '../webuntis/holidays';
@@ -10,9 +10,10 @@ import { rpc, untisSchool, type UntisSession } from '../webuntis/client';
 import { menuOfSchool, schoolByWebuntis, schoolsOfMenu } from './schools';
 
 // How a menu's plans move along the calendar: by themselves ("auto", the
-// default), each plan week on the week the canteen serves it (counted as in
-// utils/mensaCycle.ts) and no dishes on the days off of the official calendar
-// and of its schools' WebUntis, or as an administrator sets them ("manual").
+// default), each plan week on the week the canteen serves it (one rotation for
+// both plans, counted as in utils/mensaCycle.ts; each day takes the dishes of
+// its season) and no dishes on the days off of the official calendar and of
+// its schools' WebUntis, or as an administrator sets them ("manual").
 
 export interface SchoolHolidaysOnRecord {
   schoolId: string;
@@ -29,12 +30,17 @@ export interface MenuSchedule {
   schools: SchoolHolidaysOnRecord[];
   /** How the plan weeks go on (utils/mensaCycle.ts). */
   count: WeekCount;
-  /** An administrator's corrections to the count still in force. */
+  /**
+   * Where the count goes from: the anchor in force (the server's own first
+   * one when none is on record yet) and the ones ahead.
+   */
   anchors: WeekAnchor[];
+  /** The anchors as on record, for writing them only when they change. */
+  storedAnchors: string;
 }
 
 /** What utils/mensaRotate.layoutMenu needs of a schedule. */
-const layoutOf = (schedule: MenuSchedule) => ({ dayOffOf: schedule.dayOffOf, rule: schedule.season, count: schedule.count, anchors: schedule.anchors });
+const layoutOf = (schedule: MenuSchedule) => ({ dayOffOf: schedule.dayOffOf, rule: schedule.season, count: schedule.count, anchors: schedule.anchors, storedAnchors: schedule.storedAnchors });
 
 function holidaysFrom(json: string): Holiday[] {
   try {
@@ -63,7 +69,8 @@ export async function menuSchedule(menuId: string): Promise<MenuSchedule> {
     dayOffOf: menuDayOff(calendar, schools.map((s) => s.holidays), overrides),
     schools,
     count: parseWeekCount(menu?.weekCount),
-    anchors: activeAnchors(weekAnchorsFrom(menu?.weekAnchors), currentWeekMondayIso(), season),
+    anchors: settledAnchors(weekAnchorsFrom(menu?.weekAnchors), currentWeekMondayIso(), season),
+    storedAnchors: menu?.weekAnchors ?? '[]',
   };
 }
 
@@ -93,7 +100,7 @@ export interface ScheduleChange {
   overrides?: DayOverride[];
   seasonRule?: 'dates' | 'clock';
   weekCount?: WeekCount;
-  /** Back to the plain count: the corrections go. */
+  /** Back to the plain count: the corrections go, week 1 in the week the season under way began. */
   resetAnchors?: boolean;
 }
 
@@ -110,7 +117,7 @@ export async function proposedSchedule(menuId: string, change: ScheduleChange): 
     season,
     dayOffOf: menuDayOff(change.calendar, current.schools.map((s) => s.holidays), overrides),
     count: change.weekCount ?? current.count,
-    anchors: change.resetAnchors ? [] : activeAnchors(current.anchors, currentWeekMondayIso(), season),
+    anchors: settledAnchors(change.resetAnchors ? [] : current.anchors, currentWeekMondayIso(), season),
   };
 }
 
@@ -126,8 +133,10 @@ export async function layoutInTransaction(menuId: string, schedule: MenuSchedule
 
 // ─── An administrator's correction of the count ──────────────────────────────
 
-// How far ahead a correction may be set: into the next season of the plan.
+// How far ahead a correction may be set: into the next season of the plan;
+// and how far back (it is meant for the week the canteen serves now).
 const ANCHOR_AHEAD_DAYS = 400;
+const ANCHOR_BACK_DAYS = 28;
 
 export interface AnchorResult {
   plan: Plan;
@@ -145,8 +154,9 @@ const planName = (plan: Plan) => (plan === 'summer' ? 'Sommerplan' : 'Winterplan
 
 /**
  * "The week of `chosenMonday` is the one the canteen serves in the week of
- * `targetMonday`": stored as the plan's anchor (none when the count says so
- * anyway), the menu laid out anew. For a menu set to "auto".
+ * `targetMonday`": stored as an anchor of the count (none when the count says
+ * so anyway), kept from then on, the menu laid out anew. For a menu set to
+ * "auto".
  */
 export async function anchorPlanWeek(menuId: string, plan: Plan, chosenMonday: string, targetMonday: string): Promise<AnchorResult> {
   const schedule = await menuSchedule(menuId);
@@ -155,20 +165,20 @@ export async function anchorPlanWeek(menuId: string, plan: Plan, chosenMonday: s
   const dishes = await prisma.dish.findMany({ where: { menuId }, select: { id: true, plan: true, date: true, weekOrdinal: true } });
   const week = planWeekOn(dishes, plan, mondayOfDay(chosenMonday), currentMonday);
   if (week === null) throw new ValidationError(`In dieser Woche liegt kein Gericht des ${planName(plan)}s`);
-  if (hasBothPlans(dishes) && seasonOfWeek(new Date(`${target}T00:00:00Z`), schedule.season) !== plan) {
+  if (hasBothPlans(dishes) && !isInSeason(new Date(`${target}T00:00:00Z`), plan, schedule.season)) {
     throw new ValidationError(`In dieser Woche gilt der ${planName(plan === 'summer' ? 'winter' : 'summer')}`);
   }
-  if (target < seasonStartOf(currentMonday, schedule.season)) throw new ValidationError('Diese Woche liegt vor dem laufenden Plan');
-  if (Date.parse(`${target}T00:00:00Z`) - Date.parse(`${currentMonday}T00:00:00Z`) > ANCHOR_AHEAD_DAYS * DAY_MS) {
-    throw new ValidationError('Diese Woche liegt zu weit in der Zukunft');
-  }
+  const ahead = Date.parse(`${target}T00:00:00Z`) - Date.parse(`${currentMonday}T00:00:00Z`);
+  if (ahead < -ANCHOR_BACK_DAYS * DAY_MS) throw new ValidationError('Diese Woche liegt zu weit zurück');
+  if (ahead > ANCHOR_AHEAD_DAYS * DAY_MS) throw new ValidationError('Diese Woche liegt zu weit in der Zukunft');
 
-  const others = schedule.anchors.filter((a) => a.plan !== plan);
-  const plain = countedWeek(dishes, plan, target, schedule.dayOffOf, { rule: schedule.season, count: schedule.count, anchors: others }, currentMonday);
-  const anchors = withAnchor(schedule.anchors, { plan, monday: target, week }, plain ?? 0, currentMonday, schedule.season);
-  const next: MenuSchedule = { ...schedule, anchors };
+  const beside = anchorsBeside(schedule.anchors, target, currentMonday, schedule.season);
+  const plain = countedWeek(dishes, plan, target, schedule.dayOffOf, { rule: schedule.season, count: schedule.count, anchors: beside }, currentMonday);
+  const anchors = settledAnchors(withAnchor(beside, { plan, monday: target, week }, plain ?? 0, currentMonday), currentMonday, schedule.season);
+  const stored = weekAnchorsJson(anchors);
+  const next: MenuSchedule = { ...schedule, anchors, storedAnchors: stored };
   const laidOut = await prisma.$transaction(async (tx) => {
-    await tx.mensaMenu.update({ where: { id: menuId }, data: { weekAnchors: JSON.stringify(anchors) } });
+    await tx.mensaMenu.update({ where: { id: menuId }, data: { weekAnchors: stored } });
     return schedule.mode === 'auto' ? layoutMenu(menuId, layoutOf(next), tx) : 0;
   });
   if (laidOut > 0) {

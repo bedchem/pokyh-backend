@@ -1023,19 +1023,21 @@ model MensaMenu {
   // is closed although it is school, or open although it is not.
   dayOverrides  String    @default("[]") @map("day_overrides") @db.VarChar(4000)
   // When summer and winter plan change (utils/mensaSeason.ts): "dates", from
-  // summerFrom and winterFrom (MM-DD, the canteen's own, read from its plan),
-  // or "clock", with the switch to summer and winter time.
+  // summerFrom and winterFrom (MM-DD, the canteen's own, read from the top
+  // right corner of each plan's PDF), day by day, or "clock", with the switch
+  // to summer and winter time.
   seasonRule    String    @default("dates") @map("season_rule") @db.VarChar(10)
   summerFrom    String    @default("04-01") @map("summer_from") @db.VarChar(5)
   winterFrom    String    @default("11-01") @map("winter_from") @db.VarChar(5)
-  // How "auto" counts the plan weeks (utils/mensaCycle.ts): each plan starts
-  // with week 1 in the first week of its season and goes on every calendar
-  // week, holidays included ("calendar", as the Mensa St. Michael does), or
-  // only in weeks the Mensa is open ("school").
+  // How "auto" counts the plan weeks (utils/mensaCycle.ts), one rotation for
+  // both plans that never starts over: on every calendar week, holidays
+  // included ("calendar", as the Mensa St. Michael does), or only in weeks the
+  // Mensa is open ("school").
   weekCount     String    @default("calendar") @map("week_count") @db.VarChar(10)
-  // An administrator's corrections to that count, JSON [{ plan, monday, week }]:
-  // in the week of `monday` the canteen serves `week`; counted on from there
-  // to the end of that season. At most one per plan.
+  // Where that count goes from, JSON [{ plan, monday, week, auto? }]: in the
+  // week of `monday` the canteen serves `week`, counted on from there. The one
+  // in force and the ones ahead; the first is the server's own ("auto": week 1
+  // in the week the season under way began), later ones an administrator's.
   weekAnchors   String    @default("[]") @map("week_anchors") @db.VarChar(400)
   // A page that links the canteen's plans as PDFs, and the canteen's name on
   // it ("Mensa St. Michael"): the plans are found there anew at each pull.
@@ -1071,6 +1073,10 @@ model MensaMenuSource {
   // "ok", "held" (waiting for an administrator's decision) or "error".
   status    String    @default("") @db.VarChar(10)
   message   String    @default("") @db.VarChar(300)
+  // From when to when the line's PDF says it applies, as it says in its top
+  // right corner ("1. November bis 31. März"): "11-01/03-31"; "" when it says
+  // nothing (a mensa.json). Checked against the other plan's in the panel.
+  validity  String    @default("") @db.VarChar(11)
   checkedAt DateTime? @map("checked_at")
   changedAt DateTime? @map("changed_at")
 

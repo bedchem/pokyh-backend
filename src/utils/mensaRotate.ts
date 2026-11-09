@@ -3,7 +3,7 @@ import { config } from '../config';
 import { logger } from './logger';
 import { Prisma } from '@prisma/client';
 import { CLOCK, snapForwardToSeason, toUtcIso, utcMondayOf, type Plan, type SeasonRule } from './mensaSeason';
-import { cycleMoves, dayInZone, mondayOfDay, planWeeksOf, type CycleSettings } from './mensaCycle';
+import { cycleMoves, dayInZone, keptAnchors, mondayOfDay, planWeeksOf, weekAnchorsJson, type CycleSettings } from './mensaCycle';
 import type { DayOffOf } from './mensaSchedule';
 
 type PrismaLike = Prisma.TransactionClient | typeof prisma;
@@ -140,6 +140,12 @@ export async function rotatePastWeeks(menuId: string, plan: Plan, tx?: PrismaLik
 
 export interface LayoutSettings extends CycleSettings {
   dayOffOf: DayOffOf;
+  /**
+   * The menu's anchors as on record: when given, the ones the count goes from
+   * are written in their place whenever they differ (the server's own first
+   * one, an old one moved up), in the same transaction as the move.
+   */
+  storedAnchors?: string;
 }
 
 // Gives every dish of a menu its plan week once: dishes added by hand have
@@ -157,17 +163,26 @@ async function nameWeeks(db: PrismaLike, dishes: Array<{ id: string; weekOrdinal
 // Puts both plans of a menu where the count says (utils/mensaCycle.ts), in one
 // transaction. The dates are written as they should be, not shifted from
 // where they are, so two nodes of a cluster laying out the same menu at once
-// come to the same result.
+// come to the same result; so are the anchors, and only over what was read.
 export async function layoutMenu(menuId: string, settings: LayoutSettings, tx?: PrismaLike): Promise<number> {
   const db: PrismaLike = tx ?? prisma;
   const currentMonday = currentWeekMondayIso();
   const dishes = await db.dish.findMany({ where: { menuId }, select: { id: true, plan: true, date: true, weekOrdinal: true } });
-  const moves = cycleMoves(dishes, currentMonday, settings.dayOffOf, settings);
+  // Without dishes there is nothing to count yet: the first anchor waits for them.
+  const anchors = dishes.length > 0 && settings.storedAnchors !== undefined ? keptAnchors(dishes, currentMonday, settings.dayOffOf, settings) : null;
+  const anchorsJson = anchors ? weekAnchorsJson(anchors) : null;
+  const newAnchors = anchorsJson !== null && anchorsJson !== settings.storedAnchors;
+  const counted = anchors ? { ...settings, anchors } : settings;
+  const moves = cycleMoves(dishes, currentMonday, settings.dayOffOf, counted);
   const weeks = planWeeksOf(dishes, currentMonday);
   const needsNames = dishes.some((d) => weeks.get(d.id) !== d.weekOrdinal);
-  if (moves.length === 0 && !needsNames) return 0;
+  if (moves.length === 0 && !needsNames && !newAnchors) return 0;
 
   async function run(client: PrismaLike): Promise<number> {
+    if (newAnchors) {
+      await client.mensaMenu.updateMany({ where: { id: menuId, weekAnchors: settings.storedAnchors }, data: { weekAnchors: anchorsJson! } });
+      logger.info('mensa week count anchored', { menuId, anchors: anchorsJson });
+    }
     if (needsNames) await nameWeeks(client, dishes, weeks);
     let n = 0;
     for (const move of moves) {

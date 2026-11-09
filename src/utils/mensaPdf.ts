@@ -15,8 +15,10 @@ export interface PdfTextItem {
 export interface PdfMenu extends ParsedSource {
   season: 'summer' | 'winter' | null;
   vegetarian: boolean;
-  /** MM-DD, when the plan says from when it applies. */
+  /** MM-DD, when the plan says from when it applies (top right: "1. November bis 31. März"). */
   validFrom: string | null;
+  /** MM-DD, when it says until when. */
+  validTo: string | null;
 }
 
 const WEEKDAYS: Record<string, [number, string]> = {
@@ -66,12 +68,61 @@ function allergensOf(text: string): string {
   return JSON.stringify(letters.map((l) => ALLERGENS[l] ?? l));
 }
 
-// "1. November bis 31. März": 11-01.
-function validFromOf(text: string): string | null {
-  const m = text.match(/(\d{1,2})\.\s*([A-Za-zÄÖÜäöü]+)\s+bis\s+\d{1,2}\.\s*[A-Za-zÄÖÜäöü]+/);
-  const month = m ? MONTHS[m[2]!.toLowerCase()] : undefined;
-  const day = m ? Number(m[1]) : 0;
-  return month && day >= 1 && day <= 31 ? `${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}` : null;
+// "31. März": 03-31, when it is a day of the year.
+function monthDay(day: string, month: string): string | null {
+  const m = MONTHS[month.toLowerCase()];
+  const d = Number(day);
+  if (!m || !Number.isInteger(d) || d < 1 || d > DAYS_IN_MONTH[m - 1]!) return null;
+  return `${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+}
+
+const DAYS_IN_MONTH = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+// "1. November bis 31. März", as the plans say in their top right corner.
+function validityOf(text: string): { from: string | null; to: string | null } {
+  const m = text.normalize('NFC').match(/(\d{1,2})\.\s*([A-Za-zÄÖÜäöü]+)\s+bis\s+(\d{1,2})\.\s*([A-Za-zÄÖÜäöü]+)/);
+  if (!m) return { from: null, to: null };
+  const from = monthDay(m[1]!, m[2]!);
+  return { from, to: from ? monthDay(m[3]!, m[4]!) : null };
+}
+
+/** The day after a day of the year (MM-DD); the day after 28 or 29 February is 1 March. */
+export function dayAfter(md: string): string {
+  if (md === '02-28' || md === '02-29') return '03-01';
+  const t = Date.UTC(2001, Number(md.slice(0, 2)) - 1, Number(md.slice(3)) + 1);
+  return new Date(t).toISOString().slice(5, 10);
+}
+
+const dayMonth = (md: string) => `${Number(md.slice(3))}.${Number(md.slice(0, 2))}.`;
+
+/** "MM-DD/MM-DD" as a source keeps what its PDF says, from and to; "" when it says nothing. */
+export function validityText(menu: { validFrom: string | null; validTo: string | null }): string {
+  return menu.validFrom ? `${menu.validFrom}/${menu.validTo ?? ''}` : '';
+}
+
+/**
+ * Whether the dates the plans name fit together: the summer plan ends the day
+ * before the winter plan begins, and the other way round, and a vegetarian
+ * menu runs as long as its plan. What does not, in words; null when all fits
+ * or too little is known. Each `validity` is a validityText (anything else
+ * counts as not known).
+ */
+export function seasonDatesProblem(validity: { summer: string; winter: string; summerVeg?: string; winterVeg?: string }): string | null {
+  const split = (v: string | undefined) => {
+    const m = (v ?? '').match(/^(\d{2}-\d{2})\/((?:\d{2}-\d{2})?)$/);
+    return { from: m?.[1] ?? '', to: m?.[2] ?? '' };
+  };
+  const summer = split(validity.summer);
+  const winter = split(validity.winter);
+  const problems: string[] = [];
+  if (summer.to && winter.from && dayAfter(summer.to) !== winter.from) problems.push(`Der Sommerplan gilt bis ${dayMonth(summer.to)}, der Winterplan ab ${dayMonth(winter.from)}`);
+  if (winter.to && summer.from && dayAfter(winter.to) !== summer.from) problems.push(`Der Winterplan gilt bis ${dayMonth(winter.to)}, der Sommerplan ab ${dayMonth(summer.from)}`);
+  for (const [name, own, veg] of [['Sommer', summer, split(validity.summerVeg)], ['Winter', winter, split(validity.winterVeg)]] as const) {
+    if (own.from && veg.from && (own.from !== veg.from || (own.to && veg.to && own.to !== veg.to))) {
+      problems.push(`Das vegetarische Menü ${name} gilt ${dayMonth(veg.from)}–${veg.to ? dayMonth(veg.to) : '?'}, das Menü ${name} ${dayMonth(own.from)}–${own.to ? dayMonth(own.to) : '?'}`);
+    }
+  }
+  return problems.length > 0 ? problems.map((p, i) => (i === 0 ? p : p[0]!.toLowerCase() + p.slice(1))).join('; ') : null;
 }
 
 /** Reads a plan from the text of its PDF. Refuses what has no such grid. */
@@ -140,7 +191,8 @@ export function parseMenuPdf(pages: PdfTextItem[][]): PdfMenu {
       });
     }
   });
-  return { dishes, skipped, season, vegetarian, validFrom: validFromOf(heading) };
+  const validity = validityOf(heading);
+  return { dishes, skipped, season, vegetarian, validFrom: validity.from, validTo: validity.to };
 }
 
 // Words of a file name, without what every plan's name has.

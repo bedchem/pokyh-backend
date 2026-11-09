@@ -7,7 +7,7 @@
 // Days are YYYY-MM-DD; a week is named by its Monday.
 
 import { suedtirolDayOff, type DayOffReason } from './schoolCalendarSuedtirol';
-import { CLOCK, seasonOfWeek, servedDishes, toUtcIso, utcMondayOf, type SeasonRule } from './mensaSeason';
+import { CLOCK, servedDishes, toUtcIso, utcMondayOf, type SeasonRule } from './mensaSeason';
 
 export type MenuMode = 'auto' | 'manual';
 export type MenuCalendar = 'suedtirol' | 'webuntis';
@@ -100,24 +100,16 @@ export function isOpenWeek(monday: string, weekdays: Set<number>, dayOffOf: DayO
 const weekdayOf = (d: Date) => d.getUTCDay() || 7;
 
 /**
- * What the public sees of a laid-out menu: every week from the plan of its
- * season, no dishes on days off, and only as far as the weeks run on without
+ * What the public sees of a laid-out menu: every day the dishes of the plan
+ * of its season (mensaSeason.servedDishes), no dishes on days off, and only as far as the weeks run on without
  * a gap. A plan's cycle is shorter than its season, so behind it lie school
  * weeks it will only roll onto later, and then the other plan's weeks months
  * ahead; those stay hidden until the plans really meet.
  */
 export function publicDishes<T extends { plan: string; date: Date }>(dishes: T[], currentMonday: string, dayOffOf: DayOffOf, rule: SeasonRule = CLOCK): T[] {
-  const weekdaysOf = new Map<string, Set<number>>();
-  for (const d of dishes) {
-    const set = weekdaysOf.get(d.plan) ?? new Set<number>();
-    set.add(weekdayOf(new Date(d.date)));
-    weekdaysOf.set(d.plan, set);
-  }
-  const isOpen = (monday: string) => {
-    const season = seasonOfWeek(new Date(parse(monday)), rule);
-    const weekdays = weekdaysOf.get(season) ?? weekdaysOf.get(season === 'summer' ? 'winter' : 'summer');
-    return weekdays ? isOpenWeek(monday, weekdays, dayOffOf) : false;
-  };
+  // Both plans serve on the same weekdays; a day takes the dishes of its season.
+  const weekdays = new Set(dishes.map((d) => weekdayOf(new Date(d.date))));
+  const isOpen = (monday: string) => weekdays.size > 0 && isOpenWeek(monday, weekdays, dayOffOf);
 
   const served = servedDishes(dishes, rule);
   const weeks = [...new Set(served.map((d) => mondayOf(new Date(d.date))))].filter((m) => m >= currentMonday).sort();
