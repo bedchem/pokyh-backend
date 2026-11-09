@@ -419,7 +419,16 @@ interface WebsiteSignIn {
    * with its QR sign-in): taken over instead of signing in to WebUntis again,
    * so an account with two-factor sign-in needs no code here.
    */
-  adopted?: { sessionId: string; personId: number };
+  adopted?: AdoptedSession;
+}
+
+/** A session verified as the account's (webuntis/sessionIdentity.ts), with what the check read. */
+interface AdoptedSession {
+  sessionId: string;
+  /** The person its app-data names, 0 when none. */
+  personId: number;
+  /** Its app-data, null when WebUntis gave none in time. */
+  appData: unknown;
 }
 
 // Signs the website in: WebUntis, then the POKYH session, then the sealed
@@ -468,10 +477,12 @@ async function signInWebsite(req: Request, res: Response, input: WebsiteSignIn):
         loginName: '',
         studentRecordId: 0,
       }
+      // A taken-over session's app-data was read at its check a moment ago:
+      // not asked for (and waited for) twice.
       : await resolveAccount({
         base: BASE, school, sessionId, cookie, username,
         studentId: signedIn.personId, klasseId: signedIn.klasseId, personType, bearer: bearerRequest,
-      });
+      }, input.adopted ? { appData: input.adopted.appData } : undefined);
     // What WebUntis said about the student's own class (a guardian's session
     // keeps none); what the account gets is decided with the POKYH session.
     const untisClass = account.evidence.kind === 'class'
@@ -719,20 +730,28 @@ const qrPollLimiter = rateLimit({
 
 const POLL = /^[A-Za-z0-9_-]{24,64}$/;
 
+type Adoption =
+  | { ok: true; session: AdoptedSession }
+  | { ok: false; unavailable: boolean };
+
 /**
  * The POKYH app's WebUntis session, handed over with its QR sign-in, when it
- * is still signed in and belongs to this account (the app-data's login name,
- * where WebUntis gives one); null otherwise.
+ * is still signed in and belongs to this account. `unavailable`: WebUntis did
+ * not answer, which says nothing about the session.
  */
-async function adoptAppSession(school: UntisSchool, username: string, sessionId: string): Promise<{ sessionId: string; personId: number } | null> {
+async function adoptAppSession(school: UntisSchool, username: string, sessionId: string): Promise<Adoption> {
   // Only a session WebUntis names as this account's (and, where the school's
   // tenant is known, of that tenant): webuntis/sessionIdentity.ts.
   const verified = await verifySessionIdentity(school, sessionId, username, await webuntisTenantOf(school.loginName)).catch(() => null);
   if (!verified?.ok) {
     if (verified) logger.warn('[webuntis qr] handed-over session not accepted', { school: school.loginName, code: verified.code });
-    return null;
+    return { ok: false, unavailable: !verified || verified.code === 'webuntis_unavailable' };
   }
-  return verified.personId > 0 ? { sessionId, personId: verified.personId } : null;
+  // The person may stay unnamed here (a guardian's app-data that lists only
+  // the children, an app-data too slow to wait for): the app's own sign-in
+  // (POST /auth/login) takes such a session as well, and resolveAccount works
+  // out whom it acts for, as there.
+  return { ok: true, session: { sessionId, personId: verified.personId, appData: verified.appData } };
 }
 
 router.post('/qr/start', qrStartLimiter, async (req: Request, res: Response) => {
@@ -791,8 +810,14 @@ router.post('/qr/poll', qrPollLimiter, async (req: Request, res: Response) => {
   const handed = state.credential;
   const credential: Credential = handed.key ? { key: handed.key } : { password: handed.password ?? '' };
   const school = parseSchool(handed.school) ?? defaultSchool();
-  const adopted = handed.sessionId ? await adoptAppSession(school, handed.username, handed.sessionId) : null;
+  const adoption = handed.sessionId ? await adoptAppSession(school, handed.username, handed.sessionId) : null;
+  const adopted = adoption?.ok ? adoption.session : null;
   if (!adopted && !handed.key && !handed.password) {
+    // WebUntis away for a moment: the code stays, the website asks again.
+    if (adoption && !adoption.ok && adoption.unavailable) {
+      res.status(503).json({ error: 'WebUntis ist gerade nicht erreichbar. Bitte versuche es gleich noch einmal.', code: 'unavailable' });
+      return;
+    }
     await finishQrLogin(state.id);
     res.status(410).json({ status: 'expired', code: 'session_gone', error: 'Die Anmeldung der App ist abgelaufen. Öffne die App kurz und scanne den Code noch einmal.' });
     return;

@@ -21,7 +21,7 @@ import {
   parseAccountRole,
 } from '../utils/accountClass';
 import { resolveVerifiedSession, type ResolvedAccount } from '../webuntis/accountResolver';
-import { IDENTITY_FAILURES, verifySessionIdentity } from '../webuntis/sessionIdentity';
+import { IDENTITY_FAILURES, normalizedLoginName, verifySessionIdentity } from '../webuntis/sessionIdentity';
 import { accountTenant } from '../webuntis/identity';
 import { settleSchoolTenant } from '../services/schoolTenant';
 import { defaultSchoolId, forgetUserSchool, SchoolLimitError, schoolForLogin, webuntisTenantOf } from '../services/schools';
@@ -1082,14 +1082,17 @@ router.post('/qr/:code/approve', writeLimiter, requireAuth, async (req: Request,
     if (!body.password && !body.key && !body.sessionId) {
       return res.status(400).json({ error: 'Melde dich in der App einmal mit Passwort an, dann geht es.', code: 'credential_required' });
     }
-    if (body.username !== user.username) {
+    // Compared as WebUntis compares logins: an account stored with capitals
+    // (made by an older script) is still this one.
+    if (normalizedLoginName(body.username) !== normalizedLoginName(user.username)) {
       return res.status(403).json({ error: 'Die Anmeldung gehört zu einem anderen Konto.', code: 'account_mismatch' });
     }
     if (body.school && !parseSchool(body.school)) {
       return res.status(400).json({ error: 'Diese Schule ist nicht verfügbar.', code: 'school_invalid' });
     }
     credential = {
-      username: user.username,
+      // In lower case, as the website's password sign-in has it.
+      username: user.username.trim().toLowerCase(),
       ...(body.key ? { key: body.key } : body.password ? { password: body.password } : {}),
       ...(body.sessionId ? { sessionId: body.sessionId } : {}),
       ...(body.school ? { school: body.school } : {}),

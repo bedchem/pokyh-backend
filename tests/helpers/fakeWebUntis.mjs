@@ -61,7 +61,9 @@ export class FakeWebUntis {
    * children (a guardian's: person ids), pageConfig (the pupil's own element
    * carries the class), lessons (the class ids of each weekly lesson),
    * pickerClasses (the timetable picker's classes), authenticateClass
-   * (false: authenticate answers klasseId 0).
+   * (false: authenticate answers klasseId 0), appPerson (false: the app-data
+   * names no person of the account's own, only its children), appDataDelayMs
+   * (the app-data answers this late).
    */
   account(username, options = {}) {
     const kind = options.kind ?? 'student';
@@ -81,6 +83,8 @@ export class FakeWebUntis {
       lessons: options.lessons ?? null,
       pickerClasses: options.pickerClasses ?? null,
       authenticateClass: options.authenticateClass ?? true,
+      appPerson: options.appPerson ?? true,
+      appDataDelayMs: options.appDataDelayMs ?? 0,
     };
     // A class the account is in is one of the school's classes.
     if (account.klasseId > 0 && !this.klassen.some((k) => k.id === account.klasseId)) {
@@ -116,7 +120,7 @@ export class FakeWebUntis {
   appData(account) {
     const user = {
       ...(account.appLoginName ? { name: account.appLoginName } : {}),
-      person: { id: account.personId, displayName: account.username },
+      ...(account.appPerson ? { person: { id: account.personId, displayName: account.username } } : {}),
       roles: [account.kind === 'parent' ? 'LEGAL_GUARDIAN' : account.kind === 'teacher' ? 'TEACHER' : 'STUDENT'],
       ...(account.kind === 'parent-on-record' ? { tags: ['Elternaccount'] } : {}),
       students: account.children.map((id) => ({ id, displayName: `Kind ${id}` })),
@@ -168,7 +172,12 @@ export class FakeWebUntis {
         return;
       }
       if (!account) { res.writeHead(200, { 'content-type': 'text/html' }).end('<html>login</html>'); return; }
-      if (p === '/api/rest/view/v1/app/data') return json(200, this.appData(account));
+      if (p === '/api/rest/view/v1/app/data') {
+        const data = this.appData(account);
+        if (account.appDataDelayMs > 0) setTimeout(() => json(200, data), account.appDataDelayMs);
+        else json(200, data);
+        return;
+      }
       if (p === '/api/public/timetable/weekly/pageconfig') {
         const elements = account.pageConfig ? [{ type: 5, id: account.personId, name: account.username, klasseId: account.klasseId }] : [];
         return json(200, { data: { elements } });
