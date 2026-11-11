@@ -10,6 +10,8 @@ import { writeLimiter } from '../middleware/rateLimiter';
 import { logger } from '../utils/logger';
 import { NotFoundError, ValidationError } from '../utils/errors';
 import { renderPopupContent } from '../services/popupRender';
+import { storePopupImage, withPictureBase } from '../services/popupImages';
+import { PictureError } from '../utils/pictures';
 import { likeText } from '../utils/like';
 import { cached } from '../services/cache';
 
@@ -217,6 +219,21 @@ admin.get('/targets', requireAdmin, requirePermission('popups.manage'), async (r
   });
 });
 
+// POST /api/admin/popups/images — a picture for a popup, kept in the database:
+// the answer's `url` goes into the content as ![](url).
+const popupImageSchema = z.object({ data: z.string().min(1), mimeType: z.string().max(100) });
+admin.post('/images', requireAdmin, requirePermission('popups.manage'), writeLimiter, async (req: Request, res: Response): Promise<void> => {
+  const body = popupImageSchema.parse(req.body);
+  try {
+    const stored = await storePopupImage(body.data, body.mimeType, req.adminUser?.username ?? '');
+    audit(req, 'popup.image', { type: 'popup-image', id: stored.id }, { width: stored.width, height: stored.height });
+    res.status(201).json(stored);
+  } catch (err) {
+    if (err instanceof PictureError) { res.status(err.status).json({ error: err.message }); return; }
+    throw err;
+  }
+});
+
 // Live preview for the editor — the exact HTML clients would receive.
 admin.post('/render', requireAdmin, requirePermission('popups.manage'), async (req: Request, res: Response): Promise<void> => {
   const { content } = z.object({ content: z.string().max(100_000) }).parse(req.body);
@@ -345,7 +362,7 @@ client.get('/active', optionalAuth, async (req: Request, res: Response): Promise
       id: p.id,
       revision: p.revision,
       title: p.title,
-      html: p.contentHtml,
+      html: withPictureBase(p.contentHtml),
       showCount: p.showCount,
       startsAt: p.startsAt?.toISOString() ?? null,
       endsAt: p.endsAt?.toISOString() ?? null,

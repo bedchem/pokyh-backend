@@ -1,5 +1,5 @@
 import type { AdminStats, AdminClass, AdminSessionsResponse, AdminLoginEvent, UsersResponse, LogsResponse, UserLogsResponse, SetupStatus, RequestsChartPoint, TopEndpoint, AdminUserDetail, AdminTodo, AdminReminder, AdminClassTodo, AdminDish, AdminDishFull, AdminDishImportResult, AdminDishShiftResult, AdminDishRotateResult, AdminDishResetResult, AdminDishAnchorResult, DishPlan, AdminCommentsResponse, FileLogFile, FileLogResponse, FileLogEntry, FrontendActivityLogsResponse, FrontendActivityStats, AllTodosResponse, AllRemindersResponse, SchoolYearsResponse, ArchivedUsersResponse, ArchivedClass, ArchivedTodosResponse, ArchivedRemindersResponse, RolloverResult, RollbackResult, AdminApiKey, CreatedApiKey, BackupsResponse, AdminPopup, PopupInput, ClusterStatus, ClusterInstall, CreatedClusterInstall, ClusterReach, ReachEntry, AdminAnalytics, AnalyticsRange, AnalyticsPeople, PeopleFilters, AnalyticsBreakdown, BreakdownKind, AnalyticsDishes, AnalyticsVisitors, AnalyticsVisitorIp, AnalyticsPersonDetail, VisitSource, ClusterUpdates, ClusterUpdateSettings, PopupTargetUser, PopupTargetClass, WayTestResult, ReachKind, LoginResult, PasskeyChallenge, AdminSecurityStatus, TotpSetup, AdminPasskey, AccountRole, FactorKind, PermissionPreset, PresetDraft } from './types';
-import type { SearchKind, SearchResponse, UserKindFilter, UsersSummary } from './types';
+import type { SearchKind, SearchResponse, UserKindFilter, UsersSummary, PictureTakeover, DishPictureStatus } from './types';
 import type { AdminRecap, RecapInput, RecapTargets } from './types';
 import type { MenuCalendar, MenuDayOverride, MenuMode, MenuPullMode, MenuPullResult, MenuScheduleInfo, MenuWeekCount } from './types';
 import type { AdminMe, AccessCatalog, AdminSchool, MensaMenu, AdminAccount, AdminGrantView, GrantInput, AuditEventsResponse, RequestScopeChoice, RequestsSummary, PerformanceReport, SystemHealth, SystemLogsResponse, ClientErrorGroup, ClientErrorOccurrence, PrivacyOverview, DishCommentGroupsResponse, DishCommentsResponse, ReminderCommentGroup, ReminderCommentItem } from './types';
@@ -505,11 +505,16 @@ export const adminApi = {
     return request<AdminDishFull[]>('GET', `/api/admin/dishes${q}`);
   },
 
-  createDish: (data: Omit<AdminDishFull, 'id' | 'createdAt' | 'updatedAt'>): Promise<AdminDishFull> =>
-    request<AdminDishFull>('POST', '/api/admin/dishes', data),
+  // `picture`: how taking over a pasted picture link went (services/dishPictures.ts).
+  createDish: (data: Omit<AdminDishFull, 'id' | 'createdAt' | 'updatedAt'>): Promise<AdminDishFull & { picture?: PictureTakeover }> =>
+    request<AdminDishFull & { picture?: PictureTakeover }>('POST', '/api/admin/dishes', data),
 
-  updateDish: (id: string, data: Partial<Omit<AdminDishFull, 'id' | 'createdAt' | 'updatedAt'>>): Promise<AdminDishFull> =>
-    request<AdminDishFull>('PATCH', `/api/admin/dishes/${id}`, data),
+  updateDish: (id: string, data: Partial<Omit<AdminDishFull, 'id' | 'createdAt' | 'updatedAt'>>): Promise<AdminDishFull & { picture?: PictureTakeover }> =>
+    request<AdminDishFull & { picture?: PictureTakeover }>('PATCH', `/api/admin/dishes/${id}`, data),
+
+  // The pictures a menu's dishes only link to, into the database now.
+  takeDishPictures: (): Promise<{ taken: number; failed: Array<{ url: string; error: string }>; left: number; status: DishPictureStatus }> =>
+    request<{ taken: number; failed: Array<{ url: string; error: string }>; left: number; status: DishPictureStatus }>('POST', '/api/admin/dishes/pictures/take', {}),
 
   deleteDish: (id: string): Promise<void> =>
     request<void>('DELETE', `/api/admin/dishes/${id}`),
@@ -726,6 +731,10 @@ export const adminApi = {
 
   deletePopup: (id: string): Promise<void> =>
     request<void>('DELETE', `/api/admin/popups/${id}`),
+
+  // A picture for a popup, kept in the database; `url` goes into the content.
+  uploadPopupImage: (data: string, mimeType: string): Promise<{ id: string; url: string; width: number; height: number }> =>
+    request<{ id: string; url: string; width: number; height: number }>('POST', '/api/admin/popups/images', { data, mimeType }),
 
   renderPopup: (content: string): Promise<{ html: string }> =>
     request<{ html: string }>('POST', '/api/admin/popups/render', { content }),

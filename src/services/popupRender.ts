@@ -36,6 +36,17 @@ export function autoEmbedImageUrls(source: string): string {
     .join('\n');
 }
 
+// A picture uploaded for popups, by its path (services/popupImages.ts).
+const ID = '[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}';
+const OWN_PICTURE = new RegExp(`^/popup-images/${ID}$`);
+
+/** The ids of the popup pictures `texts` name (/popup-images/<id>). */
+export function popupImageIds(...texts: string[]): Set<string> {
+  const ids = new Set<string>();
+  for (const text of texts) for (const m of text.matchAll(new RegExp(`/popup-images/(${ID})`, 'g'))) ids.add(m[1]!);
+  return ids;
+}
+
 const COLOR = [/^#[0-9a-f]{3,8}$/i, /^rgba?\(\s*[\d.\s,%]+\)$/i, /^hsla?\(\s*[\d.\s,%deg]+\)$/i, /^[a-z]{3,20}$/i];
 const LENGTH = [/^\d{1,3}(?:\.\d+)?(?:px|em|rem|%)$/];
 
@@ -75,7 +86,14 @@ const SANITIZE_OPTIONS: sanitizeHtml.IOptions = {
       tagName,
       attribs: { ...attribs, target: '_blank', rel: 'noopener noreferrer nofollow' },
     }),
-    img: (tagName, attribs) => ({ tagName, attribs: { ...attribs, loading: 'lazy' } }),
+    // A picture is a web link or one uploaded for popups (/popup-images/<id>,
+    // services/popupImages.ts); any other path is dropped with its picture.
+    img: (tagName, attribs) => {
+      const { src, ...rest } = attribs;
+      const kept: Record<string, string> = { ...rest, loading: 'lazy' };
+      if (src !== undefined && (/^https?:\/\//i.test(src) || OWN_PICTURE.test(src))) kept['src'] = src;
+      return { tagName, attribs: kept };
+    },
     // GFM task-list checkboxes are display-only.
     input: (tagName, attribs) => ({ tagName, attribs: { ...attribs, disabled: 'disabled' } }),
   },

@@ -3,10 +3,11 @@ import http from 'node:http';
 import https from 'node:https';
 import net from 'node:net';
 
-// Fetches an operator-supplied JSON source. Bounded in time and size and
-// limited to plain web URLs, so a slow, endless or mistyped source can only
-// fail the one request that asked for it. Without a redirect: following one
-// would leave the address that was checked.
+// Fetches an operator-supplied JSON source, or a picture a link names. Bounded
+// in time and size and limited to plain web URLs, so a slow, endless or
+// mistyped source can only fail the one request that asked for it. Without a
+// redirect unless asked for: then every address on the way is checked as the
+// first one was.
 const FETCH_IDLE_TIMEOUT_MS = 10_000;
 const FETCH_TOTAL_TIMEOUT_MS = 30_000;
 const FETCH_MAX_BYTES = 5 * 1024 * 1024;
@@ -91,7 +92,20 @@ export async function fetchUrl(url: string, options: { publicOnly?: boolean } = 
   return (await fetchBytes(url, options)).toString('utf8');
 }
 
-export function fetchBytes(url: string, { publicOnly = false }: { publicOnly?: boolean } = {}): Promise<Buffer> {
+export interface FetchOptions {
+  /** Refuse the internal network, by name and by what the name resolves to. */
+  publicOnly?: boolean;
+  /** Bytes the answer may have at most (5 MB unless said). */
+  maxBytes?: number;
+  /** Redirects to follow (none unless said), each one checked like the first address. */
+  redirects?: number;
+  /** What the request accepts. */
+  accept?: string;
+}
+
+const MAX_REDIRECTS = 5;
+
+export function fetchBytes(url: string, { publicOnly = false, maxBytes = FETCH_MAX_BYTES, redirects = 0, accept }: FetchOptions = {}): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     let parsed: URL;
     try {
@@ -109,30 +123,61 @@ export function fetchBytes(url: string, { publicOnly = false }: { publicOnly?: b
       return;
     }
     const lib = parsed.protocol === 'https:' ? https : http;
-    const req = lib.get(parsed, { headers: { 'User-Agent': 'pokyh-backend/1.0' }, ...(publicOnly ? { lookup: publicLookup } : {}) }, (res) => {
+    const headers: Record<string, string> = { 'User-Agent': 'pokyh-backend/1.0', ...(accept ? { Accept: accept } : {}) };
+    const req = lib.get(parsed, { headers, ...(publicOnly ? { lookup: publicLookup } : {}) }, (res) => {
       const status = res.statusCode ?? 0;
+      const location = res.headers.location;
+      if (status >= 300 && status < 400 && location && redirects > 0) {
+        res.resume();
+        let next: string;
+        try {
+          next = new URL(location, parsed).toString();
+        } catch {
+          fail(new Error('invalid redirect'));
+          return;
+        }
+        settled = true;
+        fetchBytes(next, { publicOnly, maxBytes, redirects: Math.min(redirects, MAX_REDIRECTS) - 1, accept }).then(resolve, reject);
+        return;
+      }
       if (status < 200 || status >= 300) {
         res.resume();
-        reject(new Error(`unexpected HTTP status ${status}`));
+        fail(new Error(`unexpected HTTP status ${status}`));
         return;
       }
       const chunks: Buffer[] = [];
       let received = 0;
       res.on('data', (c: Buffer) => {
+        if (settled) return;
         received += c.length;
-        if (received > FETCH_MAX_BYTES) {
-          req.destroy(new Error('response too large'));
+        if (received > maxBytes) {
+          // Refused, not cut short: a too large answer is never taken in part,
+          // and the stopped connection is no error left for nobody to catch.
+          fail(new Error('response too large'));
+          res.destroy();
+          req.destroy();
           return;
         }
         chunks.push(c);
       });
-      res.on('end', () => resolve(Buffer.concat(chunks)));
-      res.on('error', reject);
+      res.on('end', () => {
+        if (settled) return;
+        settled = true;
+        resolve(Buffer.concat(chunks));
+      });
+      res.on('error', fail);
+      res.on('close', () => { if (!res.complete) fail(new Error('response cut short')); });
     });
+    let settled = false;
+    const fail = (err: Error) => {
+      if (settled) return;
+      settled = true;
+      reject(err);
+    };
     // setTimeout only sees silence; a source that drips forever meets the total.
-    const total = setTimeout(() => req.destroy(new Error('fetch timeout')), FETCH_TOTAL_TIMEOUT_MS);
+    const total = setTimeout(() => { fail(new Error('fetch timeout')); req.destroy(); }, FETCH_TOTAL_TIMEOUT_MS);
     req.on('close', () => clearTimeout(total));
-    req.on('error', reject);
-    req.setTimeout(FETCH_IDLE_TIMEOUT_MS, () => { req.destroy(new Error('fetch timeout')); });
+    req.on('error', fail);
+    req.setTimeout(FETCH_IDLE_TIMEOUT_MS, () => { fail(new Error('fetch timeout')); req.destroy(); });
   });
 }

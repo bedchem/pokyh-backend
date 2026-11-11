@@ -335,7 +335,7 @@ export function PopupsPage() {
                 <label className="text-[12px] block mb-1.5" style={dimText}>Text (optional)</label>
                 <PopupEditor value={form.content} onChange={(v) => set('content', v)} />
                 <p className="text-[11.5px] mt-1.5" style={dimText}>
-                  Darf leer bleiben — dann zeigt das Popup nur den Titel. GitHub-Markdown und HTML werden unterstützt; ein Bild-Link (…png/jpg/gif/webp) wird automatisch als Bild angezeigt.
+                  Darf leer bleiben — dann zeigt das Popup nur den Titel. GitHub-Markdown und HTML werden unterstützt. Bilder lädst du mit dem Knopf hoch, fügst sie ein oder ziehst sie hinein: Sie liegen dann in der Datenbank und sind in jedem Backup. Ein Bild-Link (…png/jpg/gif/webp) wird als Bild angezeigt, bleibt aber auf der fremden Seite.
                 </p>
               </div>
 

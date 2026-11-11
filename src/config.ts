@@ -581,6 +581,9 @@ export const config = {
   sseHeartbeatMs: intEnv('SSE_HEARTBEAT_MS', 30 * 1000),
   // The menu source (a mensa.json) for the dish import; no built-in default.
   mensaImportUrl: strEnv('MENSA_IMPORT_URL', ''),
+  // Hosts (host or host:port) in the internal network dish pictures may be
+  // fetched from; empty: public addresses only. See services/dishPictures.ts.
+  mensaPictureInternalHosts: strEnv('MENSA_PICTURE_INTERNAL_HOSTS', '').split(',').map((h) => h.trim().toLowerCase()).filter(Boolean),
   // How often a menu set to pull by itself asks its sources; 0 = never by itself.
   mensaPullIntervalHours: intEnv('MENSA_PULL_INTERVAL_HOURS', 6),
   mensaPullCheckIntervalMs: intEnv('MENSA_PULL_CHECK_INTERVAL_MS', 15 * 60 * 1000),

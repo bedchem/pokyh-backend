@@ -400,10 +400,14 @@ model Dish {
   @@map("dishes")
 }
 
+// A dish's picture, kept here so it is part of every backup (utils/pictures.ts).
 model DishImage {
   dishId    String   @id @map("dish_id")
   data      Bytes    @db.LongBlob
   mimeType  String   @map("mime_type") @db.VarChar(100)
+  // The link it was taken from (services/dishPictures.ts); "" when an
+  // administrator uploaded it. A source's new link replaces only the former.
+  sourceUrl String   @default("") @map("source_url") @db.VarChar(1000)
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
@@ -564,6 +568,23 @@ model KnownSubject {
   createdAt DateTime @default(now()) @map("created_at")
 
   @@map("known_subjects")
+}
+
+// A picture uploaded for popups, served at /popup-images/:id and named in a
+// popup's content by that path. Its id is random (not guessable), its bytes
+// never change; one no popup names any more goes a day after it was made
+// (services/popupImages.ts).
+model PopupImage {
+  id        String   @id @db.VarChar(36)
+  data      Bytes    @db.LongBlob
+  mimeType  String   @map("mime_type") @db.VarChar(100)
+  width     Int
+  height    Int
+  createdBy String   @default("") @map("created_by") @db.VarChar(191)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([createdAt])
+  @@map("popup_images")
 }
 
 model SubjectImage {

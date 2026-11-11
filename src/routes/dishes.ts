@@ -12,6 +12,7 @@ import { slugifyDishName } from '../utils/dishKey';
 import { logger } from '../utils/logger';
 import { optionalAuth } from '../middleware/auth';
 import { menuContext } from '../services/schools';
+import { pictureHeaders } from '../utils/pictures';
 
 const router = Router();
 
@@ -155,10 +156,13 @@ router.get('/:id/image', readLimiter, async (req: Request, res: Response): Promi
   const etag = `"${meta.updatedAt.getTime()}"`;
   res.setHeader('ETag', etag);
   res.setHeader('Cache-Control', 'public, max-age=86400, stale-while-revalidate=604800');
+  // The website is on another origin (www.… beside api.…): helmet's
+  // same-origin would keep it from showing the picture in an <img>.
+  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
   if (req.headers['if-none-match'] === etag) { res.status(304).end(); return; }
   const row = await prisma.dishImage.findUnique({ where: { dishId: id }, select: { data: true } });
   if (!row) { res.status(404).end(); return; }
-  res.setHeader('Content-Type', meta.mimeType);
+  for (const [name, value] of Object.entries(pictureHeaders(meta.mimeType))) res.setHeader(name, value);
   res.setHeader('Content-Length', row.data.length);
   res.end(row.data);
 });

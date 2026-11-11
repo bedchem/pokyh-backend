@@ -280,6 +280,7 @@ All times are ISO-8601 UTC. Mount points:
 | Dish ratings and comments | `/dish-ratings` · `/dish-comments/:dishId` | Stars and comments + SSE |
 | Subject images | `/subject-images` | Icon catalogue (read public, write admin) |
 | Popups | `/popups/active?platform=web\|android&audience=user\|guest` | Active announcements, targeted ones only to their users |
+| Pictures | `/dishes/:id/image` · `/popup-images/:id` | Dish and popup pictures kept in the database; public, no API key (named in `<img>`) |
 | Push | `/push` | Web Push subscription; `POST/DELETE /push/apns` for the iOS app |
 | Usage and privacy | `/usage/ping` · `/privacy` | Usage statistics; privacy notice record and consent |
 | Client errors | `/client-errors` | Validated, scrubbed error reports of the web app and the apps |
@@ -381,7 +382,8 @@ data of a person is never cached.
 The layers (cluster, checksummed backups, start-up rebuild of a lost database, point-in-time
 recovery through `db-archiver`, encrypted off-site copies) and what an operator does in each case
 are described in [`docs/database.md`](docs/database.md). Encrypted backups are opened with
-`npm run decrypt-backup`.
+`npm run decrypt-backup`. Binary columns (the pictures) are dumped as hex (`--hex-blob`): the
+dump is plain text and every picture comes back byte for byte.
 
 ---
 
@@ -440,6 +442,20 @@ winter plans and their vegetarian menus are found anew at each pull. Only what
 the source has changed is taken over, a plan's position, uploaded pictures and
 edits stay, and a file that looks wrong changes nothing and is reported on the
 same page. PDFs are read as text only, in a worker thread limited in memory and time.
+
+Every picture lives in the database, so every backup has it
+(`src/utils/pictures.ts`): uploads for dishes, subjects and popups, and the
+pictures a dish only links to (a `mensa.json` names them, an administrator may
+paste one), which the server fetches by itself (`src/services/dishPictures.ts`;
+public addresses only, at most 10 MB, redirects checked hop by hop). Each one is
+read for what its bytes are and drawn anew as WebP of at most 1600 px: no SVG,
+no script, no EXIF. A link that fails stays a link, is tried again less and less
+often and is named on the dish page; a source's new link replaces the copy of
+its old one, never an upload or a picture an administrator chose. A dish names
+its picture by path (`/dishes/<id>/image`), the public menu with
+`PUBLIC_BASE_URL` in front, so a backup restored on another server still finds
+it. Popup pictures (`/popup-images/<id>`, random ids, kept for good by
+browsers) no popup names any more go a day after their upload.
 
 ---
 

@@ -10,7 +10,7 @@ import { useAccess } from '../access';
 import { relative } from '../components/format';
 import { useSwitchView } from '../useSwitchView';
 import { MenuDeleteDialog, MenuNameDialog, MenuSchoolsDialog } from '../components/MenuDialogs';
-import type { AdminDishFull, AdminDish, AdminDishRatingEntry, DishPlan, MensaMenu, MenuBreakReason, MenuCalendar, MenuDayOverride, MenuMode, MenuPullMode, MenuScheduleInfo, MenuWeekCount } from '../types';
+import type { AdminDishFull, AdminDish, AdminDishRatingEntry, DishPictureStatus, DishPlan, MensaMenu, MenuBreakReason, MenuCalendar, MenuDayOverride, MenuMode, MenuPullMode, MenuScheduleInfo, MenuWeekCount } from '../types';
 import { useToast } from '../components/Toast';
 import { useLive } from '../live';
 import { Collapse, Delta, Dialog, Figures, IconButton, Notice, PageHeader, SearchField, Segmented, Spinner, Tag } from '../components/kit';
@@ -446,15 +446,24 @@ function DishForm({ dish, ratingData: ratingSummary, initialDate, activePlan, on
         sortOrder: Number(form.sortOrder) || 0,
         plan: form.plan,
       };
-      let saved = isEdit
+      const { picture, ...answer } = isEdit
         ? await adminApi.updateDish(dish!.id, payload)
         : await adminApi.createDish(payload);
+      let saved: AdminDishFull = answer;
       if (pendingImage) {
         const res = await adminApi.uploadDishImage(saved.id, pendingImage.data, pendingImage.mimeType);
         saved = { ...saved, imageUrl: res.imageUrl };
       }
       onSaved(saved);
-      showToast(isEdit ? 'Gericht gespeichert' : 'Gericht erstellt', 'success');
+      const done = isEdit ? 'Gericht gespeichert' : 'Gericht erstellt';
+      // A pasted picture link is fetched into the database (services/dishPictures.ts).
+      if (picture && !pendingImage) {
+        if (picture.ok) showToast(`${done} · Bild in die Datenbank übernommen`, 'success');
+        else if (picture.pending) showToast(`${done} · Das Bild wird im Hintergrund übernommen`, 'success');
+        else showToast(`${done}, aber das Bild wurde nicht übernommen: ${picture.error}. POKYH versucht es später erneut.`, 'error');
+      } else {
+        showToast(done, 'success');
+      }
     } catch (err) {
       showToast(err instanceof Error ? err.message : 'Fehler beim Speichern', 'error');
     } finally {
@@ -623,10 +632,11 @@ function DishForm({ dish, ratingData: ratingSummary, initialDate, activePlan, on
               </div>
 
               <div>
-                <label style={lblStyle} className={lbl}>Bild-URL</label>
+                <label style={lblStyle} className={lbl}>Bild-Link</label>
                 <input className={inp} style={inpStyle} value={form.imageUrl}
                   onChange={(e) => set('imageUrl', e.target.value)}
                   onFocus={focusStyle} onBlur={blurStyle} placeholder="https://..." />
+                <p className="mt-1 text-[12px] text-ink-4">Ein Link wird beim Speichern heruntergeladen und als eigenes Bild in der Datenbank gespeichert, so ist es in jedem Backup.</p>
               </div>
 
               <div className="flex gap-2">
@@ -1452,6 +1462,50 @@ function UpcomingDays({ schedule }: { schedule: MenuScheduleInfo }) {
   );
 }
 
+// Where the menu's pictures are: in the database (in every backup) or only
+// linked somewhere else, which POKYH fetches by itself (services/dishPictures.ts).
+function PicturesStatus({ pictures, canEdit, onTaken }: { pictures: DishPictureStatus; canEdit: boolean; onTaken: (next: MenuScheduleInfo) => void }) {
+  const { showToast } = useToast();
+  const [busy, setBusy] = useState(false);
+  async function take() {
+    setBusy(true);
+    try {
+      const r = await adminApi.takeDishPictures();
+      onTaken(await adminApi.menuSchedule());
+      if (r.failed.length > 0) showToast(`${r.taken} ${r.taken === 1 ? 'Bild' : 'Bilder'} übernommen, ${r.failed.length} ${r.failed.length === 1 ? 'Link' : 'Links'} gingen nicht`, 'error');
+      else showToast(r.taken > 0 ? `${r.taken} ${r.taken === 1 ? 'Bild' : 'Bilder'} in die Datenbank übernommen` : 'Alle Bilder sind schon in der Datenbank', 'success');
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Die Bilder konnten nicht geholt werden', 'error');
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div>
+      <div className="flex flex-wrap items-center gap-3">
+        <span className="flex items-center gap-2 text-[13.5px] font-medium text-ink"><ImagePlus size={15} strokeWidth={1.7} /> Bilder</span>
+        <Tag tone={pictures.linked === 0 ? 'mint' : 'amber'}>{pictures.kept} in der Datenbank{pictures.linked > 0 ? ` · ${pictures.linked} nur verlinkt` : ''}</Tag>
+        {canEdit && pictures.linked > 0 && (
+          <button type="button" className="btn btn-quiet btn-sm" disabled={busy} onClick={() => void take()}>
+            {busy ? <Spinner size={13} /> : <CloudDownload size={14} />} Jetzt holen
+          </button>
+        )}
+      </div>
+      <p className="mt-1 max-w-[78ch] text-[12.5px] leading-relaxed text-ink-3">
+        Hochgeladene Bilder und Bilder aus Links liegen in der Datenbank und sind in jedem Backup. Ein Bild, das nur verlinkt ist (z. B. aus einer mensa.json), holt POKYH von selbst; ein Link, der nicht geht, wird später erneut versucht.
+      </p>
+      {pictures.failing.length > 0 && (
+        <ul className="mt-2 space-y-1 text-[12.5px] text-ink-3">
+          {pictures.failing.slice(0, 5).map((f) => (
+            <li key={f.url} className="truncate" title={f.url}>{f.error}: {f.url}</li>
+          ))}
+          {pictures.failing.length > 5 && <li>und {pictures.failing.length - 5} weitere</li>}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 type ScheduleChange = { mode: MenuMode; calendar: MenuCalendar; overrides: MenuDayOverride[]; seasonRule: 'dates' | 'clock'; weekCount: MenuWeekCount; resetAnchors?: boolean };
 
 function SchedulePanel({ schedule, canEdit, busy, onChange, onSourceSaved, onPulled }: {
@@ -1609,6 +1663,8 @@ function SchedulePanel({ schedule, canEdit, busy, onChange, onSourceSaved, onPul
       <div style={{ opacity: auto ? 1 : 0.62 }}>
         <OverridesEditor overrides={schedule.overrides} canEdit={canEdit && auto} busy={busy} onChange={(overrides) => change({ overrides })} />
       </div>
+
+      {schedule.pictures && <PicturesStatus pictures={schedule.pictures} canEdit={canEdit} onTaken={(next) => { onSourceSaved(next); onPulled(); }} />}
 
       <div className="pt-6" style={{ borderTop: '1px solid var(--line)' }}>
         <SourceEditor schedule={schedule} canEdit={canEdit} onSaved={onSourceSaved} onPulled={onPulled} />

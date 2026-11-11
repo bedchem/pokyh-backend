@@ -6,7 +6,6 @@ import jwt from 'jsonwebtoken';
 import { rateLimit } from 'express-rate-limit';
 import fs from 'fs/promises';
 import path from 'path';
-import sharp from 'sharp';
 import { createHash, randomBytes, randomUUID } from 'crypto';
 import { config } from '../config';
 import { prisma } from '../db';
@@ -32,6 +31,8 @@ import {
 } from '../utils/mensaRotate';
 import { servedDishes, snapForwardToSeason } from '../utils/mensaSeason';
 import { seasonDatesProblem } from '../utils/mensaPdf';
+import { PictureError, toWebp, uploadBytes } from '../utils/pictures';
+import { adoptPicture, adoptPictures, isLinkedPicture, kickPictures, pictureStatus } from '../services/dishPictures';
 import { dayOverridesFrom, menuBreaks } from '../utils/mensaSchedule';
 import { mondayOfDay, planWeekOn } from '../utils/mensaCycle';
 import { dishFingerprint, sourceUrlProblem } from '../utils/mensaSource';
@@ -1740,6 +1741,8 @@ router.post('/dishes', requireAdmin, requirePermission('mensa.manage'), async (r
     return;
   }
   const plan = parsePlan(b['plan']);
+  const imageUrl = pictureLink(b['imageUrl']);
+  if (imageUrl === null) { res.status(422).json({ error: PICTURE_LINK_ERROR }); return; }
 
   const dish = await prisma.dish.create({
     data: {
@@ -1753,7 +1756,7 @@ router.post('/dishes', requireAdmin, requirePermission('mensa.manage'), async (r
       descDe: b['descDe'] ? String(b['descDe']) : '',
       descIt: b['descIt'] ? String(b['descIt']) : '',
       descEn: b['descEn'] ? String(b['descEn']) : '',
-      imageUrl: b['imageUrl'] ? String(b['imageUrl']) : '',
+      imageUrl,
       category: b['category'] ? String(b['category']).trim() : '',
       tags: JSON.stringify(Array.isArray(b['tags']) ? b['tags'] : []),
       prepTime: typeof b['prepTime'] === 'number' ? b['prepTime'] : 0,
@@ -1773,10 +1776,12 @@ router.post('/dishes', requireAdmin, requirePermission('mensa.manage'), async (r
   // A new week is named and laid out right away, not at the next visitor;
   // the answer is the dish where it lies then.
   await arrangeAfterEdit(menuId);
+  // A pasted link: the picture comes into the database right away.
+  const picture = await takePicture(imageUrl, dish.id);
   const placed = (await prisma.dish.findUnique({ where: { id: dish.id } })) ?? dish;
 
   invalidateDishesCache();
-  res.status(201).json(dishRow(placed));
+  res.status(201).json({ ...dishRow(placed), ...(picture ? { picture } : {}) });
 });
 
 // ─── PATCH /api/admin/dishes/:id ──────────────────────────────────────────────
@@ -1799,7 +1804,11 @@ router.patch('/dishes/:id', requireAdmin, requirePermission('mensa.manage'), asy
   if (b['descDe'] !== undefined) data['descDe'] = String(b['descDe']);
   if (b['descIt'] !== undefined) data['descIt'] = String(b['descIt']);
   if (b['descEn'] !== undefined) data['descEn'] = String(b['descEn']);
-  if (b['imageUrl'] !== undefined) data['imageUrl'] = String(b['imageUrl']);
+  if (b['imageUrl'] !== undefined) {
+    const link = pictureLink(b['imageUrl']);
+    if (link === null) { res.status(422).json({ error: PICTURE_LINK_ERROR }); return; }
+    data['imageUrl'] = link;
+  }
   if (b['category'] !== undefined) data['category'] = String(b['category']).trim();
   if (b['tags'] !== undefined) data['tags'] = JSON.stringify(Array.isArray(b['tags']) ? b['tags'] : []);
   if (b['prepTime'] !== undefined) data['prepTime'] = Number(b['prepTime']);
@@ -1831,10 +1840,44 @@ router.patch('/dishes/:id', requireAdmin, requirePermission('mensa.manage'), asy
 
   const dish = await prisma.dish.update({ where: { id }, data }).catch(() => null);
   if (!dish) { res.status(404).json({ error: 'Dish not found' }); return; }
+  const picture = data['imageUrl'] !== undefined && data['imageUrl'] !== before.imageUrl ? await takePicture(dish.imageUrl, id) : null;
+  const saved = picture ? ((await prisma.dish.findUnique({ where: { id } })) ?? dish) : dish;
 
   invalidateDishesCache();
-  res.json(dishRow(dish));
+  res.json({ ...dishRow(saved), ...(picture ? { picture } : {}) });
 });
+
+// What a dish's picture may be: none, its own (a path), or a web link (which
+// is fetched into the database). Null when it is none of these.
+const PICTURE_LINK_ERROR = 'Der Bild-Link muss mit https:// oder http:// beginnen (höchstens 1000 Zeichen)';
+function pictureLink(value: unknown): string | null {
+  const text = typeof value === 'string' ? value.trim() : value === undefined || value === null ? '' : null;
+  if (text === null) return null;
+  if (text === '' || /^\/dishes\/[^/?#\s]+\/image(?:\?v=\d+)?$/.test(text)) return text;
+  if (text.length > 1000 || /\s/.test(text)) return null;
+  try {
+    const url = new URL(text);
+    return url.protocol === 'https:' || url.protocol === 'http:' ? text : null;
+  } catch {
+    return null;
+  }
+}
+
+// How long an edit waits for the picture of a pasted link; after that it goes
+// on in the background (and with the next round). The picture an
+// administrator chose is theirs like an upload: no source replaces it.
+const TAKE_PICTURE_WAIT_MS = 15_000;
+async function takePicture(imageUrl: string, dishId: string): Promise<{ ok: boolean; error?: string; pending?: boolean } | null> {
+  if (!isLinkedPicture(imageUrl)) return null;
+  const outcome = adoptPicture(imageUrl).then(async (result) => {
+    if (result.ok) await prisma.dishImage.updateMany({ where: { dishId }, data: { sourceUrl: '' } });
+    return result;
+  });
+  const timeout = new Promise<'pending'>((resolve) => setTimeout(() => resolve('pending'), TAKE_PICTURE_WAIT_MS).unref?.());
+  const result = await Promise.race([outcome, timeout]);
+  if (result === 'pending') return { ok: false, pending: true };
+  return result.ok ? { ok: true } : { ok: false, error: result.error };
+}
 
 // The plan week the dishes of `plan` lying in the week of `day` are (`except`
 // not counted), or null when none lie there.
@@ -1976,7 +2019,7 @@ router.post('/dishes/reset', requireAdmin, requirePermission('mensa.manage'), as
           weekOrdinal: d.weekOrdinal,
         },
       });
-      if (image) await tx.dishImage.create({ data: { dishId: id, data: image.data, mimeType: image.mimeType } });
+      if (image) await tx.dishImage.create({ data: { dishId: id, data: image.data, mimeType: image.mimeType, sourceUrl: image.sourceUrl } });
       imported++;
     }
     return { deleted: deleted.count, imported };
@@ -1985,6 +2028,7 @@ router.post('/dishes/reset', requireAdmin, requirePermission('mensa.manage'), as
   // A plan from a PDF knows its weeks but not their dates: they are laid out now.
   await arrangeMenu(menuId, await menuSchedule(menuId)).catch(() => 0);
   invalidateDishesCache();
+  kickPictures();
   audit(req, 'mensa.reset', { type: 'menu', id: menuId }, { plan, ...result });
   res.json({ ...result, plan });
 });
@@ -2150,7 +2194,7 @@ const localTodayIso = () => mensaTodayIso();
 
 async function scheduleJson(menuId: string, schedule: MenuSchedule) {
   const today = currentWeekMondayIso();
-  const [schoolIds, schools, menu, upcoming, counted] = await Promise.all([
+  const [schoolIds, schools, menu, upcoming, counted, pictures] = await Promise.all([
     schoolsOfMenu(menuId),
     listSchools(),
     prisma.mensaMenu.findUnique({
@@ -2159,6 +2203,7 @@ async function scheduleJson(menuId: string, schedule: MenuSchedule) {
     }),
     upcomingDays(menuId, schedule),
     thisWeek(menuId, schedule),
+    pictureStatus(menuId),
   ]);
   const onRecord = new Map(schedule.schools.map((s) => [s.schoolId, s]));
   const pullMenu = { id: menuId, pullMode: menu?.pullMode ?? 'auto', sourcePage: menu?.sourcePage ?? '' };
@@ -2197,6 +2242,8 @@ async function scheduleJson(menuId: string, schedule: MenuSchedule) {
     })),
     // Without it the apps do not know where an uploaded picture lies.
     pictureBaseMissing: config.publicBaseUrl === '',
+    // Pictures kept in the database, the ones only linked, and links that failed (services/dishPictures.ts).
+    pictures,
     pullMode: menu?.pullMode === 'manual' ? 'manual' : 'auto',
     sourcePage: menu?.sourcePage ?? '',
     sourceCanteen: menu?.sourceCanteen ?? '',
@@ -2838,9 +2885,6 @@ router.get('/file-logs/:date', requireAdmin, requirePermission('system.logs.view
 
 // ─── Subject Images (admin) ───────────────────────────────────────────────────
 
-const ALLOWED_MIME = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
-const ALLOWED_FORMATS = new Set(['jpeg', 'png', 'webp', 'gif']);
-const MAX_IMG_BYTES = 3 * 1024 * 1024;
 
 function normalizeSubjectKey(s: string): string {
   return s.toLowerCase().trim().slice(0, 200);
@@ -2896,35 +2940,15 @@ router.put('/subject-images/:subject', requireAdmin, requirePermission('subjecti
   if (!subject) { res.status(400).json({ error: 'Invalid subject' }); return; }
 
   const body = subjectImageUploadSchema.parse(req.body);
-  if (!ALLOWED_MIME.has(body.mimeType)) {
-    res.status(422).json({ error: 'Unsupported image type' }); return;
+  // Checked, upright, at most 1600 px, as WebP (utils/pictures.ts).
+  let picture;
+  try {
+    picture = await toWebp(uploadBytes(body.data, body.mimeType), { crop: body.crop });
+  } catch (err) {
+    if (err instanceof PictureError) { res.status(err.status).json({ error: err.message }); return; }
+    throw err;
   }
-  let buf = Buffer.from(body.data, 'base64');
-  if (buf.length > MAX_IMG_BYTES) {
-    res.status(413).json({ error: 'Image too large (max 3 MB)' }); return;
-  }
-  // sharp goes by what the bytes are: an SVG declared as PNG would be rendered.
-  const meta = await sharp(buf, { limitInputPixels: DISH_IMAGE_MAX_PIXELS }).metadata().catch(() => undefined);
-  const format = meta?.format;
-  if (!format || !ALLOWED_FORMATS.has(format)) {
-    res.status(422).json({ error: 'Das ist kein gültiges Bild' }); return;
-  }
-  // A few megabytes of file can unpack to billions of pixels: refused before decoding.
-  if ((meta.width ?? 0) * (meta.height ?? 0) > DISH_IMAGE_MAX_PIXELS) {
-    res.status(422).json({ error: 'Das Bild ist zu groß (zu viele Pixel)' }); return;
-  }
-
-  let mimeType = body.mimeType;
-  if (body.crop) {
-    buf = Buffer.from(await sharp(buf, { limitInputPixels: DISH_IMAGE_MAX_PIXELS })
-      .extract({ left: body.crop.left, top: body.crop.top, width: body.crop.width, height: body.crop.height })
-      .webp({ quality: 85 })
-      .toBuffer());
-    mimeType = 'image/webp';
-  } else {
-    buf = Buffer.from(await sharp(buf, { limitInputPixels: DISH_IMAGE_MAX_PIXELS }).webp({ quality: 85 }).toBuffer());
-    mimeType = 'image/webp';
-  }
+  const { data: buf, mimeType } = picture;
 
   await prisma.subjectImage.upsert({
     where:  { subject },
@@ -2952,50 +2976,30 @@ async function sameDishIn(dish: { id: string; menuId: string | null; stableKey: 
   return rows.map((r) => r.id);
 }
 
-// The side a stored dish picture is at most: phones send far more than any
-// screen shows, and all of it would sit in the database.
-const DISH_IMAGE_MAX_SIDE = 1600;
-// A small file can unpack to an enormous picture: more than any phone takes is
-// refused before it is decoded into memory.
-const DISH_IMAGE_MAX_PIXELS = 50_000_000;
 
 router.put('/dishes/:id/image', requireAdmin, requirePermission('mensa.manage'), async (req: Request, res: Response): Promise<void> => {
   const id = String(req.params['id']);
   const dish = await editableDish(req, id);
 
   const body = subjectImageUploadSchema.parse(req.body);
-  if (!ALLOWED_MIME.has(body.mimeType)) {
-    res.status(422).json({ error: 'Unsupported image type' }); return;
-  }
-  const upload = Buffer.from(body.data, 'base64');
-  if (upload.length > MAX_IMG_BYTES) {
-    res.status(413).json({ error: 'Image too large (max 3 MB)' }); return;
-  }
-
-  // sharp goes by what the bytes are, not by what was declared: only the
-  // formats allowed above get through (an SVG would be rendered otherwise).
+  // Checked for what the bytes are, upright, at most 1600 px, as WebP (utils/pictures.ts).
   let buf: Buffer<ArrayBuffer>;
   try {
-    const { format, width = 0, height = 0 } = await sharp(upload).metadata();
-    if (!format || !ALLOWED_FORMATS.has(format) || width * height > DISH_IMAGE_MAX_PIXELS) throw new Error('format');
-    // rotate(): phones store a picture sideways with a note; the note goes.
-    const picture = sharp(upload, { limitInputPixels: DISH_IMAGE_MAX_PIXELS }).rotate();
-    if (body.crop) picture.extract({ left: body.crop.left, top: body.crop.top, width: body.crop.width, height: body.crop.height });
-    buf = Buffer.from(await picture
-      .resize({ width: DISH_IMAGE_MAX_SIDE, height: DISH_IMAGE_MAX_SIDE, fit: 'inside', withoutEnlargement: true })
-      .webp({ quality: 85 }).toBuffer());
-  } catch {
-    res.status(422).json({ error: 'Das ist kein gültiges Bild' }); return;
+    buf = (await toWebp(uploadBytes(body.data, body.mimeType), { crop: body.crop })).data;
+  } catch (err) {
+    if (err instanceof PictureError) { res.status(err.status).json({ error: err.message }); return; }
+    throw err;
   }
 
   const ids = await sameDishIn(dish);
   const imageUrl = dishImageUrl(id);
   await prisma.$transaction(async (tx) => {
     for (const dishId of ids) {
+      // Uploaded here (no source link): a source never replaces it.
       await tx.dishImage.upsert({
         where: { dishId },
-        create: { dishId, data: buf, mimeType: 'image/webp' },
-        update: { data: buf, mimeType: 'image/webp' },
+        create: { dishId, data: buf, mimeType: 'image/webp', sourceUrl: '' },
+        update: { data: buf, mimeType: 'image/webp', sourceUrl: '' },
       });
       await tx.dish.update({ where: { id: dishId }, data: { imageUrl: dishId === id ? imageUrl : dishImageUrl(dishId) } });
     }
@@ -3004,6 +3008,16 @@ router.put('/dishes/:id/image', requireAdmin, requirePermission('mensa.manage'),
   audit(req, 'mensa.dish.image', { type: 'dish', id }, { name: dish.nameDe, menuId: dish.menuId, dishes: ids.length });
 
   res.json({ ok: true, imageUrl, dishes: ids.length });
+});
+
+// POST /api/admin/dishes/pictures/take — the pictures a menu's dishes only
+// link to come into the database now, failed links tried again.
+router.post('/dishes/pictures/take', requireAdmin, requirePermission('mensa.manage'), writeLimiter, async (req: Request, res: Response): Promise<void> => {
+  const menuId = await editableMenu(req, req.body?.menuId);
+  // Within the request's time; what is left comes with the next round.
+  const round = await adoptPictures({ now: true, menuId, max: 60, budgetMs: 40_000 });
+  audit(req, 'mensa.pictures', { type: 'menu', id: menuId }, { taken: round.taken, failed: round.failed.length, left: round.left });
+  res.json({ ...round, status: await pictureStatus(menuId) });
 });
 
 // DELETE /api/admin/dishes/:id/image — remove the uploaded image

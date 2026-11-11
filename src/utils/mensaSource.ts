@@ -244,8 +244,14 @@ export interface PlanDish {
   /** YYYY-MM-DD */
   date: string;
   weekOrdinal: number;
-  /** Has an uploaded picture: the source's never replaces it. */
+  /** Has a picture an administrator uploaded: the source's never replaces it. */
   hasUpload: boolean;
+  /**
+   * The link its kept picture was taken from (services/dishPictures.ts), or
+   * null: while the source names that link the copy stays, a new link
+   * replaces it.
+   */
+  adoptedFrom?: string | null;
 }
 
 const FILLERS = new Set(['mit', 'und', 'oder', 'auf', 'in', 'im', 'an', 'am', 'der', 'die', 'das', 'dem', 'den', 'von', 'vom', 'zu', 'zum', 'gebacken', 'gebraten', 'gebratene', 'gebratener']);
@@ -355,14 +361,18 @@ export function planPull(existing: PlanDish[], source: ParsedSource, options: Pu
     matched++;
     const sourceDate = keepDates || dish.undated ? null : dish.date;
     const same = sameDishName(have.nameDe, dish.nameDe);
+    const adopted = have.adoptedFrom ?? null;
+    // A copy of the source's own link stays while the source names it (a
+    // source that knows only part of a dish names none: while it is the same dish).
+    const keepAdopted = adopted !== null && (dish.partial ? same : dish.imageUrl === adopted);
     const change = (date: string | null) => plan.update.push({
       id: have.id,
       dish,
       hash,
       date,
-      keepImage: have.hasUpload && (same || !dish.partial),
+      keepImage: (have.hasUpload && (same || !dish.partial)) || keepAdopted,
       curated: Boolean(dish.partial) && same,
-      dropImage: Boolean(dish.partial) && !same && have.hasUpload,
+      dropImage: (Boolean(dish.partial) && !same && (have.hasUpload || adopted !== null)) || (adopted !== null && !keepAdopted),
       fillDescription: !have.descDe,
     });
     if (!force && !have.sourceHash) {

@@ -11,6 +11,7 @@ import { MenuSourceError, parseMenuSource, planPull, type ParsedSource, type Sou
 import { pdfTextItems } from '../utils/pdfText';
 import { BlockedAddressError, fetchBytes, fetchUrl, isInternalUrl } from '../utils/safeFetch';
 import { arrangeMenu, menuSchedule } from './mensaSchedule';
+import { kickPictures, ownPictureUrl } from './dishPictures';
 import { DEFAULT_MENU_ID } from './schools';
 import { audit } from './audit';
 
@@ -112,9 +113,8 @@ const utcDay = (day: string) => new Date(`${day}T00:00:00Z`);
 
 // Builds the public URL a client uses to load a dish image (absolute when
 // PUBLIC_BASE_URL is set, otherwise relative). Cache-busted on every upload.
-export function dishImageUrl(dishId: string): string {
-  return `${config.publicBaseUrl}/dishes/${encodeURIComponent(dishId)}/image?v=${Date.now()}`;
-}
+/** Where a dish's picture kept here is served: by path (services/dishPictures.ts). */
+export const dishImageUrl = ownPictureUrl;
 
 async function record(menuId: string, line: PullLine, data: { status: string; message: string; lastHash?: string; changedAt?: Date; validity?: string }): Promise<void> {
   const row = { ...data, message: data.message.slice(0, 300), checkedAt: new Date() };
@@ -233,8 +233,12 @@ export async function pullPlan(menuId: string, line: PullLine, options: PullOpti
       prisma.dish.findMany({ where: { menuId, plan }, select }),
       prisma.dish.findMany({ where: { menuId, plan, ...lineWhere }, select }),
     ]);
-    const uploads = new Set((await prisma.dishImage.findMany({ where: { dishId: { in: existing.map((d) => d.id) } }, select: { dishId: true } })).map((i) => i.dishId));
-    const asRow = (d: (typeof all)[number]) => ({ ...d, date: d.date.toISOString().slice(0, 10), hasUpload: uploads.has(d.id) });
+    // Which dishes keep a picture here: uploaded ("") or taken from a link.
+    const kept = new Map((await prisma.dishImage.findMany({ where: { dishId: { in: existing.map((d) => d.id) } }, select: { dishId: true, sourceUrl: true } })).map((i) => [i.dishId, i.sourceUrl]));
+    const asRow = (d: (typeof all)[number]) => {
+      const from = kept.get(d.id);
+      return { ...d, date: d.date.toISOString().slice(0, 10), hasUpload: from === '', adoptedFrom: from ? from : null };
+    };
     const pull = planPull(
       existing.map(asRow),
       source,
@@ -260,11 +264,13 @@ export async function pullPlan(menuId: string, line: PullLine, options: PullOpti
       const pictureOf = new Map(pictures.map((p) => [sameDishes.find((d) => d.id === p.dishId)!.stableKey, p]));
       for (const { dish, date, hash } of pull.create) {
         const id = randomUUID();
-        const picture = pictureOf.get(slugifyDishName(dish.nameDe));
+        // One taken from a link comes along while the source names that link (or none).
+        const found = pictureOf.get(slugifyDishName(dish.nameDe));
+        const picture = found && (!found.sourceUrl || !dish.imageUrl || found.sourceUrl === dish.imageUrl) ? found : undefined;
         await tx.dish.create({
           data: { id, menuId, plan, sourceId: dish.sourceId, sourceHash: hash, imageUrl: picture ? dishImageUrl(id) : dish.imageUrl, date: utcDay(date), ...content(dish) },
         });
-        if (picture) await tx.dishImage.create({ data: { dishId: id, data: picture.data, mimeType: picture.mimeType } });
+        if (picture) await tx.dishImage.create({ data: { dishId: id, data: picture.data, mimeType: picture.mimeType, sourceUrl: picture.sourceUrl } });
       }
       for (const u of pull.update) {
         const when = u.date ? { date: utcDay(u.date) } : {};
@@ -301,6 +307,8 @@ export async function pullPlan(menuId: string, line: PullLine, options: PullOpti
     // New dates in the plan's corner move its weeks as much as new dishes do.
     if (changed || source.seasonChanged) {
       invalidateDishesCache();
+      // Pictures the new dishes only link to come into the database.
+      if (changed) kickPictures();
       // The new weeks go where they belong right away, not at the next visitor.
       await arrangeMenu(menuId, await menuSchedule(menuId)).catch((err) => {
         logger.warn('mensa arrangement after a pull failed', { menuId, error: err instanceof Error ? err.message : String(err) });

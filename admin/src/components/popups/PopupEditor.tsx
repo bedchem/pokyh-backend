@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import {
-  AlignCenter, Bold, Code, Heading1, Heading2, Heading3, Highlighter, ImagePlus, Italic, Link,
+  AlignCenter, Bold, Code, Heading1, Heading2, Heading3, Highlighter, ImagePlus, ImageUp, Italic, Link,
   List, ListChecks, ListOrdered, Minus, Palette, Quote, Strikethrough, Table, Underline,
 } from 'lucide-react';
+import { adminApi } from '../../api';
 
 // Markdown/HTML source editor with a word-processor style toolbar. The toolbar
 // only ever inserts GitHub Markdown or the small inline-HTML subset the server
@@ -18,6 +19,20 @@ const COLORS = [
 ];
 const HIGHLIGHTS = ['#fde68a', '#fecaca', '#bbf7d0', '#bfdbfe', '#ddd6fe', '#fbcfe8'];
 
+// What the server takes for a picture (services/popupImages.ts).
+const UPLOAD_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+const UPLOAD_MAX_BYTES = 3 * 1024 * 1024;
+
+// A file as the upload route wants it: base64 without the "data:…" in front.
+function base64Of(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).replace(/^data:[^,]*,/, ''));
+    reader.onerror = () => reject(new Error('Die Datei konnte nicht gelesen werden'));
+    reader.readAsDataURL(file);
+  });
+}
+
 interface Props {
   value: string;
   onChange: (value: string) => void;
@@ -25,7 +40,11 @@ interface Props {
 
 export function PopupEditor({ value, onChange }: Props) {
   const ref = useRef<HTMLTextAreaElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
   const [palette, setPalette] = useState<'color' | 'highlight' | null>(null);
+  // Pictures being uploaded, and what went wrong with the last one.
+  const [uploading, setUploading] = useState(0);
+  const [uploadError, setUploadError] = useState('');
 
   useEffect(() => {
     if (!palette) return;
@@ -102,6 +121,28 @@ export function PopupEditor({ value, onChange }: Props) {
     block(`![${alt}](${url.trim()})`);
   }
 
+  // A picture from this computer: kept in the database (so in every backup),
+  // named in the text by its path; the server draws it anew as WebP.
+  async function uploadImages(files: File[]) {
+    const pictures = files.filter((f) => f.type.startsWith('image/'));
+    if (pictures.length === 0) return;
+    setUploadError('');
+    for (const file of pictures) {
+      if (!UPLOAD_TYPES.includes(file.type)) { setUploadError(`${file.name}: nur JPEG, PNG, WebP oder GIF`); continue; }
+      if (file.size > UPLOAD_MAX_BYTES) { setUploadError(`${file.name}: höchstens 3 MB`); continue; }
+      setUploading((n) => n + 1);
+      try {
+        const { url } = await adminApi.uploadPopupImage(await base64Of(file), file.type);
+        const alt = file.name.replace(/\.[^.]+$/, '').replace(/[[\]]/g, '').slice(0, 80);
+        block(`![${alt}](${url})`);
+      } catch (err) {
+        setUploadError(`${file.name}: ${err instanceof Error ? err.message : 'Hochladen fehlgeschlagen'}`);
+      } finally {
+        setUploading((n) => n - 1);
+      }
+    }
+  }
+
   function color(c: string) {
     wrap(`<span style="color:${c}">`, '</span>', 'Text');
     setPalette(null);
@@ -121,8 +162,15 @@ export function PopupEditor({ value, onChange }: Props) {
     else if (k === 'k') { e.preventDefault(); insertLink(); }
   }
 
-  // Pasting a bare image link inserts it as an image straight away.
+  // Pasting a bare image link inserts it as an image straight away; a pasted
+  // picture (a screenshot) is uploaded.
   function onPaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
+    const files = [...e.clipboardData.files].filter((f) => f.type.startsWith('image/'));
+    if (files.length > 0) {
+      e.preventDefault();
+      void uploadImages(files);
+      return;
+    }
     const text = e.clipboardData.getData('text/plain').trim();
     if (!IMAGE_URL.test(text)) return;
     e.preventDefault();
@@ -166,7 +214,10 @@ export function PopupEditor({ value, onChange }: Props) {
         <Tool title="Code" onClick={() => wrap('`', '`', 'code')}><Code size={15} /></Tool>
         {sep}
         <Tool title="Link (Strg+K)" onClick={insertLink}><Link size={15} /></Tool>
-        <Tool title="Bild" onClick={insertImage}><ImagePlus size={15} /></Tool>
+        <Tool title="Bild hochladen (auch einfügen oder hineinziehen)" onClick={() => fileRef.current?.click()}><ImageUp size={15} /></Tool>
+        <Tool title="Bild-Link" onClick={insertImage}><ImagePlus size={15} /></Tool>
+        <input ref={fileRef} type="file" accept={UPLOAD_TYPES.join(',')} multiple hidden
+          onChange={(e) => { const files = [...(e.target.files ?? [])]; e.target.value = ''; void uploadImages(files); }} />
         <Tool title="Tabelle" onClick={() => block('| Spalte 1 | Spalte 2 |\n| --- | --- |\n| Wert | Wert |', 2)}><Table size={15} /></Tool>
         <Tool title="Trennlinie" onClick={() => block('---')}><Minus size={15} /></Tool>
         <Tool title="Zentrieren" onClick={() => wrap('<div align="center">\n\n', '\n\n</div>', 'Zentrierter Text')}><AlignCenter size={15} /></Tool>
@@ -177,11 +228,23 @@ export function PopupEditor({ value, onChange }: Props) {
         onChange={(e) => onChange(e.target.value)}
         onKeyDown={onKeyDown}
         onPaste={onPaste}
+        onDragOver={(e) => { if ([...e.dataTransfer.items].some((i) => i.kind === 'file')) e.preventDefault(); }}
+        onDrop={(e) => {
+          const files = [...e.dataTransfer.files];
+          if (files.length === 0) return;
+          e.preventDefault();
+          void uploadImages(files);
+        }}
         spellCheck
         placeholder={'Schreib hier… **fett**, # Überschrift, Bild-Links werden automatisch zu Bildern.\nMarkdown und HTML funktionieren.'}
         className="w-full block px-4 py-3 text-[13.5px] leading-[1.6] font-mono resize-y outline-none scrollbar-thin"
         style={{ background: 'transparent', color: 'rgb(var(--ink-rgb) / 0.98)', minHeight: 280 }}
       />
+      {(uploading > 0 || uploadError) && (
+        <div className="px-4 py-2 text-[12px]" role="status" style={{ borderTop: '1px solid rgb(var(--ink-rgb) / calc(0.087 * var(--veil)))', color: uploadError ? 'var(--rose-deep)' : 'rgb(var(--ink-rgb) / 0.62)' }}>
+          {uploading > 0 ? 'Bild wird hochgeladen…' : uploadError}
+        </div>
+      )}
     </div>
   );
 }

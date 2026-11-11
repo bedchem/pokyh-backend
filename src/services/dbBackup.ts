@@ -221,11 +221,17 @@ async function runBackupInternal(trigger: 'scheduled' | 'manual'): Promise<{ fil
       // application regenerates itself; dumping them would make a restore
       // fail on their DEFINER, because the scoped backup account may not
       // create objects on behalf of another account.
+      //
+      // Binary columns (the pictures of dishes, subjects and popups) are
+      // written as hex: the dump is plain text that no character set,
+      // editor or transfer can change, and every picture comes back byte for
+      // byte (checked with this image's client against MySQL 8.4).
       const dump = spawn('mysqldump', [
         '--single-transaction',
         '--routines',
         '--skip-triggers',
         '--events',
+        '--hex-blob',
         '--host', conn.host,
         '--port', conn.port,
         '--user', conn.user,

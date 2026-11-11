@@ -5,6 +5,7 @@ import { prisma } from '../db';
 import { requireAuth } from '../middleware/auth';
 import { readLimiter, writeLimiter } from '../middleware/rateLimiter';
 import { cached } from '../services/cache';
+import { pictureHeaders } from '../utils/pictures';
 
 const router = Router();
 
@@ -71,7 +72,7 @@ router.get('/:subject', readLimiter, async (req: Request, res: Response): Promis
     res.status(404).json({ error: 'Not found' });
     return;
   }
-  res.setHeader('Content-Type', meta.mimeType);
+  for (const [name, value] of Object.entries(pictureHeaders(meta.mimeType))) res.setHeader(name, value);
   res.setHeader('Content-Length', row.data.length);
   res.end(row.data);
 });

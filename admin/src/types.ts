@@ -413,6 +413,17 @@ export interface MenuSeasonRule {
   winterFrom: string;
 }
 
+// How taking over a pasted picture link went: kept in the database, failed
+// (why), or still on its way (it goes on in the background).
+export interface PictureTakeover { ok: boolean; error?: string; pending?: boolean }
+
+// A menu's dish pictures: kept in the database, only linked, and links that failed.
+export interface DishPictureStatus {
+  kept: number;
+  linked: number;
+  failing: Array<{ url: string; error: string; nextTry: string }>;
+}
+
 export interface MenuScheduleInfo {
   mode: MenuMode;
   season: MenuSeasonRule;
@@ -427,6 +438,7 @@ export interface MenuScheduleInfo {
   // What the plans' PDFs say in their top right corner ("MM-DD/MM-DD"; ""
   // not read yet, "-" nothing), and what of it does not fit together.
   seasonDates?: { summer: string; winter: string; summerVeg: string; winterVeg: string; problem: string | null };
+  pictures?: DishPictureStatus;
   breaks: Array<{ start: string; end: string; reason: MenuBreakReason }>;
   // Whether each school's WebUntis holidays have come in yet.
   schools: Array<{ id: string; name: string; breaks: number; fetchedAt: string | null }>;

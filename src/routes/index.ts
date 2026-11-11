@@ -17,6 +17,7 @@ import { usageRouter } from './usage';
 import { privacyRouter } from './privacy';
 import { pushRouter } from './push';
 import { popupsAdminRouter, popupsRouter } from './popups';
+import { popupImagesRouter } from './popupImages';
 import { recapsAdminRouter, recapsRouter } from './recaps';
 import { clusterAdminRouter } from './adminCluster';
 import { analyticsAdminRouter } from './adminAnalytics';
@@ -42,6 +43,8 @@ router.use('/api/admin', adminRouter);
 
 // Public dish catalog — no API key required (read-only menu data)
 router.use('/dishes', dishesRouter);
+// Pictures of popups: named in <img> tags, which send no API key (like a dish's picture).
+router.use('/popup-images', popupImagesRouter);
 
 // WebUntis for the website: reads are authenticated by the sealed session
 // cookie alone (pictures and documents load straight into the page), writes

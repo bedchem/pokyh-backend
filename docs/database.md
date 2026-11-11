@@ -42,7 +42,9 @@ backup layers below on every node.
 
 - **Dumps** (`pokyh-backup-<UTC>.sql.gz`, admin panel → Backups): consistent
   `mysqldump` of the whole database, daily at `BACKUP_SCHEDULE_HOUR` or every
-  `BACKUP_INTERVAL_HOURS`, kept `BACKUP_RETENTION_DAYS`.
+  `BACKUP_INTERVAL_HOURS`, kept `BACKUP_RETENTION_DAYS`. Every picture is in it
+  (dishes, subjects, popups live in the database), written as hex
+  (`--hex-blob`): plain text, back byte for byte after a restore.
 - Each dump has a **manifest** (`<file>.json`: SHA-256, size, build commit,
   time). A restore checks the file against it and reads the whole archive back
   before a single statement reaches the database, so a damaged or swapped file
