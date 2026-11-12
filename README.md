@@ -452,9 +452,12 @@ read for what its bytes are and drawn anew as WebP of at most 1600 px: no SVG,
 no script, no EXIF. A link that fails stays a link, is tried again less and less
 often and is named on the dish page; a source's new link replaces the copy of
 its old one, never an upload or a picture an administrator chose. A dish names
-its picture by path (`/dishes/<id>/image`), the public menu with
-`PUBLIC_BASE_URL` in front, so a backup restored on another server still finds
-it. Popup pictures (`/popup-images/<id>`, random ids, kept for good by
+its picture by path (`/dishes/<id>/image`), so a backup restored on another
+server still finds it. The public menu and the popups put `PUBLIC_BASE_URL` in
+front, or, when it is empty, the HTTPS address the request came to if its
+host lies on the website's site (`CORS_ORIGIN`): per request, after the shared
+cache (`src/utils/publicBase.ts`). A proxy's upstream name or a forged
+`X-Forwarded-Host` is never named; the path then stays. Popup pictures (`/popup-images/<id>`, random ids, kept for good by
 browsers) no popup names any more go a day after their upload.
 
 ---

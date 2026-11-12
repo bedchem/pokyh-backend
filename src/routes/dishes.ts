@@ -13,6 +13,8 @@ import { logger } from '../utils/logger';
 import { optionalAuth } from '../middleware/auth';
 import { menuContext } from '../services/schools';
 import { pictureHeaders } from '../utils/pictures';
+import { withBase } from '../utils/publicBase';
+import { pictureBase } from '../services/pictureBase';
 
 const router = Router();
 
@@ -54,9 +56,9 @@ function dishToJson(d: {
     internalId: d.id,
     name: { de: d.nameDe, it: d.nameIt || d.nameDe, en: d.nameEn || d.nameDe },
     description: { de: d.descDe, it: d.descIt, en: d.descEn },
-    // An uploaded picture is stored by its path until PUBLIC_BASE_URL says on
-    // which address clients reach it; it is POKYH's own, not from another site.
-    imageUrl: d.imageUrl.startsWith('/') ? `${config.publicBaseUrl}${d.imageUrl}` : d.imageUrl,
+    // A picture kept here is named by path; the address goes in front per
+    // request (withPictureBase), after the shared cache.
+    imageUrl: d.imageUrl,
     ownImage: d.imageUrl.includes(`/dishes/${d.id}/image`),
     category: d.category,
     tags: Array.from(normalizedTags.values()),
@@ -122,9 +124,18 @@ router.get('/', readLimiter, optionalAuth, async (req: Request, res: Response): 
     };
   });
   // Briefly kept by the browser (the menu changes rarely; ratings come live).
+  // Private: the pictures' address may come from this request's Host.
   res.setHeader('Cache-Control', 'private, max-age=30, stale-while-revalidate=300');
-  res.json(payload);
+  res.json(withPictureBase(payload, pictureBase(req)));
 });
+
+// The menu with the address clients reach this server on in front of the
+// pictures it keeps: the apps cannot load a bare path. A new object, the
+// cached one stays as it is.
+function withPictureBase<T extends { menu: { dishes: DishJson[] } }>(payload: T, base: string): T {
+  if (!base) return payload;
+  return { ...payload, menu: { ...payload.menu, dishes: payload.menu.dishes.map((d) => ({ ...d, imageUrl: withBase(d.imageUrl, base) })) } };
+}
 
 // The vegetarian menu sometimes has the main dish itself: a dish is served once
 // a day, vegetarian when either of them is.

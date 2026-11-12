@@ -1857,6 +1857,8 @@ function pictureLink(value: unknown): string | null {
   if (text.length > 1000 || /\s/.test(text)) return null;
   try {
     const url = new URL(text);
+    // No credentials in a link, as for a mensa.json's (utils/mensaSource.ts webUrl).
+    if (url.username || url.password) return null;
     return url.protocol === 'https:' || url.protocol === 'http:' ? text : null;
   } catch {
     return null;
@@ -2240,7 +2242,7 @@ async function scheduleJson(menuId: string, schedule: MenuSchedule) {
       breaks: onRecord.get(id)?.holidays.length ?? 0,
       fetchedAt: onRecord.get(id)?.fetchedAt.toISOString() ?? null,
     })),
-    // Without it the apps do not know where an uploaded picture lies.
+    // Without it the pictures' address comes from each request (utils/publicBase.ts).
     pictureBaseMissing: config.publicBaseUrl === '',
     // Pictures kept in the database, the ones only linked, and links that failed (services/dishPictures.ts).
     pictures,

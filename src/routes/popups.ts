@@ -10,7 +10,9 @@ import { writeLimiter } from '../middleware/rateLimiter';
 import { logger } from '../utils/logger';
 import { NotFoundError, ValidationError } from '../utils/errors';
 import { renderPopupContent } from '../services/popupRender';
-import { storePopupImage, withPictureBase } from '../services/popupImages';
+import { storePopupImage } from '../services/popupImages';
+import { withPopupPictureBase } from '../utils/publicBase';
+import { pictureBase } from '../services/pictureBase';
 import { PictureError } from '../utils/pictures';
 import { likeText } from '../utils/like';
 import { cached } from '../services/cache';
@@ -362,7 +364,8 @@ client.get('/active', optionalAuth, async (req: Request, res: Response): Promise
       id: p.id,
       revision: p.revision,
       title: p.title,
-      html: withPictureBase(p.contentHtml),
+      // Pictures by path here; the address goes in front per request, below.
+      html: p.contentHtml,
       showCount: p.showCount,
       startsAt: p.startsAt?.toISOString() ?? null,
       endsAt: p.endsAt?.toISOString() ?? null,
@@ -370,10 +373,13 @@ client.get('/active', optionalAuth, async (req: Request, res: Response): Promise
     }));
   });
   res.setHeader('Cache-Control', 'no-store');
+  const base = pictureBase(req);
   res.json({
     now: now.toISOString(),
     // A window that closed while the list was kept is left out here.
-    popups: popups.filter((p) => !p.endsAt || new Date(p.endsAt).getTime() > now.getTime()),
+    popups: popups
+      .filter((p) => !p.endsAt || new Date(p.endsAt).getTime() > now.getTime())
+      .map((p) => ({ ...p, html: withPopupPictureBase(p.html, base) })),
   });
 });
 

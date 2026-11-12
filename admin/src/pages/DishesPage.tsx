@@ -1670,7 +1670,7 @@ function SchedulePanel({ schedule, canEdit, busy, onChange, onSourceSaved, onPul
         <SourceEditor schedule={schedule} canEdit={canEdit} onSaved={onSourceSaved} onPulled={onPulled} />
       </div>
       {schedule.pictureBaseMissing && (
-        <Notice tone="amber" icon={ImagePlus}>PUBLIC_BASE_URL ist auf dem Server nicht gesetzt: Die Website findet hochgeladene Bilder trotzdem, die Apps erst, wenn die Adresse der API dort eingetragen ist.</Notice>
+        <Notice tone="amber" icon={ImagePlus}>PUBLIC_BASE_URL ist auf dem Server nicht gesetzt: Die Bilder bekommen die HTTPS-Adresse, unter der die API angefragt wird, wenn ihr Host zur Website gehört (CORS_ORIGIN) und TRUST_PROXY Host und Schema durchlässt; sonst nur den Pfad, den die Apps selbst ergänzen. Für eine feste Adresse PUBLIC_BASE_URL eintragen.</Notice>
       )}
     </section>
   );
